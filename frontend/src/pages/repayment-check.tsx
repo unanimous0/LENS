@@ -220,41 +220,47 @@ export function RepaymentCheckPage() {
   }
 
   return (
-    <div className="flex flex-col gap-px bg-border h-full">
-      {/* Upload Bar */}
-      <div className="panel px-4 py-3 flex items-center gap-4 flex-wrap">
-        <div className="flex items-center gap-2">
-          <span className="text-xs text-t3 whitespace-nowrap">오피스(5264)</span>
-          <input
-            type="file"
-            className="text-sm text-t3 file:mr-2 file:rounded file:border-0 file:bg-bg-surface-2 file:px-3 file:py-1.5 file:text-sm file:text-t2 file:cursor-pointer hover:file:bg-bg-surface-3 file:transition-all"
-            onChange={(e) => setOfficeFile(e.target.files?.[0] ?? null)}
-          />
-        </div>
-        <div className="flex items-center gap-2">
-          <span className="text-xs text-t3 whitespace-nowrap">예탁원(대차내역)</span>
-          <input
-            type="file"
-            className="text-sm text-t3 file:mr-2 file:rounded file:border-0 file:bg-bg-surface-2 file:px-3 file:py-1.5 file:text-sm file:text-t2 file:cursor-pointer hover:file:bg-bg-surface-3 file:transition-all"
-            onChange={(e) => {
-              const f = e.target.files?.[0] ?? null
-              setEsafeFile(f)
-              if (f) fetchLenders(f)
-            }}
-          />
-        </div>
-        <button
-          className="rounded bg-accent px-4 py-2 text-sm text-black font-semibold hover:bg-accent-hover active:scale-95 active:brightness-90 transition-all"
-          onClick={handleCalculate}
-        >
-          계산 실행
-        </button>
-        {loading && <span className="text-xs text-accent font-mono">처리 중...</span>}
-        {error && <span className="text-xs text-down font-mono">{error}</span>}
-      </div>
-
-      {/* Filter Panel */}
+    <div className="flex flex-col gap-1 bg-bg-base">
+      {/* Controls Panel — 파일선택 + 필터 + 엑셀저장 통합 */}
       <div className="panel">
+        <div className="px-4 py-3 flex items-center gap-4 flex-wrap">
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-t3 whitespace-nowrap">오피스(5264)</span>
+            <input
+              type="file"
+              className="text-sm text-t3 file:mr-2 file:rounded file:border-0 file:bg-bg-surface-2 file:px-3 file:py-1.5 file:text-sm file:text-t2 file:cursor-pointer hover:file:bg-bg-surface-3 file:transition-all"
+              onChange={(e) => setOfficeFile(e.target.files?.[0] ?? null)}
+            />
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-t3 whitespace-nowrap">예탁원(대차내역)</span>
+            <input
+              type="file"
+              className="text-sm text-t3 file:mr-2 file:rounded file:border-0 file:bg-bg-surface-2 file:px-3 file:py-1.5 file:text-sm file:text-t2 file:cursor-pointer hover:file:bg-bg-surface-3 file:transition-all"
+              onChange={(e) => {
+                const f = e.target.files?.[0] ?? null
+                setEsafeFile(f)
+                if (f) fetchLenders(f)
+              }}
+            />
+          </div>
+          <button
+            className="rounded bg-accent px-4 py-2 text-sm text-black font-semibold hover:bg-accent-hover active:scale-95 active:brightness-90 transition-all"
+            onClick={handleCalculate}
+          >
+            계산 실행
+          </button>
+          {loading && <span className="text-xs text-accent font-mono">처리 중...</span>}
+          {error && <span className="text-xs text-down font-mono">{error}</span>}
+          {data && (
+            <button
+              className="ml-auto rounded bg-bg-surface-2 px-4 py-2 text-sm text-t2 font-medium hover:bg-bg-surface-3 active:scale-95 transition-all"
+              onClick={exportToExcel}
+            >
+              엑셀 저장
+            </button>
+          )}
+        </div>
         <button
           className="w-full px-4 py-2 flex items-center gap-2 text-xs text-t3 hover:text-t2 transition-colors"
           onClick={() => setFilterOpen(!filterOpen)}
@@ -526,19 +532,8 @@ export function RepaymentCheckPage() {
             </div>
           )}
 
-          {/* Export */}
-          <div className="panel px-4 py-2 flex justify-end">
-            <button
-              className="rounded bg-bg-surface-2 px-4 py-2 text-sm text-t2 font-medium hover:bg-bg-surface-3 active:scale-95 transition-all"
-              onClick={exportToExcel}
-            >
-              엑셀 저장
-            </button>
-          </div>
-
           {/* Results Table — 종목별 합산 (아코디언) */}
-          <div className="panel flex-1 flex flex-col min-h-0">
-            <div className="flex-1 overflow-y-auto">
+          <div className="panel">
               <table className="w-full text-[13px]">
                 <thead className="sticky top-0 bg-bg-surface z-10">
                   <tr className="text-[13px] text-t2 border-b border-border-light">
@@ -582,13 +577,12 @@ export function RepaymentCheckPage() {
                   })}
                 </tbody>
               </table>
-            </div>
           </div>
         </>
       )}
 
       {!data && !loading && (
-        <div className="panel flex-1 flex items-center justify-center">
+        <div className="flex items-center justify-center py-20">
           <div className="text-center">
             <p className="text-t3 text-sm">
               오피스(5264) 파일과 예탁원(대차내역) 파일을 업로드하세요

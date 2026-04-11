@@ -7,7 +7,7 @@ export function MarketPage() {
   const futuresList = Object.values(futuresTicks)
 
   return (
-    <div className="flex flex-col gap-px bg-border h-full">
+    <div className="flex flex-col gap-1 bg-bg-base h-full">
       {/* ETF Spread Heatmap */}
       <div className="panel p-4">
         <h3 className="text-sm font-semibold text-t1 mb-3">ETF 괴리 히트맵 (bp)</h3>
@@ -37,7 +37,7 @@ export function MarketPage() {
       </div>
 
       {/* Two column: ETF Table + Futures Table */}
-      <div className="flex gap-px flex-1 min-h-0">
+      <div className="flex gap-1 flex-1 min-h-0">
         {/* ETF Real-time Table */}
         <div className="flex-1 panel flex flex-col">
           <div className="px-4 py-3 border-b border-border-light">

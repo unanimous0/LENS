@@ -69,9 +69,9 @@ const portfolioData = Array.from({ length: 90 }, (_, i) => {
 
 export function DashboardPage() {
   return (
-    <div className="flex flex-col gap-px bg-border">
+    <div className="flex flex-col gap-1 bg-bg-base">
       {/* Top Row */}
-      <div className="flex gap-px">
+      <div className="flex gap-1">
         <div className="flex-1 panel p-4">
           <div className="grid grid-cols-4 gap-3">
             {[
@@ -133,7 +133,7 @@ export function DashboardPage() {
       </div>
 
       {/* Middle Row */}
-      <div className="flex gap-px" style={{ height: "380px" }}>
+      <div className="flex gap-1" style={{ height: "380px" }}>
         {/* Main Chart */}
         <div className="flex-[2] panel flex flex-col">
           <div className="flex items-center justify-between px-4 py-3 border-b border-border-light">
@@ -213,7 +213,7 @@ export function DashboardPage() {
       </div>
 
       {/* Bottom Row */}
-      <div className="flex gap-px" style={{ height: "300px" }}>
+      <div className="flex gap-1" style={{ height: "300px" }}>
         {/* Position */}
         <div className="flex-1 panel flex flex-col">
           <div className="px-4 py-3 border-b border-border-light">

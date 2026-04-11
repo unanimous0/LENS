@@ -29,7 +29,7 @@ export function LendingPage() {
   const checkTabs = subTabs.filter((t) => t.group === "check")
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col min-h-full">
       {/* Sub-tab bar */}
       <div className="flex items-center gap-1 bg-bg-primary px-4 py-1 border-b border-border">
         {manageTabs.map((tab) => (
@@ -67,7 +67,7 @@ export function LendingPage() {
       {subTabs.map((tab) => (
         <div
           key={tab.key}
-          className={`flex-1 min-h-0 ${activeTab === tab.key ? "flex flex-col" : "hidden"}`}
+          className={`flex-1 ${activeTab === tab.key ? "flex flex-col" : "hidden"}`}
         >
           {tab.key === "availability" && <LendingAvailabilityPage />}
           {tab.key === "repay-check" && <RepaymentCheckPage />}
