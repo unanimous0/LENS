@@ -37,12 +37,12 @@ def _parse_holdings(buf: io.BytesIO) -> pd.DataFrame:
     df = pd.read_excel(buf, sheet_name="원장RAW", engine="openpyxl")
     df = df.dropna(subset=[df.columns[1]])  # 펀드코드 기준
 
-    df = df.iloc[:, :15]  # O,P,Q 함수열 제외 (A~N만)
+    df = df.iloc[:, :14]  # A~N열만 사용 (O,P,Q 함수열 제외)
     df.columns = [
         "book_code", "fund_code", "fund_name", "account_code",
         "stock_code_raw", "stock_name", "settlement_today", "t1_balance",
         "t2_balance", "collateral_locked", "lending", "collateral_free",
-        "collateral_amount", "prev_close", "mm_flag",
+        "collateral_amount", "prev_close",
     ]
 
     # 종목코드 정규화: A005930 → 005930
