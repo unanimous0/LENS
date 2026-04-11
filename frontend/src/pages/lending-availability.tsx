@@ -281,6 +281,7 @@ export function LendingAvailabilityPage() {
               <table className="w-full text-[13px]">
                 <thead className="sticky top-0 bg-bg-surface z-10">
                   <tr className="text-[13px] text-t2 border-b border-border-light">
+                    <th className="text-center px-2 py-2.5 font-medium text-t3 w-10">No</th>
                     <th className="text-left px-4 py-2.5 font-medium w-8">
                       <span
                         className="cursor-pointer text-accent hover:text-accent-hover transition-colors select-none"
@@ -305,9 +306,10 @@ export function LendingAvailabilityPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {sortedResults.map((r) => (
+                  {sortedResults.map((r, i) => (
                     <ResultRow
                       key={r.stock_code}
+                      no={i + 1}
                       result={r}
                       expanded={expandedRows.has(r.stock_code)}
                       onToggle={() => toggleRow(r.stock_code)}
@@ -368,10 +370,12 @@ function SortTh({
 }
 
 function ResultRow({
+  no,
   result: r,
   expanded,
   onToggle,
 }: {
+  no: number;
   result: StockResult;
   expanded: boolean;
   onToggle: () => void;
@@ -384,6 +388,7 @@ function ResultRow({
         } ${expanded ? "bg-bg-hover" : ""}`}
         onClick={() => r.funds.length > 0 && onToggle()}
       >
+        <td className="text-center px-2 py-2.5 font-mono text-xs text-t4">{no}</td>
         <td className="px-4 py-2.5 text-t3 text-sm">
           {r.funds.length > 0 && (
             <span className={`inline-block transition-transform duration-150 ${expanded ? "rotate-90" : ""}`}>
@@ -441,6 +446,7 @@ function ResultRow({
       {expanded && (
         <>
           <tr className="bg-bg-surface border-b border-border">
+            <td></td>
             <td className="px-4 py-1.5 pl-8"></td>
             <td className="px-4 py-1.5 text-xs text-t3 font-medium">펀드코드</td>
             <td className="px-4 py-1.5 text-xs text-t3 font-medium">펀드명 (계정)</td>
@@ -459,6 +465,7 @@ function ResultRow({
               key={`${r.stock_code}-${f.fund_code}-${i}`}
               className="border-b border-border bg-bg-surface"
             >
+              <td></td>
               <td className="px-4 py-2 text-t4 text-xs pl-8">{"\u2514"}</td>
               <td className="px-4 py-2 font-mono text-xs text-t4">
                 {f.fund_code}

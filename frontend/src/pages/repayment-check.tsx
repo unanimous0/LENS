@@ -542,6 +542,7 @@ export function RepaymentCheckPage() {
               <table className="w-full text-[13px]">
                 <thead className="sticky top-0 bg-bg-surface z-10">
                   <tr className="text-[13px] text-t2 border-b border-border-light">
+                    <th className="text-center px-2 py-2.5 font-medium text-t3 w-10">No</th>
                     <th className="text-left px-4 py-2.5 font-medium w-8">
                       <span
                         className="cursor-pointer text-accent hover:text-accent-hover transition-colors select-none"
@@ -565,12 +566,13 @@ export function RepaymentCheckPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {data.summary.map((s) => {
+                  {data.summary.map((s, i) => {
                     const expanded = expandedRows.has(s.종목코드)
                     const details = matchesByStock(s.종목코드)
                     return (
                       <SummaryRow
                         key={s.종목코드}
+                        no={i + 1}
                         summary={s}
                         details={details}
                         expanded={expanded}
@@ -602,11 +604,13 @@ export function RepaymentCheckPage() {
 }
 
 function SummaryRow({
+  no,
   summary: s,
   details,
   expanded,
   onToggle,
 }: {
+  no: number
   summary: StockSummary
   details: RepaymentMatch[]
   expanded: boolean
@@ -620,6 +624,7 @@ function SummaryRow({
         }`}
         onClick={onToggle}
       >
+        <td className="text-center px-2 py-2.5 font-mono text-xs text-t4">{no}</td>
         <td className="px-4 py-2.5 text-t3 text-sm">
           <span className={`inline-block transition-transform duration-150 ${expanded ? "rotate-90" : ""}`}>
             {"\u25B6"}
@@ -644,6 +649,7 @@ function SummaryRow({
       {expanded && (
         <>
           <tr className="bg-bg-surface border-b border-border">
+            <td></td>
             <td className="px-4 py-1.5 pl-8"></td>
             <td className="px-4 py-1.5 text-xs text-t3 font-medium">펀드코드</td>
             <td className="px-4 py-1.5 text-xs text-t3 font-medium">펀드명</td>
@@ -659,6 +665,7 @@ function SummaryRow({
               key={`${s.종목코드}-${m.체결번호}-${i}`}
               className="border-b border-border bg-bg-surface"
             >
+              <td></td>
               <td className="px-4 py-2 text-t4 text-xs pl-8">{"\u2514"}</td>
               <td className="px-4 py-2 font-mono text-xs text-t4">{m.펀드코드}</td>
               <td className="px-4 py-2 text-xs text-t3">{m.펀드명}</td>

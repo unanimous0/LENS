@@ -63,15 +63,17 @@ export function LendingPage() {
         ))}
       </div>
 
-      {/* Content */}
-      <div className="flex-1 min-h-0">
-        {activeTab === "availability" && <LendingAvailabilityPage />}
-        {activeTab === "borrow" && <StubContent label="차입" />}
-        {activeTab === "repay" && <StubContent label="상환" />}
-        {activeTab === "lend" && <StubContent label="대여" />}
-        {activeTab === "lend-repay" && <StubContent label="대여상환" />}
-        {activeTab === "repay-check" && <RepaymentCheckPage />}
-      </div>
+      {/* Content — 모든 탭을 마운트 상태로 유지, 비활성 탭은 숨김 */}
+      {subTabs.map((tab) => (
+        <div
+          key={tab.key}
+          className={`flex-1 min-h-0 ${activeTab === tab.key ? "flex flex-col" : "hidden"}`}
+        >
+          {tab.key === "availability" && <LendingAvailabilityPage />}
+          {tab.key === "repay-check" && <RepaymentCheckPage />}
+          {tab.key !== "availability" && tab.key !== "repay-check" && <StubContent label={tab.label} />}
+        </div>
+      ))}
     </div>
   )
 }
