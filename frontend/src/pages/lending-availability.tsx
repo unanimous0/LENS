@@ -39,6 +39,8 @@ function cleanName(name: string) {
   return name.replace(/^[*#\s]+/, "");
 }
 
+const DEFAULT_RESTRICTED = ["187", "421", "422", "424", "446", "476", "836"];
+
 export function LendingAvailabilityPage() {
   const [data, setData] = useState<LendingResponse | null>(null);
   const [loading, setLoading] = useState(false);
@@ -48,6 +50,19 @@ export function LendingAvailabilityPage() {
   const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
   const [sortKey, setSortKey] = useState<keyof StockResult>("total_combined");
   const [sortAsc, setSortAsc] = useState(false);
+  const [filterOpen, setFilterOpen] = useState(true);
+  const [restrictedSuffixes, setRestrictedSuffixes] = useState<string[]>(DEFAULT_RESTRICTED);
+  const [suffixInput, setSuffixInput] = useState("");
+
+  const addSuffix = () => {
+    const raw = suffixInput.trim();
+    if (!raw) { setSuffixInput(""); return; }
+    const code = raw.length <= 3 ? raw.padStart(3, "0") : raw.padStart(6, "0");
+    if ((code.length === 3 || code.length === 6) && !restrictedSuffixes.includes(code)) {
+      setRestrictedSuffixes([...restrictedSuffixes, code].sort());
+    }
+    setSuffixInput("");
+  };
 
   const handleUpload = async (file: File) => {
     setFileName(file.name);
@@ -58,6 +73,9 @@ export function LendingAvailabilityPage() {
 
     const form = new FormData();
     form.append("file", file);
+    if (restrictedSuffixes.length > 0) {
+      form.append("restricted_suffixes", restrictedSuffixes.join(","));
+    }
 
     try {
       const res = await fetch(`/api/lending/calculate`, {
@@ -139,6 +157,7 @@ export function LendingAvailabilityPage() {
     <div className="flex flex-col gap-px bg-border h-full">
       {/* Upload Bar */}
       <div className="panel px-4 py-3 flex items-center gap-4">
+        <span className="text-xs text-t3 whitespace-nowrap">대여확인</span>
         <input
           id="file-upload"
           type="file"
@@ -168,6 +187,49 @@ export function LendingAvailabilityPage() {
         )}
         {error && (
           <span className="text-xs text-down font-mono">{error}</span>
+        )}
+      </div>
+
+      {/* Filter Panel */}
+      <div className="panel">
+        <button
+          className="w-full px-4 py-2 flex items-center gap-2 text-xs text-t3 hover:text-t2 transition-colors"
+          onClick={() => setFilterOpen(!filterOpen)}
+        >
+          <span className={`transition-transform duration-150 ${filterOpen ? "rotate-90" : ""}`}>{"\u25B6"}</span>
+          <span className="font-medium">필터</span>
+          {restrictedSuffixes.length > 0 && (
+            <span className="text-accent">적용 중</span>
+          )}
+        </button>
+        {filterOpen && (
+          <div className="px-4 pb-3 flex flex-col gap-1.5">
+            <span className="text-[11px] text-t4 font-medium">대여불가펀드</span>
+            <div className="flex items-center gap-2">
+              <input
+                className="bg-bg-input rounded px-2 py-1 text-xs font-mono text-t1 w-28 outline-none focus:ring-1 focus:ring-accent"
+                placeholder="3자리 또는 6자리"
+                value={suffixInput}
+                onChange={(e) => setSuffixInput(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && !e.nativeEvent.isComposing && addSuffix()}
+                maxLength={6}
+              />
+              <button className="text-xs text-accent hover:text-accent-hover px-1" onClick={addSuffix}>+</button>
+            </div>
+            {restrictedSuffixes.length > 0 && (
+              <div className="flex items-center gap-1 flex-wrap">
+                {restrictedSuffixes.map((s) => (
+                  <button
+                    key={s}
+                    className="bg-bg-surface-2 hover:bg-bg-surface-3 rounded px-1.5 py-0.5 text-xs font-mono text-t2 transition-colors cursor-pointer"
+                    onClick={() => setRestrictedSuffixes(restrictedSuffixes.filter((x) => x !== s))}
+                  >
+                    {s} ×
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
         )}
       </div>
 
@@ -262,10 +324,10 @@ export function LendingAvailabilityPage() {
         <div className="panel flex-1 flex items-center justify-center">
           <div className="text-center">
             <p className="text-t3 text-sm">
-              대여 확인 엑셀 파일(.xlsx)을 업로드하세요
+              대여확인 엑셀 파일(.xlsx)을 업로드하세요
             </p>
             <p className="text-t4 text-xs mt-1">
-              문의종목, 원장RAW, MM펀드, 대여불가펀드, 상환예정내역 시트 포함
+              문의종목, 원장RAW, MM펀드, 상환예정내역 시트 포함
             </p>
           </div>
         </div>

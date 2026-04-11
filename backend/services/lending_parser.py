@@ -3,20 +3,18 @@ import pandas as pd
 
 
 def parse_lending_file(file_bytes: bytes) -> dict:
-    """xlsm 파일의 5개 시트를 파싱하여 정제된 DataFrame dict 반환."""
+    """xlsm 파일의 4개 시트를 파싱하여 정제된 DataFrame dict 반환."""
     buf = io.BytesIO(file_bytes)
 
     inquiry = _parse_inquiry(buf)
     holdings = _parse_holdings(buf)
     mm_funds = _parse_mm_funds(buf)
-    restricted = _parse_restricted_funds(buf)
     repayments = _parse_repayments(buf)
 
     return {
         "inquiry": inquiry,
         "holdings": holdings,
         "mm_funds": mm_funds,
-        "restricted_suffixes": restricted,
         "repayments": repayments,
     }
 
@@ -67,12 +65,6 @@ def _parse_mm_funds(buf: io.BytesIO) -> set[str]:
     codes = df.iloc[:, 0].dropna().astype(str).str.zfill(6)
     return set(codes)
 
-
-def _parse_restricted_funds(buf: io.BytesIO) -> list[str]:
-    """대여불가펀드 시트: 펀드코드 뒤 3자리 리스트 반환."""
-    df = pd.read_excel(buf, sheet_name="대여불가펀드", engine="openpyxl")
-    suffixes = df.iloc[:, 0].dropna().astype(str).tolist()
-    return suffixes
 
 
 def _parse_repayments(buf: io.BytesIO) -> pd.DataFrame:

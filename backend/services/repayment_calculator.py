@@ -9,7 +9,14 @@ def apply_filters(office: pd.DataFrame, esafe: pd.DataFrame, filters: dict) -> t
 
     # 5264 필터
     if filters["exclude_fund_codes"]:
-        o = o[~o["펀드코드"].isin(filters["exclude_fund_codes"])]
+        exact = [c for c in filters["exclude_fund_codes"] if len(c) == 6]
+        suffixes = [c for c in filters["exclude_fund_codes"] if len(c) == 3]
+        mask = pd.Series(False, index=o.index)
+        if exact:
+            mask = mask | o["펀드코드"].isin(exact)
+        if suffixes:
+            mask = mask | o["펀드코드"].str[-3:].isin(suffixes)
+        o = o[~mask]
     if filters["exclude_office_stock_code"]:
         codes = [c.strip() for c in filters["exclude_office_stock_code"].split(",") if c.strip()]
         if codes:

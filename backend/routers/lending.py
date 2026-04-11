@@ -1,4 +1,5 @@
-from fastapi import APIRouter, File, UploadFile, HTTPException
+from fastapi import APIRouter, File, Form, UploadFile, HTTPException
+from typing import Optional
 
 from schemas.lending import LendingResponse
 from services.lending_parser import parse_lending_file
@@ -8,7 +9,10 @@ router = APIRouter(tags=["lending"])
 
 
 @router.post("/lending/calculate", response_model=LendingResponse)
-async def calculate_lending(file: UploadFile = File(...)):
+async def calculate_lending(
+    file: UploadFile = File(...),
+    restricted_suffixes: Optional[str] = Form(None),
+):
     if not file.filename.endswith((".xlsm", ".xlsx")):
         raise HTTPException(400, "엑셀 파일(.xlsm, .xlsx)만 업로드 가능합니다.")
 
@@ -18,11 +22,13 @@ async def calculate_lending(file: UploadFile = File(...)):
     except Exception as e:
         raise HTTPException(400, f"파일 파싱 오류: {str(e)}")
 
+    suffixes = [s.strip() for s in restricted_suffixes.split(",") if s.strip()] if restricted_suffixes else []
+
     results = calculate_availability(
         inquiry=data["inquiry"],
         holdings=data["holdings"],
         mm_funds=data["mm_funds"],
-        restricted_suffixes=data["restricted_suffixes"],
+        restricted_suffixes=suffixes,
         repayments=data["repayments"],
     )
 

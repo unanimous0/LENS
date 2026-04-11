@@ -107,9 +107,11 @@ export function RepaymentCheckPage() {
   )
 
   const addFundCode = () => {
-    const code = fundCodeInput.trim().padStart(6, "0")
-    if (code.length === 6 && !excludeFundCodes.includes(code)) {
-      setExcludeFundCodes([...excludeFundCodes, code])
+    const raw = fundCodeInput.trim()
+    if (!raw) { setFundCodeInput(""); return }
+    const code = raw.length <= 3 ? raw.padStart(3, "0") : raw.padStart(6, "0")
+    if ((code.length === 3 || code.length === 6) && !excludeFundCodes.includes(code)) {
+      setExcludeFundCodes([...excludeFundCodes, code].sort())
     }
     setFundCodeInput("")
   }
@@ -272,8 +274,8 @@ export function RepaymentCheckPage() {
                 <div className="flex items-center gap-1">
                   <span className="text-xs text-t3 w-14">펀드코드</span>
                   <input
-                    className="bg-bg-input rounded px-2 py-1 text-xs font-mono text-t1 w-24 outline-none focus:ring-1 focus:ring-accent"
-                    placeholder="6자리"
+                    className="bg-bg-input rounded px-2 py-1 text-xs font-mono text-t1 w-28 outline-none focus:ring-1 focus:ring-accent"
+                    placeholder="3자리 또는 6자리"
                     value={fundCodeInput}
                     onChange={(e) => setFundCodeInput(e.target.value)}
                     onKeyDown={(e) => e.key === "Enter" && !e.nativeEvent.isComposing && addFundCode()}

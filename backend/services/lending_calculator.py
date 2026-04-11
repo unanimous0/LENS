@@ -27,8 +27,14 @@ def calculate_availability(
     df = df[~df["fund_code"].isin(mm_funds)]
 
     # 3. 대여불가펀드 제외 (펀드코드 뒤 3자리)
-    fund_suffix = df["fund_code"].str[-3:]
-    df = df[~fund_suffix.isin(restricted_suffixes)]
+    exact = [c for c in restricted_suffixes if len(c) == 6]
+    suffixes = [c for c in restricted_suffixes if len(c) == 3]
+    mask = pd.Series(False, index=df.index)
+    if exact:
+        mask = mask | df["fund_code"].isin(exact)
+    if suffixes:
+        mask = mask | df["fund_code"].str[-3:].isin(suffixes)
+    df = df[~mask]
 
     # 4. 상환예정 수량 종목별 합산
     repay_by_stock = (
