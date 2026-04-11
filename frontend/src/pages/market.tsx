@@ -147,10 +147,10 @@ function SpreadBadge({ bp }: { bp: number }) {
 
 function BasisBadge({ bp }: { bp: number }) {
   let color = 'text-t2 bg-bg-surface-2'
-  if (bp > 10) color = 'text-green bg-green-dim'
-  else if (bp > 0) color = 'text-green bg-green-dim'
-  else if (bp < -10) color = 'text-up bg-up-bg'
-  else if (bp < 0) color = 'text-up bg-up-bg'
+  if (bp > 10) color = 'text-up bg-up-bg'
+  else if (bp > 0) color = 'text-up bg-up-bg'
+  else if (bp < -10) color = 'text-down bg-down-bg'
+  else if (bp < 0) color = 'text-down bg-down-bg'
   return (
     <span className={`inline-block px-2 py-0.5 rounded font-mono text-xs font-semibold ${color}`}>
       {bp > 0 ? '+' : ''}{bp.toFixed(1)}

@@ -119,7 +119,7 @@ export function DashboardPage() {
                   </p>
                   <span
                     className={`font-mono text-xs font-medium ${
-                      card.isUp ? "text-green" : "text-up"
+                      card.isUp ? "text-up" : "text-down"
                     }`}
                   >
                     {card.change}
@@ -156,7 +156,7 @@ export function DashboardPage() {
             </div>
             <div className="flex items-center gap-3">
               <span className="font-mono text-xl font-semibold text-t1">{"\u20A9"}12.43B</span>
-              <span className="font-mono text-sm font-medium text-green">+2.31%</span>
+              <span className="font-mono text-sm font-medium text-up">+2.31%</span>
             </div>
           </div>
           <div className="flex-1 px-4 py-2 flex items-end">
@@ -191,7 +191,7 @@ export function DashboardPage() {
                 <div className="text-right">
                   <div className="flex items-center gap-2 justify-end">
                     <span className="font-mono text-[13px] text-t1">{s.price}</span>
-                    <span className={`font-mono text-[11px] font-medium ${s.type === "BUY" ? "text-up" : "text-green"}`}>
+                    <span className={`font-mono text-[11px] font-medium ${s.type === "BUY" ? "text-up" : "text-down"}`}>
                       {s.pct}
                     </span>
                   </div>
@@ -199,7 +199,7 @@ export function DashboardPage() {
                     <span className="font-mono text-[10px] text-t4">{s.time}</span>
                     <span
                       className={`font-mono text-[10px] font-semibold px-1.5 py-px rounded-sm ${
-                        s.type === "BUY" ? "bg-up-bg text-up" : "bg-down-bg text-green"
+                        s.type === "BUY" ? "bg-up-bg text-up" : "bg-down-bg text-down"
                       }`}
                     >
                       {s.type}
@@ -244,10 +244,10 @@ export function DashboardPage() {
                     <td className="px-4 py-2.5 text-right font-mono text-t2">{p.qty}</td>
                     <td className="px-4 py-2.5 text-right font-mono text-t2">{p.avg}</td>
                     <td className="px-4 py-2.5 text-right font-mono text-t1">{p.cur}</td>
-                    <td className={`px-4 py-2.5 text-right font-mono ${p.pnl.startsWith("+") ? "text-green" : "text-up"}`}>
+                    <td className={`px-4 py-2.5 text-right font-mono ${p.pnl.startsWith("+") ? "text-up" : "text-down"}`}>
                       {p.pnl}
                     </td>
-                    <td className={`px-4 py-2.5 text-right font-mono font-semibold ${p.pct.startsWith("+") ? "text-green" : "text-up"}`}>
+                    <td className={`px-4 py-2.5 text-right font-mono font-semibold ${p.pct.startsWith("+") ? "text-up" : "text-down"}`}>
                       {p.pct}
                     </td>
                   </tr>
@@ -287,7 +287,7 @@ export function DashboardPage() {
                     <td className="px-4 py-2.5 text-right">
                       <span
                         className={`font-mono text-[11px] font-semibold px-1.5 py-px rounded-sm ${
-                          r.type === "차입" ? "bg-up-bg text-up" : "bg-down-bg text-green"
+                          r.type === "차입" ? "bg-down-bg text-down" : "bg-up-bg text-up"
                         }`}
                       >
                         {r.type}

@@ -167,7 +167,7 @@ export function LendingPage() {
           <span className="text-xs text-green font-mono">처리 중...</span>
         )}
         {error && (
-          <span className="text-xs text-up font-mono">{error}</span>
+          <span className="text-xs text-down font-mono">{error}</span>
         )}
       </div>
 
@@ -184,13 +184,13 @@ export function LendingPage() {
               </div>
               <div className="panel-inner rounded p-4">
                 <p className="text-xs text-t3 mb-1">대여가능</p>
-                <p className="font-mono text-2xl font-semibold text-green">
+                <p className="font-mono text-2xl font-semibold text-up">
                   {data.results.filter((r) => r.total_combined > 0).length}
                 </p>
               </div>
               <div className="panel-inner rounded p-4">
                 <p className="text-xs text-t3 mb-1">대여불가</p>
-                <p className="font-mono text-2xl font-semibold text-up">
+                <p className="font-mono text-2xl font-semibold text-down">
                   {data.results.filter((r) => r.total_combined === 0).length}
                 </p>
               </div>
@@ -344,7 +344,7 @@ function ResultRow({
         <td className={`px-4 py-2.5 text-right font-mono ${r.rate > 5 ? "text-blue" : "text-t1"}`}>
           {r.rate.toFixed(2)}%
         </td>
-        <td className="px-4 py-2.5 text-right font-mono text-green">
+        <td className="px-4 py-2.5 text-right font-mono text-up">
           {fmt(r.total_free)}
         </td>
         <td className="px-4 py-2.5 text-right font-mono text-warning">
@@ -352,22 +352,22 @@ function ResultRow({
         </td>
         <td
           className={`px-4 py-2.5 text-right font-mono font-semibold ${
-            r.total_combined > 0 ? "text-green" : "text-up"
+            r.total_combined > 0 ? "text-up" : "text-down"
           }`}
         >
           {fmt(r.total_combined)}
         </td>
         <td className="px-4 py-2.5 text-center">
           {r.total_combined === 0 ? (
-            <span className="font-mono text-[11px] font-semibold px-2 py-0.5 rounded-sm bg-up-bg text-up">
+            <span className="font-mono text-[11px] font-semibold px-2 py-0.5 rounded-sm bg-down-bg text-down">
               수량 없음
             </span>
           ) : r.total_combined > r.requested_qty ? (
-            <span className="font-mono text-[11px] font-semibold px-2 py-0.5 rounded-sm bg-down-bg text-green">
+            <span className="font-mono text-[11px] font-semibold px-2 py-0.5 rounded-sm bg-up-bg text-up">
               초과 수량
             </span>
           ) : (
-            <span className="font-mono text-[11px] font-semibold px-2 py-0.5 rounded-sm bg-down-bg text-green">
+            <span className="font-mono text-[11px] font-semibold px-2 py-0.5 rounded-sm bg-up-bg text-up">
               수량 있음
             </span>
           )}
@@ -410,10 +410,10 @@ function ResultRow({
               </td>
               <td className="px-4 py-2 text-right font-mono text-xs text-t4">
                 {f.repayment_deducted > 0 && (
-                  <span className="text-up">-{fmt(f.repayment_deducted)}</span>
+                  <span className="text-down">-{fmt(f.repayment_deducted)}</span>
                 )}
               </td>
-              <td className="px-4 py-2 text-right font-mono text-xs text-green">
+              <td className="px-4 py-2 text-right font-mono text-xs text-up">
                 {fmt(f.collateral_free)}
               </td>
               <td className="px-4 py-2 text-right font-mono text-xs text-warning">

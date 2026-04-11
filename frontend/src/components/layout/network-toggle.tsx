@@ -37,7 +37,7 @@ export function NetworkToggle() {
         ))}
       </div>
       <div className="flex items-center gap-1.5">
-        <span className={`h-1.5 w-1.5 rounded-full ${connected ? 'bg-down' : 'bg-up'}`} />
+        <span className={`h-1.5 w-1.5 rounded-full ${connected ? 'bg-up' : 'bg-down'}`} />
         <span className="font-mono text-xs text-t3">{connected ? 'Connected' : 'Disconnected'}</span>
       </div>
     </div>
