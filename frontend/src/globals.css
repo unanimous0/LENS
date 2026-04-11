@@ -1,0 +1,78 @@
+@import "tailwindcss";
+
+@theme inline {
+  /* Backgrounds */
+  --color-bg-base: #000000;
+  --color-bg-primary: #111111;
+  --color-bg-surface: #1c1c1e;
+  --color-bg-surface-2: #2c2c2e;
+  --color-bg-surface-3: #3a3a3c;
+  --color-bg-hover: #2c2c2e;
+  --color-bg-input: #2c2c2e;
+
+  /* Text */
+  --color-t1: #ffffff;
+  --color-t2: #d1d1d6;
+  --color-t3: #8e8e93;
+  --color-t4: #636366;
+
+  /* Apple Green */
+  --color-green: #34c759;
+  --color-green-light: #30d158;
+  --color-green-dim: rgba(52, 199, 89, 0.15);
+
+  /* Market */
+  --color-up: #34c759;
+  --color-up-bg: rgba(52, 199, 89, 0.12);
+  --color-down: #ff3b30;
+  --color-down-bg: rgba(255, 59, 48, 0.12);
+
+  /* Accent */
+  --color-accent: #34c759;
+  --color-accent-hover: #30d158;
+
+  /* Functional */
+  --color-border: #1c1c1e;
+  --color-border-light: #2c2c2e;
+  --color-warning: #ff9f0a;
+  --color-blue: #0a84ff;
+  --color-cyan: #5ac8fa;
+  --color-purple: #bf5af2;
+
+  --font-jakarta: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-jetbrains: 'JetBrains Mono', 'SF Mono', 'Consolas', monospace;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #3a3a3c transparent;
+}
+
+body {
+  background: #000000;
+  color: #ffffff;
+  font-family: var(--font-jakarta);
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+}
+
+.font-mono {
+  font-family: var(--font-jetbrains);
+}
+
+.panel {
+  background: #111111;
+}
+
+.panel-inner {
+  background: #1c1c1e;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.animate-in {
+  animation: fadeIn 0.2s ease-out;
+}
