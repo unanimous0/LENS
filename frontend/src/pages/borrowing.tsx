@@ -120,7 +120,7 @@ function StockRow({ item, no, cols }: { item: CostItem; no?: number; cols: "stoc
       {cols === "stock" && <td className="px-4 py-2 text-right font-mono text-t2">{fmt(item.total_qty)}</td>}
       <td className="px-4 py-2 text-right font-mono text-t2">{fmt(item.total_value)}</td>
       <td className="px-4 py-2 text-right font-mono text-up">{fmtRate(item.wa_rate)}</td>
-      <td className="px-4 py-2 text-right font-mono text-down">
+      <td className="px-4 py-2 text-right font-mono text-up">
         {fmt(item.daily_cost)}
         {tooltip && details.length > 0 && (
           <div
@@ -184,7 +184,7 @@ function LenderRow({ item }: { item: CostItem }) {
       <td className="px-4 py-2 text-right font-mono text-t2">{fmt(item.count)}</td>
       <td className="px-4 py-2 text-right font-mono text-t2">{fmt(item.total_value)}</td>
       <td className="px-4 py-2 text-right font-mono text-up">{fmtRate(item.wa_rate)}</td>
-      <td className="px-4 py-2 text-right font-mono text-down">
+      <td className="px-4 py-2 text-right font-mono text-up">
         {fmt(item.daily_cost)}
         {tooltip && details.length > 0 && (
           <div
@@ -215,7 +215,7 @@ function LenderRow({ item }: { item: CostItem }) {
                     <td className="pr-3 py-0.5 text-right font-mono text-up">{d.fee_rate.toFixed(4)}%</td>
                     <td className="pr-3 py-0.5 text-right font-mono">{fmt(d.qty)}</td>
                     <td className="pr-3 py-0.5 text-right font-mono">{fmt(d.value)}</td>
-                    <td className="pr-3 py-0.5 text-right font-mono text-down">{fmt(Math.round(d.value * d.fee_rate / 100 / 365))}</td>
+                    <td className="pr-3 py-0.5 text-right font-mono text-up">{fmt(Math.round(d.value * d.fee_rate / 100 / 365))}</td>
                   </tr>
                 ))}
               </tbody>
@@ -396,11 +396,11 @@ export function BorrowingPage() {
               </div>
               <div className="panel-inner rounded px-3 py-2">
                 <p className="text-[11px] text-t3">일일 비용</p>
-                <p className="font-mono text-lg font-semibold text-down">{fmt(data.summary.total_daily_cost)}원</p>
+                <p className="font-mono text-lg font-semibold text-up">{fmt(data.summary.total_daily_cost)}원</p>
               </div>
               <div className="panel-inner rounded px-3 py-2">
                 <p className="text-[11px] text-t3">고비용 일일 비용</p>
-                <p className="font-mono text-lg font-semibold text-down">{fmt(data.summary.expensive_daily_cost)}원</p>
+                <p className="font-mono text-lg font-semibold text-up">{fmt(data.summary.expensive_daily_cost)}원</p>
               </div>
             </div>
           </div>

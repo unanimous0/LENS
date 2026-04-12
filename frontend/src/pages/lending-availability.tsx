@@ -402,18 +402,18 @@ function ResultRow({
         <td className="px-4 py-2.5 text-right font-mono text-t2">
           {fmt(r.requested_qty)}
         </td>
-        <td className={`px-4 py-2.5 text-right font-mono ${r.rate > 5 ? "text-down" : "text-t1"}`}>
+        <td className={`px-4 py-2.5 text-right font-mono ${r.rate > 5 ? "text-up" : "text-t1"}`}>
           {r.rate.toFixed(2)}%
         </td>
-        <td className="px-4 py-2.5 text-right font-mono text-up">
+        <td className={`px-4 py-2.5 text-right font-mono ${r.total_free > 0 ? "text-up" : "text-t1"}`}>
           {fmt(r.total_free)}
         </td>
-        <td className="px-4 py-2.5 text-right font-mono text-warning">
+        <td className={`px-4 py-2.5 text-right font-mono ${r.total_locked > 0 ? "text-up" : "text-t1"}`}>
           {fmt(r.total_locked)}
         </td>
         <td
           className={`px-4 py-2.5 text-right font-mono font-semibold ${
-            r.total_combined > 0 ? "text-up" : "text-down"
+            r.total_combined > 0 ? "text-up" : "text-t1"
           }`}
         >
           {fmt(r.total_combined)}
@@ -476,10 +476,10 @@ function ResultRow({
                   <span className="text-down">-{fmt(f.repayment_deducted)}</span>
                 )}
               </td>
-              <td className="px-4 py-2 text-right font-mono text-xs text-up">
+              <td className={`px-4 py-2 text-right font-mono text-xs ${f.collateral_free > 0 ? "text-up" : "text-t1"}`}>
                 {fmt(f.collateral_free)}
               </td>
-              <td className="px-4 py-2 text-right font-mono text-xs text-warning">
+              <td className={`px-4 py-2 text-right font-mono text-xs ${f.collateral_locked > 0 ? "text-up" : "text-t1"}`}>
                 {fmt(f.collateral_locked)}
               </td>
               <td className="px-4 py-2 text-right font-mono text-xs text-t2">
