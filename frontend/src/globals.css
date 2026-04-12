@@ -39,7 +39,7 @@
   --color-cyan: #5ac8fa;
   --color-purple: #bf5af2;
 
-  --font-jakarta: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-pretendard: 'Pretendard Variable', 'Pretendard', -apple-system, BlinkMacSystemFont, sans-serif;
   --font-jetbrains: 'JetBrains Mono', 'SF Mono', 'Consolas', monospace;
 }
 
@@ -51,7 +51,7 @@
 body {
   background: #000000;
   color: #ffffff;
-  font-family: var(--font-jakarta);
+  font-family: var(--font-pretendard);
   font-size: 14px;
   -webkit-font-smoothing: antialiased;
 }
