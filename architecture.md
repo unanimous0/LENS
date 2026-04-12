@@ -23,6 +23,7 @@ LENS/
 │   │       ├── dashboard.tsx              # 메인 대시보드 (샘플 데이터)
 │   │       ├── market.tsx                 # 실시간 시세 (WebSocket 연동)
 │   │       ├── lending.tsx                # 대차 페이지 (서브탭 컨테이너)
+│   │       ├── borrowing.tsx              # 차입 (비용 분석 + Rollover)
 │   │       ├── lending-availability.tsx   # 대여가능확인
 │   │       └── repayment-check.tsx        # 상환가능확인
 │
@@ -36,6 +37,7 @@ LENS/
 │   │       ├── adapter.py                 # MarketDataAdapter ABC + NetworkMode
 │   │       └── mock_adapter.py            # Mock 시세 생성기
 │   ├── routers/
+│   │   ├── borrowing.py                   # POST /api/borrowing/analyze
 │   │   ├── health.py                      # GET /api/health
 │   │   ├── lending.py                     # POST /api/lending/calculate
 │   │   ├── repayment.py                   # POST /api/repayment/calculate, /api/repayment/lenders
@@ -48,6 +50,7 @@ LENS/
 │   │   ├── lending.py                     # LendingResponse, StockResult, FundBreakdown
 │   │   └── repayment.py                   # RepaymentResponse, RepaymentMatch, StockSummary
 │   └── services/
+│       ├── borrowing_calculator.py        # 차입 비용 분석 + Rollover 관리
 │       ├── lending_parser.py              # 대여가능 엑셀 파싱 (4개 시트)
 │       ├── lending_calculator.py          # 대여가능 산출 로직
 │       ├── repayment_parser.py            # 상환가능 엑셀 파싱 (오피스 + 예탁원)

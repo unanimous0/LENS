@@ -1,5 +1,6 @@
 import { useState } from "react"
 import { cn } from "@/lib/utils"
+import { BorrowingPage } from "./borrowing"
 import { LendingAvailabilityPage } from "./lending-availability"
 import { RepaymentCheckPage } from "./repayment-check"
 
@@ -69,9 +70,10 @@ export function LendingPage() {
           key={tab.key}
           className={`flex-1 ${activeTab === tab.key ? "flex flex-col" : "hidden"}`}
         >
+          {tab.key === "borrow" && <BorrowingPage />}
           {tab.key === "availability" && <LendingAvailabilityPage />}
           {tab.key === "repay-check" && <RepaymentCheckPage />}
-          {tab.key !== "availability" && tab.key !== "repay-check" && <StubContent label={tab.label} />}
+          {tab.key !== "borrow" && tab.key !== "availability" && tab.key !== "repay-check" && <StubContent label={tab.label} />}
         </div>
       ))}
     </div>
