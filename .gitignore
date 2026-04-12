@@ -26,3 +26,6 @@ npm-debug.log*
 
 # Data files (sensitive)
 data/
+
+# Internal deploy (installers + pip packages)
+internal_sending/

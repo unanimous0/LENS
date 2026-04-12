@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react"
+import { useState, useRef, useEffect, useMemo, useCallback } from "react"
 import * as XLSX from "xlsx"
 
 interface RepaymentMatch {
@@ -39,6 +39,22 @@ function fmt(n: number) {
   return n.toLocaleString("ko-KR")
 }
 
+function SortTh<T>({ label, field, sortKey, sortAsc, onSort, align = "right" }: {
+  label: string; field: keyof T; sortKey: keyof T; sortAsc: boolean
+  onSort: (k: keyof T) => void; align?: "left" | "right" | "center"
+}) {
+  const active = sortKey === field
+  return (
+    <th
+      className={`text-${align} px-4 py-2.5 font-medium cursor-pointer select-none hover:text-t1 transition-colors ${active ? "text-t1" : ""}`}
+      onClick={() => onSort(field)}
+    >
+      {label}
+      <span className="ml-0.5 text-[10px]">{active ? (sortAsc ? "\u25B2" : "\u25BC") : ""}</span>
+    </th>
+  )
+}
+
 export function RepaymentCheckPage() {
   const [data, setData] = useState<RepaymentResponse | null>(null)
   const [loading, setLoading] = useState(false)
@@ -46,6 +62,8 @@ export function RepaymentCheckPage() {
   const [officeFile, setOfficeFile] = useState<File | null>(null)
   const [esafeFile, setEsafeFile] = useState<File | null>(null)
   const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set())
+  const [sortKey, setSortKey] = useState<keyof StockSummary>("대차금액")
+  const [sortAsc, setSortAsc] = useState(false)
   const [filterOpen, setFilterOpen] = useState(true)
 
   // 5264 필터
@@ -178,6 +196,24 @@ export function RepaymentCheckPage() {
 
   const matchesByStock = (code: string) =>
     data?.matches.filter((m) => m.종목코드 === code) ?? []
+
+  const handleSort = useCallback((key: keyof StockSummary) => {
+    if (sortKey === key) setSortAsc((p) => !p)
+    else { setSortKey(key); setSortAsc(true) }
+  }, [sortKey])
+
+  const sortedSummary = useMemo(() => {
+    if (!data) return []
+    return [...data.summary].sort((a, b) => {
+      const av = a[sortKey]
+      const bv = b[sortKey]
+      if (typeof av === "number" && typeof bv === "number")
+        return sortAsc ? av - bv : bv - av
+      const as = String(av ?? "")
+      const bs = String(bv ?? "")
+      return sortAsc ? as.localeCompare(bs) : bs.localeCompare(as)
+    })
+  }, [data, sortKey, sortAsc])
 
   const exportToExcel = () => {
     if (!data) return
@@ -542,26 +578,26 @@ export function RepaymentCheckPage() {
                       <span
                         className="cursor-pointer text-accent hover:text-accent-hover transition-colors select-none"
                         onClick={() => {
-                          const codes = data.summary.map((s) => s.종목코드)
+                          const codes = sortedSummary.map((s) => s.종목코드)
                           const allExpanded = codes.every((c) => expandedRows.has(c))
                           setExpandedRows(allExpanded ? new Set() : new Set(codes))
                         }}
                       >
-                        {data.summary.every((s) => expandedRows.has(s.종목코드)) ? "\u25BC" : "\u25B6"}
+                        {sortedSummary.every((s) => expandedRows.has(s.종목코드)) ? "\u25BC" : "\u25B6"}
                       </span>
                     </th>
-                    <th className="text-left px-4 py-2.5 font-medium">종목코드</th>
-                    <th className="text-left px-4 py-2.5 font-medium">종목명</th>
+                    <SortTh<StockSummary> label="종목코드" field="종목코드" align="left" sortKey={sortKey} sortAsc={sortAsc} onSort={handleSort} />
+                    <SortTh<StockSummary> label="종목명" field="종목명" align="left" sortKey={sortKey} sortAsc={sortAsc} onSort={handleSort} />
                     <th className="px-4 py-2.5"></th>
-                    <th className="text-right px-4 py-2.5 font-medium">상환수량</th>
-                    <th className="text-right px-4 py-2.5 font-medium">상환금액</th>
-                    <th className="text-right px-4 py-2.5 font-medium">체결건수</th>
+                    <SortTh<StockSummary> label="상환수량" field="상환수량" sortKey={sortKey} sortAsc={sortAsc} onSort={handleSort} />
+                    <SortTh<StockSummary> label="상환금액" field="대차금액" sortKey={sortKey} sortAsc={sortAsc} onSort={handleSort} />
+                    <SortTh<StockSummary> label="체결건수" field="체결건수" sortKey={sortKey} sortAsc={sortAsc} onSort={handleSort} />
                     <th className="px-4 py-2.5"></th>
-                    <th className="text-right px-4 py-2.5 font-medium">최고수수료율</th>
+                    <SortTh<StockSummary> label="최고수수료율" field="최고수수료율" sortKey={sortKey} sortAsc={sortAsc} onSort={handleSort} />
                   </tr>
                 </thead>
                 <tbody>
-                  {data.summary.map((s, i) => {
+                  {sortedSummary.map((s, i) => {
                     const expanded = expandedRows.has(s.종목코드)
                     const details = matchesByStock(s.종목코드)
                     return (

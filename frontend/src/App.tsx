@@ -4,6 +4,7 @@ import { useWebSocket } from './hooks/useWebSocket'
 import { DashboardPage } from './pages/dashboard'
 import { MarketPage } from './pages/market'
 import { LendingPage } from './pages/lending'
+import { StockArbitragePage } from './pages/stock-arbitrage'
 
 function AppLayout() {
   useWebSocket()
@@ -21,6 +22,7 @@ function AppLayout() {
             <Route path="/signals" element={<StubPage label="시그널" />} />
             <Route path="/position" element={<StubPage label="포지션" />} />
             <Route path="/supply-demand" element={<StubPage label="수급" />} />
+            <Route path="/stock-arbitrage" element={<StockArbitragePage />} />
           </Routes>
         </div>
       </main>

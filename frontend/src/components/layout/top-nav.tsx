@@ -10,6 +10,7 @@ const tabs = [
   { label: "대차", href: "/lending" },
   { label: "포지션", href: "/position" },
   { label: "수급", href: "/supply-demand" },
+  { label: "종목차익", href: "/stock-arbitrage" },
 ]
 
 export function TopNav() {
