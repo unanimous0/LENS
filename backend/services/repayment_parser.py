@@ -28,7 +28,10 @@ def _parse_office(df: pd.DataFrame) -> pd.DataFrame:
         if col not in df.columns:
             raise ValueError(f"오피스 파일에 '{col}' 컬럼이 없습니다.")
 
-    df = df[required].copy()
+    use_cols = required + (["계정코드"] if "계정코드" in df.columns else [])
+    df = df[use_cols].copy()
+    if "계정코드" in df.columns:
+        df["계정코드"] = df["계정코드"].astype(str).str.strip().str.zfill(3)
     df["담보가능수량"] = pd.to_numeric(df["담보가능수량"], errors="coerce").fillna(0).astype(int)
     df = df[df["담보가능수량"] > 0].copy()
 

@@ -104,6 +104,8 @@ def calculate_repayment(office: pd.DataFrame, esafe: pd.DataFrame) -> dict:
 
     total_qty = sum(m["상환수량"] for m in all_matches)
     total_amount = sum(m["대차금액"] for m in all_matches)
+    qty_052 = sum(m["상환수량"] for m in all_matches if m.get("계정코드", "").lstrip("0") == "52")
+    qty_031 = sum(m["상환수량"] for m in all_matches if m.get("계정코드", "").lstrip("0") == "31")
 
     remaining_office = pd.concat(all_remaining_office).reset_index(drop=True).to_dict("records") if all_remaining_office else []
     remaining_esafe = pd.concat(all_remaining_esafe).reset_index(drop=True).to_dict("records") if all_remaining_esafe else []
@@ -117,6 +119,8 @@ def calculate_repayment(office: pd.DataFrame, esafe: pd.DataFrame) -> dict:
         "summary": summary,
         "total_qty": total_qty,
         "total_amount": total_amount,
+        "qty_052": qty_052,
+        "qty_031": qty_031,
     }
 
 
@@ -144,6 +148,7 @@ def _match_two_pointer(office: pd.DataFrame, esafe: pd.DataFrame) -> list[dict]:
         matches.append({
             "펀드코드": str(office.at[ix, "펀드코드"]),
             "펀드명": str(office.at[ix, "펀드명"]),
+            "계정코드": str(office.at[ix, "계정코드"]) if "계정코드" in office.columns else "",
             "종목코드": str(office.at[ix, "종목번호"]),
             "종목명": str(office.at[ix, "종목명"]),
             "상환수량": int(repay),

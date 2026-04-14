@@ -4,6 +4,7 @@ from pydantic import BaseModel
 class RepaymentMatch(BaseModel):
     펀드코드: str
     펀드명: str
+    계정코드: str = ""
     종목코드: str
     종목명: str
     상환수량: int
@@ -54,3 +55,5 @@ class RepaymentResponse(BaseModel):
     no_esafe_stocks: list[dict]
     total_qty: int
     total_amount: int
+    qty_052: int = 0
+    qty_031: int = 0

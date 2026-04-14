@@ -34,6 +34,8 @@ interface RepaymentResponse {
   no_esafe_stocks: Record<string, unknown>[]
   total_qty: number
   total_amount: number
+  qty_052: number
+  qty_031: number
 }
 
 function fmt(n: number) {
@@ -538,7 +540,7 @@ export function RepaymentCheckPage() {
           {/* Remaining Esafe Summary */}
           {data.remaining_esafe.length > 0 && (
             <div className="panel px-4 py-2">
-              <div className={`grid gap-2 ${data.no_esafe_stocks.length > 0 ? "grid-cols-4" : "grid-cols-3"}`}>
+              <div className="grid grid-cols-4 gap-2">
                 <div className="panel-inner rounded px-3 py-2">
                   <p className="text-[11px] text-t3">미상환 건수</p>
                   <p className="font-mono text-lg font-semibold text-down">{data.remaining_esafe.length}</p>
@@ -554,6 +556,17 @@ export function RepaymentCheckPage() {
                   <p className="font-mono text-lg font-semibold text-down">
                     {fmt((data.remaining_esafe as Record<string, number>[]).reduce((s, r) => s + (r["대차가액"] ?? 0), 0))}원
                   </p>
+                </div>
+                <div className="panel-inner rounded px-3 py-2 flex">
+                  <div className="flex-1">
+                    <p className="text-[11px] text-t3">052 상환 수량</p>
+                    <p className="font-mono text-lg font-semibold text-up">{fmt(data.qty_052)}주</p>
+                  </div>
+                  <div className="w-px bg-border-light mx-2"></div>
+                  <div className="flex-1">
+                    <p className="text-[11px] text-t3">031 상환 수량</p>
+                    <p className="font-mono text-lg font-semibold text-up">{fmt(data.qty_031)}주</p>
+                  </div>
                 </div>
                 {data.no_esafe_stocks.length > 0 && (
                   <div className="panel-inner rounded px-3 py-2">
