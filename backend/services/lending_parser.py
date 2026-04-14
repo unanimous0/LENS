@@ -1,15 +1,16 @@
-import io
 import pandas as pd
+
+from services.excel_reader import read_excel_sheets
 
 
 def parse_lending_file(file_bytes: bytes) -> dict:
-    """xlsm 파일의 4개 시트를 파싱하여 정제된 DataFrame dict 반환."""
-    buf = io.BytesIO(file_bytes)
+    """엑셀 파일의 4개 시트를 파싱하여 정제된 DataFrame dict 반환."""
+    sheets = read_excel_sheets(file_bytes, ["문의종목", "원장RAW", "MM펀드", "상환예정내역"])
 
-    inquiry = _parse_inquiry(buf)
-    holdings = _parse_holdings(buf)
-    mm_funds = _parse_mm_funds(buf)
-    repayments = _parse_repayments(buf)
+    inquiry = _parse_inquiry(sheets["문의종목"])
+    holdings = _parse_holdings(sheets["원장RAW"])
+    mm_funds = _parse_mm_funds(sheets["MM펀드"])
+    repayments = _parse_repayments(sheets["상환예정내역"])
 
     return {
         "inquiry": inquiry,
@@ -19,9 +20,8 @@ def parse_lending_file(file_bytes: bytes) -> dict:
     }
 
 
-def _parse_inquiry(buf: io.BytesIO) -> pd.DataFrame:
+def _parse_inquiry(df: pd.DataFrame) -> pd.DataFrame:
     """문의종목 시트: 종목코드, 종목명, 최대수량, 요율."""
-    df = pd.read_excel(buf, sheet_name="문의종목", engine="openpyxl")
     df = df.dropna(subset=[df.columns[0]])
     df.columns = ["stock_code", "stock_name", "max_qty", "rate"]
     df["stock_code"] = df["stock_code"].astype(str).str.zfill(6)
@@ -30,9 +30,8 @@ def _parse_inquiry(buf: io.BytesIO) -> pd.DataFrame:
     return df
 
 
-def _parse_holdings(buf: io.BytesIO) -> pd.DataFrame:
+def _parse_holdings(df: pd.DataFrame) -> pd.DataFrame:
     """원장RAW 시트: 펀드코드, 펀드명, 계정코드, 종목번호, 종목명, 잔고, 담보, 담보가능수량."""
-    df = pd.read_excel(buf, sheet_name="원장RAW", engine="openpyxl")
     df = df.dropna(subset=[df.columns[1]])  # 펀드코드 기준
 
     df = df.iloc[:, :14]  # A~N열만 사용 (O,P,Q 함수열 제외)
@@ -59,17 +58,15 @@ def _parse_holdings(buf: io.BytesIO) -> pd.DataFrame:
     return df
 
 
-def _parse_mm_funds(buf: io.BytesIO) -> set[str]:
+def _parse_mm_funds(df: pd.DataFrame) -> set[str]:
     """MM펀드 시트: 제외할 펀드코드 set 반환."""
-    df = pd.read_excel(buf, sheet_name="MM펀드", engine="openpyxl")
     codes = df.iloc[:, 0].dropna().astype(str).str.zfill(6)
     return set(codes)
 
 
 
-def _parse_repayments(buf: io.BytesIO) -> pd.DataFrame:
+def _parse_repayments(df: pd.DataFrame) -> pd.DataFrame:
     """상환예정내역 시트: 종목코드(6자리), 대차수량."""
-    df = pd.read_excel(buf, sheet_name="상환예정내역", engine="openpyxl")
     df = df.dropna(subset=[df.columns[3]])  # D열 종목코드 기준
 
     result = pd.DataFrame()

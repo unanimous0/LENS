@@ -20,6 +20,7 @@ class StockResult(BaseModel):
     total_free: int
     total_locked: int
     total_combined: int
+    repay_scheduled: int
     meets_request: bool
     funds: list[FundBreakdown]
 

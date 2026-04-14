@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useMemo, useCallback } from "react"
 import * as XLSX from "xlsx"
+import { formatSheet } from "@/lib/excel"
 
 interface RepaymentMatch {
   펀드코드: string
@@ -243,14 +244,22 @@ export function RepaymentCheckPage() {
     }))
 
     const wb = XLSX.utils.book_new()
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(matchRows), "상환 내역")
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(summaryRows), "종목별 합산")
-    if (data.remaining_office.length > 0)
-      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(data.remaining_office), "상환 후 오피스")
-    if (data.remaining_esafe.length > 0)
-      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(data.remaining_esafe), "상환 후 예탁원")
-    if (data.no_esafe_stocks.length > 0)
-      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(data.no_esafe_stocks), "내부차입 추정")
+    const ws1 = XLSX.utils.json_to_sheet(matchRows); formatSheet(ws1)
+    XLSX.utils.book_append_sheet(wb, ws1, "상환 내역")
+    const ws2 = XLSX.utils.json_to_sheet(summaryRows); formatSheet(ws2)
+    XLSX.utils.book_append_sheet(wb, ws2, "종목별 합산")
+    if (data.remaining_office.length > 0) {
+      const ws3 = XLSX.utils.json_to_sheet(data.remaining_office); formatSheet(ws3)
+      XLSX.utils.book_append_sheet(wb, ws3, "상환 후 오피스")
+    }
+    if (data.remaining_esafe.length > 0) {
+      const ws4 = XLSX.utils.json_to_sheet(data.remaining_esafe); formatSheet(ws4)
+      XLSX.utils.book_append_sheet(wb, ws4, "상환 후 예탁원")
+    }
+    if (data.no_esafe_stocks.length > 0) {
+      const ws5 = XLSX.utils.json_to_sheet(data.no_esafe_stocks); formatSheet(ws5)
+      XLSX.utils.book_append_sheet(wb, ws5, "내부차입 추정")
+    }
 
     XLSX.writeFile(wb, "상환가능확인_결과.xlsx")
   }
@@ -316,7 +325,7 @@ export function RepaymentCheckPage() {
                 <div className="flex items-center gap-1">
                   <span className="text-xs text-t3 w-14">펀드코드</span>
                   <input
-                    className="bg-bg-input rounded px-2 py-1 text-xs font-mono text-t1 w-28 outline-none focus:ring-1 focus:ring-accent"
+                    className="bg-bg-input rounded px-2 py-1 text-xs font-mono text-t1 w-32 outline-none focus:ring-1 focus:ring-accent"
                     placeholder="3자리 또는 6자리"
                     value={fundCodeInput}
                     onChange={(e) => setFundCodeInput(e.target.value)}

@@ -1,18 +1,14 @@
 """차입 탭 — 비용 분석 + Rollover 상환 관리."""
-import io
 from datetime import datetime
 
 import pandas as pd
 
+from services.excel_reader import read_excel
+
 
 def parse_esafe_for_borrowing(file_bytes: bytes) -> pd.DataFrame:
     """대차내역 파일에서 차입 분석에 필요한 컬럼 파싱."""
-    buf = io.BytesIO(file_bytes)
-    try:
-        df = pd.read_excel(buf, engine="openpyxl")
-    except Exception:
-        buf.seek(0)
-        df = pd.read_excel(buf, engine="xlrd")
+    df = read_excel(file_bytes)
 
     required = [
         "단축코드", "종목명", "수수료율(%)", "대차수량", "대차가액",
@@ -145,6 +141,8 @@ def _cost_by_group(df: pd.DataFrame, group_cols: list[str], include_details: boo
                     "fee_rate": round(float(r["수수료율(%)"]), 4),
                     "qty": int(r["대차수량"]),
                     "value": int(r["대차가액"]),
+                    "settlement_date": str(r.get("체결일", "")),
+                    "settlement_no": int(r.get("체결번호", 0)),
                 })
             details.sort(key=lambda x: x["value"] * x["fee_rate"], reverse=True)
             detail_map[k] = details

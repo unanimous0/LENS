@@ -1,8 +1,23 @@
+import math
+import json
+
 from fastapi import APIRouter, File, UploadFile, HTTPException
+from fastapi.responses import JSONResponse
 
 from services.borrowing_calculator import parse_esafe_for_borrowing, calculate_borrowing
 
 router = APIRouter(tags=["borrowing"])
+
+
+def _clean_nan(obj):
+    """NaN/Inf를 JSON 호환 값으로 변환."""
+    if isinstance(obj, float) and (math.isnan(obj) or math.isinf(obj)):
+        return 0
+    if isinstance(obj, dict):
+        return {k: _clean_nan(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_clean_nan(v) for v in obj]
+    return obj
 
 
 @router.post("/borrowing/analyze")
@@ -17,4 +32,4 @@ async def analyze_borrowing(file: UploadFile = File(...)):
         raise HTTPException(400, f"파일 파싱 오류: {str(e)}")
 
     result = calculate_borrowing(df)
-    return result
+    return JSONResponse(content=_clean_nan(result))

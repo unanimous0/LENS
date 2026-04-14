@@ -1,5 +1,6 @@
 import { useState } from "react";
 import * as XLSX from "xlsx";
+import { formatSheet } from "@/lib/excel";
 
 interface FundBreakdown {
   fund_code: string;
@@ -20,6 +21,7 @@ interface StockResult {
   total_free: number;
   total_locked: number;
   total_combined: number;
+  repay_scheduled: number;
   meets_request: boolean;
   funds: FundBreakdown[];
 }
@@ -138,9 +140,24 @@ export function LendingAvailabilityPage() {
         });
       }
     }
-    const ws = XLSX.utils.json_to_sheet(rows);
+    // 시트1: 종목별 합산
+    const summaryRows = sortedResults.map((r) => ({
+      종목코드: r.stock_code,
+      종목명: cleanName(r.stock_name),
+      합산수량: r.total_combined,
+      합계: r.total_combined,
+      요율: r.rate,
+    }));
+    const ws1 = XLSX.utils.json_to_sheet(summaryRows);
+    formatSheet(ws1);
+
+    // 시트2: 대여가능산출 (펀드별 상세)
+    const ws2 = XLSX.utils.json_to_sheet(rows);
+    formatSheet(ws2);
+
     const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "대여가능산출");
+    XLSX.utils.book_append_sheet(wb, ws1, "종목별합산");
+    XLSX.utils.book_append_sheet(wb, ws2, "대여가능산출");
     XLSX.writeFile(wb, "대여가능산출_결과.xlsx");
   };
 
@@ -213,7 +230,7 @@ export function LendingAvailabilityPage() {
             <span className="text-[11px] text-t4 font-medium">대여불가펀드</span>
             <div className="flex items-center gap-2">
               <input
-                className="bg-bg-input rounded px-2 py-1 text-xs font-mono text-t1 w-28 outline-none focus:ring-1 focus:ring-accent"
+                className="bg-bg-input rounded px-2 py-1 text-xs font-mono text-t1 w-32 outline-none focus:ring-1 focus:ring-accent"
                 placeholder="3자리 또는 6자리"
                 value={suffixInput}
                 onChange={(e) => setSuffixInput(e.target.value)}
@@ -294,6 +311,8 @@ export function LendingAvailabilityPage() {
                     <SortTh align="right" sortKey="requested_qty" label="문의수량" current={sortKey} asc={sortAsc} onSort={handleSort} />
                     <SortTh align="right" sortKey="rate" label="요율" current={sortKey} asc={sortAsc} onSort={handleSort} />
                     <SortTh align="right" sortKey="total_free" label="담보가능수량" current={sortKey} asc={sortAsc} onSort={handleSort} />
+                    <SortTh align="right" sortKey="repay_scheduled" label="상환예정" current={sortKey} asc={sortAsc} onSort={handleSort} />
+                    <th className="text-right px-4 py-2.5 font-medium">담보가능-상환</th>
                     <SortTh align="right" sortKey="total_locked" label="담보" current={sortKey} asc={sortAsc} onSort={handleSort} />
                     <SortTh align="right" sortKey="total_combined" label="합산" current={sortKey} asc={sortAsc} onSort={handleSort} />
                     <th className="text-center px-4 py-2.5 font-medium">상태</th>
@@ -405,6 +424,12 @@ function ResultRow({
         <td className={`px-4 py-2.5 text-right font-mono ${r.rate > 5 ? "text-up" : "text-t1"}`}>
           {r.rate.toFixed(2)}%
         </td>
+        <td className={`px-4 py-2.5 text-right font-mono ${(r.total_free + (r.repay_scheduled ?? 0)) > 0 ? "text-up" : "text-t1"}`}>
+          {fmt(r.total_free + (r.repay_scheduled ?? 0))}
+        </td>
+        <td className="px-4 py-2.5 text-right font-mono">
+          {(r.repay_scheduled ?? 0) > 0 && <span className="text-down">-{fmt(r.repay_scheduled)}</span>}
+        </td>
         <td className={`px-4 py-2.5 text-right font-mono ${r.total_free > 0 ? "text-up" : "text-t1"}`}>
           {fmt(r.total_free)}
         </td>
@@ -444,6 +469,8 @@ function ResultRow({
             <td className="px-4 py-1.5 pl-8"></td>
             <td className="px-4 py-1.5 text-xs text-t3 font-medium">펀드코드</td>
             <td className="px-4 py-1.5 text-xs text-t3 font-medium">펀드명 (계정)</td>
+            <td></td>
+            <td></td>
             <td className="px-4 py-1.5 text-right text-xs text-t3 font-medium">담보가능수량</td>
             <td className="px-4 py-1.5 text-right text-xs text-t3 font-medium">상환차감</td>
             <td className="px-4 py-1.5 text-right text-xs text-t3 font-medium">담보가능-상환</td>
@@ -453,7 +480,7 @@ function ResultRow({
             <td className="px-4 py-1.5 text-right text-xs text-t3 font-medium">대여</td>
           </tr>
           {r.funds
-            .filter((f) => f.collateral_free + f.collateral_locked > 0)
+            .filter((f) => f.collateral_free + f.collateral_locked > 0 || f.repayment_deducted > 0 || f.lending > 0)
             .map((f, i) => (
             <tr
               key={`${r.stock_code}-${f.fund_code}-${i}`}
@@ -468,6 +495,8 @@ function ResultRow({
                 {f.fund_name}
                 <span className="ml-2 font-mono text-t4">({f.account_code})</span>
               </td>
+              <td></td>
+              <td></td>
               <td className="px-4 py-2 text-right font-mono text-xs text-t3">
                 {fmt(f.collateral_free + f.repayment_deducted)}
               </td>

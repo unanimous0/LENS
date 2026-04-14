@@ -9,50 +9,54 @@ LENS/
 ├── internal_sending/          # 내부망 전송용 (gitignore 대상)
 │   ├── 실행방법.txt           # 회사에서 따라할 가이드
 │   ├── installers/            # 최초 1회만 필요
-│   │   ├── node-v20.18.3-x64.msi
+│   │   ├── node-v20.20.2-x64.msi
 │   │   └── python-3.12.9-amd64.exe
-│   └── pip_packages/          # 오프라인 pip 설치용 .whl 파일들
-└── ... (나머지 LENS 코드)
+│   └── pip_packages/          # Windows Python 3.13용 오프라인 pip 패키지
+├── frontend/public/fonts/     # 로컬 폰트 (Pretendard, JetBrains Mono)
+├── backend/requirements-win.txt  # Windows용 requirements (uvloop 제외)
+└── ...
 ```
 
 ## 압축해서 보내기
 
-### 최초 전송 (전체 포함)
+### 최초 전송 (전체 포함, 50MB 분할)
 
 ```bash
 cd /home/una0/projects
-tar -czf LENS_full.tar.gz \
-    --exclude='LENS/.git' \
-    --exclude='LENS/.env' \
-    LENS/
+zip -r -s 50m LENS_full.zip LENS/ -x "LENS/.git/*" "LENS/.env"
 ```
 
 - `node_modules/` 포함 (npm install 불필요)
 - `internal_sending/` 포함 (설치파일 + pip 패키지)
-- **압축 크기**: ~180MB
+- `frontend/public/fonts/` 포함 (오프라인 폰트)
+- 회사에서 반디집으로 `LENS_full.zip` 열면 자동 합쳐져서 풀림
 
 ### 코드 업데이트 전송 (2회차부터)
 
 ```bash
 cd /home/una0/projects
-tar -czf LENS_update.tar.gz \
-    --exclude='LENS/.git' \
-    --exclude='LENS/.env' \
-    --exclude='LENS/internal_sending/installers' \
-    --exclude='LENS/internal_sending/pip_packages' \
-    LENS/
+zip -r -s 50m LENS_update.zip LENS/ -x "LENS/.git/*" "LENS/.env" "LENS/internal_sending/installers/*" "LENS/internal_sending/pip_packages/*" "LENS/frontend/node_modules/*"
 ```
 
-- 설치파일, pip 패키지 제외 → **압축 크기: ~70MB**
-- 회사에서 덮어쓰고 바로 실행하면 됨 (1, 2단계 불필요)
+- 설치파일, pip 패키지, node_modules 제외 → 더 가벼움
+- **주의**: 회사의 node_modules는 Windows용이므로 덮어쓰면 안 됨
+- 회사에서 LENS 폴더에 덮어쓰고 3단계(실행)부터 하면 됨
 
-## pip 패키지 갱신 (requirements.txt 변경 시에만)
+### 이전 압축 파일 정리
+
+```bash
+rm -f /home/una0/projects/LENS_full.z* /home/una0/projects/LENS_full.zip
+rm -f /home/una0/projects/LENS_update.z* /home/una0/projects/LENS_update.zip
+```
+
+## pip 패키지 갱신 (requirements-win.txt 변경 시에만)
 
 ```bash
 rm -rf /home/una0/projects/LENS/internal_sending/pip_packages
 mkdir -p /home/una0/projects/LENS/internal_sending/pip_packages
-pip download -r /home/una0/projects/LENS/backend/requirements.txt \
-    -d /home/una0/projects/LENS/internal_sending/pip_packages/
+pip download -r /home/una0/projects/LENS/backend/requirements-win.txt \
+    -d /home/una0/projects/LENS/internal_sending/pip_packages/ \
+    --platform win_amd64 --python-version 3.13 --only-binary=:all:
 ```
 
 ## 회사에서 실행

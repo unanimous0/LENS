@@ -95,6 +95,7 @@ def calculate_availability(
         total_free = sum(f["collateral_free"] for f in funds)
         total_locked = sum(f["collateral_locked"] for f in funds)
         total_combined = total_free + total_locked
+        repay_scheduled = repay_by_stock.get(stock_code, 0)
 
         results.append({
             "stock_code": stock_code,
@@ -104,6 +105,7 @@ def calculate_availability(
             "total_free": total_free,
             "total_locked": total_locked,
             "total_combined": total_combined,
+            "repay_scheduled": repay_scheduled,
             "meets_request": total_combined >= int(info["max_qty"]),
             "funds": funds,
         })
@@ -120,6 +122,7 @@ def _empty_result(stock_code: str, info: dict) -> dict:
         "total_free": 0,
         "total_locked": 0,
         "total_combined": 0,
+        "repay_scheduled": 0,
         "meets_request": False,
         "funds": [],
     }

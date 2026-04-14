@@ -1,5 +1,6 @@
 import { useState, useMemo, useCallback } from "react"
 import * as XLSX from "xlsx"
+import { formatSheet } from "@/lib/excel"
 
 interface DetailItem {
   lender: string
@@ -9,6 +10,8 @@ interface DetailItem {
   fee_rate: number
   qty: number
   value: number
+  settlement_date: string
+  settlement_no: number
 }
 
 interface CostItem {
@@ -77,15 +80,15 @@ function fmtMonth(m: string) {
 const TABLE_MAX_H = "max-h-[403px]"
 
 // --- 종목 행 + hover 상세 tooltip (fixed position) ---
-function StockRow({ item, no, cols }: { item: CostItem; no?: number; cols: "stock" | "expensive" }) {
+function StockRow({ item, no, cols, showSettlement = false }: { item: CostItem; no?: number; cols: "stock" | "expensive"; showSettlement?: boolean }) {
   const details = item.details ?? []
   const [tooltip, setTooltip] = useState<{ x: number; y: number; above: boolean } | null>(null)
 
-  const handleMouseEnter = (e: React.MouseEvent<HTMLTableRowElement>) => {
-    const row = e.currentTarget
+  const handleCellMouseEnter = (e: React.MouseEvent<HTMLTableCellElement>) => {
+    const cell = e.currentTarget
+    const row = cell.closest("tr")!
     const rect = row.getBoundingClientRect()
     const estimatedH = 36 + details.length * 22
-    // overflow-y-auto 스크롤 컨테이너 경계 기준
     const scrollParent = row.closest(".overflow-y-auto")
     const boundary = scrollParent ? scrollParent.getBoundingClientRect() : { top: 0, bottom: window.innerHeight }
     const spaceBelow = boundary.bottom - rect.bottom
@@ -98,10 +101,10 @@ function StockRow({ item, no, cols }: { item: CostItem; no?: number; cols: "stoc
     })
   }
 
-  const handleMouseLeave = () => setTooltip(null)
+  const handleCellMouseLeave = () => setTooltip(null)
 
   return (
-    <tr className="border-b border-border hover:bg-bg-hover transition-colors" onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave}>
+    <tr className="border-b border-border hover:bg-bg-hover transition-colors">
       {cols === "stock" && (
         <td className="text-center px-2 py-2 font-mono text-xs text-t4">{no}</td>
       )}
@@ -118,9 +121,10 @@ function StockRow({ item, no, cols }: { item: CostItem; no?: number; cols: "stoc
       {cols === "stock" && <td className="px-4 py-2 text-t1">{item.종목명}</td>}
       {cols === "stock" && <td className="px-4 py-2 text-right font-mono text-t2">{fmt(item.count)}</td>}
       {cols === "stock" && <td className="px-4 py-2 text-right font-mono text-t2">{fmt(item.total_qty)}</td>}
-      <td className="px-4 py-2 text-right font-mono text-t2">{fmt(item.total_value)}</td>
-      <td className="px-4 py-2 text-right font-mono text-up">{fmtRate(item.wa_rate)}</td>
-      <td className="px-4 py-2 text-right font-mono text-up">
+      <td className="px-4 py-2 text-right font-mono text-t2 cursor-default" onMouseEnter={handleCellMouseEnter} onMouseLeave={handleCellMouseLeave}>{fmt(item.total_value)}</td>
+      {cols === "expensive" && <td className="px-4 py-2 text-right font-mono text-t2 cursor-default" onMouseEnter={handleCellMouseEnter} onMouseLeave={handleCellMouseLeave}>{fmt(item.total_qty)}</td>}
+      <td className="px-4 py-2 text-right font-mono text-up cursor-default" onMouseEnter={handleCellMouseEnter} onMouseLeave={handleCellMouseLeave}>{fmtRate(item.wa_rate)}</td>
+      <td className="px-4 py-2 text-right font-mono text-up cursor-default" onMouseEnter={handleCellMouseEnter} onMouseLeave={handleCellMouseLeave}>
         {fmt(item.daily_cost)}
         {tooltip && details.length > 0 && (
           <div
@@ -136,7 +140,9 @@ function StockRow({ item, no, cols }: { item: CostItem; no?: number; cols: "stoc
                   <th className="text-left pr-3 pb-1 font-medium">대여자</th>
                   <th className="text-right pr-3 pb-1 font-medium">수수료율</th>
                   <th className="text-right pr-3 pb-1 font-medium">수량</th>
-                  <th className="text-right pb-1 font-medium">대차가액</th>
+                  <th className="text-right pr-3 pb-1 font-medium">대차가액</th>
+                  {showSettlement && <th className="text-center pr-3 pb-1 font-medium">체결일</th>}
+                  {showSettlement && <th className="text-right pb-1 font-medium">체결번호</th>}
                 </tr>
               </thead>
               <tbody>
@@ -145,7 +151,9 @@ function StockRow({ item, no, cols }: { item: CostItem; no?: number; cols: "stoc
                     <td className="pr-3 py-0.5">{d.lender}</td>
                     <td className="pr-3 py-0.5 text-right font-mono text-up">{d.fee_rate.toFixed(4)}%</td>
                     <td className="pr-3 py-0.5 text-right font-mono">{fmt(d.qty)}</td>
-                    <td className="py-0.5 text-right font-mono">{fmt(d.value)}</td>
+                    <td className="pr-3 py-0.5 text-right font-mono">{fmt(d.value)}</td>
+                    {showSettlement && <td className="pr-3 py-0.5 text-center font-mono">{d.settlement_date}</td>}
+                    {showSettlement && <td className="py-0.5 text-right font-mono">{d.settlement_no}</td>}
                   </tr>
                 ))}
               </tbody>
@@ -158,14 +166,14 @@ function StockRow({ item, no, cols }: { item: CostItem; no?: number; cols: "stoc
 }
 
 // --- 대여자 행 + hover 상세 tooltip ---
-function LenderRow({ item }: { item: CostItem }) {
+function LenderRow({ item, showSettlement = false }: { item: CostItem; showSettlement?: boolean }) {
   const details = item.details ?? []
   const [tooltip, setTooltip] = useState<{ x: number; y: number; above: boolean } | null>(null)
 
-  const handleMouseEnter = (e: React.MouseEvent<HTMLTableRowElement>) => {
-    const row = e.currentTarget
+  const handleCellMouseEnter = (e: React.MouseEvent<HTMLTableCellElement>) => {
+    const cell = e.currentTarget
+    const row = cell.closest("tr")!
     const rect = row.getBoundingClientRect()
-    // max-h-80 = 320px
     const estimatedH = Math.min(320, 36 + details.length * 22)
     const scrollParent = row.closest(".overflow-y-auto")
     const boundary = scrollParent ? scrollParent.getBoundingClientRect() : { top: 0, bottom: window.innerHeight }
@@ -175,16 +183,18 @@ function LenderRow({ item }: { item: CostItem }) {
     setTooltip({ x: rect.right, y: above ? rect.top : rect.bottom, above })
   }
 
+  const handleCellMouseLeave = () => setTooltip(null)
+
   return (
-    <tr className="border-b border-border hover:bg-bg-hover transition-colors" onMouseEnter={handleMouseEnter} onMouseLeave={() => setTooltip(null)}>
+    <tr className="border-b border-border hover:bg-bg-hover transition-colors">
       <td className="px-4 py-2 text-t1">
         {item.대여자명}
         <span className="ml-2 font-mono text-[11px] text-t4">{item.대여자계좌}</span>
       </td>
       <td className="px-4 py-2 text-right font-mono text-t2">{fmt(item.count)}</td>
-      <td className="px-4 py-2 text-right font-mono text-t2">{fmt(item.total_value)}</td>
-      <td className="px-4 py-2 text-right font-mono text-up">{fmtRate(item.wa_rate)}</td>
-      <td className="px-4 py-2 text-right font-mono text-up">
+      <td className="px-4 py-2 text-right font-mono text-t2 cursor-default" onMouseEnter={handleCellMouseEnter} onMouseLeave={handleCellMouseLeave}>{fmt(item.total_value)}</td>
+      <td className="px-4 py-2 text-right font-mono text-up cursor-default" onMouseEnter={handleCellMouseEnter} onMouseLeave={handleCellMouseLeave}>{fmtRate(item.wa_rate)}</td>
+      <td className="px-4 py-2 text-right font-mono text-up cursor-default" onMouseEnter={handleCellMouseEnter} onMouseLeave={handleCellMouseLeave}>
         {fmt(item.daily_cost)}
         {tooltip && details.length > 0 && (
           <div
@@ -205,17 +215,21 @@ function LenderRow({ item }: { item: CostItem }) {
                   <th className="text-right pr-3 pb-1 pt-2 font-medium">수량</th>
                   <th className="text-right pr-3 pb-1 pt-2 font-medium">대차가액</th>
                   <th className="text-right pr-3 pb-1 pt-2 font-medium">일일 비용</th>
+                  {showSettlement && <th className="text-center pr-3 pb-1 pt-2 font-medium">체결일</th>}
+                  {showSettlement && <th className="text-right pr-3 pb-1 pt-2 font-medium">체결번호</th>}
                 </tr>
               </thead>
               <tbody>
                 {details.map((d, i) => (
-                  <tr key={i} className="text-t2">
+                  <tr key={i} className="text-t2 whitespace-nowrap">
                     <td className="pr-3 py-0.5 pl-3 font-mono">{d.stock_code}</td>
                     <td className="pr-3 py-0.5">{d.stock_name}</td>
                     <td className="pr-3 py-0.5 text-right font-mono text-up">{d.fee_rate.toFixed(4)}%</td>
                     <td className="pr-3 py-0.5 text-right font-mono">{fmt(d.qty)}</td>
                     <td className="pr-3 py-0.5 text-right font-mono">{fmt(d.value)}</td>
                     <td className="pr-3 py-0.5 text-right font-mono text-up">{fmt(Math.round(d.value * d.fee_rate / 100 / 365))}</td>
+                    {showSettlement && <td className="pr-3 py-0.5 text-center font-mono">{d.settlement_date}</td>}
+                    {showSettlement && <td className="pr-3 py-0.5 text-right font-mono">{d.settlement_no}</td>}
                   </tr>
                 ))}
               </tbody>
@@ -277,6 +291,7 @@ export function BorrowingPage() {
   const [error, setError] = useState<string | null>(null)
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
   const [innerTab, setInnerTab] = useState<InnerTab>("cost")
+  const [showSettlement, setShowSettlement] = useState(false)
   const [rolloverMonth, setRolloverMonth] = useState<string>("all")
 
   // 정렬
@@ -352,6 +367,10 @@ export function BorrowingPage() {
           >
             분석 실행
           </button>
+          <label className="flex items-center gap-1.5 cursor-pointer">
+            <input type="checkbox" checked={showSettlement} onChange={(e) => setShowSettlement(e.target.checked)} className="accent-accent" />
+            <span className="text-xs text-t3 whitespace-nowrap">체결일/체결번호 포함</span>
+          </label>
           {loading && <span className="text-xs text-accent font-mono">처리 중...</span>}
           {error && <span className="text-xs text-down font-mono">{error}</span>}
           {data && (
@@ -425,7 +444,7 @@ export function BorrowingPage() {
                   </thead>
                   <tbody>
                     {lenderSort.sorted.map((item) => (
-                      <LenderRow key={item.대여자계좌} item={item} />
+                      <LenderRow key={item.대여자계좌} item={item} showSettlement={showSettlement} />
                     ))}
                   </tbody>
                 </table>
@@ -444,13 +463,14 @@ export function BorrowingPage() {
                       <tr className="text-xs text-t3 border-b border-border-light">
                         <SortTh<CostItem> label="종목" field="종목명" align="left" sortKey={expensiveSort.sortKey} sortAsc={expensiveSort.sortAsc} onSort={expensiveSort.toggle} />
                         <SortTh<CostItem> label="총 대차가액" field="total_value" sortKey={expensiveSort.sortKey} sortAsc={expensiveSort.sortAsc} onSort={expensiveSort.toggle} />
+                        <SortTh<CostItem> label="차입수량" field="total_qty" sortKey={expensiveSort.sortKey} sortAsc={expensiveSort.sortAsc} onSort={expensiveSort.toggle} />
                         <SortTh<CostItem> label="가중평균 수수료" field="wa_rate" sortKey={expensiveSort.sortKey} sortAsc={expensiveSort.sortAsc} onSort={expensiveSort.toggle} />
                         <SortTh<CostItem> label="일일 비용" field="daily_cost" sortKey={expensiveSort.sortKey} sortAsc={expensiveSort.sortAsc} onSort={expensiveSort.toggle} />
                       </tr>
                     </thead>
                     <tbody>
                       {expensiveSort.sorted.map((item) => (
-                        <StockRow key={item.단축코드} item={item} cols="expensive" />
+                        <StockRow key={item.단축코드} item={item} cols="expensive" showSettlement={showSettlement} />
                       ))}
                     </tbody>
                   </table>
@@ -483,7 +503,7 @@ export function BorrowingPage() {
                 </thead>
                 <tbody>
                   {stockSort.sorted.map((item, i) => (
-                    <StockRow key={item.단축코드} item={item} no={i + 1} cols="stock" />
+                    <StockRow key={item.단축코드} item={item} no={i + 1} cols="stock" showSettlement={showSettlement} />
                   ))}
                 </tbody>
               </table>
@@ -514,6 +534,7 @@ export function BorrowingPage() {
                     상환만기일: r.maturity_date,
                   }))
                   const ws = XLSX.utils.json_to_sheet(rows)
+                  formatSheet(ws)
                   const wb = XLSX.utils.book_new()
                   XLSX.utils.book_append_sheet(wb, ws, "Rollover")
                   const label = rolloverMonth === "all" ? "전체" : rolloverMonth

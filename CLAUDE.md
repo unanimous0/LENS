@@ -22,6 +22,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 기능 상세, 프로젝트 구조 등은 별도 문서 참조:
 - **[features.md](features.md)** — 구현된 기능 상세 (대여가능확인, 상환가능확인, 실시간 시세, 데이터 어댑터)
 - **[architecture.md](architecture.md)** — 프로젝트 구조, 데이터 소스 전략, 새 기능 추가 방법
+- **[ls-api.md](ls-api.md)** — LS증권 OpenAPI 연동 가이드 (실시간 시세, 선물 베이시스)
+- **[internal-deploy.md](internal-deploy.md)** — 내부망 배포 가이드 (오프라인 Windows 설치)
 
 ## 디자인 가이드
 
