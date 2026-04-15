@@ -70,10 +70,11 @@ export function LendingPage() {
           key={tab.key}
           className={`flex-1 ${activeTab === tab.key ? "flex flex-col" : "hidden"}`}
         >
-          {tab.key === "borrow" && <BorrowingPage />}
+          {tab.key === "borrow" && <BorrowingPage mode="borrowing" />}
+          {tab.key === "lend" && <BorrowingPage mode="lending" />}
           {tab.key === "availability" && <LendingAvailabilityPage />}
           {tab.key === "repay-check" && <RepaymentCheckPage />}
-          {tab.key !== "borrow" && tab.key !== "availability" && tab.key !== "repay-check" && <StubContent label={tab.label} />}
+          {tab.key !== "borrow" && tab.key !== "lend" && tab.key !== "availability" && tab.key !== "repay-check" && <StubContent label={tab.label} />}
         </div>
       ))}
     </div>

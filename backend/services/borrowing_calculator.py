@@ -1,25 +1,36 @@
-"""차입 탭 — 비용 분석 + Rollover 상환 관리."""
-from datetime import datetime
-
+"""차입/대여 탭 — 비용/수익 분석 + Rollover 상환 관리."""
 import pandas as pd
 
 from services.excel_reader import read_excel
 
 
-def parse_esafe_for_borrowing(file_bytes: bytes) -> pd.DataFrame:
-    """대차내역 파일에서 차입 분석에 필요한 컬럼 파싱."""
+def parse_esafe_for_borrowing(file_bytes: bytes, counterparty: str = "대여자") -> pd.DataFrame:
+    """대차/대여내역 파일에서 분석에 필요한 컬럼 파싱.
+    counterparty: "대여자" (차입 분석) 또는 "차입자" (대여 분석)
+    """
     df = read_excel(file_bytes)
 
-    required = [
+    account_col = f"{counterparty}계좌"
+    name_col = f"{counterparty}명"
+
+    required_base = [
         "단축코드", "종목명", "수수료율(%)", "대차수량", "대차가액",
-        "체결일", "체결번호", "상환만기일", "대여자계좌", "대여자명",
-        "Rollover 횟수",
+        "체결일", "체결번호", "상환만기일", account_col, name_col,
     ]
+    # Rollover 횟수는 대여내역에 없을 수 있음 (optional)
+    has_rollover = "Rollover 횟수" in df.columns
+    required = required_base + (["Rollover 횟수"] if has_rollover else [])
+
     for col in required:
         if col not in df.columns:
-            raise ValueError(f"대차내역 파일에 '{col}' 컬럼이 없습니다.")
+            raise ValueError(f"파일에 '{col}' 컬럼이 없습니다.")
 
     df = df[required].copy()
+    # 컬럼명 통일: 상대방 → 대여자계좌/대여자명
+    if counterparty != "대여자":
+        df = df.rename(columns={account_col: "대여자계좌", name_col: "대여자명"})
+    if not has_rollover:
+        df["Rollover 횟수"] = 0
     df["대차수량"] = pd.to_numeric(df["대차수량"], errors="coerce").fillna(0).astype(int)
     df = df[df["대차수량"] > 0].copy()
 
@@ -38,13 +49,12 @@ def parse_esafe_for_borrowing(file_bytes: bytes) -> pd.DataFrame:
     return df.reset_index(drop=True)
 
 
-def calculate_borrowing(df: pd.DataFrame) -> dict:
-    """차입 비용 분석 + Rollover 관리 결과 산출."""
+def calculate_borrowing(df: pd.DataFrame, expensive_threshold: float = 0.05) -> dict:
+    """차입/대여 분석 결과 산출. expensive_threshold: 고비용 기준 수수료율(%)."""
     by_lender = _cost_by_group(df, group_cols=["대여자계좌", "대여자명"], include_details=True)
     by_stock = _cost_by_group(df, group_cols=["단축코드", "종목명"], include_details=True)
 
-    # 고비용: 수수료율 > 0.05%
-    expensive_df = df[df["수수료율(%)"] > 0.05]
+    expensive_df = df[df["수수료율(%)"] >= expensive_threshold]
     by_expensive = _cost_by_group(expensive_df, group_cols=["단축코드", "종목명"], include_details=True)
 
     # 전체 합산

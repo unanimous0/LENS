@@ -80,13 +80,14 @@ function fmtMonth(m: string) {
 const TABLE_MAX_H = "max-h-[403px]"
 
 // --- 종목 행 + hover 상세 tooltip (fixed position) ---
-function StockRow({ item, no, cols, showSettlement = false }: { item: CostItem; no?: number; cols: "stock" | "expensive"; showSettlement?: boolean }) {
+function StockRow({ item, no, cols, showSettlement = false, counterpartyLabel = "대여자", dailyLabel = "1D 비용" }: { item: CostItem; no?: number; cols: "stock" | "expensive"; showSettlement?: boolean; counterpartyLabel?: string; dailyLabel?: string }) {
   const details = item.details ?? []
   const [tooltip, setTooltip] = useState<{ x: number; y: number; above: boolean } | null>(null)
 
   const handleCellMouseEnter = (e: React.MouseEvent<HTMLTableCellElement>) => {
     const cell = e.currentTarget
-    const row = cell.closest("tr")!
+    const row = cell.closest("tr")
+    if (!row) return
     const rect = row.getBoundingClientRect()
     const estimatedH = 36 + details.length * 22
     const scrollParent = row.closest(".overflow-y-auto")
@@ -137,7 +138,7 @@ function StockRow({ item, no, cols, showSettlement = false }: { item: CostItem; 
             <table className="text-[11px]">
               <thead>
                 <tr className="text-t4">
-                  <th className="text-left pr-3 pb-1 font-medium">대여자</th>
+                  <th className="text-left pr-3 pb-1 font-medium">{counterpartyLabel}</th>
                   <th className="text-right pr-3 pb-1 font-medium">수수료율</th>
                   <th className="text-right pr-3 pb-1 font-medium">수량</th>
                   <th className="text-right pr-3 pb-1 font-medium">대차가액</th>
@@ -166,13 +167,14 @@ function StockRow({ item, no, cols, showSettlement = false }: { item: CostItem; 
 }
 
 // --- 대여자 행 + hover 상세 tooltip ---
-function LenderRow({ item, showSettlement = false }: { item: CostItem; showSettlement?: boolean }) {
+function LenderRow({ item, showSettlement = false, dailyLabel = "1D 비용" }: { item: CostItem; showSettlement?: boolean; dailyLabel?: string }) {
   const details = item.details ?? []
   const [tooltip, setTooltip] = useState<{ x: number; y: number; above: boolean } | null>(null)
 
   const handleCellMouseEnter = (e: React.MouseEvent<HTMLTableCellElement>) => {
     const cell = e.currentTarget
-    const row = cell.closest("tr")!
+    const row = cell.closest("tr")
+    if (!row) return
     const rect = row.getBoundingClientRect()
     const estimatedH = Math.min(320, 36 + details.length * 22)
     const scrollParent = row.closest(".overflow-y-auto")
@@ -214,7 +216,7 @@ function LenderRow({ item, showSettlement = false }: { item: CostItem; showSettl
                   <th className="text-right pr-3 pb-1 pt-2 font-medium">수수료율</th>
                   <th className="text-right pr-3 pb-1 pt-2 font-medium">수량</th>
                   <th className="text-right pr-3 pb-1 pt-2 font-medium">대차가액</th>
-                  <th className="text-right pr-3 pb-1 pt-2 font-medium">일일 비용</th>
+                  <th className="text-right pr-3 pb-1 pt-2 font-medium">{dailyLabel}</th>
                   {showSettlement && <th className="text-center pr-3 pb-1 pt-2 font-medium">체결일</th>}
                   {showSettlement && <th className="text-right pr-3 pb-1 pt-2 font-medium">체결번호</th>}
                 </tr>
@@ -285,7 +287,35 @@ function SortTh<T>({ label, field, sortKey, sortAsc, onSort, align = "right" }: 
   )
 }
 
-export function BorrowingPage() {
+const CONFIGS = {
+  borrowing: {
+    apiEndpoint: "/api/borrowing/analyze",
+    fileLabel: "대차내역",
+    counterpartyLabel: "대여자",
+    groupLabel: "차입처별",
+    actionLabel: "비용",
+    dailyLabel: "1D 비용",
+    expensiveLabel: "고비용 종목",
+    expensiveDailyLabel: "고비용 1D 비용",
+    stockActionLabel: "종목별 비용",
+    description: "차입처별·종목별 비용 분석 + Rollover 상환 관리",
+  },
+  lending: {
+    apiEndpoint: "/api/lending/analyze",
+    fileLabel: "대여내역",
+    counterpartyLabel: "차입자",
+    groupLabel: "차입처별",
+    actionLabel: "수익",
+    dailyLabel: "1D 수익",
+    expensiveLabel: "5% 이상 종목",
+    expensiveDailyLabel: "5% 이상 1D 수익",
+    stockActionLabel: "종목별 수익",
+    description: "차입처별·종목별 수익 분석 + Rollover 관리",
+  },
+} as const
+
+export function BorrowingPage({ mode = "borrowing" }: { mode?: "borrowing" | "lending" }) {
+  const cfg = CONFIGS[mode]
   const [data, setData] = useState<BorrowingData | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -299,11 +329,12 @@ export function BorrowingPage() {
   const expensiveSort = useSortable<CostItem>(data?.by_expensive ?? [], "daily_cost")
   const stockSort = useSortable<CostItem>(data?.by_stock ?? [], "daily_cost")
 
+  // Rollover — 차입 모드에서만 사용
   const filteredRollover = useMemo(() => {
-    if (!data) return []
+    if (!data || mode !== "borrowing") return []
     if (rolloverMonth === "all") return data.rollover_items
     return data.rollover_items.filter((item) => item.maturity_month === rolloverMonth)
-  }, [data, rolloverMonth])
+  }, [data, rolloverMonth, mode])
 
   const rolloverSort = useSortable<RolloverItem>(filteredRollover, "maturity_date", true)
   const filteredValue = useMemo(() => filteredRollover.reduce((s, r) => s + r.value, 0), [filteredRollover])
@@ -323,7 +354,7 @@ export function BorrowingPage() {
     form.append("file", selectedFile)
 
     try {
-      const res = await fetch("/api/borrowing/analyze", {
+      const res = await fetch(cfg.apiEndpoint, {
         method: "POST",
         body: form,
       })
@@ -334,14 +365,16 @@ export function BorrowingPage() {
       const json: BorrowingData = await res.json()
       setData(json)
 
-      const now = new Date()
-      const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`
-      if (json.rollover_months.includes(currentMonth)) {
-        setRolloverMonth(currentMonth)
-      } else if (json.rollover_months.length > 0) {
-        setRolloverMonth(json.rollover_months[0])
-      } else {
-        setRolloverMonth("all")
+      if (mode === "borrowing") {
+        const now = new Date()
+        const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`
+        if (json.rollover_months.includes(currentMonth)) {
+          setRolloverMonth(currentMonth)
+        } else if (json.rollover_months.length > 0) {
+          setRolloverMonth(json.rollover_months[0])
+        } else {
+          setRolloverMonth("all")
+        }
       }
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "업로드 실패")
@@ -355,7 +388,7 @@ export function BorrowingPage() {
       {/* Controls */}
       <div className="panel">
         <div className="px-4 py-3 flex items-center gap-4">
-          <span className="text-xs text-t3 whitespace-nowrap">대차내역</span>
+          <span className="text-xs text-t3 whitespace-nowrap">{cfg.fileLabel}</span>
           <input
             type="file"
             className="h-[30px] text-xs text-t3 file:mr-3 file:h-[30px] file:rounded file:border-0 file:bg-bg-surface-2 file:px-3 file:text-xs file:text-t2 file:cursor-pointer hover:file:bg-bg-surface-3 file:active:scale-95 file:transition-all"
@@ -373,7 +406,7 @@ export function BorrowingPage() {
           </label>
           {loading && <span className="text-xs text-accent font-mono">처리 중...</span>}
           {error && <span className="text-xs text-down font-mono">{error}</span>}
-          {data && (
+          {data && mode === "borrowing" && (
             <div className="ml-auto flex rounded bg-bg-surface-2 p-0.5">
               <button
                 className={`px-2.5 py-1 rounded text-xs font-medium transition-colors ${
@@ -414,11 +447,11 @@ export function BorrowingPage() {
                 <p className="font-mono text-lg font-semibold text-up">{fmtRate(data.summary.total_wa_rate)}</p>
               </div>
               <div className="panel-inner rounded px-3 py-2">
-                <p className="text-[11px] text-t3">일일 비용</p>
+                <p className="text-[11px] text-t3">{cfg.dailyLabel}</p>
                 <p className="font-mono text-lg font-semibold text-up">{fmt(data.summary.total_daily_cost)}원</p>
               </div>
               <div className="panel-inner rounded px-3 py-2">
-                <p className="text-[11px] text-t3">고비용 일일 비용</p>
+                <p className="text-[11px] text-t3">{cfg.expensiveDailyLabel}</p>
                 <p className="font-mono text-lg font-semibold text-up">{fmt(data.summary.expensive_daily_cost)}원</p>
               </div>
             </div>
@@ -428,23 +461,23 @@ export function BorrowingPage() {
           <div className="flex gap-1">
             <div className="flex-1 panel flex flex-col">
               <div className="px-4 py-2 border-b border-border-light flex items-center justify-between">
-                <span className="text-sm font-semibold text-t1">차입처별 비용</span>
+                <span className="text-sm font-semibold text-t1">{cfg.groupLabel} {cfg.actionLabel}</span>
                 <span className="text-[11px] text-t4">{data.by_lender.length}개</span>
               </div>
               <div className={`overflow-y-auto ${TABLE_MAX_H}`}>
                 <table className="w-full text-[13px]">
                   <thead className="sticky top-0 bg-bg-surface z-10">
                     <tr className="text-xs text-t3 border-b border-border-light">
-                      <SortTh<CostItem> label="대여자" field="대여자명" align="left" sortKey={lenderSort.sortKey} sortAsc={lenderSort.sortAsc} onSort={lenderSort.toggle} />
+                      <SortTh<CostItem> label={cfg.counterpartyLabel} field="대여자명" align="left" sortKey={lenderSort.sortKey} sortAsc={lenderSort.sortAsc} onSort={lenderSort.toggle} />
                       <SortTh<CostItem> label="건수" field="count" sortKey={lenderSort.sortKey} sortAsc={lenderSort.sortAsc} onSort={lenderSort.toggle} />
                       <SortTh<CostItem> label="총 대차가액" field="total_value" sortKey={lenderSort.sortKey} sortAsc={lenderSort.sortAsc} onSort={lenderSort.toggle} />
                       <SortTh<CostItem> label="가중평균 수수료" field="wa_rate" sortKey={lenderSort.sortKey} sortAsc={lenderSort.sortAsc} onSort={lenderSort.toggle} />
-                      <SortTh<CostItem> label="일일 비용" field="daily_cost" sortKey={lenderSort.sortKey} sortAsc={lenderSort.sortAsc} onSort={lenderSort.toggle} />
+                      <SortTh<CostItem> label={cfg.dailyLabel} field="daily_cost" sortKey={lenderSort.sortKey} sortAsc={lenderSort.sortAsc} onSort={lenderSort.toggle} />
                     </tr>
                   </thead>
                   <tbody>
                     {lenderSort.sorted.map((item) => (
-                      <LenderRow key={item.대여자계좌} item={item} showSettlement={showSettlement} />
+                      <LenderRow key={item.대여자계좌} item={item} showSettlement={showSettlement} dailyLabel={cfg.dailyLabel} />
                     ))}
                   </tbody>
                 </table>
@@ -453,7 +486,7 @@ export function BorrowingPage() {
 
             <div className="flex-1 panel flex flex-col">
               <div className="px-4 py-2 border-b border-border-light flex items-center justify-between">
-                <span className="text-sm font-semibold text-t1">고비용 종목</span>
+                <span className="text-sm font-semibold text-t1">{cfg.expensiveLabel}</span>
                 <span className="text-[11px] text-t4">수수료율 &gt; 0.05% · {data.by_expensive.length}개</span>
               </div>
               {data.by_expensive.length > 0 ? (
@@ -463,14 +496,14 @@ export function BorrowingPage() {
                       <tr className="text-xs text-t3 border-b border-border-light">
                         <SortTh<CostItem> label="종목" field="종목명" align="left" sortKey={expensiveSort.sortKey} sortAsc={expensiveSort.sortAsc} onSort={expensiveSort.toggle} />
                         <SortTh<CostItem> label="총 대차가액" field="total_value" sortKey={expensiveSort.sortKey} sortAsc={expensiveSort.sortAsc} onSort={expensiveSort.toggle} />
-                        <SortTh<CostItem> label="차입수량" field="total_qty" sortKey={expensiveSort.sortKey} sortAsc={expensiveSort.sortAsc} onSort={expensiveSort.toggle} />
+                        <SortTh<CostItem> label={mode === "borrowing" ? "차입수량" : "대여수량"} field="total_qty" sortKey={expensiveSort.sortKey} sortAsc={expensiveSort.sortAsc} onSort={expensiveSort.toggle} />
                         <SortTh<CostItem> label="가중평균 수수료" field="wa_rate" sortKey={expensiveSort.sortKey} sortAsc={expensiveSort.sortAsc} onSort={expensiveSort.toggle} />
-                        <SortTh<CostItem> label="일일 비용" field="daily_cost" sortKey={expensiveSort.sortKey} sortAsc={expensiveSort.sortAsc} onSort={expensiveSort.toggle} />
+                        <SortTh<CostItem> label={cfg.dailyLabel} field="daily_cost" sortKey={expensiveSort.sortKey} sortAsc={expensiveSort.sortAsc} onSort={expensiveSort.toggle} />
                       </tr>
                     </thead>
                     <tbody>
                       {expensiveSort.sorted.map((item) => (
-                        <StockRow key={item.단축코드} item={item} cols="expensive" showSettlement={showSettlement} />
+                        <StockRow key={item.단축코드} item={item} cols="expensive" showSettlement={showSettlement} counterpartyLabel={cfg.counterpartyLabel} dailyLabel={cfg.dailyLabel} />
                       ))}
                     </tbody>
                   </table>
@@ -484,7 +517,7 @@ export function BorrowingPage() {
           {/* 종목별 */}
           <div className="panel flex flex-col">
             <div className="px-4 py-2 border-b border-border-light flex items-center justify-between">
-              <span className="text-sm font-semibold text-t1">종목별 비용</span>
+              <span className="text-sm font-semibold text-t1">{cfg.stockActionLabel}</span>
               <span className="text-[11px] text-t4">{data.by_stock.length}개 종목</span>
             </div>
             <div className={`overflow-y-auto ${TABLE_MAX_H}`}>
@@ -498,12 +531,12 @@ export function BorrowingPage() {
                     <SortTh<CostItem> label="총 수량" field="total_qty" sortKey={stockSort.sortKey} sortAsc={stockSort.sortAsc} onSort={stockSort.toggle} />
                     <SortTh<CostItem> label="총 대차가액" field="total_value" sortKey={stockSort.sortKey} sortAsc={stockSort.sortAsc} onSort={stockSort.toggle} />
                     <SortTh<CostItem> label="가중평균 수수료" field="wa_rate" sortKey={stockSort.sortKey} sortAsc={stockSort.sortAsc} onSort={stockSort.toggle} />
-                    <SortTh<CostItem> label="일일 비용" field="daily_cost" sortKey={stockSort.sortKey} sortAsc={stockSort.sortAsc} onSort={stockSort.toggle} />
+                    <SortTh<CostItem> label={cfg.dailyLabel} field="daily_cost" sortKey={stockSort.sortKey} sortAsc={stockSort.sortAsc} onSort={stockSort.toggle} />
                   </tr>
                 </thead>
                 <tbody>
                   {stockSort.sorted.map((item, i) => (
-                    <StockRow key={item.단축코드} item={item} no={i + 1} cols="stock" showSettlement={showSettlement} />
+                    <StockRow key={item.단축코드} item={item} no={i + 1} cols="stock" showSettlement={showSettlement} counterpartyLabel={cfg.counterpartyLabel} dailyLabel={cfg.dailyLabel} />
                   ))}
                 </tbody>
               </table>
@@ -512,8 +545,8 @@ export function BorrowingPage() {
         </>
       )}
 
-      {/* ===== Rollover ===== */}
-      {data && innerTab === "rollover" && (
+      {/* ===== Rollover (차입 모드 전용) ===== */}
+      {data && mode === "borrowing" && innerTab === "rollover" && (
         <>
           <div className="panel px-4 py-2">
             <div className="flex items-center gap-3">
@@ -527,8 +560,8 @@ export function BorrowingPage() {
                     종목코드: r.stock_code,
                     종목명: r.stock_name,
                     대차수량: r.qty,
-                    대여자코드: r.lender_account,
-                    대여자명: r.lender_name,
+                    [`${cfg.counterpartyLabel}코드`]: r.lender_account,
+                    [`${cfg.counterpartyLabel}명`]: r.lender_name,
                     체결일: r.settlement_date,
                     체결번호: r.settlement_no,
                     상환만기일: r.maturity_date,
@@ -603,7 +636,7 @@ export function BorrowingPage() {
                     <SortTh<RolloverItem> label="종목코드" field="stock_code" align="left" sortKey={rolloverSort.sortKey} sortAsc={rolloverSort.sortAsc} onSort={rolloverSort.toggle} />
                     <SortTh<RolloverItem> label="종목명" field="stock_name" align="left" sortKey={rolloverSort.sortKey} sortAsc={rolloverSort.sortAsc} onSort={rolloverSort.toggle} />
                     <SortTh<RolloverItem> label="상환만기일" field="maturity_date" align="center" sortKey={rolloverSort.sortKey} sortAsc={rolloverSort.sortAsc} onSort={rolloverSort.toggle} />
-                    <SortTh<RolloverItem> label="대여자" field="lender_name" align="left" sortKey={rolloverSort.sortKey} sortAsc={rolloverSort.sortAsc} onSort={rolloverSort.toggle} />
+                    <SortTh<RolloverItem> label={cfg.counterpartyLabel} field="lender_name" align="left" sortKey={rolloverSort.sortKey} sortAsc={rolloverSort.sortAsc} onSort={rolloverSort.toggle} />
                     <SortTh<RolloverItem> label="체결일" field="settlement_date" align="center" sortKey={rolloverSort.sortKey} sortAsc={rolloverSort.sortAsc} onSort={rolloverSort.toggle} />
                     <SortTh<RolloverItem> label="체결번호" field="settlement_no" sortKey={rolloverSort.sortKey} sortAsc={rolloverSort.sortAsc} onSort={rolloverSort.toggle} />
                     <SortTh<RolloverItem> label="대차수량" field="qty" sortKey={rolloverSort.sortKey} sortAsc={rolloverSort.sortAsc} onSort={rolloverSort.toggle} />
@@ -653,8 +686,8 @@ export function BorrowingPage() {
       {!data && !loading && (
         <div className="flex items-center justify-center py-20">
           <div className="text-center">
-            <p className="text-t3 text-sm">대차내역 파일(.xls, .xlsx)을 업로드하세요</p>
-            <p className="text-t4 text-xs mt-1">차입처별·종목별 비용 분석 + Rollover 상환 관리</p>
+            <p className="text-t3 text-sm">{cfg.fileLabel} 파일(.xls, .xlsx)을 업로드하세요</p>
+            <p className="text-t4 text-xs mt-1">{cfg.description}</p>
           </div>
         </div>
       )}

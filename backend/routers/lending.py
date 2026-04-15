@@ -1,4 +1,7 @@
+import math
+
 from fastapi import APIRouter, File, Form, UploadFile, HTTPException
+from fastapi.responses import JSONResponse
 from typing import Optional
 
 from schemas.lending import LendingResponse
@@ -7,6 +10,7 @@ from services.lending_parser import (
     parse_restricted_funds, parse_repayments,
 )
 from services.lending_calculator import calculate_availability
+from services.borrowing_calculator import parse_esafe_for_borrowing, calculate_borrowing
 from services.file_resolver import find_files_in_folder, read_file_bytes
 
 router = APIRouter(tags=["lending"])
@@ -138,3 +142,42 @@ async def get_restricted_codes(
         return {"codes": codes}
     except Exception:
         return {"codes": []}
+
+
+def _clean_nan(obj):
+    """NaN/Inf를 JSON 호환 값으로 변환."""
+    if isinstance(obj, float) and (math.isnan(obj) or math.isinf(obj)):
+        return 0
+    if isinstance(obj, dict):
+        return {k: _clean_nan(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_clean_nan(v) for v in obj]
+    return obj
+
+
+@router.post("/lending/analyze")
+async def analyze_lending(
+    file: Optional[UploadFile] = File(None),
+    folder_path: Optional[str] = Form(None),
+):
+    """대여내역 파일 분석 — 차입 분석과 동일한 로직 (파일 포맷 동일)."""
+    contents = None
+
+    if folder_path:
+        found = find_files_in_folder(folder_path, [("lending_history", "대여내역*")])
+        if "lending_history" in found:
+            contents = read_file_bytes(found["lending_history"])
+
+    if file and file.filename:
+        contents = await file.read()
+
+    if not contents:
+        raise HTTPException(400, "대여내역 파일이 필요합니다. 파일을 선택하거나 폴더 경로를 지정하세요.")
+
+    try:
+        df = parse_esafe_for_borrowing(contents, counterparty="차입자")
+    except Exception as e:
+        raise HTTPException(400, f"파일 파싱 오류: {str(e)}")
+
+    result = calculate_borrowing(df, expensive_threshold=5.0)
+    return JSONResponse(content=_clean_nan(result))
