@@ -23,7 +23,7 @@ LENS/
 
 ```bash
 cd /home/una0/projects
-zip -r -s 50m LENS_full.zip LENS/ -x "LENS/.git/*" "LENS/.env"
+zip -r -s 50m LENS_full.zip LENS/ -x "LENS/.git/*" "LENS/.env" "LENS/data/상환대여가능확인 파일모음/*"
 ```
 
 - `node_modules/` 포함 (npm install 불필요)
@@ -35,7 +35,7 @@ zip -r -s 50m LENS_full.zip LENS/ -x "LENS/.git/*" "LENS/.env"
 
 ```bash
 cd /home/una0/projects
-zip -r -s 50m LENS_update.zip LENS/ -x "LENS/.git/*" "LENS/.env" "LENS/internal_sending/installers/*" "LENS/internal_sending/pip_packages/*" "LENS/frontend/node_modules/*"
+zip -r -s 50m LENS_update.zip LENS/ -x "LENS/.git/*" "LENS/.env" "LENS/internal_sending/installers/*" "LENS/internal_sending/pip_packages/*" "LENS/frontend/node_modules/*" "LENS/data/상환대여가능확인 파일모음/*"
 ```
 
 - 설치파일, pip 패키지, node_modules 제외 → 더 가벼움
