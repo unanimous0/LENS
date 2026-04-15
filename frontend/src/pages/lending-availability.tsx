@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect, useCallback } from "react";
 import * as XLSX from "xlsx";
 import { formatSheet } from "@/lib/excel";
 
@@ -22,6 +22,7 @@ interface StockResult {
   total_locked: number;
   total_combined: number;
   repay_scheduled: number;
+  prev_close: number;
   meets_request: boolean;
   funds: FundBreakdown[];
 }
@@ -41,7 +42,7 @@ function cleanName(name: string) {
   return name.replace(/^[*#\s]+/, "");
 }
 
-const DEFAULT_RESTRICTED = ["187", "421", "422", "424", "446", "476", "836"];
+const DEFAULT_RESTRICTED: string[] = [];
 
 export function LendingAvailabilityPage() {
   const [data, setData] = useState<LendingResponse | null>(null);
@@ -60,6 +61,24 @@ export function LendingAvailabilityPage() {
   const [filterOpen, setFilterOpen] = useState(true);
   const [restrictedSuffixes, setRestrictedSuffixes] = useState<string[]>(DEFAULT_RESTRICTED);
   const [suffixInput, setSuffixInput] = useState("");
+
+  const loadRestrictedCodes = useCallback(async (path?: string, file?: File | null) => {
+    const form = new FormData();
+    if (path) form.append("folder_path", path);
+    if (file) form.append("file", file);
+    try {
+      const res = await fetch("/api/lending/restricted-codes", { method: "POST", body: form });
+      if (res.ok) {
+        const json = await res.json();
+        if (json.codes?.length > 0) setRestrictedSuffixes(json.codes);
+      }
+    } catch { /* ignore */ }
+  }, []);
+
+  // 초기 로드: 폴더 경로가 있으면 대여불가펀드 코드 자동 로드
+  useEffect(() => {
+    if (folderPath) loadRestrictedCodes(folderPath);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const addSuffix = () => {
     const raw = suffixInput.trim();
@@ -216,6 +235,7 @@ export function LendingAvailabilityPage() {
                 setFolderPath(e.target.value);
                 localStorage.setItem("lens_lending_path", e.target.value);
               }}
+              onBlur={() => { if (folderPath) loadRestrictedCodes(folderPath); }}
             />
           )}
 
@@ -251,7 +271,11 @@ export function LendingAvailabilityPage() {
             <div className="flex items-center gap-2">
               <span className="text-xs text-t3 whitespace-nowrap">대여불가펀드</span>
               <input type="file" className="h-[30px] text-xs text-t3 file:mr-2 file:h-[30px] file:rounded file:border-0 file:bg-bg-surface-2 file:px-3 file:text-xs file:text-t2 file:cursor-pointer hover:file:bg-bg-surface-3 file:transition-all"
-                onChange={(e) => setRestrictedFile(e.target.files?.[0] ?? null)} />
+                onChange={(e) => {
+                  const f = e.target.files?.[0] ?? null;
+                  setRestrictedFile(f);
+                  if (f) loadRestrictedCodes(undefined, f);
+                }} />
             </div>
             <div className="flex items-center gap-2">
               <span className="text-xs text-t3 whitespace-nowrap">MM펀드</span>
@@ -312,28 +336,54 @@ export function LendingAvailabilityPage() {
           <div className="panel p-4">
             <div className="grid grid-cols-4 gap-3">
               <div className="panel-inner rounded p-4">
-                <p className="text-xs text-t3 mb-1">문의 종목</p>
-                <p className="font-mono text-2xl font-semibold text-t1">
-                  {data.total_inquiry}
-                </p>
+                <div className="flex h-full">
+                  <div className="flex-1 flex flex-col justify-between border-r border-border pr-3">
+                    <p className="text-xs text-t3 mb-1">문의 종목</p>
+                    <p className="font-mono text-2xl font-semibold text-t1">
+                      {data.total_inquiry}
+                    </p>
+                  </div>
+                  <div className="flex-1 flex flex-col justify-between border-r border-border px-3">
+                    <p className="text-xs text-t3 mb-1">대여가능</p>
+                    <p className="font-mono text-2xl font-semibold text-up">
+                      {data.results.filter((r) => r.total_combined > 0).length}
+                    </p>
+                  </div>
+                  <div className="flex-1 flex flex-col justify-between pl-3">
+                    <p className="text-xs text-t3 mb-1">대여불가</p>
+                    <p className="font-mono text-2xl font-semibold text-down">
+                      {data.results.filter((r) => r.total_combined === 0).length}
+                    </p>
+                  </div>
+                </div>
               </div>
               <div className="panel-inner rounded p-4">
-                <p className="text-xs text-t3 mb-1">대여가능</p>
-                <p className="font-mono text-2xl font-semibold text-up">
-                  {data.results.filter((r) => r.total_combined > 0).length}
-                </p>
-              </div>
-              <div className="panel-inner rounded p-4">
-                <p className="text-xs text-t3 mb-1">대여불가</p>
-                <p className="font-mono text-2xl font-semibold text-down">
-                  {data.results.filter((r) => r.total_combined === 0).length}
-                </p>
-              </div>
-              <div className="panel-inner rounded p-4">
-                <p className="text-xs text-t3 mb-1">총 대여가능 (합산)</p>
+                <p className="text-xs text-t3 mb-1">총 대여가능 수량</p>
                 <p className="font-mono text-2xl font-semibold text-t1">
                   {fmt(data.results.reduce((s, r) => s + r.total_combined, 0))}
                 </p>
+              </div>
+              <div className="panel-inner rounded p-4">
+                <p className="text-xs text-t3 mb-1">총 대여가능 금액</p>
+                <p className="font-mono text-2xl font-semibold text-t1">
+                  {fmt(data.results.reduce((s, r) => s + r.total_combined * r.prev_close, 0))}
+                </p>
+              </div>
+              <div className="panel-inner rounded p-4">
+                <div className="flex h-full">
+                  <div className="flex-1 flex flex-col justify-between border-r border-border pr-3">
+                    <p className="text-xs text-t3 mb-1">1Y 기대수익</p>
+                    <p className="font-mono text-lg font-semibold text-up">
+                      {fmt(Math.round(data.results.reduce((s, r) => s + r.total_combined * r.prev_close * r.rate / 100, 0)))}
+                    </p>
+                  </div>
+                  <div className="flex-1 flex flex-col justify-between pl-3">
+                    <p className="text-xs text-t3 mb-1">1D 기대수익</p>
+                    <p className="font-mono text-lg font-semibold text-up">
+                      {fmt(Math.round(data.results.reduce((s, r) => s + r.total_combined * r.prev_close * r.rate / 100 / 365, 0)))}
+                    </p>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
@@ -362,9 +412,10 @@ export function LendingAvailabilityPage() {
                     <SortTh align="right" sortKey="rate" label="요율" current={sortKey} asc={sortAsc} onSort={handleSort} />
                     <SortTh align="right" sortKey="total_free" label="담보가능수량" current={sortKey} asc={sortAsc} onSort={handleSort} />
                     <SortTh align="right" sortKey="repay_scheduled" label="상환예정" current={sortKey} asc={sortAsc} onSort={handleSort} />
-                    <th className="text-right px-4 py-2.5 font-medium">담보가능-상환</th>
+                    <th className="text-right px-4 py-2.5 font-medium">담보가능-상환예정</th>
                     <SortTh align="right" sortKey="total_locked" label="담보" current={sortKey} asc={sortAsc} onSort={handleSort} />
                     <SortTh align="right" sortKey="total_combined" label="대여가능수량" current={sortKey} asc={sortAsc} onSort={handleSort} />
+                    <th className="text-right px-4 py-2.5 font-medium">1D 기대수익</th>
                     <th className="text-center px-4 py-2.5 font-medium">상태</th>
                     <th className="text-right px-4 py-2.5 font-medium">대여</th>
                   </tr>
@@ -469,26 +520,26 @@ function ResultRow({
           )}
           {r.total_free < r.requested_qty && r.total_locked > 0 && (
             <span className="ml-2 text-[10px] font-medium px-1.5 py-0.5 rounded-sm bg-warning/15 text-warning">
-              담보해제 필요
+              담보해지 필요 ({fmt(r.total_locked)}주)
             </span>
           )}
         </td>
         <td className="px-4 py-2.5 text-right font-mono text-t2">
           {fmt(r.requested_qty)}
         </td>
-        <td className={`px-4 py-2.5 text-right font-mono ${r.rate > 5 ? "text-up" : "text-t1"}`}>
+        <td className={`px-4 py-2.5 text-right font-mono ${r.rate >= 5 ? "text-up" : "text-t2"}`}>
           {r.rate.toFixed(2)}%
         </td>
-        <td className={`px-4 py-2.5 text-right font-mono ${(r.total_free + (r.repay_scheduled ?? 0)) > 0 ? "text-up" : "text-t1"}`}>
+        <td className="px-4 py-2.5 text-right font-mono text-t2">
           {fmt(r.total_free + (r.repay_scheduled ?? 0))}
         </td>
         <td className="px-4 py-2.5 text-right font-mono">
           {(r.repay_scheduled ?? 0) > 0 && <span className="text-down">-{fmt(r.repay_scheduled)}</span>}
         </td>
-        <td className={`px-4 py-2.5 text-right font-mono ${r.total_free > 0 ? "text-up" : "text-t1"}`}>
+        <td className={`px-4 py-2.5 text-right font-mono ${r.total_free > 0 ? "text-up" : "text-t2"}`}>
           {fmt(r.total_free)}
         </td>
-        <td className={`px-4 py-2.5 text-right font-mono ${r.total_locked > 0 ? "text-up" : "text-t1"}`}>
+        <td className={`px-4 py-2.5 text-right font-mono ${r.total_locked > 0 ? "text-warning" : "text-t2"}`}>
           {fmt(r.total_locked)}
         </td>
         <td
@@ -497,6 +548,9 @@ function ResultRow({
           }`}
         >
           {fmt(r.total_combined)}
+        </td>
+        <td className="px-4 py-2.5 text-right font-mono text-t2">
+          {r.total_combined > 0 ? fmt(Math.round(r.total_combined * r.prev_close * r.rate / 100 / 365)) : ""}
         </td>
         <td className="px-4 py-2.5 text-center">
           {r.total_combined === 0 ? (
@@ -528,9 +582,10 @@ function ResultRow({
             <td></td>
             <td className="px-4 py-1.5 text-right text-xs text-t3 font-medium">담보가능수량</td>
             <td className="px-4 py-1.5 text-right text-xs text-t3 font-medium">상환차감</td>
-            <td className="px-4 py-1.5 text-right text-xs text-t3 font-medium">담보가능-상환</td>
+            <td className="px-4 py-1.5 text-right text-xs text-t3 font-medium">담보가능-상환예정</td>
             <td className="px-4 py-1.5 text-right text-xs text-t3 font-medium">담보</td>
             <td className="px-4 py-1.5 text-right text-xs text-t3 font-medium">합산</td>
+            <td></td>
             <td></td>
             <td className="px-4 py-1.5 text-right text-xs text-t3 font-medium">대여</td>
           </tr>
@@ -569,6 +624,7 @@ function ResultRow({
               <td className="px-4 py-2 text-right font-mono text-xs text-t2">
                 {fmt(f.collateral_free + f.collateral_locked)}
               </td>
+              <td></td>
               <td></td>
               <td className="px-4 py-2 text-right font-mono text-xs text-t3">
                 {fmt(f.lending)}

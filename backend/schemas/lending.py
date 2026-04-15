@@ -21,6 +21,7 @@ class StockResult(BaseModel):
     total_locked: int
     total_combined: int
     repay_scheduled: int
+    prev_close: int = 0
     meets_request: bool
     funds: list[FundBreakdown]
 

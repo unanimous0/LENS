@@ -76,13 +76,31 @@ export function RepaymentCheckPage() {
   const [folderPath, setFolderPath] = useState(() => localStorage.getItem("lens_repayment_path") ?? "")
   const [showPathInput, setShowPathInput] = useState(true)
   const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set())
-  type SortKey = keyof StockSummary | "담보가능수량" | "상환예정" | "담보가능_상환" | "담보" | "합산"
+  type SortKey = keyof StockSummary | "담보가능수량" | "상환예정" | "담보가능_상환" | "담보"
   const [sortKey, setSortKey] = useState<SortKey>("대차금액")
   const [sortAsc, setSortAsc] = useState(false)
   const [filterOpen, setFilterOpen] = useState(true)
 
+  const loadRestrictedCodes = useCallback(async (path?: string, file?: File | null) => {
+    const form = new FormData()
+    if (path) form.append("folder_path", path)
+    if (file) form.append("file", file)
+    try {
+      const res = await fetch("/api/lending/restricted-codes", { method: "POST", body: form })
+      if (res.ok) {
+        const json = await res.json()
+        if (json.codes?.length > 0) setExcludeFundCodes(json.codes)
+      }
+    } catch { /* ignore */ }
+  }, [])
+
+  // 초기 로드: 폴더 경로가 있으면 대여불가펀드 코드 자동 로드
+  useEffect(() => {
+    if (folderPath) loadRestrictedCodes(folderPath)
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
   // 5264 필터
-  const [excludeFundCodes, setExcludeFundCodes] = useState<string[]>(["187", "421", "422", "424", "446", "476", "836"])
+  const [excludeFundCodes, setExcludeFundCodes] = useState<string[]>([])
   const [fundCodeInput, setFundCodeInput] = useState("")
   const [officeStockCodes, setOfficeStockCodes] = useState<string[]>([])
   const [officeStockCodeInput, setOfficeStockCodeInput] = useState("")
@@ -233,14 +251,13 @@ export function RepaymentCheckPage() {
       case "상환예정": return deducted
       case "담보가능_상환": return after
       case "담보": return locked
-      case "합산": return after + locked
       default: return 0
     }
   }, [data])
 
   const sortedSummary = useMemo(() => {
     if (!data) return []
-    const extraKeys: SortKey[] = ["담보가능수량", "상환예정", "담보가능_상환", "담보", "합산"]
+    const extraKeys: SortKey[] = ["담보가능수량", "상환예정", "담보가능_상환", "담보"]
     return [...data.summary].sort((a, b) => {
       if (extraKeys.includes(sortKey)) {
         const av = getExtraValue(a, sortKey)
@@ -336,6 +353,7 @@ export function RepaymentCheckPage() {
                 setFolderPath(e.target.value)
                 localStorage.setItem("lens_repayment_path", e.target.value)
               }}
+              onBlur={() => { if (folderPath) loadRestrictedCodes(folderPath) }}
             />
           )}
 
@@ -385,7 +403,11 @@ export function RepaymentCheckPage() {
             <div className="flex items-center gap-2">
               <span className="text-xs text-t3 whitespace-nowrap">대여불가펀드</span>
               <input type="file" className="h-[30px] text-xs text-t3 file:mr-2 file:h-[30px] file:rounded file:border-0 file:bg-bg-surface-2 file:px-3 file:text-xs file:text-t2 file:cursor-pointer hover:file:bg-bg-surface-3 file:transition-all"
-                onChange={(e) => setRestrictedFile(e.target.files?.[0] ?? null)} />
+                onChange={(e) => {
+                  const f = e.target.files?.[0] ?? null
+                  setRestrictedFile(f)
+                  if (f) loadRestrictedCodes(undefined, f)
+                }} />
             </div>
           </div>
         )}
@@ -680,15 +702,12 @@ export function RepaymentCheckPage() {
                       상환예정<span className="ml-0.5 text-[10px]">{sortKey === "상환예정" ? (sortAsc ? "▲" : "▼") : ""}</span>
                     </th>
                     <th className="text-right px-4 py-2.5 font-medium cursor-pointer select-none hover:text-t1 transition-colors" onClick={() => handleSort("담보가능_상환")}>
-                      담보가능-상환<span className="ml-0.5 text-[10px]">{sortKey === "담보가능_상환" ? (sortAsc ? "▲" : "▼") : ""}</span>
+                      담보가능-상환예정<span className="ml-0.5 text-[10px]">{sortKey === "담보가능_상환" ? (sortAsc ? "▲" : "▼") : ""}</span>
                     </th>
+                    <SortTh<StockSummary> label="상환수량" field="상환수량" sortKey={sortKey as keyof StockSummary} sortAsc={sortAsc} onSort={handleSort as (k: keyof StockSummary) => void} />
                     <th className="text-right px-4 py-2.5 font-medium cursor-pointer select-none hover:text-t1 transition-colors" onClick={() => handleSort("담보")}>
                       담보<span className="ml-0.5 text-[10px]">{sortKey === "담보" ? (sortAsc ? "▲" : "▼") : ""}</span>
                     </th>
-                    <th className="text-right px-4 py-2.5 font-medium cursor-pointer select-none hover:text-t1 transition-colors" onClick={() => handleSort("합산")}>
-                      합산<span className="ml-0.5 text-[10px]">{sortKey === "합산" ? (sortAsc ? "▲" : "▼") : ""}</span>
-                    </th>
-                    <SortTh<StockSummary> label="상환수량" field="상환수량" sortKey={sortKey as keyof StockSummary} sortAsc={sortAsc} onSort={handleSort as (k: keyof StockSummary) => void} />
                     <SortTh<StockSummary> label="상환금액" field="대차금액" sortKey={sortKey as keyof StockSummary} sortAsc={sortAsc} onSort={handleSort as (k: keyof StockSummary) => void} />
                     <SortTh<StockSummary> label="체결건수" field="체결건수" sortKey={sortKey as keyof StockSummary} sortAsc={sortAsc} onSort={handleSort as (k: keyof StockSummary) => void} />
                     <SortTh<StockSummary> label="최고수수료율" field="최고수수료율" sortKey={sortKey as keyof StockSummary} sortAsc={sortAsc} onSort={handleSort as (k: keyof StockSummary) => void} />
@@ -698,6 +717,9 @@ export function RepaymentCheckPage() {
                   {sortedSummary.map((s, i) => {
                     const expanded = expandedRows.has(s.종목코드)
                     const details = matchesByStock(s.종목코드)
+                    const remainingEsafe = (data.remaining_esafe as Record<string, unknown>[])
+                      .filter((r) => r["단축코드"] === s.종목코드)
+                      .reduce((sum, r) => sum + ((r["대차수량"] as number) ?? 0), 0)
                     return (
                       <SummaryRow
                         key={s.종목코드}
@@ -712,6 +734,7 @@ export function RepaymentCheckPage() {
                         lockedCollateral={data.locked_collateral?.[s.종목코드] ?? 0}
                         lockedByFund={data.locked_by_fund?.[s.종목코드] ?? {}}
                         fundNames={data.fund_names ?? {}}
+                        remainingEsafe={remainingEsafe}
                       />
                     )
                   })}
@@ -749,6 +772,7 @@ function SummaryRow({
   lockedCollateral,
   lockedByFund,
   fundNames,
+  remainingEsafe,
 }: {
   no: number
   summary: StockSummary
@@ -761,11 +785,12 @@ function SummaryRow({
   lockedCollateral: number
   lockedByFund: Record<string, number>
   fundNames: Record<string, string>
+  remainingEsafe: number
 }) {
   const totalDeducted = Object.values(deductions).reduce((a, b) => a + b, 0)
   const afterDeduction = originalCollateral - totalDeducted
-  const combined = afterDeduction + lockedCollateral
   const needsUnlock = s.상환수량 >= afterDeduction && lockedCollateral > 0
+  const unlockNeeded = Math.min(remainingEsafe, lockedCollateral)
   return (
     <>
       <tr
@@ -790,7 +815,7 @@ function SummaryRow({
           )}
           {needsUnlock && (
             <span className="ml-2 text-[10px] font-medium px-1.5 py-0.5 rounded-sm bg-warning/15 text-warning">
-              담보해제 필요
+              담보해지 필요 ({fmt(unlockNeeded)}주)
             </span>
           )}
         </td>
@@ -803,13 +828,10 @@ function SummaryRow({
         <td className="px-4 py-2.5 text-right font-mono text-t2">
           {fmt(afterDeduction)}
         </td>
+        <td className="px-4 py-2.5 text-right font-mono text-up">{fmt(s.상환수량)}</td>
         <td className={`px-4 py-2.5 text-right font-mono ${lockedCollateral > 0 ? "text-warning" : "text-t2"}`}>
           {fmt(lockedCollateral)}
         </td>
-        <td className="px-4 py-2.5 text-right font-mono text-t2 font-semibold">
-          {fmt(combined)}
-        </td>
-        <td className="px-4 py-2.5 text-right font-mono text-up">{fmt(s.상환수량)}</td>
         <td className="px-4 py-2.5 text-right font-mono text-t1">{fmt(s.대차금액)}</td>
         <td className="px-4 py-2.5 text-right font-mono text-t2">{s.체결건수}</td>
         <td className="px-4 py-2.5 text-right font-mono text-t2">{s.최고수수료율.toFixed(2)}%</td>
@@ -823,10 +845,9 @@ function SummaryRow({
             <td className="px-4 py-1.5 text-xs text-t3 font-medium">펀드명 / 대여자</td>
             <td className="px-4 py-1.5 text-right text-xs text-t3 font-medium">담보가능수량</td>
             <td className="px-4 py-1.5 text-right text-xs text-t3 font-medium">상환예정</td>
-            <td className="px-4 py-1.5 text-right text-xs text-t3 font-medium">담보가능-상환</td>
-            <td className="px-4 py-1.5 text-right text-xs text-t3 font-medium">담보</td>
-            <td></td>
+            <td className="px-4 py-1.5 text-right text-xs text-t3 font-medium">담보가능-상환예정</td>
             <td className="px-4 py-1.5 text-right text-xs text-t3 font-medium">상환수량</td>
+            <td className="px-4 py-1.5 text-right text-xs text-t3 font-medium">담보</td>
             <td className="px-4 py-1.5 text-right text-xs text-t3 font-medium">상환금액</td>
             <td className="px-4 py-1.5 text-right text-xs text-t3 font-medium">체결일/번호</td>
             <td className="px-4 py-1.5 text-right text-xs text-t3 font-medium">수수료율</td>
@@ -867,13 +888,12 @@ function SummaryRow({
                     <td className="px-4 py-2 text-right font-mono text-xs text-t2">
                       {isFirstOfFund ? fmt(fundAfter) : <span className="text-t4 text-sm font-bold">↑</span>}
                     </td>
+                    <td className="px-4 py-2 text-right font-mono text-xs text-up">{fmt(m.상환수량)}</td>
                     <td className="px-4 py-2 text-right font-mono text-xs">
                       {isFirstOfFund ? (lockedByFund[m.펀드코드] ?? 0) > 0 && (
                         <span className="text-warning">{fmt(lockedByFund[m.펀드코드])}</span>
                       ) : (lockedByFund[m.펀드코드] ?? 0) > 0 && <span className="text-t4 text-sm font-bold">↑</span>}
                     </td>
-                    <td></td>
-                    <td className="px-4 py-2 text-right font-mono text-xs text-up">{fmt(m.상환수량)}</td>
                     <td className="px-4 py-2 text-right font-mono text-xs text-t2">{fmt(m.대차금액)}</td>
                     <td className="px-4 py-2 text-right font-mono text-xs text-t4">{m.체결일} / {m.체결번호}</td>
                     <td className="px-4 py-2 text-right font-mono text-xs text-t2">{m.수수료율.toFixed(2)}%</td>
@@ -889,11 +909,10 @@ function SummaryRow({
                     <td className="px-4 py-2 text-right font-mono text-xs text-t2">{fmt(cf.orig)}</td>
                     <td className="px-4 py-2 text-right font-mono text-xs"><span className="text-down">-{fmt(cf.deduct)}</span></td>
                     <td className="px-4 py-2 text-right font-mono text-xs text-t2">{fmt(cf.orig - cf.deduct)}</td>
+                    <td className="px-4 py-2 text-right font-mono text-xs text-t4">—</td>
                     <td className="px-4 py-2 text-right font-mono text-xs">
                       {cf.locked > 0 && <span className="text-warning">{fmt(cf.locked)}</span>}
                     </td>
-                    <td></td>
-                    <td className="px-4 py-2 text-right font-mono text-xs text-t4">—</td>
                     <td className="px-4 py-2 text-right font-mono text-xs text-t4">—</td>
                     <td className="px-4 py-2 text-right font-mono text-xs text-t4">—</td>
                     <td className="px-4 py-2 text-right font-mono text-xs text-t4">—</td>

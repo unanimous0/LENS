@@ -112,3 +112,29 @@ async def calculate_lending(
         total_met=total_met,
         total_unmet=len(results) - total_met,
     )
+
+
+@router.post("/lending/restricted-codes")
+async def get_restricted_codes(
+    file: Optional[UploadFile] = File(None),
+    folder_path: Optional[str] = Form(None),
+):
+    """대여불가펀드 파일에서 펀드코드 목록 반환."""
+    file_bytes = None
+
+    if folder_path:
+        found = find_files_in_folder(folder_path, [("restricted", "대여불가펀드*")])
+        if "restricted" in found:
+            file_bytes = read_file_bytes(found["restricted"])
+
+    if file and file.filename:
+        file_bytes = await file.read()
+
+    if not file_bytes:
+        return {"codes": []}
+
+    try:
+        codes = parse_restricted_funds(file_bytes)
+        return {"codes": codes}
+    except Exception:
+        return {"codes": []}

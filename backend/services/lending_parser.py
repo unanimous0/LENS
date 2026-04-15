@@ -37,7 +37,7 @@ def parse_holdings(file_bytes: bytes) -> pd.DataFrame:
     df["fund_code"] = df["fund_code"].astype(str).str.zfill(6)
     df["account_code"] = df["account_code"].astype(str).str.strip().str.zfill(3)
 
-    for col in ["settlement_today", "collateral_locked", "collateral_free", "lending"]:
+    for col in ["settlement_today", "collateral_locked", "collateral_free", "lending", "prev_close"]:
         df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).astype(int)
 
     return df
