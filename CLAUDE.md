@@ -24,6 +24,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **[architecture.md](architecture.md)** — 프로젝트 구조, 데이터 소스 전략, 새 기능 추가 방법
 - **[ls-api.md](ls-api.md)** — LS증권 OpenAPI 연동 가이드 (실시간 시세, 선물 베이시스)
 - **[internal-deploy.md](internal-deploy.md)** — 내부망 배포 가이드 (오프라인 Windows 설치)
+- **[realtime-service.md](realtime-service.md)** — Rust 실시간 데이터 서비스 아키텍처 (모든 실시간 화면의 공통 인프라)
+- **[stock-arbitrage.md](stock-arbitrage.md)** — 종목차익 기능 설계 (베이시스 모니터링 + ETF 차익 계산)
 
 ## 디자인 가이드
 
