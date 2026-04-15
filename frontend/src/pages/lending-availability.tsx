@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import * as XLSX from "xlsx";
 import { formatSheet } from "@/lib/excel";
+import { CopyButton } from "@/components/copy-button";
 
 interface FundBreakdown {
   fund_code: string;
@@ -334,6 +335,15 @@ export function LendingAvailabilityPage() {
         <>
           {/* Summary Cards */}
           <div className="panel p-4">
+            <div className="flex justify-end mb-2">
+              <CopyButton rows={sortedResults.map((r) => ({
+                종목코드: r.stock_code, 종목명: r.stock_name, 문의수량: r.requested_qty,
+                요율: r.rate, 담보가능수량: r.total_free + (r.repay_scheduled ?? 0),
+                상환예정: r.repay_scheduled, "담보가능-상환예정": r.total_free,
+                담보: r.total_locked, 대여가능수량: r.total_combined,
+                "1D기대수익": r.total_combined > 0 ? Math.round(r.total_combined * r.prev_close * r.rate / 100 / 365) : 0,
+              }))} />
+            </div>
             <div className="grid grid-cols-4 gap-3">
               <div className="panel-inner rounded p-4">
                 <div className="flex h-full">

@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useMemo, useCallback } from "react"
 import * as XLSX from "xlsx"
 import { formatSheet } from "@/lib/excel"
+import { CopyButton } from "@/components/copy-button"
 
 interface RepaymentMatch {
   펀드코드: string
@@ -620,6 +621,20 @@ export function RepaymentCheckPage() {
         <>
           {/* Summary Cards */}
           <div className="panel px-4 py-2">
+            <div className="flex justify-end mb-1">
+              <CopyButton rows={sortedSummary.map((s) => {
+                const code = s.종목코드
+                const orig = data.original_collateral?.[code] ?? 0
+                const deducted = Object.values(data.repay_deductions?.[code] ?? {}).reduce((a: number, b: number) => a + b, 0)
+                const locked = data.locked_collateral?.[code] ?? 0
+                return {
+                  종목코드: s.종목코드, 종목명: s.종목명, 담보가능수량: orig,
+                  상환예정: deducted, "담보가능-상환예정": orig - deducted,
+                  상환수량: s.상환수량, 담보: locked, 상환금액: s.대차금액,
+                  체결건수: s.체결건수, 최고수수료율: s.최고수수료율,
+                }
+              })} />
+            </div>
             <div className="grid grid-cols-4 gap-2">
               <div className="panel-inner rounded px-3 py-2">
                 <p className="text-[11px] text-t3">매칭 종목 수</p>

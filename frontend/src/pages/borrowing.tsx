@@ -1,6 +1,7 @@
 import { useState, useMemo, useCallback } from "react"
 import * as XLSX from "xlsx"
 import { formatSheet } from "@/lib/excel"
+import { CopyButton } from "@/components/copy-button"
 
 interface DetailItem {
   lender: string
@@ -461,8 +462,14 @@ export function BorrowingPage({ mode = "borrowing" }: { mode?: "borrowing" | "le
           <div className="flex gap-1">
             <div className="flex-1 panel flex flex-col">
               <div className="px-4 py-2 border-b border-border-light flex items-center justify-between">
-                <span className="text-sm font-semibold text-t1">{cfg.groupLabel} {cfg.actionLabel}</span>
-                <span className="text-[11px] text-t4">{data.by_lender.length}개</span>
+                <div className="flex items-center gap-2">
+                  <span className="text-sm font-semibold text-t1">{cfg.groupLabel} {cfg.actionLabel}</span>
+                  <span className="text-[11px] text-t4">{data.by_lender.length}개</span>
+                </div>
+                <CopyButton rows={lenderSort.sorted.map((item) => ({
+                  [cfg.counterpartyLabel]: item.대여자명, 계좌: item.대여자계좌, 건수: item.count,
+                  대차가액: item.total_value, 가중평균수수료: item.wa_rate, [cfg.dailyLabel]: item.daily_cost,
+                }))} />
               </div>
               <div className={`overflow-y-auto ${TABLE_MAX_H}`}>
                 <table className="w-full text-[13px]">
@@ -486,8 +493,14 @@ export function BorrowingPage({ mode = "borrowing" }: { mode?: "borrowing" | "le
 
             <div className="flex-1 panel flex flex-col">
               <div className="px-4 py-2 border-b border-border-light flex items-center justify-between">
-                <span className="text-sm font-semibold text-t1">{cfg.expensiveLabel}</span>
-                <span className="text-[11px] text-t4">수수료율 &gt; 0.05% · {data.by_expensive.length}개</span>
+                <div className="flex items-center gap-2">
+                  <span className="text-sm font-semibold text-t1">{cfg.expensiveLabel}</span>
+                  <span className="text-[11px] text-t4">{data.by_expensive.length}개</span>
+                </div>
+                <CopyButton rows={expensiveSort.sorted.map((item) => ({
+                  종목코드: item.단축코드, 종목명: item.종목명, 수량: item.total_qty,
+                  대차가액: item.total_value, 가중평균수수료: item.wa_rate, [cfg.dailyLabel]: item.daily_cost,
+                }))} />
               </div>
               {data.by_expensive.length > 0 ? (
                 <div className={`overflow-y-auto ${TABLE_MAX_H}`}>
@@ -517,8 +530,14 @@ export function BorrowingPage({ mode = "borrowing" }: { mode?: "borrowing" | "le
           {/* 종목별 */}
           <div className="panel flex flex-col">
             <div className="px-4 py-2 border-b border-border-light flex items-center justify-between">
-              <span className="text-sm font-semibold text-t1">{cfg.stockActionLabel}</span>
-              <span className="text-[11px] text-t4">{data.by_stock.length}개 종목</span>
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-semibold text-t1">{cfg.stockActionLabel}</span>
+                <span className="text-[11px] text-t4">{data.by_stock.length}개 종목</span>
+              </div>
+              <CopyButton rows={stockSort.sorted.map((item) => ({
+                종목코드: item.단축코드, 종목명: item.종목명, 건수: item.count, 총수량: item.total_qty,
+                대차가액: item.total_value, 가중평균수수료: item.wa_rate, [cfg.dailyLabel]: item.daily_cost,
+              }))} />
             </div>
             <div className={`overflow-y-auto ${TABLE_MAX_H}`}>
               <table className="w-full text-[13px]">
