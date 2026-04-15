@@ -12,6 +12,15 @@ export function formatSheet(ws: XLSX.WorkSheet) {
   // 컬럼별 최대 너비 추적
   const colWidths: number[] = []
 
+  // 헤더에서 소수점 강제 컬럼 판별 (요율, 수수료율 등)
+  const decimalCols = new Set<number>()
+  for (let c = range.s.c; c <= range.e.c; c++) {
+    const header = ws[XLSX.utils.encode_cell({ r: range.s.r, c })]
+    if (header && typeof header.v === "string" && /요율|수수료/.test(header.v)) {
+      decimalCols.add(c)
+    }
+  }
+
   for (let c = range.s.c; c <= range.e.c; c++) {
     let maxLen = 0
     for (let r = range.s.r; r <= range.e.r; r++) {
@@ -20,7 +29,7 @@ export function formatSheet(ws: XLSX.WorkSheet) {
 
       // 숫자 서식 (헤더 제외)
       if (r > range.s.r && typeof cell.v === "number") {
-        cell.z = Number.isInteger(cell.v) ? "#,##0" : "#,##0.00"
+        cell.z = decimalCols.has(c) || !Number.isInteger(cell.v) ? "#,##0.00" : "#,##0"
       }
 
       // 너비 계산: 표시될 문자열 길이
