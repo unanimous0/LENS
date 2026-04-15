@@ -50,8 +50,10 @@ LENS/
 │   │   ├── lending.py                     # LendingResponse, StockResult, FundBreakdown
 │   │   └── repayment.py                   # RepaymentResponse, RepaymentMatch, StockSummary
 │   └── services/
+│       ├── file_resolver.py               # 폴더 내 파일 자동 탐색 (패턴 매칭, NFC/NFD 정규화)
+│       ├── excel_reader.py                # 엑셀 읽기 (openpyxl → xlrd → xlwings fallback)
 │       ├── borrowing_calculator.py        # 차입 비용 분석 + Rollover 관리
-│       ├── lending_parser.py              # 대여가능 엑셀 파싱 (4개 시트)
+│       ├── lending_parser.py              # 대여가능 개별 파일 파싱 (5개 파일)
 │       ├── lending_calculator.py          # 대여가능 산출 로직
 │       ├── repayment_parser.py            # 상환가능 엑셀 파싱 (오피스 + 예탁원)
 │       └── repayment_calculator.py        # 상환가능 매칭 로직 + 필터

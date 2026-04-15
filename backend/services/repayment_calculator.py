@@ -2,12 +2,71 @@
 import pandas as pd
 
 
+def deduct_repay_schedule(office: pd.DataFrame, repay: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
+    """상환예정 수량을 오피스 담보가능수량에서 차감. 052 우선 → 담보가능수량 큰 순.
+    Returns: (차감된 office, {종목코드: {펀드코드: 차감수량}})
+    """
+    office = office.copy()
+    repay_by_stock = repay.groupby("종목번호")["상환예정수량"].sum().to_dict()
+    deductions: dict[str, dict[str, int]] = {}  # {종목코드: {펀드코드: 차감량}}
+
+    for stock_code, repay_qty in repay_by_stock.items():
+        mask = office["종목번호"] == stock_code
+        if not mask.any():
+            continue
+
+        stock_rows = office[mask].copy()
+        if "계정코드" in stock_rows.columns:
+            stock_rows = stock_rows.sort_values(
+                by=["계정코드", "담보가능수량"],
+                key=lambda s: s if s.name == "담보가능수량" else s.map(
+                    lambda x: 0 if str(x).lstrip("0") == "52" else 1
+                ),
+                ascending=[True, False],
+            )
+        else:
+            stock_rows = stock_rows.sort_values("담보가능수량", ascending=False)
+
+        remaining = repay_qty
+        stock_deductions: dict[str, int] = {}
+        for idx in stock_rows.index:
+            if remaining <= 0:
+                break
+            available = office.at[idx, "담보가능수량"]
+            deduct = min(available, remaining)
+            office.at[idx, "담보가능수량"] = available - deduct
+            remaining -= deduct
+            fund_code = str(office.at[idx, "펀드코드"])
+            stock_deductions[fund_code] = stock_deductions.get(fund_code, 0) + deduct
+
+        if stock_deductions:
+            deductions[stock_code] = stock_deductions
+
+    office = office[office["담보가능수량"] > 0].reset_index(drop=True)
+    return office, deductions
+
+
 def apply_filters(office: pd.DataFrame, esafe: pd.DataFrame, filters: dict) -> tuple[pd.DataFrame, pd.DataFrame]:
     """계산 전 필터링 적용."""
     o = office.copy()
     e = esafe.copy()
 
-    # 5264 필터
+    # MM펀드 제외
+    if filters.get("mm_funds"):
+        o = o[~o["펀드코드"].isin(filters["mm_funds"])]
+
+    # 상환불가펀드 제외 (파일 기반)
+    if filters.get("restricted_suffixes"):
+        r_exact = [c for c in filters["restricted_suffixes"] if len(c) == 6]
+        r_suffixes = [c for c in filters["restricted_suffixes"] if len(c) == 3]
+        r_mask = pd.Series(False, index=o.index)
+        if r_exact:
+            r_mask = r_mask | o["펀드코드"].isin(r_exact)
+        if r_suffixes:
+            r_mask = r_mask | o["펀드코드"].str[-3:].isin(r_suffixes)
+        o = o[~r_mask]
+
+    # 5264 필터 (수동 입력)
     if filters["exclude_fund_codes"]:
         exact = [c for c in filters["exclude_fund_codes"] if len(c) == 6]
         suffixes = [c for c in filters["exclude_fund_codes"] if len(c) == 3]
@@ -84,8 +143,17 @@ def calculate_repayment(office: pd.DataFrame, esafe: pd.DataFrame) -> dict:
             all_no_esafe.append(o)
             continue
 
-        # 오피스: 담보가능수량 작은 순 → 펀드코드 순
-        o = o.sort_values(["담보가능수량", "펀드코드"], ascending=True).reset_index(drop=True)
+        # 오피스: 052 우선 → 담보가능수량 작은 순 (짜투리부터 소진)
+        if "계정코드" in o.columns:
+            o = o.sort_values(
+                by=["계정코드", "담보가능수량"],
+                key=lambda s: s if s.name == "담보가능수량" else s.map(
+                    lambda x: 0 if str(x).lstrip("0") == "52" else 1
+                ),
+                ascending=[True, True],
+            ).reset_index(drop=True)
+        else:
+            o = o.sort_values(["담보가능수량", "펀드코드"], ascending=True).reset_index(drop=True)
         # 예탁원: 수수료율 높은 순 → 수량 작은 순
         e = e.sort_values(["수수료율(%)", "대차수량"], ascending=[False, True]).reset_index(drop=True)
 

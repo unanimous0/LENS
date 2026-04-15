@@ -28,12 +28,17 @@ def _parse_office(df: pd.DataFrame) -> pd.DataFrame:
         if col not in df.columns:
             raise ValueError(f"오피스 파일에 '{col}' 컬럼이 없습니다.")
 
-    use_cols = required + (["계정코드"] if "계정코드" in df.columns else [])
+    optional = ["계정코드", "담보"]
+    use_cols = required + [c for c in optional if c in df.columns]
     df = df[use_cols].copy()
     if "계정코드" in df.columns:
         df["계정코드"] = df["계정코드"].astype(str).str.strip().str.zfill(3)
     df["담보가능수량"] = pd.to_numeric(df["담보가능수량"], errors="coerce").fillna(0).astype(int)
-    df = df[df["담보가능수량"] > 0].copy()
+    if "담보" in df.columns:
+        df["담보"] = pd.to_numeric(df["담보"], errors="coerce").fillna(0).astype(int)
+    else:
+        df["담보"] = 0
+    df = df[(df["담보가능수량"] > 0) | (df["담보"] > 0)].copy()
 
     # 종목번호 정규화: A005930 → 005930
     df["종목번호"] = df["종목번호"].astype(str).str.replace(r"^A", "", regex=True).str.zfill(6)
@@ -77,3 +82,17 @@ def parse_esafe_lenders(file_bytes: bytes) -> list[dict]:
         .reset_index(drop=True)
     )
     return [{"account": str(row["대여자계좌"]), "name": str(row["대여자명"])} for _, row in lenders.iterrows()]
+
+
+def parse_repay_schedule(file_bytes: bytes) -> pd.DataFrame:
+    """상환예정내역 파일 파싱: D열 ISIN → 종목코드 6자리, J열 대차수량."""
+    df = read_excel(file_bytes)
+    df = df.dropna(subset=[df.columns[3]])  # D열 종목코드 기준
+
+    result = pd.DataFrame()
+    # D열(index 3): ISIN KR7005930003 → [3:9] = 005930
+    result["종목번호"] = df.iloc[:, 3].astype(str).str[3:9]
+    # J열(index 9): 대차수량
+    result["상환예정수량"] = pd.to_numeric(df.iloc[:, 9], errors="coerce").fillna(0).astype(int)
+
+    return result

@@ -47,8 +47,13 @@ export function LendingAvailabilityPage() {
   const [data, setData] = useState<LendingResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [_fileName, setFileName] = useState<string | null>(null);
-  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [inquiryFile, setInquiryFile] = useState<File | null>(null);
+  const [holdingsFile, setHoldingsFile] = useState<File | null>(null);
+  const [restrictedFile, setRestrictedFile] = useState<File | null>(null);
+  const [mmFundsFile, setMmFundsFile] = useState<File | null>(null);
+  const [repayFile, setRepayFile] = useState<File | null>(null);
+  const [folderPath, setFolderPath] = useState(() => localStorage.getItem("lens_lending_path") ?? "");
+  const [showPathInput, setShowPathInput] = useState(true);
   const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
   const [sortKey, setSortKey] = useState<keyof StockResult>("total_combined");
   const [sortAsc, setSortAsc] = useState(false);
@@ -66,15 +71,25 @@ export function LendingAvailabilityPage() {
     setSuffixInput("");
   };
 
-  const handleUpload = async (file: File) => {
-    setFileName(file.name);
+  const handleCalculate = async () => {
+    if (!inquiryFile && !holdingsFile && !folderPath) {
+      setError("파일을 선택하거나 폴더 경로를 지정하세요");
+      return;
+    }
     setLoading(true);
     setError(null);
     setData(null);
     setExpandedRows(new Set());
 
     const form = new FormData();
-    form.append("file", file);
+    if (inquiryFile) form.append("inquiry_file", inquiryFile);
+    if (holdingsFile) form.append("holdings_file", holdingsFile);
+    if (restrictedFile) form.append("restricted_file", restrictedFile);
+    if (mmFundsFile) form.append("mm_funds_file", mmFundsFile);
+    if (repayFile) form.append("repayments_file", repayFile);
+    if (folderPath) {
+      form.append("folder_path", folderPath);
+    }
     if (restrictedSuffixes.length > 0) {
       form.append("restricted_suffixes", restrictedSuffixes.join(","));
     }
@@ -172,49 +187,84 @@ export function LendingAvailabilityPage() {
 
   return (
     <div className="flex flex-col gap-1 bg-bg-base">
-      {/* Controls Panel — 파일선택 + 필터 + 엑셀저장 통합 */}
+      {/* Controls Panel */}
       <div className="panel">
-        <div className="px-4 py-3 flex items-center gap-4">
-          <span className="text-xs text-t3 whitespace-nowrap">대여확인</span>
-          <input
-            id="file-upload"
-            type="file"
-            className="text-sm text-t3 file:mr-3 file:rounded file:border-0 file:bg-bg-surface-2 file:px-4 file:py-2 file:text-sm file:text-t2 file:cursor-pointer hover:file:bg-bg-surface-3 file:active:scale-95 file:active:bg-bg-surface-3 file:transition-all"
-            onChange={(e) => {
-              const f = e.target.files?.[0];
-              if (f) {
-                setFileName(f.name);
-                setSelectedFile(f);
-              }
-            }}
-          />
+        <div className="px-4 py-3 flex items-center gap-3">
+          {/* 모드 토글 */}
+          <div className="flex h-[30px]">
+            <button
+              className={`h-full px-2.5 rounded-l text-xs font-medium transition-all ${showPathInput ? "bg-bg-surface-2 text-t1" : "bg-bg-base text-t4 hover:text-t3"}`}
+              onClick={() => setShowPathInput(true)}
+            >
+              폴더 경로
+            </button>
+            <button
+              className={`h-full px-2.5 rounded-r text-xs font-medium transition-all ${!showPathInput ? "bg-bg-surface-2 text-t1" : "bg-bg-base text-t4 hover:text-t3"}`}
+              onClick={() => { setShowPathInput(false); setFolderPath(""); localStorage.removeItem("lens_lending_path"); }}
+            >
+              파일 선택
+            </button>
+          </div>
+
+          {/* 폴더 경로 모드 */}
+          {showPathInput && (
+            <input
+              className="h-[30px] w-80 bg-bg-input rounded px-3 text-xs font-mono text-t1 outline-none focus:ring-1 focus:ring-accent"
+              placeholder="예: C:\Users\SE21297\Desktop\대여가능확인 파일모음"
+              value={folderPath}
+              onChange={(e) => {
+                setFolderPath(e.target.value);
+                localStorage.setItem("lens_lending_path", e.target.value);
+              }}
+            />
+          )}
+
           <button
-            className="rounded bg-green px-4 py-2 text-sm text-black font-semibold hover:bg-green-light active:scale-95 active:brightness-90 transition-all"
-            onClick={() => {
-              if (selectedFile) {
-                handleUpload(selectedFile);
-              } else {
-                setError("파일을 먼저 선택하세요");
-              }
-            }}
+            className="h-[30px] rounded bg-green px-3 text-xs text-black font-semibold hover:bg-green-light active:scale-95 active:brightness-90 transition-all"
+            onClick={handleCalculate}
           >
             계산 실행
           </button>
-          {loading && (
-            <span className="text-xs text-green font-mono">처리 중...</span>
-          )}
-          {error && (
-            <span className="text-xs text-down font-mono">{error}</span>
-          )}
+          {loading && <span className="text-xs text-green font-mono">처리 중...</span>}
+          {error && <span className="text-xs text-down font-mono">{error}</span>}
           {data && (
             <button
-              className="ml-auto rounded bg-bg-surface-2 px-4 py-2 text-sm text-t2 font-medium hover:bg-bg-surface-3 active:scale-95 transition-all"
+              className="ml-auto h-[30px] rounded bg-bg-surface-2 px-3 text-xs text-t2 font-medium hover:bg-bg-surface-3 active:scale-95 transition-all"
               onClick={exportToExcel}
             >
               엑셀 저장
             </button>
           )}
         </div>
+        {!showPathInput && (
+          <div className="px-4 pb-3 flex items-center gap-3 flex-wrap">
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-t3 whitespace-nowrap">대여문의종목</span>
+              <input type="file" className="h-[30px] text-xs text-t3 file:mr-2 file:h-[30px] file:rounded file:border-0 file:bg-bg-surface-2 file:px-3 file:text-xs file:text-t2 file:cursor-pointer hover:file:bg-bg-surface-3 file:transition-all"
+                onChange={(e) => setInquiryFile(e.target.files?.[0] ?? null)} />
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-t3 whitespace-nowrap">5264</span>
+              <input type="file" className="h-[30px] text-xs text-t3 file:mr-2 file:h-[30px] file:rounded file:border-0 file:bg-bg-surface-2 file:px-3 file:text-xs file:text-t2 file:cursor-pointer hover:file:bg-bg-surface-3 file:transition-all"
+                onChange={(e) => setHoldingsFile(e.target.files?.[0] ?? null)} />
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-t3 whitespace-nowrap">대여불가펀드</span>
+              <input type="file" className="h-[30px] text-xs text-t3 file:mr-2 file:h-[30px] file:rounded file:border-0 file:bg-bg-surface-2 file:px-3 file:text-xs file:text-t2 file:cursor-pointer hover:file:bg-bg-surface-3 file:transition-all"
+                onChange={(e) => setRestrictedFile(e.target.files?.[0] ?? null)} />
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-t3 whitespace-nowrap">MM펀드</span>
+              <input type="file" className="h-[30px] text-xs text-t3 file:mr-2 file:h-[30px] file:rounded file:border-0 file:bg-bg-surface-2 file:px-3 file:text-xs file:text-t2 file:cursor-pointer hover:file:bg-bg-surface-3 file:transition-all"
+                onChange={(e) => setMmFundsFile(e.target.files?.[0] ?? null)} />
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-t3 whitespace-nowrap">상환예정내역</span>
+              <input type="file" className="h-[30px] text-xs text-t3 file:mr-2 file:h-[30px] file:rounded file:border-0 file:bg-bg-surface-2 file:px-3 file:text-xs file:text-t2 file:cursor-pointer hover:file:bg-bg-surface-3 file:transition-all"
+                onChange={(e) => setRepayFile(e.target.files?.[0] ?? null)} />
+            </div>
+          </div>
+        )}
         <button
           className="w-full px-4 py-2 flex items-center gap-2 text-xs text-t3 hover:text-t2 transition-colors"
           onClick={() => setFilterOpen(!filterOpen)}
@@ -314,7 +364,7 @@ export function LendingAvailabilityPage() {
                     <SortTh align="right" sortKey="repay_scheduled" label="상환예정" current={sortKey} asc={sortAsc} onSort={handleSort} />
                     <th className="text-right px-4 py-2.5 font-medium">담보가능-상환</th>
                     <SortTh align="right" sortKey="total_locked" label="담보" current={sortKey} asc={sortAsc} onSort={handleSort} />
-                    <SortTh align="right" sortKey="total_combined" label="합산" current={sortKey} asc={sortAsc} onSort={handleSort} />
+                    <SortTh align="right" sortKey="total_combined" label="대여가능수량" current={sortKey} asc={sortAsc} onSort={handleSort} />
                     <th className="text-center px-4 py-2.5 font-medium">상태</th>
                     <th className="text-right px-4 py-2.5 font-medium">대여</th>
                   </tr>
@@ -415,6 +465,11 @@ function ResultRow({
           {r.funds.length > 0 && !expanded && (
             <span className="ml-2 text-[11px] font-mono text-t4">
               {r.funds.length}개 펀드
+            </span>
+          )}
+          {r.total_free < r.requested_qty && r.total_locked > 0 && (
+            <span className="ml-2 text-[10px] font-medium px-1.5 py-0.5 rounded-sm bg-warning/15 text-warning">
+              담보해제 필요
             </span>
           )}
         </td>

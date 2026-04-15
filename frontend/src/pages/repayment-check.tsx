@@ -36,6 +36,12 @@ interface RepaymentResponse {
   total_amount: number
   qty_052: number
   qty_031: number
+  repay_deductions: Record<string, Record<string, number>>
+  original_collateral: Record<string, number>
+  original_by_fund: Record<string, Record<string, number>>
+  locked_collateral: Record<string, number>
+  locked_by_fund: Record<string, Record<string, number>>
+  fund_names: Record<string, string>
 }
 
 function fmt(n: number) {
@@ -64,13 +70,19 @@ export function RepaymentCheckPage() {
   const [error, setError] = useState<string | null>(null)
   const [officeFile, setOfficeFile] = useState<File | null>(null)
   const [esafeFile, setEsafeFile] = useState<File | null>(null)
+  const [repayFile, setRepayFile] = useState<File | null>(null)
+  const [mmFundsFile, setMmFundsFile] = useState<File | null>(null)
+  const [restrictedFile, setRestrictedFile] = useState<File | null>(null)
+  const [folderPath, setFolderPath] = useState(() => localStorage.getItem("lens_repayment_path") ?? "")
+  const [showPathInput, setShowPathInput] = useState(true)
   const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set())
-  const [sortKey, setSortKey] = useState<keyof StockSummary>("대차금액")
+  type SortKey = keyof StockSummary | "담보가능수량" | "상환예정" | "담보가능_상환" | "담보" | "합산"
+  const [sortKey, setSortKey] = useState<SortKey>("대차금액")
   const [sortAsc, setSortAsc] = useState(false)
   const [filterOpen, setFilterOpen] = useState(true)
 
   // 5264 필터
-  const [excludeFundCodes, setExcludeFundCodes] = useState<string[]>([])
+  const [excludeFundCodes, setExcludeFundCodes] = useState<string[]>(["187", "421", "422", "424", "446", "476", "836"])
   const [fundCodeInput, setFundCodeInput] = useState("")
   const [officeStockCodes, setOfficeStockCodes] = useState<string[]>([])
   const [officeStockCodeInput, setOfficeStockCodeInput] = useState("")
@@ -85,7 +97,7 @@ export function RepaymentCheckPage() {
   const [lenderInput, setLenderInput] = useState("")
   const [lenderDropdownOpen, setLenderDropdownOpen] = useState(false)
   const lenderRef = useRef<HTMLDivElement>(null)
-  const [excludeFeeRates, setExcludeFeeRates] = useState<string[]>([])
+  const [excludeFeeRates, setExcludeFeeRates] = useState<string[]>(["0.05"])
   const [feeRateInput, setFeeRateInput] = useState("")
   const today = new Date().toISOString().slice(0, 10).replace(/-/g, "")
   const [excludeDates, setExcludeDates] = useState<string[]>([today])
@@ -146,8 +158,8 @@ export function RepaymentCheckPage() {
   }
 
   const handleCalculate = async () => {
-    if (!officeFile || !esafeFile) {
-      setError("오피스 파일과 예탁원 파일을 모두 선택하세요")
+    if (!officeFile && !esafeFile && !folderPath) {
+      setError("파일을 선택하거나 폴더 경로를 지정하세요")
       return
     }
 
@@ -157,8 +169,12 @@ export function RepaymentCheckPage() {
     setExpandedRows(new Set())
 
     const form = new FormData()
-    form.append("office_file", officeFile)
-    form.append("esafe_file", esafeFile)
+    if (officeFile) form.append("office_file", officeFile)
+    if (esafeFile) form.append("esafe_file", esafeFile)
+    if (repayFile) form.append("repay_file", repayFile)
+    if (mmFundsFile) form.append("mm_funds_file", mmFundsFile)
+    if (restrictedFile) form.append("restricted_file", restrictedFile)
+    if (folderPath) form.append("folder_path", folderPath)
     if (excludeFundCodes.length > 0) form.append("exclude_fund_codes", excludeFundCodes.join(","))
     if (officeStockCodes.length > 0) form.append("exclude_office_stock_code", officeStockCodes.join(","))
     if (officeStockNames.length > 0) form.append("exclude_office_stock_name", officeStockNames.join(","))
@@ -200,16 +216,39 @@ export function RepaymentCheckPage() {
   const matchesByStock = (code: string) =>
     data?.matches.filter((m) => m.종목코드 === code) ?? []
 
-  const handleSort = useCallback((key: keyof StockSummary) => {
+  const handleSort = useCallback((key: SortKey) => {
     if (sortKey === key) setSortAsc((p) => !p)
     else { setSortKey(key); setSortAsc(true) }
   }, [sortKey])
 
+  const getExtraValue = useCallback((s: StockSummary, key: SortKey): number => {
+    if (!data) return 0
+    const code = s.종목코드
+    const orig = data.original_collateral?.[code] ?? 0
+    const deducted = Object.values(data.repay_deductions?.[code] ?? {}).reduce((a, b) => a + b, 0)
+    const after = orig - deducted
+    const locked = data.locked_collateral?.[code] ?? 0
+    switch (key) {
+      case "담보가능수량": return orig
+      case "상환예정": return deducted
+      case "담보가능_상환": return after
+      case "담보": return locked
+      case "합산": return after + locked
+      default: return 0
+    }
+  }, [data])
+
   const sortedSummary = useMemo(() => {
     if (!data) return []
+    const extraKeys: SortKey[] = ["담보가능수량", "상환예정", "담보가능_상환", "담보", "합산"]
     return [...data.summary].sort((a, b) => {
-      const av = a[sortKey]
-      const bv = b[sortKey]
+      if (extraKeys.includes(sortKey)) {
+        const av = getExtraValue(a, sortKey)
+        const bv = getExtraValue(b, sortKey)
+        return sortAsc ? av - bv : bv - av
+      }
+      const av = a[sortKey as keyof StockSummary]
+      const bv = b[sortKey as keyof StockSummary]
       if (typeof av === "number" && typeof bv === "number")
         return sortAsc ? av - bv : bv - av
       const as = String(av ?? "")
@@ -268,31 +307,40 @@ export function RepaymentCheckPage() {
 
   return (
     <div className="flex flex-col gap-1 bg-bg-base">
-      {/* Controls Panel — 파일선택 + 필터 + 엑셀저장 통합 */}
+      {/* Controls Panel */}
       <div className="panel">
-        <div className="px-4 py-3 flex items-center gap-4 flex-wrap">
-          <div className="flex items-center gap-2">
-            <span className="text-xs text-t3 whitespace-nowrap">오피스(5264)</span>
-            <input
-              type="file"
-              className="text-sm text-t3 file:mr-2 file:rounded file:border-0 file:bg-bg-surface-2 file:px-3 file:py-1.5 file:text-sm file:text-t2 file:cursor-pointer hover:file:bg-bg-surface-3 file:transition-all"
-              onChange={(e) => setOfficeFile(e.target.files?.[0] ?? null)}
-            />
+        <div className="px-4 py-3 flex items-center gap-3 flex-wrap">
+          {/* 모드 토글 */}
+          <div className="flex h-[30px]">
+            <button
+              className={`h-full px-2.5 rounded-l text-xs font-medium transition-all ${showPathInput ? "bg-bg-surface-2 text-t1" : "bg-bg-base text-t4 hover:text-t3"}`}
+              onClick={() => setShowPathInput(true)}
+            >
+              폴더 경로
+            </button>
+            <button
+              className={`h-full px-2.5 rounded-r text-xs font-medium transition-all ${!showPathInput ? "bg-bg-surface-2 text-t1" : "bg-bg-base text-t4 hover:text-t3"}`}
+              onClick={() => { setShowPathInput(false); setFolderPath(""); localStorage.removeItem("lens_repayment_path"); }}
+            >
+              파일 선택
+            </button>
           </div>
-          <div className="flex items-center gap-2">
-            <span className="text-xs text-t3 whitespace-nowrap">예탁원(대차내역)</span>
+
+          {/* 폴더 경로 모드 */}
+          {showPathInput && (
             <input
-              type="file"
-              className="text-sm text-t3 file:mr-2 file:rounded file:border-0 file:bg-bg-surface-2 file:px-3 file:py-1.5 file:text-sm file:text-t2 file:cursor-pointer hover:file:bg-bg-surface-3 file:transition-all"
+              className="h-[30px] w-80 bg-bg-input rounded px-3 text-xs font-mono text-t1 outline-none focus:ring-1 focus:ring-accent"
+              placeholder="예: C:\Users\SE21297\Desktop\상환가능확인 파일모음"
+              value={folderPath}
               onChange={(e) => {
-                const f = e.target.files?.[0] ?? null
-                setEsafeFile(f)
-                if (f) fetchLenders(f)
+                setFolderPath(e.target.value)
+                localStorage.setItem("lens_repayment_path", e.target.value)
               }}
             />
-          </div>
+          )}
+
           <button
-            className="rounded bg-accent px-4 py-2 text-sm text-black font-semibold hover:bg-accent-hover active:scale-95 active:brightness-90 transition-all"
+            className="h-[30px] rounded bg-accent px-3 text-xs text-black font-semibold hover:bg-accent-hover active:scale-95 active:brightness-90 transition-all"
             onClick={handleCalculate}
           >
             계산 실행
@@ -301,13 +349,46 @@ export function RepaymentCheckPage() {
           {error && <span className="text-xs text-down font-mono">{error}</span>}
           {data && (
             <button
-              className="ml-auto rounded bg-bg-surface-2 px-4 py-2 text-sm text-t2 font-medium hover:bg-bg-surface-3 active:scale-95 transition-all"
+              className="ml-auto h-[30px] rounded bg-bg-surface-2 px-3 text-xs text-t2 font-medium hover:bg-bg-surface-3 active:scale-95 transition-all"
               onClick={exportToExcel}
             >
               엑셀 저장
             </button>
           )}
         </div>
+        {!showPathInput && (
+          <div className="px-4 pb-3 flex items-center gap-3 flex-wrap">
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-t3 whitespace-nowrap">오피스(5264)</span>
+              <input type="file" className="h-[30px] text-xs text-t3 file:mr-2 file:h-[30px] file:rounded file:border-0 file:bg-bg-surface-2 file:px-3 file:text-xs file:text-t2 file:cursor-pointer hover:file:bg-bg-surface-3 file:transition-all"
+                onChange={(e) => setOfficeFile(e.target.files?.[0] ?? null)} />
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-t3 whitespace-nowrap">예탁원(대차내역)</span>
+              <input type="file" className="h-[30px] text-xs text-t3 file:mr-2 file:h-[30px] file:rounded file:border-0 file:bg-bg-surface-2 file:px-3 file:text-xs file:text-t2 file:cursor-pointer hover:file:bg-bg-surface-3 file:transition-all"
+                onChange={(e) => {
+                  const f = e.target.files?.[0] ?? null
+                  setEsafeFile(f)
+                  if (f) fetchLenders(f)
+                }} />
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-t3 whitespace-nowrap">상환예정내역</span>
+              <input type="file" className="h-[30px] text-xs text-t3 file:mr-2 file:h-[30px] file:rounded file:border-0 file:bg-bg-surface-2 file:px-3 file:text-xs file:text-t2 file:cursor-pointer hover:file:bg-bg-surface-3 file:transition-all"
+                onChange={(e) => setRepayFile(e.target.files?.[0] ?? null)} />
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-t3 whitespace-nowrap">MM펀드</span>
+              <input type="file" className="h-[30px] text-xs text-t3 file:mr-2 file:h-[30px] file:rounded file:border-0 file:bg-bg-surface-2 file:px-3 file:text-xs file:text-t2 file:cursor-pointer hover:file:bg-bg-surface-3 file:transition-all"
+                onChange={(e) => setMmFundsFile(e.target.files?.[0] ?? null)} />
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-t3 whitespace-nowrap">대여불가펀드</span>
+              <input type="file" className="h-[30px] text-xs text-t3 file:mr-2 file:h-[30px] file:rounded file:border-0 file:bg-bg-surface-2 file:px-3 file:text-xs file:text-t2 file:cursor-pointer hover:file:bg-bg-surface-3 file:transition-all"
+                onChange={(e) => setRestrictedFile(e.target.files?.[0] ?? null)} />
+            </div>
+          </div>
+        )}
         <button
           className="w-full px-4 py-2 flex items-center gap-2 text-xs text-t3 hover:text-t2 transition-colors"
           onClick={() => setFilterOpen(!filterOpen)}
@@ -527,12 +608,12 @@ export function RepaymentCheckPage() {
                 <p className="font-mono text-lg font-semibold text-up">{data.matches.length}</p>
               </div>
               <div className="panel-inner rounded px-3 py-2">
-                <p className="text-[11px] text-t3">상환 수량</p>
-                <p className="font-mono text-lg font-semibold text-up">{fmt(data.total_qty)}주</p>
-              </div>
-              <div className="panel-inner rounded px-3 py-2">
                 <p className="text-[11px] text-t3">상환 금액</p>
                 <p className="font-mono text-lg font-semibold text-up">{fmt(data.total_amount)}원</p>
+              </div>
+              <div className="panel-inner rounded px-3 py-2">
+                <p className="text-[11px] text-t3">상환 수량</p>
+                <p className="font-mono text-lg font-semibold text-up">{fmt(data.total_qty)}주</p>
               </div>
             </div>
           </div>
@@ -568,24 +649,6 @@ export function RepaymentCheckPage() {
                     <p className="font-mono text-lg font-semibold text-up">{fmt(data.qty_031)}주</p>
                   </div>
                 </div>
-                {data.no_esafe_stocks.length > 0 && (
-                  <div className="panel-inner rounded px-3 py-2">
-                    <p className="text-[11px] text-t3 flex items-center gap-1">
-                      내부차입 추정
-                      <span className="relative group">
-                        <span className="inline-flex items-center justify-center w-3.5 h-3.5 rounded-full border border-t4 text-[9px] text-t4 cursor-help">?</span>
-                        <span className="absolute bottom-full left-0 mb-2 w-72 px-4 py-3 rounded bg-bg-surface-3 text-xs text-t2 leading-relaxed hidden group-hover:block z-30 shadow-lg">
-                          오피스(5264)에 담보가능수량이 있지만,<br />
-                          예탁원(대차내역)에 해당 종목의 체결건이 없는 경우.<br /><br />
-                          예탁원은 외부 차입만 기록하므로<br />
-                          내부(PBS) 차입으로 추정합니다.<br /><br />
-                          다만, 사용자가 예탁원 대차내역에서 직접 대상 리스트를 제외한 경우는 내부차입이 아닌 경우가 포함될 수 있습니다.
-                        </span>
-                      </span>
-                    </p>
-                    <p className="font-mono text-lg font-semibold text-warning">{data.no_esafe_stocks.length}건</p>
-                  </div>
-                )}
               </div>
             </div>
           )}
@@ -608,14 +671,27 @@ export function RepaymentCheckPage() {
                         {sortedSummary.every((s) => expandedRows.has(s.종목코드)) ? "\u25BC" : "\u25B6"}
                       </span>
                     </th>
-                    <SortTh<StockSummary> label="종목코드" field="종목코드" align="left" sortKey={sortKey} sortAsc={sortAsc} onSort={handleSort} />
-                    <SortTh<StockSummary> label="종목명" field="종목명" align="left" sortKey={sortKey} sortAsc={sortAsc} onSort={handleSort} />
-                    <th className="px-4 py-2.5"></th>
-                    <SortTh<StockSummary> label="상환수량" field="상환수량" sortKey={sortKey} sortAsc={sortAsc} onSort={handleSort} />
-                    <SortTh<StockSummary> label="상환금액" field="대차금액" sortKey={sortKey} sortAsc={sortAsc} onSort={handleSort} />
-                    <SortTh<StockSummary> label="체결건수" field="체결건수" sortKey={sortKey} sortAsc={sortAsc} onSort={handleSort} />
-                    <th className="px-4 py-2.5"></th>
-                    <SortTh<StockSummary> label="최고수수료율" field="최고수수료율" sortKey={sortKey} sortAsc={sortAsc} onSort={handleSort} />
+                    <SortTh<StockSummary> label="종목코드" field="종목코드" align="left" sortKey={sortKey as keyof StockSummary} sortAsc={sortAsc} onSort={handleSort as (k: keyof StockSummary) => void} />
+                    <SortTh<StockSummary> label="종목명" field="종목명" align="left" sortKey={sortKey as keyof StockSummary} sortAsc={sortAsc} onSort={handleSort as (k: keyof StockSummary) => void} />
+                    <th className="text-right px-4 py-2.5 font-medium cursor-pointer select-none hover:text-t1 transition-colors" onClick={() => handleSort("담보가능수량")}>
+                      담보가능수량<span className="ml-0.5 text-[10px]">{sortKey === "담보가능수량" ? (sortAsc ? "▲" : "▼") : ""}</span>
+                    </th>
+                    <th className="text-right px-4 py-2.5 font-medium cursor-pointer select-none hover:text-t1 transition-colors" onClick={() => handleSort("상환예정")}>
+                      상환예정<span className="ml-0.5 text-[10px]">{sortKey === "상환예정" ? (sortAsc ? "▲" : "▼") : ""}</span>
+                    </th>
+                    <th className="text-right px-4 py-2.5 font-medium cursor-pointer select-none hover:text-t1 transition-colors" onClick={() => handleSort("담보가능_상환")}>
+                      담보가능-상환<span className="ml-0.5 text-[10px]">{sortKey === "담보가능_상환" ? (sortAsc ? "▲" : "▼") : ""}</span>
+                    </th>
+                    <th className="text-right px-4 py-2.5 font-medium cursor-pointer select-none hover:text-t1 transition-colors" onClick={() => handleSort("담보")}>
+                      담보<span className="ml-0.5 text-[10px]">{sortKey === "담보" ? (sortAsc ? "▲" : "▼") : ""}</span>
+                    </th>
+                    <th className="text-right px-4 py-2.5 font-medium cursor-pointer select-none hover:text-t1 transition-colors" onClick={() => handleSort("합산")}>
+                      합산<span className="ml-0.5 text-[10px]">{sortKey === "합산" ? (sortAsc ? "▲" : "▼") : ""}</span>
+                    </th>
+                    <SortTh<StockSummary> label="상환수량" field="상환수량" sortKey={sortKey as keyof StockSummary} sortAsc={sortAsc} onSort={handleSort as (k: keyof StockSummary) => void} />
+                    <SortTh<StockSummary> label="상환금액" field="대차금액" sortKey={sortKey as keyof StockSummary} sortAsc={sortAsc} onSort={handleSort as (k: keyof StockSummary) => void} />
+                    <SortTh<StockSummary> label="체결건수" field="체결건수" sortKey={sortKey as keyof StockSummary} sortAsc={sortAsc} onSort={handleSort as (k: keyof StockSummary) => void} />
+                    <SortTh<StockSummary> label="최고수수료율" field="최고수수료율" sortKey={sortKey as keyof StockSummary} sortAsc={sortAsc} onSort={handleSort as (k: keyof StockSummary) => void} />
                   </tr>
                 </thead>
                 <tbody>
@@ -630,6 +706,12 @@ export function RepaymentCheckPage() {
                         details={details}
                         expanded={expanded}
                         onToggle={() => toggleRow(s.종목코드)}
+                        deductions={data.repay_deductions?.[s.종목코드] ?? {}}
+                        originalCollateral={data.original_collateral?.[s.종목코드] ?? 0}
+                        originalByFund={data.original_by_fund?.[s.종목코드] ?? {}}
+                        lockedCollateral={data.locked_collateral?.[s.종목코드] ?? 0}
+                        lockedByFund={data.locked_by_fund?.[s.종목코드] ?? {}}
+                        fundNames={data.fund_names ?? {}}
                       />
                     )
                   })}
@@ -661,13 +743,29 @@ function SummaryRow({
   details,
   expanded,
   onToggle,
+  deductions,
+  originalCollateral,
+  originalByFund,
+  lockedCollateral,
+  lockedByFund,
+  fundNames,
 }: {
   no: number
   summary: StockSummary
   details: RepaymentMatch[]
   expanded: boolean
   onToggle: () => void
+  deductions: Record<string, number>
+  originalCollateral: number
+  originalByFund: Record<string, number>
+  lockedCollateral: number
+  lockedByFund: Record<string, number>
+  fundNames: Record<string, string>
 }) {
+  const totalDeducted = Object.values(deductions).reduce((a, b) => a + b, 0)
+  const afterDeduction = originalCollateral - totalDeducted
+  const combined = afterDeduction + lockedCollateral
+  const needsUnlock = s.상환수량 >= afterDeduction && lockedCollateral > 0
   return (
     <>
       <tr
@@ -690,12 +788,30 @@ function SummaryRow({
               {s.체결건수}건
             </span>
           )}
+          {needsUnlock && (
+            <span className="ml-2 text-[10px] font-medium px-1.5 py-0.5 rounded-sm bg-warning/15 text-warning">
+              담보해제 필요
+            </span>
+          )}
         </td>
-        <td className="px-4 py-2.5"></td>
+        <td className="px-4 py-2.5 text-right font-mono text-t2">
+          {fmt(originalCollateral)}
+        </td>
+        <td className="px-4 py-2.5 text-right font-mono">
+          {totalDeducted > 0 && <span className="text-down">-{fmt(totalDeducted)}</span>}
+        </td>
+        <td className="px-4 py-2.5 text-right font-mono text-t2">
+          {fmt(afterDeduction)}
+        </td>
+        <td className={`px-4 py-2.5 text-right font-mono ${lockedCollateral > 0 ? "text-warning" : "text-t2"}`}>
+          {fmt(lockedCollateral)}
+        </td>
+        <td className="px-4 py-2.5 text-right font-mono text-t2 font-semibold">
+          {fmt(combined)}
+        </td>
         <td className="px-4 py-2.5 text-right font-mono text-up">{fmt(s.상환수량)}</td>
         <td className="px-4 py-2.5 text-right font-mono text-t1">{fmt(s.대차금액)}</td>
         <td className="px-4 py-2.5 text-right font-mono text-t2">{s.체결건수}</td>
-        <td className="px-4 py-2.5"></td>
         <td className="px-4 py-2.5 text-right font-mono text-t2">{s.최고수수료율.toFixed(2)}%</td>
       </tr>
       {expanded && (
@@ -704,31 +820,88 @@ function SummaryRow({
             <td></td>
             <td className="px-4 py-1.5 pl-8"></td>
             <td className="px-4 py-1.5 text-xs text-t3 font-medium">펀드코드</td>
-            <td className="px-4 py-1.5 text-xs text-t3 font-medium">펀드명</td>
-            <td className="px-4 py-1.5 text-xs text-t3 font-medium">대여자</td>
+            <td className="px-4 py-1.5 text-xs text-t3 font-medium">펀드명 / 대여자</td>
+            <td className="px-4 py-1.5 text-right text-xs text-t3 font-medium">담보가능수량</td>
+            <td className="px-4 py-1.5 text-right text-xs text-t3 font-medium">상환예정</td>
+            <td className="px-4 py-1.5 text-right text-xs text-t3 font-medium">담보가능-상환</td>
+            <td className="px-4 py-1.5 text-right text-xs text-t3 font-medium">담보</td>
+            <td></td>
             <td className="px-4 py-1.5 text-right text-xs text-t3 font-medium">상환수량</td>
             <td className="px-4 py-1.5 text-right text-xs text-t3 font-medium">상환금액</td>
-            <td className="px-4 py-1.5 text-right text-xs text-t3 font-medium">체결일</td>
-            <td className="px-4 py-1.5 text-right text-xs text-t3 font-medium">체결번호</td>
+            <td className="px-4 py-1.5 text-right text-xs text-t3 font-medium">체결일/번호</td>
             <td className="px-4 py-1.5 text-right text-xs text-t3 font-medium">수수료율</td>
           </tr>
-          {details.map((m, i) => (
-            <tr
-              key={`${s.종목코드}-${m.체결번호}-${i}`}
-              className="border-b border-border bg-bg-surface"
-            >
-              <td></td>
-              <td className="px-4 py-2 text-t4 text-xs pl-8">{"\u2514"}</td>
-              <td className="px-4 py-2 font-mono text-xs text-t4">{m.펀드코드}</td>
-              <td className="px-4 py-2 text-xs text-t3">{m.펀드명}</td>
-              <td className="px-4 py-2 text-xs text-t3">{m.대여자명}</td>
-              <td className="px-4 py-2 text-right font-mono text-xs text-up">{fmt(m.상환수량)}</td>
-              <td className="px-4 py-2 text-right font-mono text-xs text-t2">{fmt(m.대차금액)}</td>
-              <td className="px-4 py-2 text-right font-mono text-xs text-t4">{m.체결일}</td>
-              <td className="px-4 py-2 text-right font-mono text-xs text-t4">{m.체결번호}</td>
-              <td className="px-4 py-2 text-right font-mono text-xs text-t2">{m.수수료율.toFixed(2)}%</td>
-            </tr>
-          ))}
+          {(() => {
+            // 매칭에 등장하는 펀드코드 set
+            const matchedFunds = new Set(details.map((m) => m.펀드코드))
+            // 차감은 있지만 매칭에 없는 펀드 (전량 소진)
+            const consumedFunds = Object.entries(deductions)
+              .filter(([fund, qty]) => qty > 0 && !matchedFunds.has(fund))
+              .map(([fund, qty]) => ({ fund, deduct: qty, orig: originalByFund[fund] ?? 0, locked: lockedByFund[fund] ?? 0 }))
+
+            return (
+              <>
+                {details.map((m, i) => {
+                  const fundOrig = originalByFund[m.펀드코드] ?? 0
+                  const fundDeduct = deductions[m.펀드코드] ?? 0
+                  const fundAfter = fundOrig - fundDeduct
+                  const isFirstOfFund = i === 0 || details[i - 1].펀드코드 !== m.펀드코드
+                  return (
+                  <tr
+                    key={`${s.종목코드}-${m.체결번호}-${i}`}
+                    className="border-b border-border bg-bg-surface"
+                  >
+                    <td></td>
+                    <td className="px-4 py-2 text-t4 text-xs pl-8">{"\u2514"}</td>
+                    <td className="px-4 py-2 font-mono text-xs text-t4">{m.펀드코드}</td>
+                    <td className="px-4 py-2 text-xs text-t3">
+                      {m.펀드명}
+                      <span className="ml-1.5 text-t4">{m.대여자명}</span>
+                    </td>
+                    <td className="px-4 py-2 text-right font-mono text-xs text-t2">
+                      {isFirstOfFund ? fmt(fundOrig) : <span className="text-t4 text-sm font-bold">↑</span>}
+                    </td>
+                    <td className="px-4 py-2 text-right font-mono text-xs">
+                      {isFirstOfFund ? fundDeduct > 0 && <span className="text-down">-{fmt(fundDeduct)}</span> : fundDeduct > 0 && <span className="text-t4 text-sm font-bold">↑</span>}
+                    </td>
+                    <td className="px-4 py-2 text-right font-mono text-xs text-t2">
+                      {isFirstOfFund ? fmt(fundAfter) : <span className="text-t4 text-sm font-bold">↑</span>}
+                    </td>
+                    <td className="px-4 py-2 text-right font-mono text-xs">
+                      {isFirstOfFund ? (lockedByFund[m.펀드코드] ?? 0) > 0 && (
+                        <span className="text-warning">{fmt(lockedByFund[m.펀드코드])}</span>
+                      ) : (lockedByFund[m.펀드코드] ?? 0) > 0 && <span className="text-t4 text-sm font-bold">↑</span>}
+                    </td>
+                    <td></td>
+                    <td className="px-4 py-2 text-right font-mono text-xs text-up">{fmt(m.상환수량)}</td>
+                    <td className="px-4 py-2 text-right font-mono text-xs text-t2">{fmt(m.대차금액)}</td>
+                    <td className="px-4 py-2 text-right font-mono text-xs text-t4">{m.체결일} / {m.체결번호}</td>
+                    <td className="px-4 py-2 text-right font-mono text-xs text-t2">{m.수수료율.toFixed(2)}%</td>
+                  </tr>
+                  )
+                })}
+                {consumedFunds.map((cf) => (
+                  <tr key={`${s.종목코드}-consumed-${cf.fund}`} className="border-b border-border bg-bg-surface opacity-60">
+                    <td></td>
+                    <td className="px-4 py-2 text-t4 text-xs pl-8">{"\u2514"}</td>
+                    <td className="px-4 py-2 font-mono text-xs text-t4">{cf.fund}</td>
+                    <td className="px-4 py-2 text-xs text-t4">상환예정 전량 차감 ({fundNames[cf.fund] ?? cf.fund})</td>
+                    <td className="px-4 py-2 text-right font-mono text-xs text-t2">{fmt(cf.orig)}</td>
+                    <td className="px-4 py-2 text-right font-mono text-xs"><span className="text-down">-{fmt(cf.deduct)}</span></td>
+                    <td className="px-4 py-2 text-right font-mono text-xs text-t2">{fmt(cf.orig - cf.deduct)}</td>
+                    <td className="px-4 py-2 text-right font-mono text-xs">
+                      {cf.locked > 0 && <span className="text-warning">{fmt(cf.locked)}</span>}
+                    </td>
+                    <td></td>
+                    <td className="px-4 py-2 text-right font-mono text-xs text-t4">—</td>
+                    <td className="px-4 py-2 text-right font-mono text-xs text-t4">—</td>
+                    <td className="px-4 py-2 text-right font-mono text-xs text-t4">—</td>
+                    <td className="px-4 py-2 text-right font-mono text-xs text-t4">—</td>
+                  </tr>
+                ))}
+              </>
+            )
+          })()}
         </>
       )}
     </>

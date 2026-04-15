@@ -358,11 +358,11 @@ export function BorrowingPage() {
           <span className="text-xs text-t3 whitespace-nowrap">대차내역</span>
           <input
             type="file"
-            className="text-sm text-t3 file:mr-3 file:rounded file:border-0 file:bg-bg-surface-2 file:px-4 file:py-2 file:text-sm file:text-t2 file:cursor-pointer hover:file:bg-bg-surface-3 file:active:scale-95 file:transition-all"
+            className="h-[30px] text-xs text-t3 file:mr-3 file:h-[30px] file:rounded file:border-0 file:bg-bg-surface-2 file:px-3 file:text-xs file:text-t2 file:cursor-pointer hover:file:bg-bg-surface-3 file:active:scale-95 file:transition-all"
             onChange={(e) => setSelectedFile(e.target.files?.[0] ?? null)}
           />
           <button
-            className="rounded bg-accent px-4 py-2 text-sm text-black font-semibold hover:bg-accent-hover active:scale-95 active:brightness-90 transition-all"
+            className="h-[30px] rounded bg-accent px-3 text-xs text-black font-semibold hover:bg-accent-hover active:scale-95 active:brightness-90 transition-all"
             onClick={handleUpload}
           >
             분석 실행

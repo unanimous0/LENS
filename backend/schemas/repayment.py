@@ -57,3 +57,9 @@ class RepaymentResponse(BaseModel):
     total_amount: int
     qty_052: int = 0
     qty_031: int = 0
+    repay_deductions: dict[str, dict[str, int]] = {}  # {종목코드: {펀드코드: 차감수량}}
+    original_collateral: dict[str, int] = {}  # {종목코드: 원본 담보가능수량}
+    original_by_fund: dict[str, dict[str, int]] = {}  # {종목코드: {펀드코드: 원본 담보가능수량}}
+    locked_collateral: dict[str, int] = {}  # {종목코드: 담보잡힌수량}
+    locked_by_fund: dict[str, dict[str, int]] = {}  # {종목코드: {펀드코드: 담보잡힌수량}}
+    fund_names: dict[str, str] = {}  # {펀드코드: 펀드명}

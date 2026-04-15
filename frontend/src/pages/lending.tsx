@@ -24,7 +24,7 @@ function StubContent({ label }: { label: string }) {
 }
 
 export function LendingPage() {
-  const [activeTab, setActiveTab] = useState<SubTabKey>("availability")
+  const [activeTab, setActiveTab] = useState<SubTabKey>("borrow")
 
   const manageTabs = subTabs.filter((t) => t.group === "manage")
   const checkTabs = subTabs.filter((t) => t.group === "check")
