@@ -2,7 +2,7 @@
 
 # LENS 개발 서버 실행 스크립트
 # 사용법: ./start_dev.sh
-# 접속: ssh -L 3100:localhost:3100 -L 8100:localhost:8100 una0@100.64.229.73
+# 접속: ssh -L 3100:localhost:3100 -L 8100:localhost:8100 -L 8200:localhost:8200 una0@100.64.229.73
 #       브라우저에서 http://localhost:3100
 
 cd "$(dirname "$0")"
@@ -12,11 +12,21 @@ export NVM_DIR="$HOME/.nvm"
 [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
 nvm use --delete-prefix v20.20.2
 
+# Rust 환경
+[ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"
+
 # 백엔드 실행 (백그라운드)
 echo "[백엔드] 시작 (포트 8100)..."
 cd backend
 uvicorn main:app --host 0.0.0.0 --port 8100 --reload &
 BACKEND_PID=$!
+cd ..
+
+# Rust 실시간 서비스 실행 (백그라운드)
+echo "[실시간] Rust 서비스 시작 (포트 8200)..."
+cd realtime
+cargo run --release &
+REALTIME_PID=$!
 cd ..
 
 # 프론트엔드 dev 모드 실행
@@ -30,8 +40,9 @@ echo ""
 echo "LENS 개발 서버 실행 완료"
 echo "   프론트엔드: http://localhost:3100"
 echo "   백엔드 API: http://localhost:8100"
+echo "   실시간 WS:  http://localhost:8200"
 echo ""
 echo "종료: Ctrl+C"
 
-trap "kill $BACKEND_PID $FRONTEND_PID 2>/dev/null; exit" INT TERM
+trap "kill $BACKEND_PID $REALTIME_PID $FRONTEND_PID 2>/dev/null; exit" INT TERM
 wait

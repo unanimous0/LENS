@@ -118,6 +118,8 @@ POST http://localhost:8200/mode/{external|internal|mock}
 
 현재 피드 구독 해제 → 새 어댑터로 재구독. 프론트엔드 WebSocket 연결은 유지.
 
+**주의**: 기존 Python의 `POST /api/network/mode/{mode}` (market.py)와 `GET /api/basis/{code}` 등은 어댑터 상태에 의존한다. Rust 전환 시 이 엔드포인트들을 Rust로 옮기거나, Python이 Rust에 위임하도록 수정해야 한다. Phase 1에서는 Python WS 코드(`ws.py`, `app_state.py`, `adapter.py`)를 삭제하지 않고 보존하여, Vite 프록시 한 줄 원복만으로 즉시 롤백 가능하게 유지.
+
 ---
 
 ## 데이터 모델
@@ -145,26 +147,57 @@ pub enum TickExtra {
 }
 ```
 
+### 프론트엔드 메시지 계약 (필수 준수)
+
+기존 Python WebSocket이 보내는 포맷을 Rust가 **정확히** 재현해야 한다. 필드명, 타입, 구조가 하나라도 다르면 프론트엔드가 조용히 무시한다 (에러 없이 화면만 안 뜸).
+
+**엔드포인트**: `/ws/market`
+**프론트엔드 초기 메시지**: 연결 시 `"subscribe"` 문자열 전송 (hooks/useWebSocket.ts)
+
+**ETF 틱**:
+```json
+{
+  "type": "etf_tick",
+  "data": {
+    "code": "069500",
+    "name": "KODEX 200",
+    "price": 35420.0,
+    "nav": 35415.0,
+    "spread_bp": 1.41,
+    "volume": 1234567,
+    "timestamp": "2026-04-15T09:30:00.123456"
+  }
+}
+```
+
+**선물 틱**:
+```json
+{
+  "type": "futures_tick",
+  "data": {
+    "code": "101T9000",
+    "name": "KOSPI200 F 2506",
+    "price": 352.50,
+    "underlying_price": 351.80,
+    "basis_bp": 19.9,
+    "volume": 45678,
+    "timestamp": "2026-04-15T09:30:00.123456"
+  }
+}
+```
+
+**주의**: `timestamp`는 ISO 8601 문자열. `underlying_price` (not `underlying`). `spread_bp` / `basis_bp` (not `spread` / `basis`).
+
 ### 채널/토픽 구조
 
-프론트엔드가 필요한 데이터만 구독:
+초기에는 단일 WebSocket(`/ws/market`)에서 메시지 타입으로 분기 (현재 Python 방식과 동일).
+트래픽 증가 시 토픽별 분리 검토:
 
 ```
 /ws/market          — 전체 시세 스트림 (기존 호환)
-/ws/basis           — 종목차익 베이시스 스트림
-/ws/etf             — ETF NAV/괴리 스트림
-/ws/{custom}        — 향후 추가 화면별 스트림
+/ws/basis           — 종목차익 베이시스 스트림 (향후)
+/ws/etf             — ETF NAV/괴리 스트림 (향후)
 ```
-
-또는 단일 WebSocket 연결에서 메시지 타입으로 분기 (현재 Python 방식과 동일):
-
-```json
-{ "type": "stock_tick", "data": { ... } }
-{ "type": "futures_tick", "data": { ... } }
-{ "type": "basis_update", "data": { ... } }
-```
-
-→ 초기에는 메시지 타입 분기 방식으로 시작, 트래픽 증가 시 토픽 분리 검토.
 
 ---
 
@@ -201,15 +234,29 @@ WebSocket 실시간 구독 (전체 레퍼런스: [ls-api.md](ls-api.md)):
 
 ## Rust 기술 스택
 
+### Phase 1 (뼈대 + MockFeed)
+
 | 용도 | 라이브러리 |
 |------|-----------|
 | 비동기 런타임 | tokio |
 | WebSocket 서버 + HTTP | axum |
-| WebSocket 클라이언트 | tokio-tungstenite |
 | JSON 직렬화 | serde + serde_json |
-| HTTP 클라이언트 | reqwest |
-| 설정 관리 | config 또는 toml |
 | 로깅 | tracing + tracing-subscriber |
+| 인메모리 상태 | dashmap |
+| Mock 데이터 생성 | rand |
+| CORS | tower-http |
+| Graceful shutdown | tokio-util (CancellationToken) |
+
+### Phase 2+ (LS API 연동 이후)
+
+| 용도 | 라이브러리 |
+|------|-----------|
+| WebSocket 클라이언트 | tokio-tungstenite |
+| HTTP 클라이언트 | reqwest |
+| 재접속 백오프 | backon |
+| 시간 처리 | chrono 또는 time |
+| 설정 관리 | config 또는 toml |
+| 환경변수 | dotenvy |
 | 메트릭 (선택) | metrics + metrics-exporter-prometheus |
 
 ---
@@ -256,10 +303,15 @@ LENS/
 - [ ] tokio + axum 기본 서버 (port 8200)
 - [ ] `MarketFeed` trait 정의
 - [ ] `MockFeed` 구현 (설정 가능한 종목 수, 틱 주기)
-- [ ] 공통 `Tick` 구조체 + serde 직렬화
+- [ ] 공통 `Tick` 구조체 + serde 직렬화 (프론트엔드 메시지 계약 준수)
 - [ ] WebSocket 서버 (클라이언트 접속/해제/브로드캐스트)
+- [ ] `GET /health` 헬스체크 엔드포인트
+- [ ] CORS 설정 (tower-http, React 3100 → Rust 8200)
 - [ ] Vite 프록시 `/ws` → `localhost:8200`
-- [ ] 프론트엔드 `useWebSocket` 훅 연동 확인
+- [ ] `start_dev.sh` 업데이트 (Rust 서비스 프로세스 추가)
+- [ ] `docker-compose.yml`에 realtime 서비스 추가
+- [ ] 프론트엔드 `useWebSocket` 훅 연동 확인 (기존 화면이 동일하게 동작)
+- [ ] Python WS 코드 보존 (삭제하지 않음, 롤백용)
 
 ### Phase 2: LS증권 API 연동 (외부망)
 

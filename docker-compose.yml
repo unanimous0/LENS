@@ -9,6 +9,7 @@ services:
       - VITE_API_URL=http://localhost:8000
     depends_on:
       - backend
+      - realtime
 
   backend:
     build:
@@ -24,6 +25,18 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+
+  realtime:
+    build:
+      context: ./realtime
+      dockerfile: Dockerfile
+    ports:
+      - "8200:8200"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8200/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
 
   postgres:
     image: postgres:16-alpine
