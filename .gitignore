@@ -27,5 +27,8 @@ npm-debug.log*
 # Data files (sensitive)
 data/
 
+# Rust
+realtime/target/
+
 # Internal deploy
 internal_sending/
