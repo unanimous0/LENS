@@ -13,6 +13,7 @@ use tokio_util::sync::CancellationToken;
 use tower_http::cors::{Any, CorsLayer};
 use tracing::info;
 
+use feed::internal::InternalFeed;
 use feed::ls_api::LsApiFeed;
 use feed::mock::MockFeed;
 use feed::MarketFeed;
@@ -77,6 +78,44 @@ async fn main() {
             info!("LS API subscriptions: {:?}", subscriptions);
 
             let feed = LsApiFeed::new(app_key, app_secret, subscriptions, names);
+            tokio::spawn(async move {
+                feed.run(tx, feed_cancel).await;
+            });
+        }
+        "internal" => {
+            let ws_url = std::env::var("INTERNAL_WS_URL")
+                .unwrap_or_else(|_| "ws://10.21.1.208:41001".to_string());
+
+            // 구독 종목: "A005930,A069500,KA1165000" (내부망 형식)
+            // 또는 사용자 입력 형식도 OK: "005930,069500,A1165000"
+            let subs_str = std::env::var("INTERNAL_SUBSCRIPTIONS").unwrap_or_else(|_| {
+                "A005930,A069500".to_string()
+            });
+
+            use crate::model::internal::short_to_subscribe;
+            let subscribe_codes: Vec<String> = subs_str
+                .split(',')
+                .map(|s| {
+                    let trimmed = s.trim();
+                    short_to_subscribe(trimmed)
+                })
+                .collect();
+
+            let real_nav = std::env::var("INTERNAL_REAL_NAV")
+                .map(|v| v == "true" || v == "1")
+                .unwrap_or(true);
+
+            // 종목명 매핑 (TODO: 자동 조회)
+            let mut names = HashMap::new();
+            names.insert("005930".to_string(), "삼성전자".to_string());
+            names.insert("069500".to_string(), "KODEX 200".to_string());
+            names.insert("364980".to_string(), "KODEX K-반도체".to_string());
+            names.insert("A1165000".to_string(), "삼성전자 F 근월".to_string());
+            names.insert("A0166000".to_string(), "코스닥150 F 근월".to_string());
+
+            info!("Internal subscriptions: {:?} (real_nav={real_nav})", subscribe_codes);
+
+            let feed = InternalFeed::new(ws_url, subscribe_codes, names, real_nav);
             tokio::spawn(async move {
                 feed.run(tx, feed_cancel).await;
             });

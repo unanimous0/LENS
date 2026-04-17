@@ -749,12 +749,18 @@ LENS/
 - [x] 자동 재연결 (지수 백오프: 2s → 4s → 8s → ... → 최대 60s)
 - [x] 데이터 검증: 내부망/외부망 동시 수집 비교 완료 (가격, 수량, 누적 일치)
 
-### Phase 3: 사내 서버 연동 (내부망)
+### Phase 3: 사내 서버 연동 (내부망) — 완료
 
-- [ ] `InternalFeed` 구현
-- [ ] 사내 WebSocket 프로토콜 연동 (`ws://10.21.1.208:41001`)
-- [ ] JSON 배열 메시지 파싱 (Trade, LpBookSnapshot, Index, Auction, Status)
-- [ ] 프론트엔드 메시지 포맷으로 변환
+- [x] `InternalFeed` 구현 (`realtime/src/feed/internal.rs`)
+- [x] 사내 WebSocket 프로토콜 연동 (`ws://10.21.1.208:41001`)
+- [x] JSON 배열 메시지 파싱 (Trade, LpBookSnapshot, Index, Auction, Status)
+- [x] 내부망 네이티브 타입 정의 (`realtime/src/model/internal.rs`)
+- [x] ISIN ↔ 단축코드 변환 (`isin_to_short`, `short_to_subscribe`)
+- [x] Index fl 비트마스크 처리 (iNAV, rNAV, 선물이론가 → SymbolState 갱신)
+- [x] Trade → EtfTick/FuturesTick 변환 (rNAV/iNAV/이론가 활용)
+- [x] 자동 재연결 (지수 백오프, LsApiFeed와 동일 패턴)
+- [x] `FEED_MODE=internal` 환경변수 전환
+- [ ] 내부망 실 데이터 테스트 (사내 PC에서 실행 필요)
 
 ### Phase 4+: 계산 모듈 확장
 

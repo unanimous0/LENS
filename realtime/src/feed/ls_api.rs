@@ -5,7 +5,7 @@ use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::{self, client::IntoClientRequest, http::HeaderValue};
 use tokio_util::sync::CancellationToken;
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 
 use crate::model::message::WsMessage;
 use crate::model::tick::{EtfTick, FuturesTick};

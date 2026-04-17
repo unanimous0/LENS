@@ -1,3 +1,4 @@
+pub mod internal;
 pub mod ls_api;
 pub mod mock;
 
