@@ -721,36 +721,40 @@ LENS/
 
 ## 구현 단계
 
-### Phase 1: 뼈대 + MockFeed
+### Phase 1: 뼈대 + MockFeed — 완료
 
-- [ ] `realtime/` Cargo 프로젝트 생성
-- [ ] tokio + axum 기본 서버 (port 8200)
-- [ ] `MarketFeed` trait 정의
-- [ ] `MockFeed` 구현 (설정 가능한 종목 수, 틱 주기)
-- [ ] 공통 `Tick` 구조체 + serde 직렬화 (프론트엔드 메시지 계약 준수)
-- [ ] WebSocket 서버 (클라이언트 접속/해제/브로드캐스트)
-- [ ] `GET /health` 헬스체크 엔드포인트
-- [ ] CORS 설정 (tower-http, React 3100 → Rust 8200)
-- [ ] Vite 프록시 `/ws` → `localhost:8200`
-- [ ] `start_dev.sh` 업데이트 (Rust 서비스 프로세스 추가)
-- [ ] `docker-compose.yml`에 realtime 서비스 추가
-- [ ] 프론트엔드 `useWebSocket` 훅 연동 확인 (기존 화면이 동일하게 동작)
-- [ ] Python WS 코드 보존 (삭제하지 않음, 롤백용)
+- [x] `realtime/` Cargo 프로젝트 생성
+- [x] tokio + axum 기본 서버 (port 8200)
+- [x] `MarketFeed` trait 정의
+- [x] `MockFeed` 구현 (설정 가능한 종목 수, 틱 주기)
+- [x] 프론트엔드 메시지 계약 준수 (EtfTick, FuturesTick serde 직렬화)
+- [x] WebSocket 서버 (클라이언트 접속/해제/브로드캐스트)
+- [x] `GET /health` 헬스체크 엔드포인트
+- [x] CORS 설정 (tower-http, React 3100 → Rust 8200)
+- [x] Vite 프록시 `/ws` → `localhost:8200`
+- [x] `start_dev.sh` 업데이트 (Rust 서비스 프로세스 추가)
+- [x] `docker-compose.yml`에 realtime 서비스 추가
+- [x] 프론트엔드 `useWebSocket` 훅 연동 확인
+- [x] Python WS 코드 보존 (삭제하지 않음, 롤백용)
 
-### Phase 2: LS증권 API 연동 (외부망)
+### Phase 2: LS증권 API 연동 (외부망) — 완료
 
-- [ ] `LsApiFeed` 구현
-- [ ] OAuth2 토큰 관리 (자동 재발급, 07:00 만료 대응)
-- [ ] WebSocket 클라이언트 (tokio-tungstenite)
-- [ ] TR별 구독/해제 메시지 처리
-- [ ] raw 데이터 → `Tick` 정규화
-- [ ] 네트워크 모드 전환 API (`POST /mode/{mode}`)
+- [x] `LsApiFeed` 구현 (`realtime/src/feed/ls_api.rs`)
+- [x] OAuth2 토큰 발급 + 끊기면 자동 재발급
+- [x] WebSocket 클라이언트 (tokio-tungstenite, native-tls)
+- [x] WebSocket 접속: `/websocket` 경로 + User-Agent/Accept-Language 필수 헤더 (WAF 통과)
+- [x] TR별 구독: S3_(주식/ETF 체결), JC0(주식선물 체결), FC0(지수선물 체결)
+- [x] 프론트엔드 메시지 포맷으로 변환 (EtfTick, FuturesTick)
+- [x] `FEED_MODE` 환경변수로 mock/ls_api 전환
+- [x] 자동 재연결 (지수 백오프: 2s → 4s → 8s → ... → 최대 60s)
+- [x] 데이터 검증: 내부망/외부망 동시 수집 비교 완료 (가격, 수량, 누적 일치)
 
 ### Phase 3: 사내 서버 연동 (내부망)
 
 - [ ] `InternalFeed` 구현
-- [ ] 사내 WebSocket 프로토콜 분석
-- [ ] 데이터 정규화 (거래소 포맷 → 공통 Tick)
+- [ ] 사내 WebSocket 프로토콜 연동 (`ws://10.21.1.208:41001`)
+- [ ] JSON 배열 메시지 파싱 (Trade, LpBookSnapshot, Index, Auction, Status)
+- [ ] 프론트엔드 메시지 포맷으로 변환
 
 ### Phase 4+: 계산 모듈 확장
 
