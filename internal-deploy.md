@@ -10,8 +10,11 @@ LENS/
 │   ├── 실행방법.txt           # 회사에서 따라할 가이드
 │   ├── installers/            # 최초 1회만 필요
 │   │   ├── node-v20.20.2-x64.msi
-│   │   └── python-3.12.9-amd64.exe
+│   │   ├── python-3.12.9-amd64.exe
+│   │   └── rust-1.94.1-x86_64-pc-windows-msvc.msi
 │   └── pip_packages/          # Windows Python 3.13용 오프라인 pip 패키지
+├── realtime/vendor/           # Rust 오프라인 의존성 (cargo vendor)
+├── realtime/.cargo/config.toml  # vendor 디렉토리 참조 설정
 ├── frontend/public/fonts/     # 로컬 폰트 (Pretendard, JetBrains Mono)
 ├── backend/requirements-win.txt  # Windows용 requirements (uvloop 제외)
 └── ...
@@ -35,10 +38,11 @@ zip -r -s 50m LENS_full.zip LENS/ -x "LENS/.git/*" "LENS/.env" "LENS/data/상환
 
 ```bash
 cd /home/una0/projects
-zip -r -s 50m LENS_update.zip LENS/ -x "LENS/.git/*" "LENS/.env" "LENS/internal_sending/installers/*" "LENS/internal_sending/pip_packages/*" "LENS/frontend/node_modules/*" "LENS/data/상환대여가능확인 파일모음/*"
+zip -r -s 50m LENS_update.zip LENS/ -x "LENS/.git/*" "LENS/.env" "LENS/internal_sending/installers/*" "LENS/internal_sending/pip_packages/*" "LENS/frontend/node_modules/*" "LENS/realtime/target/*" "LENS/data/상환대여가능확인 파일모음/*"
 ```
 
-- 설치파일, pip 패키지, node_modules 제외 → 더 가벼움
+- 설치파일, pip 패키지, node_modules, Rust 빌드 캐시 제외 → 더 가벼움
+- `realtime/vendor/`는 **포함** (오프라인 Rust 의존성, Cargo.toml 변경 시 재벤더링 필요)
 - **주의**: 회사의 node_modules는 Windows용이므로 덮어쓰면 안 됨
 - 회사에서 LENS 폴더에 덮어쓰고 3단계(실행)부터 하면 됨
 
@@ -58,6 +62,15 @@ pip download -r /home/una0/projects/LENS/backend/requirements-win.txt \
     -d /home/una0/projects/LENS/internal_sending/pip_packages/ \
     --platform win_amd64 --python-version 3.13 --only-binary=:all:
 ```
+
+## Rust 의존성 갱신 (Cargo.toml 변경 시에만)
+
+```bash
+cd /home/una0/projects/LENS/realtime
+cargo vendor
+```
+
+`realtime/vendor/` 디렉토리가 갱신됨. `realtime/.cargo/config.toml`이 이미 vendor를 참조하도록 설정되어 있으므로 별도 작업 불필요.
 
 ## 회사에서 실행
 

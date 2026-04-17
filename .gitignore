@@ -29,6 +29,7 @@ data/
 
 # Rust
 realtime/target/
+realtime/vendor/
 
 # Internal deploy
 internal_sending/
