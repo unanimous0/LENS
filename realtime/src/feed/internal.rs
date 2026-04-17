@@ -5,7 +5,7 @@ use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite;
 use tokio_util::sync::CancellationToken;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::model::internal::{
     self, InternalMsg, Index, LpBookSnapshot, Trade,
@@ -262,6 +262,7 @@ impl InternalFeed {
                 0.0
             };
 
+            debug!("{name} {price} (이론 {underlying}, 베이시스 {basis_bp:.1}bp) x{volume}");
             let msg = WsMessage::FuturesTick(FuturesTick {
                 code: short_code,
                 name,
@@ -287,6 +288,7 @@ impl InternalFeed {
                 0.0
             };
 
+            debug!("{name} {price} (NAV {nav}, 괴리 {spread_bp:.1}bp) x{volume}");
             let msg = WsMessage::EtfTick(EtfTick {
                 code: short_code,
                 name,

@@ -12,7 +12,10 @@ LENS/
 │   │   ├── node-v20.20.2-x64.msi
 │   │   ├── python-3.12.9-amd64.exe
 │   │   └── rust-1.94.1-x86_64-pc-windows-msvc.msi
-│   └── pip_packages/          # Windows Python 3.13용 오프라인 pip 패키지
+│   ├── pip_packages/          # Windows Python 3.13용 오프라인 pip 패키지
+│   └── vscode_extensions/     # VS Code 확장 (.vsix, 오프라인 설치)
+│       ├── rust-analyzer.vsix
+│       └── even-better-toml.vsix
 ├── realtime/vendor/           # Rust 오프라인 의존성 (cargo vendor)
 ├── realtime/.cargo/config.toml  # vendor 디렉토리 참조 설정
 ├── frontend/public/fonts/     # 로컬 폰트 (Pretendard, JetBrains Mono)
@@ -72,11 +75,44 @@ cargo vendor
 
 `realtime/vendor/` 디렉토리가 갱신됨. `realtime/.cargo/config.toml`이 이미 vendor를 참조하도록 설정되어 있으므로 별도 작업 불필요.
 
+## VS Code 확장 설치 (선택, 최초 1회)
+
+Rust 개발 시 유용한 VS Code 확장. `internal_sending/vscode_extensions/`에 `.vsix` 파일로 포함.
+
+| 파일 | 확장 | 용도 |
+|------|------|------|
+| `rust-analyzer.vsix` | rust-analyzer | 자동완성, 타입추론, 인라인 에러 표시 (필수) |
+| `even-better-toml.vsix` | Even Better TOML | Cargo.toml 문법 하이라이팅 |
+
+설치 방법:
+1. VS Code → `Ctrl+Shift+X` (Extensions 패널)
+2. 패널 상단 `...` → **Install from VSIX...**
+3. `.vsix` 파일 선택 → 설치 → VS Code 재시작
+
 ## 회사에서 실행
 
 `internal_sending/실행방법.txt` 참고.
 
 요약:
-1. 최초: 설치파일 실행 → pip 오프라인 설치
-2. 매번: PowerShell 2개 열고 백엔드(8100) + 프론트엔드(3100) 실행
+1. 최초: 설치파일 실행 (Node.js, Python, Rust) → pip 오프라인 설치 → VS Code 확장 설치
+2. 매번: PowerShell 3개 열고 Rust 실시간(8200) + 백엔드(8100) + 프론트엔드(3100) 실행
 3. 브라우저: http://localhost:3100
+
+### Rust 실시간 서비스 실행
+
+```powershell
+cd "C:\...\LENS\realtime"
+$env:FEED_MODE="internal"
+$env:INTERNAL_SUBSCRIPTIONS="A005930,A069500,KA1165000"
+cargo run --release
+```
+
+- 첫 빌드 시 컴파일에 수 분 소요 (vendor에서 읽으므로 인터넷 불필요), 2회차부터는 빠름
+- `"Internal server connected"` + `"Internal subscribed"` 로그 뜨면 정상
+- 장중(09:00~15:30)에만 틱 데이터 수신됨
+
+디버그 로그로 틱 데이터 확인:
+```powershell
+$env:RUST_LOG="lens_realtime=debug"
+cargo run --release
+```
