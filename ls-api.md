@@ -53,12 +53,19 @@ grant_type=client_credentials&appkey={APP_KEY}&appsecretkey={APP_SECRET}&scope=o
 
 ### 접속 URL
 
-| 시장 | URL |
+**중요: 경로는 `/websocket`이다** (`/websocket/stock` 아님). 시장 구분은 구독 시 TR코드로 한다.
+User-Agent, Accept-Language 헤더가 없으면 WAF가 연결을 drop한다.
+
+| 환경 | URL |
 |------|-----|
-| 주식 | `wss://openapi.ls-sec.co.kr:9443/websocket/stock` |
-| 선물/옵션 | `wss://openapi.ls-sec.co.kr:9443/websocket/futureoption` |
-| 해외선물 | `wss://openapi.ls-sec.co.kr:9443/websocket/overseas-futureoption` |
-| 업종/지수 | `wss://openapi.ls-sec.co.kr:9443/websocket/indtp` |
+| 실서버 | `wss://openapi.ls-sec.co.kr:9443/websocket` |
+| 시뮬레이션 | `wss://openapi.ls-sec.co.kr:29443/websocket` |
+
+**필수 헤더** (없으면 TLS 후 응답 없이 타임아웃):
+```
+User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) LENS_Terminal/1.0
+Accept-Language: ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7
+```
 
 ### 구독/해제 메시지
 

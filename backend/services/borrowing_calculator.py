@@ -49,12 +49,12 @@ def parse_esafe_for_borrowing(file_bytes: bytes, counterparty: str = "대여자"
     return df.reset_index(drop=True)
 
 
-def calculate_borrowing(df: pd.DataFrame, expensive_threshold: float = 0.05) -> dict:
-    """차입/대여 분석 결과 산출. expensive_threshold: 고비용 기준 수수료율(%)."""
+def calculate_borrowing(df: pd.DataFrame, expensive_threshold: float = 0.05, expensive_inclusive: bool = False) -> dict:
+    """차입/대여 분석 결과 산출. expensive_threshold: 고비용 기준 수수료율(%). expensive_inclusive: True면 이상(>=), False면 초과(>)."""
     by_lender = _cost_by_group(df, group_cols=["대여자계좌", "대여자명"], include_details=True)
     by_stock = _cost_by_group(df, group_cols=["단축코드", "종목명"], include_details=True)
 
-    expensive_df = df[df["수수료율(%)"] >= expensive_threshold]
+    expensive_df = df[df["수수료율(%)"] >= expensive_threshold] if expensive_inclusive else df[df["수수료율(%)"] > expensive_threshold]
     by_expensive = _cost_by_group(expensive_df, group_cols=["단축코드", "종목명"], include_details=True)
 
     # 전체 합산

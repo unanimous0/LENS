@@ -179,5 +179,5 @@ async def analyze_lending(
     except Exception as e:
         raise HTTPException(400, f"파일 파싱 오류: {str(e)}")
 
-    result = calculate_borrowing(df, expensive_threshold=5.0)
+    result = calculate_borrowing(df, expensive_threshold=5.0, expensive_inclusive=True)
     return JSONResponse(content=_clean_nan(result))

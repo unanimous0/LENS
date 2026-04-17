@@ -2,6 +2,7 @@ mod feed;
 mod model;
 mod ws;
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::http::Method;
@@ -12,6 +13,7 @@ use tokio_util::sync::CancellationToken;
 use tower_http::cors::{Any, CorsLayer};
 use tracing::info;
 
+use feed::ls_api::LsApiFeed;
 use feed::mock::MockFeed;
 use feed::MarketFeed;
 use ws::broadcast::Broadcaster;
@@ -22,6 +24,10 @@ const BROADCAST_CAPACITY: usize = 4096;
 
 #[tokio::main]
 async fn main() {
+    // .env 파일 로드 (없으면 무시)
+    let _ = dotenvy::from_path("../.env");
+    let _ = dotenvy::dotenv();
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -34,11 +40,55 @@ async fn main() {
 
     // 피드 → 브로드캐스터 파이프라인
     let (tx, mut rx) = mpsc::channel(256);
-    let feed = MockFeed;
     let feed_cancel = cancel.clone();
-    tokio::spawn(async move {
-        feed.run(tx, feed_cancel).await;
-    });
+
+    // 모드 선택: FEED_MODE 환경변수 (mock / ls_api)
+    let mode = std::env::var("FEED_MODE").unwrap_or_else(|_| "mock".to_string());
+    info!("Feed mode: {mode}");
+
+    match mode.as_str() {
+        "ls_api" => {
+            let app_key = std::env::var("LS_APP_KEY").expect("LS_APP_KEY not set");
+            let app_secret = std::env::var("LS_APP_SECRET").expect("LS_APP_SECRET not set");
+
+            // 기본 구독 종목 (환경변수 또는 기본값)
+            let subs_str = std::env::var("LS_SUBSCRIPTIONS").unwrap_or_else(|_| {
+                "S3_:005930,S3_:069500".to_string()
+            });
+
+            let subscriptions: Vec<(String, String)> = subs_str
+                .split(',')
+                .filter_map(|s| {
+                    let parts: Vec<&str> = s.trim().split(':').collect();
+                    if parts.len() == 2 {
+                        Some((parts[0].to_string(), parts[1].to_string()))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            // 종목명 매핑 (TODO: REST API로 조회하여 자동 설정)
+            let mut names = HashMap::new();
+            names.insert("005930".to_string(), "삼성전자".to_string());
+            names.insert("069500".to_string(), "KODEX 200".to_string());
+            names.insert("A1165000".to_string(), "삼성전자 F 근월".to_string());
+
+            info!("LS API subscriptions: {:?}", subscriptions);
+
+            let feed = LsApiFeed::new(app_key, app_secret, subscriptions, names);
+            tokio::spawn(async move {
+                feed.run(tx, feed_cancel).await;
+            });
+        }
+        _ => {
+            // Mock 모드 (기본)
+            let feed = MockFeed;
+            tokio::spawn(async move {
+                feed.run(tx, feed_cancel).await;
+            });
+        }
+    }
 
     // mpsc → broadcast 브릿지: 메시지를 JSON 직렬화 후 브로드캐스트
     let bc = broadcaster.clone();
