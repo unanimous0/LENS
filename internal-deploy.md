@@ -12,10 +12,7 @@ LENS/
 │   │   ├── node-v20.20.2-x64.msi
 │   │   ├── python-3.12.9-amd64.exe
 │   │   └── rust-1.94.1-x86_64-pc-windows-msvc.msi
-│   ├── pip_packages/          # Windows Python 3.13용 오프라인 pip 패키지
-│   └── vscode_extensions/     # VS Code 확장 (.vsix, 오프라인 설치)
-│       ├── rust-analyzer.vsix
-│       └── even-better-toml.vsix
+│   └── pip_packages/          # Windows Python 3.13용 오프라인 pip 패키지
 ├── realtime/vendor/           # Rust 오프라인 의존성 (cargo vendor)
 ├── realtime/.cargo/config.toml  # vendor 디렉토리 참조 설정
 ├── frontend/public/fonts/     # 로컬 폰트 (Pretendard, JetBrains Mono)
@@ -83,6 +80,8 @@ Rust 개발 시 유용한 VS Code 확장. `internal_sending/vscode_extensions/`�
 |------|------|------|
 | `rust-analyzer.vsix` | rust-analyzer | 자동완성, 타입추론, 인라인 에러 표시 (필수) |
 | `even-better-toml.vsix` | Even Better TOML | Cargo.toml 문법 하이라이팅 |
+
+파일 위치: `internal_sending/installers/vscode_extensions/`
 
 설치 방법:
 1. VS Code → `Ctrl+Shift+X` (Extensions 패널)
