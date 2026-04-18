@@ -156,29 +156,58 @@ Mock:   MockFeed가 직접 프론트엔드 포맷 생성 → 브로드캐스트 
     "price": 35420.0,
     "nav": 35415.0,
     "spread_bp": 1.41,
+    "spread_bid_bp": -1.13,
+    "spread_ask_bp": 2.69,
     "volume": 1234567,
     "timestamp": "2026-04-15T09:30:00.123456"
   }
 }
 ```
 
-**선물 틱**:
+- `spread_bp`: (현재가 - NAV) / NAV × 10000
+- `spread_bid_bp`: (매수1호가 - NAV) / NAV × 10000
+- `spread_ask_bp`: (매도1호가 - NAV) / NAV × 10000
+- bid/ask는 LpBookSnapshot(호가)에서 갱신, Trade(체결) 시 함께 계산
+
+**주식 틱**:
 ```json
 {
-  "type": "futures_tick",
+  "type": "stock_tick",
   "data": {
-    "code": "101T9000",
-    "name": "KOSPI200 F 2506",
-    "price": 352.50,
-    "underlying_price": 351.80,
-    "basis_bp": 19.9,
-    "volume": 45678,
+    "code": "005930",
+    "name": "삼성전자",
+    "price": 58400.0,
+    "volume": 10,
+    "cum_volume": 5234567,
     "timestamp": "2026-04-15T09:30:00.123456"
   }
 }
 ```
 
-**주의**: `timestamp`는 ISO 8601 문자열. `underlying_price` (not `underlying`). `spread_bp` / `basis_bp` (not `spread` / `basis`).
+- 일반 주식 체결 (ETF가 아닌 종목). NAV 개념 없음.
+- `cum_volume`: 당일 누적 거래량 (내부망 Trade의 `cs` 필드)
+- ETF vs 주식 구분: 내부망에서는 NAV 데이터(Index fl=1,10,18) 수신 여부로 자동 판별
+
+**선물 틱**:
+```json
+{
+  "type": "futures_tick",
+  "data": {
+    "code": "A1165000",
+    "name": "삼성전자 F 근월",
+    "price": 58500.0,
+    "underlying_price": 58400.0,
+    "basis": 100.0,
+    "volume": 5,
+    "timestamp": "2026-04-15T09:30:00.123456"
+  }
+}
+```
+
+- `basis`: 시장 베이시스 = 선물가 - 현물가 (순수 가격 차이, bp 아님)
+- bp 변환 필요 시 프론트엔드에서 `basis / underlying_price × 10000`
+
+**주의**: `timestamp`는 ISO 8601 문자열.
 
 ### 채널/토픽 구조
 

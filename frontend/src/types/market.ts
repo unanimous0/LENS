@@ -4,7 +4,18 @@ export interface ETFTick {
   price: number
   nav: number
   spread_bp: number
+  spread_bid_bp: number
+  spread_ask_bp: number
   volume: number
+  timestamp: string
+}
+
+export interface StockTick {
+  code: string
+  name: string
+  price: number
+  volume: number
+  cum_volume: number
   timestamp: string
 }
 
@@ -13,7 +24,8 @@ export interface FuturesTick {
   name: string
   price: number
   underlying_price: number
-  basis_bp: number
+  /** 시장 베이시스 = 선물가 - 현물가 (순수 가격 차이) */
+  basis: number
   volume: number
   timestamp: string
 }

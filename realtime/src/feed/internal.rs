@@ -12,7 +12,7 @@ use crate::model::internal::{
     INDEX_EXCHANGE_NAV, INDEX_FUTURES_IDEAL, INDEX_QUOTE, INDEX_REAL_NAV, INDEX_TRADE,
 };
 use crate::model::message::WsMessage;
-use crate::model::tick::{EtfTick, FuturesTick};
+use crate::model::tick::{EtfTick, FuturesTick, StockTick};
 
 use super::MarketFeed;
 
@@ -20,35 +20,30 @@ const MAX_RECONNECT_DELAY_SECS: u64 = 60;
 
 /// 사내 거래소 데이터 수신 서버 피드
 pub struct InternalFeed {
-    /// WebSocket 주소 (e.g. "ws://10.21.1.208:41001")
     ws_url: String,
-    /// 구독할 종목 코드 (내부망 형식: A005930, KA1165000)
     subscribe_codes: Vec<String>,
-    /// ISIN → 단축코드 매핑 (런타임에 구독 코드에서 생성)
-    /// e.g. "KR7005930003" → "005930"
-    /// 실제 데이터의 `s` 필드(ISIN)가 오면 이 맵으로 단축코드를 찾는다.
-    /// 미리 알 수 없으므로 데이터 수신 시 동적으로 매핑.
     names: HashMap<String, String>,
-    /// real_nav 옵션 (rNAV, 선물이론가 수신 여부)
     real_nav: bool,
 }
 
-/// 종목별 최신 상태 (Index 메시지로 갱신)
+/// 종목별 최신 상태 (Index/LpBookSnapshot으로 갱신, Trade 시 참조)
 struct SymbolState {
-    /// 최신 rNAV (체결 기반, fl=10)
+    // NAV
     rnav_trade: f64,
-    /// 최신 rNAV bid/ask (호가 기반, fl=18)
     rnav_bid: f64,
     rnav_ask: f64,
-    /// 거래소 공식 iNAV (fl=1)
     inav: f64,
-    /// 선물 이론가 (체결 기반, fl=12)
+    // 선물 이론가
     futures_ideal_trade: f64,
-    /// 선물 이론가 bid/ask (호가 기반, fl=20)
     futures_ideal_bid: f64,
     futures_ideal_ask: f64,
-    /// 이 종목이 선물인지 여부 (ex == "XKRF")
+    // 호가 (LpBookSnapshot에서 갱신)
+    best_bid: f64,
+    best_ask: f64,
+    // 종목 특성
     is_futures: bool,
+    /// ETF 여부 (NAV 데이터가 한 번이라도 왔으면 ETF로 판별)
+    is_etf: bool,
 }
 
 impl Default for SymbolState {
@@ -61,7 +56,10 @@ impl Default for SymbolState {
             futures_ideal_trade: 0.0,
             futures_ideal_bid: 0.0,
             futures_ideal_ask: 0.0,
+            best_bid: 0.0,
+            best_ask: 0.0,
             is_futures: false,
+            is_etf: false,
         }
     }
 }
@@ -81,7 +79,6 @@ impl InternalFeed {
         }
     }
 
-    /// WebSocket 연결 → 구독 → 수신 루프. 끊기면 Err 반환.
     async fn connect_and_stream(
         &self,
         tx: &mpsc::Sender<WsMessage>,
@@ -99,7 +96,6 @@ impl InternalFeed {
 
         let (mut write, mut read) = ws_stream.split();
 
-        // 구독 요청
         let sub_msg = serde_json::json!({
             "symbols": self.subscribe_codes,
             "real_nav": self.real_nav,
@@ -114,12 +110,9 @@ impl InternalFeed {
             self.subscribe_codes, self.real_nav
         );
 
-        // ISIN → 단축코드 캐시 (데이터 수신 시 동적 구축)
         let mut isin_cache: HashMap<String, String> = HashMap::new();
-        // 종목별 상태 (Index로 갱신, Trade 시 참조)
         let mut states: HashMap<String, SymbolState> = HashMap::new();
 
-        // 수신 루프
         loop {
             tokio::select! {
                 msg = read.next() => {
@@ -156,7 +149,6 @@ impl InternalFeed {
         }
     }
 
-    /// JSON 배열 메시지 파싱 + 처리
     async fn handle_message(
         &self,
         text: &str,
@@ -164,7 +156,6 @@ impl InternalFeed {
         isin_cache: &mut HashMap<String, String>,
         states: &mut HashMap<String, SymbolState>,
     ) {
-        // 구독 응답: {"code": 0, "error": null}
         if text.starts_with('{') {
             match serde_json::from_str::<serde_json::Value>(text) {
                 Ok(v) => {
@@ -177,11 +168,9 @@ impl InternalFeed {
             return;
         }
 
-        // 메시지는 항상 JSON 배열
         let msgs: Vec<InternalMsg> = match serde_json::from_str(text) {
             Ok(v) => v,
             Err(e) => {
-                // 파싱 실패는 무시 (알 수 없는 메시지 타입 등)
                 if !text.is_empty() {
                     warn!("Failed to parse internal message: {e}");
                 }
@@ -200,14 +189,11 @@ impl InternalFeed {
                 InternalMsg::Index(index) => {
                     self.handle_index(&index, isin_cache, states);
                 }
-                InternalMsg::Auction(_) | InternalMsg::Status(_) => {
-                    // Phase 3에서는 Auction/Status는 로그만
-                }
+                InternalMsg::Auction(_) | InternalMsg::Status(_) => {}
             }
         }
     }
 
-    /// ISIN → 단축코드 조회 (캐시 미스 시 변환 후 캐시)
     fn resolve_code<'a>(
         &self,
         isin: &str,
@@ -223,7 +209,7 @@ impl InternalFeed {
         isin_cache.get(isin)
     }
 
-    /// Trade 처리 → EtfTick 또는 FuturesTick 전송
+    /// Trade → 종목 특성에 따라 StockTick / EtfTick / FuturesTick 전송
     async fn handle_trade(
         &self,
         trade: &Trade,
@@ -238,6 +224,7 @@ impl InternalFeed {
 
         let price = parse_f64(&trade.tp);
         let volume: u64 = trade.ts.parse().unwrap_or(0);
+        let cum_volume: u64 = trade.cs.parse().unwrap_or(0);
         let timestamp = epoch_us_to_iso(trade.et);
         let name = self
             .names
@@ -250,31 +237,27 @@ impl InternalFeed {
         state.is_futures = is_futures;
 
         if is_futures {
-            // 선물: 이론가를 underlying_price로, 베이시스 계산
+            // 선물 → FuturesTick
             let underlying = if state.futures_ideal_trade > 0.0 {
                 state.futures_ideal_trade
             } else {
                 0.0
             };
-            let basis_bp = if underlying > 0.0 {
-                (price - underlying) / underlying * 10000.0
-            } else {
-                0.0
-            };
+            let basis = price - underlying;
 
-            debug!("{name} {price} (이론 {underlying}, 베이시스 {basis_bp:.1}bp) x{volume}");
+            debug!("{name} {price} (기초 {underlying}, 베이시스 {basis}) x{volume}");
             let msg = WsMessage::FuturesTick(FuturesTick {
                 code: short_code,
                 name,
                 price,
                 underlying_price: round2(underlying),
-                basis_bp: round2(basis_bp),
+                basis: round2(basis),
                 volume,
                 timestamp,
             });
             let _ = tx.send(msg).await;
-        } else {
-            // 주식/ETF: rNAV 우선, 없으면 iNAV
+        } else if state.is_etf {
+            // ETF → EtfTick (NAV 데이터가 한 번이라도 온 종목)
             let nav = if state.rnav_trade > 0.0 {
                 state.rnav_trade
             } else if state.inav > 0.0 {
@@ -282,27 +265,40 @@ impl InternalFeed {
             } else {
                 0.0
             };
-            let spread_bp = if nav > 0.0 {
-                (price - nav) / nav * 10000.0
-            } else {
-                0.0
-            };
 
-            debug!("{name} {price} (NAV {nav}, 괴리 {spread_bp:.1}bp) x{volume}");
+            let spread_bp = calc_spread_bp(price, nav);
+            let spread_bid_bp = calc_spread_bp(state.best_bid, nav);
+            let spread_ask_bp = calc_spread_bp(state.best_ask, nav);
+
+            debug!("{name} {price} (NAV {nav}, 괴리 {spread_bp:.1}bp, bid {spread_bid_bp:.1}bp, ask {spread_ask_bp:.1}bp) x{volume}");
             let msg = WsMessage::EtfTick(EtfTick {
                 code: short_code,
                 name,
                 price,
                 nav: round2(nav),
                 spread_bp: round2(spread_bp),
+                spread_bid_bp: round2(spread_bid_bp),
+                spread_ask_bp: round2(spread_ask_bp),
                 volume,
+                timestamp,
+            });
+            let _ = tx.send(msg).await;
+        } else {
+            // 일반 주식 → StockTick
+            debug!("{name} {price} x{volume} (누적 {cum_volume})");
+            let msg = WsMessage::StockTick(StockTick {
+                code: short_code,
+                name,
+                price,
+                volume,
+                cum_volume,
                 timestamp,
             });
             let _ = tx.send(msg).await;
         }
     }
 
-    /// LpBookSnapshot 처리 — 호가 mid price를 state에 반영
+    /// LpBookSnapshot → best bid/ask 저장
     fn handle_book(
         &self,
         book: &LpBookSnapshot,
@@ -314,13 +310,18 @@ impl InternalFeed {
             None => return,
         };
 
-        // best ask / best bid로 mid price 계산 (호가 데이터 활용)
-        let _state = states.entry(short_code).or_default();
-        // 호가 데이터는 향후 호가창 화면에서 직접 활용 예정
-        // 현재는 state 갱신만 (별도 브로드캐스트 없음)
+        let state = states.entry(short_code).or_default();
+
+        // best bid = b[0][0], best ask = a[0][0]
+        if let Some(first_bid) = book.b.first() {
+            state.best_bid = parse_f64(&first_bid[0]);
+        }
+        if let Some(first_ask) = book.a.first() {
+            state.best_ask = parse_f64(&first_ask[0]);
+        }
     }
 
-    /// Index 처리 — fl 비트마스크에 따라 state 갱신
+    /// Index → fl 비트마스크에 따라 state 갱신
     fn handle_index(
         &self,
         index: &Index,
@@ -338,17 +339,20 @@ impl InternalFeed {
         let i2_str = &index.i2;
 
         if (fl & INDEX_EXCHANGE_NAV) != 0 {
-            // fl=1: 거래소 공식 iNAV (i1=현재, i2=전일종가)
+            // fl=1: 거래소 iNAV → ETF 확정
+            state.is_etf = true;
             if i1 > 0.0 {
                 state.inav = i1;
             }
         } else if (fl & INDEX_REAL_NAV) != 0 && (fl & INDEX_TRADE) != 0 {
-            // fl=10: rNAV (체결 기반)
+            // fl=10: rNAV (체결 기반) → ETF 확정
+            state.is_etf = true;
             if i1 > 0.0 {
                 state.rnav_trade = i1;
             }
         } else if (fl & INDEX_REAL_NAV) != 0 && (fl & INDEX_QUOTE) != 0 {
-            // fl=18: rNAV (호가 기반) — i1=bid NAV, i2=ask NAV
+            // fl=18: rNAV (호가 기반)
+            state.is_etf = true;
             if i1 > 0.0 {
                 state.rnav_bid = i1;
             }
@@ -384,7 +388,7 @@ impl MarketFeed for InternalFeed {
             }
 
             match self.connect_and_stream(&tx, &cancel).await {
-                Ok(()) => return, // 정상 종료 (cancel)
+                Ok(()) => return,
                 Err(e) => {
                     attempt += 1;
                     let delay = (2u64.pow(attempt.min(5))).min(MAX_RECONNECT_DELAY_SECS);
@@ -412,9 +416,16 @@ fn round2(v: f64) -> f64 {
     (v * 100.0).round() / 100.0
 }
 
-/// epoch 마이크로초 → ISO 8601 문자열
+/// (value - nav) / nav × 10000. nav가 0이면 0.0 반환.
+fn calc_spread_bp(value: f64, nav: f64) -> f64 {
+    if nav > 0.0 && value > 0.0 {
+        (value - nav) / nav * 10000.0
+    } else {
+        0.0
+    }
+}
+
 fn epoch_us_to_iso(us: i64) -> String {
-    let dt: DateTime<Utc> = DateTime::from_timestamp_micros(us)
-        .unwrap_or_default();
+    let dt: DateTime<Utc> = DateTime::from_timestamp_micros(us).unwrap_or_default();
     dt.format("%Y-%m-%dT%H:%M:%S%.6f").to_string()
 }

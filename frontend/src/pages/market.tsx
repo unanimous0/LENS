@@ -99,7 +99,7 @@ export function MarketPage() {
                     <th className="text-left px-4 py-2 font-medium">선물</th>
                     <th className="text-right px-4 py-2 font-medium">선물가</th>
                     <th className="text-right px-4 py-2 font-medium">현물가</th>
-                    <th className="text-right px-4 py-2 font-medium">베이시스(bp)</th>
+                    <th className="text-right px-4 py-2 font-medium">베이시스</th>
                     <th className="text-right px-4 py-2 font-medium">거래량</th>
                   </tr>
                 </thead>
@@ -117,7 +117,7 @@ export function MarketPage() {
                         {tick.underlying_price.toLocaleString(undefined, { minimumFractionDigits: 2 })}
                       </td>
                       <td className="text-right px-4 py-2.5">
-                        <BasisBadge bp={tick.basis_bp} />
+                        <BasisBadge value={tick.basis} />
                       </td>
                       <td className="text-right px-4 py-2.5 font-mono text-t3">
                         {tick.volume.toLocaleString()}
@@ -145,15 +145,13 @@ function SpreadBadge({ bp }: { bp: number }) {
   )
 }
 
-function BasisBadge({ bp }: { bp: number }) {
+function BasisBadge({ value }: { value: number }) {
   let color = 'text-t2 bg-bg-surface-2'
-  if (bp > 10) color = 'text-up bg-up-bg'
-  else if (bp > 0) color = 'text-up bg-up-bg'
-  else if (bp < -10) color = 'text-down bg-down-bg'
-  else if (bp < 0) color = 'text-down bg-down-bg'
+  if (value > 0) color = 'text-up bg-up-bg'
+  else if (value < 0) color = 'text-down bg-down-bg'
   return (
     <span className={`inline-block px-2 py-0.5 rounded font-mono text-xs font-semibold ${color}`}>
-      {bp > 0 ? '+' : ''}{bp.toFixed(1)}
+      {value > 0 ? '+' : ''}{value.toLocaleString(undefined, { maximumFractionDigits: 2 })}
     </span>
   )
 }

@@ -230,12 +230,16 @@ impl LsApiFeed {
                     0.0
                 };
 
+                // 외부망에서는 ETF/주식 구분이 어려우므로 일단 EtfTick으로 전송
+                // TODO: 종목 마스터로 ETF/주식 구분 후 StockTick 분리
                 let msg = WsMessage::EtfTick(EtfTick {
                     code: tr_key.to_string(),
                     name: name.to_string(),
                     price,
                     nav: round2(nav),
                     spread_bp: round2(spread_bp),
+                    spread_bid_bp: 0.0, // 별도 호가 TR 구독 시 채움
+                    spread_ask_bp: 0.0,
                     volume,
                     timestamp: now,
                 });
@@ -250,7 +254,7 @@ impl LsApiFeed {
                     name: name.to_string(),
                     price,
                     underlying_price: 0.0,
-                    basis_bp: 0.0,
+                    basis: 0.0,
                     volume,
                     timestamp: now,
                 });
@@ -260,18 +264,14 @@ impl LsApiFeed {
                 let price = parse_f64(&body["price"]);
                 let volume = parse_u64(&body["volume"]);
                 let underlying = parse_f64(&body["k200jisu"]);
-                let basis_bp = if underlying > 0.0 {
-                    (price - underlying) / underlying * 10000.0
-                } else {
-                    0.0
-                };
+                let basis = price - underlying;
 
                 let msg = WsMessage::FuturesTick(FuturesTick {
                     code: tr_key.to_string(),
                     name: name.to_string(),
                     price,
                     underlying_price: round2(underlying),
-                    basis_bp: round2(basis_bp),
+                    basis: round2(basis),
                     volume,
                     timestamp: now,
                 });

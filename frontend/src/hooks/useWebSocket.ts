@@ -3,7 +3,7 @@ import { useMarketStore } from '../stores/marketStore'
 
 export function useWebSocket() {
   const wsRef = useRef<WebSocket | null>(null)
-  const { updateETFTick, updateFuturesTick, setConnected } = useMarketStore()
+  const { updateETFTick, updateStockTick, updateFuturesTick, setConnected } = useMarketStore()
 
   useEffect(() => {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
@@ -22,6 +22,7 @@ export function useWebSocket() {
         try {
           const msg = JSON.parse(event.data)
           if (msg.type === 'etf_tick') updateETFTick(msg.data)
+          else if (msg.type === 'stock_tick') updateStockTick(msg.data)
           else if (msg.type === 'futures_tick') updateFuturesTick(msg.data)
         } catch { /* ignore parse errors */ }
       }
@@ -36,5 +37,5 @@ export function useWebSocket() {
 
     connect()
     return () => { wsRef.current?.close() }
-  }, [updateETFTick, updateFuturesTick, setConnected])
+  }, [updateETFTick, updateStockTick, updateFuturesTick, setConnected])
 }
