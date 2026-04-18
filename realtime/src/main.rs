@@ -21,7 +21,7 @@ use ws::broadcast::Broadcaster;
 use ws::handler::ws_market;
 
 const PORT: u16 = 8200;
-const BROADCAST_CAPACITY: usize = 4096;
+const BROADCAST_CAPACITY: usize = 16384;
 
 #[tokio::main]
 async fn main() {
@@ -40,7 +40,7 @@ async fn main() {
     let broadcaster = Arc::new(Broadcaster::new(BROADCAST_CAPACITY));
 
     // 피드 → 브로드캐스터 파이프라인
-    let (tx, mut rx) = mpsc::channel(256);
+    let (tx, mut rx) = mpsc::channel(1024);
     let feed_cancel = cancel.clone();
 
     // 모드 선택: FEED_MODE 환경변수 (mock / ls_api)
