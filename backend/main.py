@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from core.config import settings
 from core.app_state import app_state
-from routers import borrowing, health, lending, market, repayment
+from routers import arbitrage, borrowing, health, lending, market, repayment
 from routers.ws import router as ws_router, broadcast
 
 
@@ -35,6 +35,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(arbitrage.router, prefix="/api")
 app.include_router(borrowing.router, prefix="/api")
 app.include_router(health.router, prefix="/api")
 app.include_router(lending.router, prefix="/api")
