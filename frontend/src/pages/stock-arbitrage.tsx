@@ -146,13 +146,13 @@ export function StockArbitragePage() {
             onClick={() => setMonth('front')}
             className={cn('px-3 py-1 rounded text-[11px] transition-colors', month === 'front' ? 'bg-[#2e2e32] text-white' : 'text-[#8b8b8e] hover:text-white')}
           >
-            근월 {master?.front_month}
+            근월물
           </button>
           <button
             onClick={() => setMonth('back')}
             className={cn('px-3 py-1 rounded text-[11px] transition-colors', month === 'back' ? 'bg-[#2e2e32] text-white' : 'text-[#8b8b8e] hover:text-white')}
           >
-            원월 {master?.back_month}
+            원월물
           </button>
         </div>
         <span className="text-[10px] text-[#8b8b8e]">{master?.count}종목 · {master?.updated}</span>
