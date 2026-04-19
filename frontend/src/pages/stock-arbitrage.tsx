@@ -151,7 +151,7 @@ export function StockArbitragePage() {
           <thead className="sticky top-0 z-20">
             <tr className="text-[10px] text-[#8b8b8e] bg-black">
               {/* 종목 */}
-              <Th sort={() => doSort('baseName')} active={sk === 'baseName'} asc={asc} left sticky className="pl-4 min-w-[160px]">종목</Th>
+              <Th sort={() => doSort('baseName')} active={sk === 'baseName'} asc={asc} left sticky className="pl-4 min-w-[120px]">종목</Th>
               {/* 가격 */}
               <Th sort={() => doSort('spotPrice')} active={sk === 'spotPrice'} asc={asc} className="min-w-[90px]">현물가</Th>
               <Th sort={() => doSort('futuresPrice')} active={sk === 'futuresPrice'} asc={asc} className="min-w-[90px]">선물가</Th>
