@@ -186,7 +186,7 @@ export function StockArbitragePage() {
           </thead>
           <tbody>
             {filtered.map((r) => (
-              <tr key={r.baseCode} className="border-b border-white/[0.04] bg-black hover:bg-[#1a1a1a] transition-colors">
+              <tr key={r.baseCode} className="border-b border-white/[0.04] bg-black hover:bg-[#1d1d1d] transition-colors">
                 {/* 종목 */}
                 <td className="pl-4 pr-3 py-[11px] sticky left-0 z-10" style={{ backgroundColor: 'inherit' }}>
                   <div className="text-[11px] text-white leading-none">{r.baseName}</div>
