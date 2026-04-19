@@ -129,10 +129,10 @@ export function StockArbitragePage() {
   if (error) return <Center className="text-down">로드 실패: {error}</Center>
 
   return (
-    <div className="flex flex-col h-full bg-[#131214]">
+    <div className="flex flex-col h-full bg-[#0b0e11]">
       {/* 헤더 */}
       <div className="px-6 py-4 flex items-center gap-5 shrink-0">
-        <h1 className="text-[16px] text-white">종목차익</h1>
+        <h1 className="text-[14px] text-white">종목차익</h1>
         <span className="text-[12px] text-[#8b8b8e]">{master?.count}종목 · 근월 {master?.front_month} · {master?.updated}</span>
         <div className="ml-auto">
           <input
@@ -149,7 +149,7 @@ export function StockArbitragePage() {
       <div className="flex-1 overflow-auto min-h-0 px-2">
         <table className="w-max min-w-full border-collapse">
           <thead className="sticky top-0 z-20">
-            <tr className="text-[12px] text-[#8b8b8e] bg-[#131214]">
+            <tr className="text-[11px] text-[#8b8b8e] bg-[#0b0e11]">
               {/* 종목 */}
               <Th sort={() => doSort('baseName')} active={sk === 'baseName'} asc={asc} left sticky className="pl-4 min-w-[160px]">종목</Th>
               {/* 가격 */}
@@ -188,9 +188,9 @@ export function StockArbitragePage() {
             {filtered.map((r) => (
               <tr key={r.baseCode} className="border-b border-white/[0.04] hover:bg-white/[0.03] transition-colors">
                 {/* 종목 */}
-                <td className="pl-4 pr-4 py-3 sticky left-0 bg-[#131214] z-10">
-                  <div className="text-[14px] text-white leading-tight">{r.baseName}</div>
-                  <div className="text-[11px] text-[#5a5a5e] leading-tight mt-0.5 tabular-nums">
+                <td className="pl-4 pr-3 py-[5px] sticky left-0 bg-[#0b0e11] z-10">
+                  <div className="text-[12px] text-white leading-none">{r.baseName}</div>
+                  <div className="text-[10px] text-[#5a5a5e] leading-none mt-[3px] tabular-nums">
                     {r.baseCode} / {r.frontCode}
                   </div>
                 </td>
@@ -217,16 +217,16 @@ export function StockArbitragePage() {
                 {/* 만기 */}
                 <C mute>{r.daysLeft > 0 ? `${r.daysLeft}` : '-'}</C>
                 {/* 액션 */}
-                <td className="px-2 py-3 text-center">
+                <td className="px-2 py-[5px] text-center">
                   <button className="text-[11px] text-[#5a5a5e] hover:text-white transition-colors">호가</button>
                 </td>
-                <td className="px-2 py-3 text-center">
+                <td className="px-2 py-[5px] text-center">
                   <button className="text-[11px] text-[#5a5a5e] hover:text-white transition-colors">스프</button>
                 </td>
                 {/* 보유 */}
                 <C sub>{r.holding031 || '-'}</C>
                 <C sub>{r.holding052 || '-'}</C>
-                <td className="px-2 py-3 text-center">
+                <td className="px-2 py-[5px] text-center">
                   <button className="text-[11px] text-[#5a5a5e] hover:text-white transition-colors">조회</button>
                 </td>
                 <C sub className="pr-4">{r.futuresHolding || '-'}</C>
@@ -252,11 +252,11 @@ function Th({ children, className, sort, active, asc, left, sticky, style }: {
   return (
     <th
       className={cn(
-        'px-3 py-3 font-normal whitespace-nowrap border-b border-white/[0.06]',
+        'px-2 py-[5px] font-normal whitespace-nowrap border-b border-white/[0.06]',
         left ? 'text-left' : 'text-right',
         sort ? 'cursor-pointer select-none hover:text-white transition-colors' : '',
         active ? 'text-white' : '',
-        sticky && 'sticky left-0 bg-[#131214] z-30',
+        sticky && 'sticky left-0 bg-[#0b0e11] z-30',
         className,
       )}
       style={style}
@@ -273,7 +273,7 @@ function C({ children, c, sub, mute, className }: {
 }) {
   return (
     <td className={cn(
-      'px-3 py-3 text-right text-[14px] tabular-nums whitespace-nowrap',
+      'px-2 py-[5px] text-right text-[12px] tabular-nums whitespace-nowrap',
       c || (mute ? 'text-[#5a5a5e]' : sub ? 'text-[#8b8b8e]' : 'text-[#e0e0e3]'),
       className,
     )}>
