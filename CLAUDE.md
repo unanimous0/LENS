@@ -60,7 +60,7 @@ CSS 변수는 `globals.css`의 `@theme inline`에 정의. Tailwind 클래스로 
 - **패널 분리 기준**: 기능적으로 다른 영역(카드, 테이블)만 독립 패널로 분리. 조작 요소(파일선택, 필터, 엑셀저장)는 하나의 패널로 통합하여 번잡함 방지.
 - **테이블 헤더 sticky**: 페이지 스크롤 시 테이블 `thead`가 `sticky top-0`으로 상단에 고정. 테이블이 자체 `overflow-y-auto` 스크롤을 갖지 않고 `<main>`이 유일한 스크롤 컨테이너.
 - **고밀도 정보 레이아웃** — 바이낸스/블룸버그처럼 기능적이고 직선적
-- **숫자 데이터**: 모노스페이스 폰트 (`font-mono` 클래스)
+- **숫자 데이터**: Inter tabular-nums (`font-mono` 또는 `tabular-nums` 클래스)
 - **둥근 모서리 최소화** — `rounded` 또는 `rounded-sm` 정도만
 
 ### 하지 말 것
