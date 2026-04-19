@@ -246,8 +246,8 @@ export function StockArbitragePage() {
                   <button className="text-[10px] text-[#5a5a5e] hover:text-white transition-colors">스프</button>
                 </td>
                 {/* 보유 */}
-                <C sub>{r.holding031 ? r.holding031.toLocaleString() : '-'}</C>
-                <C sub>{r.holding052 ? r.holding052.toLocaleString() : '-'}</C>
+                <C>{r.holding031 ? r.holding031.toLocaleString() : '-'}</C>
+                <C>{r.holding052 ? r.holding052.toLocaleString() : '-'}</C>
                 <td className="px-2 py-[11px] text-center">
                   <button className="text-[10px] text-[#5a5a5e] hover:text-white transition-colors">조회</button>
                 </td>
