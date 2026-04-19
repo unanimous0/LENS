@@ -188,7 +188,7 @@ export function StockArbitragePage() {
             {filtered.map((r) => (
               <tr key={r.baseCode} className="border-b border-white/[0.04] hover:bg-white/[0.03] transition-colors">
                 {/* 종목 */}
-                <td className="pl-4 pr-3 py-[5px] sticky left-0 bg-black z-10">
+                <td className="pl-4 pr-3 py-[8px] sticky left-0 bg-black z-10">
                   <div className="text-[11px] text-white leading-none">{r.baseName}</div>
                   <div className="text-[9px] text-[#5a5a5e] leading-none mt-[2px] tabular-nums">
                     {r.baseCode} / {r.frontCode}
@@ -217,16 +217,16 @@ export function StockArbitragePage() {
                 {/* 만기 */}
                 <C mute>{r.daysLeft > 0 ? `${r.daysLeft}` : '-'}</C>
                 {/* 액션 */}
-                <td className="px-2 py-[5px] text-center">
+                <td className="px-2 py-[8px] text-center">
                   <button className="text-[10px] text-[#5a5a5e] hover:text-white transition-colors">호가</button>
                 </td>
-                <td className="px-2 py-[5px] text-center">
+                <td className="px-2 py-[8px] text-center">
                   <button className="text-[10px] text-[#5a5a5e] hover:text-white transition-colors">스프</button>
                 </td>
                 {/* 보유 */}
                 <C sub>{r.holding031 ? r.holding031.toLocaleString() : '-'}</C>
                 <C sub>{r.holding052 ? r.holding052.toLocaleString() : '-'}</C>
-                <td className="px-2 py-[5px] text-center">
+                <td className="px-2 py-[8px] text-center">
                   <button className="text-[10px] text-[#5a5a5e] hover:text-white transition-colors">조회</button>
                 </td>
                 <C sub className="pr-4">{r.futuresHolding ? r.futuresHolding.toLocaleString() : '-'}</C>
@@ -252,7 +252,7 @@ function Th({ children, className, sort, active, asc, left, sticky, style }: {
   return (
     <th
       className={cn(
-        'px-2 py-[5px] font-normal whitespace-nowrap border-b border-white/[0.06]',
+        'px-2 py-[8px] font-normal whitespace-nowrap border-b border-white/[0.06]',
         left ? 'text-left' : 'text-right',
         sort ? 'cursor-pointer select-none hover:text-white transition-colors' : '',
         active ? 'text-white' : '',
@@ -273,7 +273,7 @@ function C({ children, c, sub, mute, className }: {
 }) {
   return (
     <td className={cn(
-      'px-2 py-[5px] text-right text-[11px] tabular-nums whitespace-nowrap',
+      'px-2 py-[8px] text-right text-[11px] tabular-nums whitespace-nowrap',
       c || (mute ? 'text-[#5a5a5e]' : sub ? 'text-[#8b8b8e]' : 'text-[#e0e0e3]'),
       className,
     )}>
@@ -284,7 +284,7 @@ function C({ children, c, sub, mute, className }: {
 
 // ── 포맷 ──
 
-function cV(v: number) { return !v ? 'text-[#5a5a5e]' : v < 0 ? 'text-[#00b26b]' : 'text-[#e0e0e3]' }
+function cV(v: number) { return !v ? 'text-[#5a5a5e]' : v > 0 ? 'text-[#00b26b]' : 'text-[#bb4a65]' }
 function fP(v: number) { return v ? v.toLocaleString() : '-' }
 function fB(v: number) { return !v ? '-' : `${v > 0 ? '+' : ''}${v.toLocaleString(undefined, { maximumFractionDigits: 1 })}` }
 function fBp(v: number) { return !v ? '-' : `${v > 0 ? '+' : ''}${v.toFixed(1)}` }
