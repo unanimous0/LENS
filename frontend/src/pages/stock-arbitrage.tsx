@@ -308,8 +308,8 @@ function C({ children, c, sub, mute, className }: {
 
 function cV(v: number) { return !v ? 'text-[#5a5a5e]' : v > 0 ? 'text-[#00b26b]' : 'text-[#bb4a65]' }
 function fP(v: number) { return v ? v.toLocaleString() : '-' }
-function fB(v: number) { return !v ? '-' : `${v > 0 ? '+' : ''}${v.toLocaleString(undefined, { maximumFractionDigits: 1 })}` }
-function fBp(v: number) { return !v ? '-' : `${v > 0 ? '+' : ''}${v.toFixed(1)}` }
+function fB(v: number) { return `${v > 0 ? '+' : ''}${v.toLocaleString(undefined, { maximumFractionDigits: 1 })}` }
+function fBp(v: number) { return `${v > 0 ? '+' : ''}${v.toFixed(1)}` }
 function fVol(v: number) {
   if (v >= 1e12) return `${(v / 1e12).toFixed(1)}조`
   if (v >= 1e8) return `${(v / 1e8).toFixed(0)}억`
