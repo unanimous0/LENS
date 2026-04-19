@@ -284,7 +284,7 @@ function C({ children, c, sub, mute, className }: {
 
 // ── 포맷 ──
 
-function cV(v: number) { return !v ? 'text-[#5a5a5e]' : v > 0 ? 'text-[#00b26b]' : 'text-[#f6465d]' }
+function cV(v: number) { return !v ? 'text-[#5a5a5e]' : v < 0 ? 'text-[#00b26b]' : 'text-[#e0e0e3]' }
 function fP(v: number) { return v ? v.toLocaleString() : '-' }
 function fB(v: number) { return !v ? '-' : `${v > 0 ? '+' : ''}${v.toLocaleString(undefined, { maximumFractionDigits: 1 })}` }
 function fBp(v: number) { return !v ? '-' : `${v > 0 ? '+' : ''}${v.toFixed(1)}` }
