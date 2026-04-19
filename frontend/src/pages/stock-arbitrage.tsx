@@ -274,7 +274,7 @@ function C({ children, c, sub, mute, className }: {
   return (
     <td className={cn(
       'px-2 py-[5px] text-right text-[11px] tabular-nums whitespace-nowrap',
-      c || 'text-[#e0e0e3]',
+      c || (mute ? 'text-[#5a5a5e]' : sub ? 'text-[#8b8b8e]' : 'text-[#e0e0e3]'),
       className,
     )}>
       {children}
