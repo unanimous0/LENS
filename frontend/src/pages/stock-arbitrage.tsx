@@ -149,7 +149,7 @@ export function StockArbitragePage() {
     <div className="flex flex-col h-full bg-bg-base">
       {/* 상단 */}
       <div className="px-5 py-3 flex items-center gap-4 bg-bg-primary shrink-0">
-        <span className="text-[15px] font-semibold text-t1">종목차익</span>
+        <span className="text-[15px] font-medium text-t1">종목차익</span>
         <span className="text-[11px] text-t4">{master?.count}종목 · 근월 {master?.front_month} · 갱신 {master?.updated}</span>
         <div className="ml-auto flex items-center gap-3">
           <input
@@ -212,7 +212,7 @@ export function StockArbitragePage() {
             {filtered.map((r) => (
               <tr key={r.baseCode} className="hover:bg-bg-surface/50 transition-colors">
                 {/* 종목 — 고정 */}
-                <td className="pl-5 pr-2 py-[7px] sticky left-0 bg-bg-base z-10 text-t1 font-medium truncate max-w-[110px] group-hover:bg-bg-surface">
+                <td className="pl-5 pr-2 py-[7px] sticky left-0 bg-bg-base z-10 text-t1 truncate max-w-[110px]">
                   {r.baseName}
                 </td>
                 <td className="px-1 py-[7px] sticky bg-bg-base z-10 tabular-nums text-[10px] text-t4 text-right" style={{ left: 110 }}>
@@ -272,7 +272,7 @@ function ColH({ children, className, sticky, style }: {
   children: React.ReactNode; className?: string; sticky?: boolean; style?: React.CSSProperties
 }) {
   return (
-    <th className={cn('px-2 py-1.5 font-medium text-right', sticky && 'sticky bg-bg-primary z-30', className)} style={style}>
+    <th className={cn('px-2 py-1.5 font-normal text-right', sticky && 'sticky bg-bg-primary z-30', className)} style={style}>
       {children}
     </th>
   )
@@ -286,7 +286,7 @@ function Col({ k, s, a, sort, children, className, left, sticky, style }: {
   return (
     <th
       className={cn(
-        'px-2 py-1.5 font-medium cursor-pointer select-none hover:text-t1 transition-colors',
+        'px-2 py-1.5 font-normal cursor-pointer select-none hover:text-t1 transition-colors',
         left ? 'text-left' : 'text-right',
         active ? 'text-accent' : '',
         sticky && 'sticky bg-bg-primary z-30',
@@ -309,7 +309,7 @@ function V({ children, c, dim, vdim, bold }: {
     <td className={cn(
       'px-2 py-[7px] tabular-nums text-right',
       c || (dim ? 'text-t3' : vdim ? 'text-t4' : 'text-t1'),
-      bold && 'font-semibold',
+      bold && 'font-medium',
     )}>
       {children}
     </td>
