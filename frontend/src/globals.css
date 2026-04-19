@@ -60,6 +60,10 @@ body {
   font-family: var(--font-jetbrains);
 }
 
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
 .panel {
   background: #111111;
 }

@@ -215,10 +215,10 @@ export function StockArbitragePage() {
                 <td className="pl-5 pr-2 py-[7px] sticky left-0 bg-bg-base z-10 text-t1 font-medium truncate max-w-[110px] group-hover:bg-bg-surface">
                   {r.baseName}
                 </td>
-                <td className="px-1 py-[7px] sticky bg-bg-base z-10 font-mono text-[10px] text-t4 text-right" style={{ left: 110 }}>
+                <td className="px-1 py-[7px] sticky bg-bg-base z-10 tabular-nums text-[10px] text-t4 text-right" style={{ left: 110 }}>
                   {r.baseCode}
                 </td>
-                <td className="pl-1 pr-6 py-[7px] sticky bg-bg-base z-10 font-mono text-[10px] text-t4 text-right" style={{ left: 168 }}>
+                <td className="pl-1 pr-6 py-[7px] sticky bg-bg-base z-10 tabular-nums text-[10px] text-t4 text-right" style={{ left: 168 }}>
                   {r.frontCode}
                 </td>
                 {/* 가격 */}
@@ -307,7 +307,7 @@ function V({ children, c, dim, vdim, bold }: {
 }) {
   return (
     <td className={cn(
-      'px-2 py-[7px] font-mono text-right',
+      'px-2 py-[7px] tabular-nums text-right',
       c || (dim ? 'text-t3' : vdim ? 'text-t4' : 'text-t1'),
       bold && 'font-semibold',
     )}>
