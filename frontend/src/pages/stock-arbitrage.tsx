@@ -173,37 +173,37 @@ export function StockArbitragePage() {
           <thead className="sticky top-0 z-20">
             <tr className="text-[10px] text-[#8b8b8e] bg-black">
               {/* 종목 */}
-              <Th sort={() => doSort('baseName')} active={sk === 'baseName'} asc={asc} left sticky className="pl-4 min-w-[120px]">종목</Th>
+              <Th sort={() => doSort('baseName')} active={sk === 'baseName'} asc={asc} left sticky className="pl-4 min-w-[110px]">종목</Th>
               {/* 가격 */}
-              <Th sort={() => doSort('spotPrice')} active={sk === 'spotPrice'} asc={asc} className="min-w-[90px]">현물가</Th>
-              <Th sort={() => doSort('futuresPrice')} active={sk === 'futuresPrice'} asc={asc} className="min-w-[90px]">선물가</Th>
-              <Th className="min-w-[90px]">이론가</Th>
+              <Th sort={() => doSort('spotPrice')} active={sk === 'spotPrice'} asc={asc} className="min-w-[74px]">현물가</Th>
+              <Th sort={() => doSort('futuresPrice')} active={sk === 'futuresPrice'} asc={asc} className="min-w-[74px]">선물가</Th>
+              <Th className="min-w-[74px]">이론가</Th>
               {/* 베이시스 */}
-              <Th sort={() => doSort('theoreticalBasis')} active={sk === 'theoreticalBasis'} asc={asc} className="min-w-[76px]">이론B</Th>
-              <Th sort={() => doSort('marketBasis')} active={sk === 'marketBasis'} asc={asc} className="min-w-[76px]">시장B</Th>
-              <Th sort={() => doSort('basisGap')} active={sk === 'basisGap'} asc={asc} className="min-w-[76px]">갭</Th>
-              <Th sort={() => doSort('basisGapBp')} active={sk === 'basisGapBp'} asc={asc} className="min-w-[68px]">갭(bp)</Th>
+              <Th sort={() => doSort('theoreticalBasis')} active={sk === 'theoreticalBasis'} asc={asc} className="min-w-[62px]">이론B</Th>
+              <Th sort={() => doSort('marketBasis')} active={sk === 'marketBasis'} asc={asc} className="min-w-[62px]">시장B</Th>
+              <Th sort={() => doSort('basisGap')} active={sk === 'basisGap'} asc={asc} className="min-w-[62px]">갭</Th>
+              <Th sort={() => doSort('basisGapBp')} active={sk === 'basisGapBp'} asc={asc} className="min-w-[56px]">갭bp</Th>
               {/* 거래 */}
-              <Th sort={() => doSort('spotCumVolume')} active={sk === 'spotCumVolume'} asc={asc} className="min-w-[90px]">현물대금</Th>
-              <Th sort={() => doSort('futuresVolume')} active={sk === 'futuresVolume'} asc={asc} className="min-w-[76px]">선물량</Th>
-              <Th className="min-w-[48px]">승수</Th>
+              <Th sort={() => doSort('spotCumVolume')} active={sk === 'spotCumVolume'} asc={asc} className="min-w-[76px]">현물대금</Th>
+              <Th sort={() => doSort('futuresVolume')} active={sk === 'futuresVolume'} asc={asc} className="min-w-[64px]">선물량</Th>
+              <Th className="min-w-[42px]">승수</Th>
               {/* 스프레드 */}
-              <Th sort={() => doSort('spread')} active={sk === 'spread'} asc={asc} className="min-w-[76px]">스프레드</Th>
-              <Th className="min-w-[64px]">스프량</Th>
+              <Th sort={() => doSort('spread')} active={sk === 'spread'} asc={asc} className="min-w-[64px]">스프레드</Th>
+              <Th className="min-w-[52px]">스프량</Th>
               {/* 배당 */}
-              <Th className="min-w-[64px]">배당금</Th>
-              <Th className="min-w-[72px]">기준일</Th>
-              <Th className="min-w-[40px]">적용</Th>
+              <Th className="min-w-[56px]">배당금</Th>
+              <Th className="min-w-[62px]">기준일</Th>
+              <Th className="min-w-[34px]">적용</Th>
               {/* 만기 */}
-              <Th sort={() => doSort('daysLeft')} active={sk === 'daysLeft'} asc={asc} className="min-w-[52px]">잔존</Th>
+              <Th sort={() => doSort('daysLeft')} active={sk === 'daysLeft'} asc={asc} className="min-w-[44px]">잔존</Th>
               {/* 액션 */}
-              <Th className="min-w-[44px]">호가</Th>
-              <Th className="min-w-[44px]">스프</Th>
+              <Th className="min-w-[38px]">호가</Th>
+              <Th className="min-w-[38px]">스프</Th>
               {/* 보유 */}
-              <Th className="min-w-[56px]">031</Th>
-              <Th className="min-w-[56px]">052</Th>
-              <Th className="min-w-[40px]">펀드</Th>
-              <Th className="min-w-[56px] pr-4">선물</Th>
+              <Th className="min-w-[48px]">031</Th>
+              <Th className="min-w-[48px]">052</Th>
+              <Th className="min-w-[34px]">펀드</Th>
+              <Th className="min-w-[48px] pr-4">선물</Th>
             </tr>
           </thead>
           <tbody>

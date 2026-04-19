@@ -6,7 +6,7 @@
 LENS/
 ├── frontend/                              # Vite + React
 │   ├── vite.config.ts                     # Vite 설정 (프록시, 경로 별칭)
-│   ├── index.html                         # 엔트리 HTML (Pretendard + JetBrains Mono)
+│   ├── index.html                         # 엔트리 HTML (Inter + Pretendard)
 │   ├── src/
 │   │   ├── main.tsx                       # React 엔트리
 │   │   ├── App.tsx                        # BrowserRouter + Routes + WebSocket 초기화
