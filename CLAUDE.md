@@ -31,8 +31,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ### 폰트
 
-- 본문: **Pretendard** (`--font-pretendard`) — Apple SF Pro 계열 한국어 폰트. Inter, Roboto 등 범용 폰트 사용 금지
-- 숫자/코드: **JetBrains Mono** (`--font-jetbrains`, `font-mono` 클래스)
+- 본문: **Inter** (영문/숫자) + **Pretendard** (한국어 폴백) — OKX 스타일. `--font-pretendard` 변수에 Inter가 첫 번째로 지정됨
+- 숫자: **Inter tabular-nums** (`font-mono` 또는 `tabular-nums` 클래스) — 고정폭 숫자로 컬럼 정렬
 
 ### 컬러 시스템 (Apple Stocks + 트레이딩 터미널)
 

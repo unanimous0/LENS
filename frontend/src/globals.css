@@ -57,7 +57,7 @@ body {
 }
 
 .font-mono {
-  font-family: var(--font-jetbrains);
+  font-variant-numeric: tabular-nums;
 }
 
 .tabular-nums {
