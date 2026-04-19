@@ -61,6 +61,7 @@ export function StockArbitragePage() {
   const [search, setSearch] = useState('')
   const [sk, setSk] = useState<SK>('basisGapBp')
   const [asc, setAsc] = useState(false)
+  const [month, setMonth] = useState<'front' | 'back'>('front')
 
   const stockTicks = useMarketStore((s) => s.stockTicks)
   const futuresTicks = useMarketStore((s) => s.futuresTicks)
@@ -76,27 +77,34 @@ export function StockArbitragePage() {
     if (!master) return [] as Row[]
     return master.items.map((item, idx): Row => {
       const spot = stockTicks[item.base_code]
-      const front = futuresTicks[item.front.code]
-      const back = item.back ? futuresTicks[item.back.code] : undefined
+      // 선택된 월물에 따라 선물 데이터 참조
+      const sel = month === 'back' && item.back ? item.back : item.front
+      const other = month === 'back' ? item.front : item.back
+      const fut = futuresTicks[sel.code]
+      const otherFut = other ? futuresTicks[other.code] : undefined
+
       const seed = parseInt(item.base_code.slice(-4), 10) || (idx + 1) * 137
-      const mock = !spot && !front
+      const mock = !spot && !fut
       const bp = mock ? 10000 + (seed % 50) * 5000 : 0
       const sp = spot?.price ?? (mock ? bp : 0)
-      const fp = front?.price ?? (mock ? bp + (seed % 200 - 100) : 0)
-      const mb = front?.basis ?? (mock ? fp - sp : 0)
+      const fp = fut?.price ?? (mock ? bp + (seed % 200 - 100) : 0)
+      const mb = fut?.basis ?? (mock ? fp - sp : 0)
       const tp = mock ? bp + (seed % 80 - 30) : 0
       const tb = mock ? tp - sp : 0
       const g = mock ? mb - tb : 0
       const gbp = sp > 0 ? (g / sp) * 10000 : 0
-      const bkp = back?.price ?? (mock ? fp + (seed % 60 - 20) : 0)
+      const ofp = otherFut?.price ?? (mock ? fp + (seed % 60 - 20) : 0)
+      // 스프레드: 항상 원월 - 근월
+      const frontP = month === 'front' ? fp : ofp
+      const backP = month === 'front' ? ofp : fp
       return {
         baseCode: item.base_code, baseName: item.base_name,
-        frontCode: item.front.code, backCode: item.back?.code ?? '',
-        multiplier: item.front.multiplier, expiry: item.front.expiry, daysLeft: item.front.days_left || 28,
+        frontCode: sel.code, backCode: other?.code ?? '',
+        multiplier: sel.multiplier, expiry: sel.expiry, daysLeft: sel.days_left || 28,
         spotPrice: sp, spotCumVolume: spot?.cum_volume ?? (mock ? (seed % 300 + 50) * 1e8 : 0),
-        futuresPrice: fp, futuresVolume: front?.volume ?? (mock ? seed % 2000 + 100 : 0),
+        futuresPrice: fp, futuresVolume: fut?.volume ?? (mock ? seed % 2000 + 100 : 0),
         theoreticalPrice: tp, theoreticalBasis: tb, marketBasis: mb, basisGap: g, basisGapBp: gbp,
-        backPrice: bkp, spread: bkp > 0 && fp > 0 ? bkp - fp : 0,
+        backPrice: backP, spread: backP > 0 && frontP > 0 ? backP - frontP : 0,
         spreadVolume: mock ? seed % 500 : 0,
         dividend: mock && seed % 3 === 0 ? (seed % 10 + 1) * 100 : 0,
         dividendDate: mock && seed % 3 === 0 ? '2026-06-28' : '',
@@ -106,7 +114,7 @@ export function StockArbitragePage() {
         futuresHolding: mock && seed % 6 === 0 ? seed % 200 + 10 : 0,
       }
     })
-  }, [master, stockTicks, futuresTicks])
+  }, [master, stockTicks, futuresTicks, month])
 
   const filtered = useMemo(() => {
     let list = rows
@@ -133,7 +141,21 @@ export function StockArbitragePage() {
       {/* 헤더 */}
       <div className="px-6 py-4 flex items-center gap-5 shrink-0">
         <h1 className="text-[14px] text-white">종목차익</h1>
-        <span className="text-[10px] text-[#8b8b8e]">{master?.count}종목 · 근월 {master?.front_month} · {master?.updated}</span>
+        <div className="flex items-center gap-1 rounded-md bg-[#1e1e22] p-0.5">
+          <button
+            onClick={() => setMonth('front')}
+            className={cn('px-3 py-1 rounded text-[11px] transition-colors', month === 'front' ? 'bg-[#2e2e32] text-white' : 'text-[#8b8b8e] hover:text-white')}
+          >
+            근월 {master?.front_month}
+          </button>
+          <button
+            onClick={() => setMonth('back')}
+            className={cn('px-3 py-1 rounded text-[11px] transition-colors', month === 'back' ? 'bg-[#2e2e32] text-white' : 'text-[#8b8b8e] hover:text-white')}
+          >
+            원월 {master?.back_month}
+          </button>
+        </div>
+        <span className="text-[10px] text-[#8b8b8e]">{master?.count}종목 · {master?.updated}</span>
         <div className="ml-auto">
           <input
             type="text"
