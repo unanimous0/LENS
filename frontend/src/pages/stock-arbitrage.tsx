@@ -164,7 +164,7 @@ export function StockArbitragePage() {
               {/* 거래 */}
               <Th sort={() => doSort('spotCumVolume')} active={sk === 'spotCumVolume'} asc={asc} className="min-w-[90px]">현물대금</Th>
               <Th sort={() => doSort('futuresVolume')} active={sk === 'futuresVolume'} asc={asc} className="min-w-[76px]">선물량</Th>
-              <Th className="min-w-[44px]">승수</Th>
+              <Th className="min-w-[48px]">승수</Th>
               {/* 스프레드 */}
               <Th sort={() => doSort('spread')} active={sk === 'spread'} asc={asc} className="min-w-[76px]">스프레드</Th>
               <Th className="min-w-[64px]">스프량</Th>
@@ -206,7 +206,7 @@ export function StockArbitragePage() {
                 {/* 거래 */}
                 <C sub>{r.spotCumVolume ? fVol(r.spotCumVolume) : '-'}</C>
                 <C sub>{r.futuresVolume ? r.futuresVolume.toLocaleString() : '-'}</C>
-                <C mute>{r.multiplier}</C>
+                <C mute>{r.multiplier % 1 === 0 ? r.multiplier : r.multiplier.toFixed(2)}</C>
                 {/* 스프레드 */}
                 <C c={cV(r.spread)}>{r.spread ? fB(r.spread) : '-'}</C>
                 <C sub>{r.spreadVolume ? r.spreadVolume.toLocaleString() : '-'}</C>
