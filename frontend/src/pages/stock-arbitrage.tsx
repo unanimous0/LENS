@@ -4,19 +4,19 @@ import { cn } from '@/lib/utils'
 
 // ── 타입 ──
 
-interface FuturesMasterItem {
+interface MasterItem {
   base_code: string
   base_name: string
   front: { code: string; name: string; expiry: string; days_left: number; multiplier: number }
   back?: { code: string; name: string; expiry: string; days_left: number; multiplier: number }
 }
 
-interface FuturesMaster {
+interface Master {
   updated: string
   front_month: string
   back_month: string
   count: number
-  items: FuturesMasterItem[]
+  items: MasterItem[]
 }
 
 interface Row {
@@ -47,20 +47,20 @@ interface Row {
   futuresHolding: number
 }
 
-type SortKey = keyof Pick<Row,
+type SK = keyof Pick<Row,
   'baseName' | 'spotPrice' | 'futuresPrice' | 'marketBasis' | 'basisGapBp' |
   'spotCumVolume' | 'futuresVolume' | 'spread' | 'daysLeft' | 'theoreticalBasis' | 'basisGap'
 >
 
-const BASIS_SORT_KEYS: SortKey[] = ['marketBasis', 'basisGapBp', 'basisGap', 'theoreticalBasis']
+const ABS_KEYS: SK[] = ['marketBasis', 'basisGapBp', 'basisGap', 'theoreticalBasis']
 
 export function StockArbitragePage() {
-  const [master, setMaster] = useState<FuturesMaster | null>(null)
+  const [master, setMaster] = useState<Master | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [search, setSearch] = useState('')
-  const [sortKey, setSortKey] = useState<SortKey>('basisGapBp')
-  const [sortAsc, setSortAsc] = useState(false)
+  const [sk, setSk] = useState<SK>('basisGapBp')
+  const [asc, setAsc] = useState(false)
 
   const stockTicks = useMarketStore((s) => s.stockTicks)
   const futuresTicks = useMarketStore((s) => s.futuresTicks)
@@ -78,40 +78,25 @@ export function StockArbitragePage() {
       const spot = stockTicks[item.base_code]
       const front = futuresTicks[item.front.code]
       const back = item.back ? futuresTicks[item.back.code] : undefined
-
-      // Mock 데이터 (실시간 데이터 없을 때 디자인 확인용)
       const seed = parseInt(item.base_code.slice(-4), 10) || (idx + 1) * 137
       const mock = !spot && !front
       const bp = mock ? 10000 + (seed % 50) * 5000 : 0
-
-      const spotPrice = spot?.price ?? (mock ? bp : 0)
-      const futuresPrice = front?.price ?? (mock ? bp + (seed % 200 - 100) : 0)
-      const marketBasis = front?.basis ?? (mock ? futuresPrice - spotPrice : 0)
+      const sp = spot?.price ?? (mock ? bp : 0)
+      const fp = front?.price ?? (mock ? bp + (seed % 200 - 100) : 0)
+      const mb = front?.basis ?? (mock ? fp - sp : 0)
       const tp = mock ? bp + (seed % 80 - 30) : 0
-      const tb = mock ? tp - spotPrice : 0
-      const gap = mock ? marketBasis - tb : 0
-      const gapBp = spotPrice > 0 ? (gap / spotPrice) * 10000 : 0
-      const backPrice = back?.price ?? (mock ? futuresPrice + (seed % 60 - 20) : 0)
-
+      const tb = mock ? tp - sp : 0
+      const g = mock ? mb - tb : 0
+      const gbp = sp > 0 ? (g / sp) * 10000 : 0
+      const bkp = back?.price ?? (mock ? fp + (seed % 60 - 20) : 0)
       return {
-        baseCode: item.base_code,
-        baseName: item.base_name,
-        frontCode: item.front.code,
-        backCode: item.back?.code ?? '',
-        multiplier: item.front.multiplier,
-        expiry: item.front.expiry,
-        daysLeft: item.front.days_left || 28,
-        spotPrice,
-        spotCumVolume: spot?.cum_volume ?? (mock ? (seed % 300 + 50) * 1e8 : 0),
-        futuresPrice,
-        futuresVolume: front?.volume ?? (mock ? seed % 2000 + 100 : 0),
-        theoreticalPrice: tp,
-        theoreticalBasis: tb,
-        marketBasis,
-        basisGap: gap,
-        basisGapBp: gapBp,
-        backPrice,
-        spread: backPrice > 0 && futuresPrice > 0 ? backPrice - futuresPrice : 0,
+        baseCode: item.base_code, baseName: item.base_name,
+        frontCode: item.front.code, backCode: item.back?.code ?? '',
+        multiplier: item.front.multiplier, expiry: item.front.expiry, daysLeft: item.front.days_left || 28,
+        spotPrice: sp, spotCumVolume: spot?.cum_volume ?? (mock ? (seed % 300 + 50) * 1e8 : 0),
+        futuresPrice: fp, futuresVolume: front?.volume ?? (mock ? seed % 2000 + 100 : 0),
+        theoreticalPrice: tp, theoreticalBasis: tb, marketBasis: mb, basisGap: g, basisGapBp: gbp,
+        backPrice: bkp, spread: bkp > 0 && fp > 0 ? bkp - fp : 0,
         spreadVolume: mock ? seed % 500 : 0,
         dividend: mock && seed % 3 === 0 ? (seed % 10 + 1) * 100 : 0,
         dividendDate: mock && seed % 3 === 0 ? '2026-06-28' : '',
@@ -127,136 +112,124 @@ export function StockArbitragePage() {
     let list = rows
     if (search) {
       const q = search.toLowerCase()
-      list = list.filter((r) =>
-        r.baseName.toLowerCase().includes(q) || r.baseCode.includes(q) || r.frontCode.toLowerCase().includes(q)
-      )
+      list = list.filter((r) => r.baseName.toLowerCase().includes(q) || r.baseCode.includes(q) || r.frontCode.toLowerCase().includes(q))
     }
     list.sort((a, b) => {
-      const av = a[sortKey] ?? 0, bv = b[sortKey] ?? 0
-      if (sortKey === 'baseName') return sortAsc ? String(av).localeCompare(String(bv)) : String(bv).localeCompare(String(av))
-      if (BASIS_SORT_KEYS.includes(sortKey)) return sortAsc ? Math.abs(+av) - Math.abs(+bv) : Math.abs(+bv) - Math.abs(+av)
-      return sortAsc ? +av - +bv : +bv - +av
+      const av = a[sk] ?? 0, bv = b[sk] ?? 0
+      if (sk === 'baseName') return asc ? String(av).localeCompare(String(bv)) : String(bv).localeCompare(String(av))
+      if (ABS_KEYS.includes(sk)) return asc ? Math.abs(+av) - Math.abs(+bv) : Math.abs(+bv) - Math.abs(+av)
+      return asc ? +av - +bv : +bv - +av
     })
     return list
-  }, [rows, search, sortKey, sortAsc])
+  }, [rows, search, sk, asc])
 
-  const sort = (k: SortKey) => { if (sortKey === k) setSortAsc(!sortAsc); else { setSortKey(k); setSortAsc(false) } }
+  const doSort = (k: SK) => { if (sk === k) setAsc(!asc); else { setSk(k); setAsc(false) } }
 
-  if (loading) return <div className="flex h-full items-center justify-center"><p className="text-sm text-t3">마스터 데이터 로딩 중...</p></div>
-  if (error) return <div className="flex h-full items-center justify-center"><p className="text-sm text-down">로드 실패: {error}</p></div>
+  if (loading) return <Center>마스터 데이터 로딩 중...</Center>
+  if (error) return <Center className="text-down">로드 실패: {error}</Center>
 
   return (
-    <div className="flex flex-col h-full bg-bg-base">
-      {/* 상단 */}
-      <div className="px-5 py-3 flex items-center gap-4 bg-bg-primary shrink-0">
-        <span className="text-[15px] font-medium text-t1">종목차익</span>
-        <span className="text-[11px] text-t4">{master?.count}종목 · 근월 {master?.front_month} · 갱신 {master?.updated}</span>
-        <div className="ml-auto flex items-center gap-3">
+    <div className="flex flex-col h-full bg-[#131214]">
+      {/* 헤더 */}
+      <div className="px-6 py-4 flex items-center gap-5 shrink-0">
+        <h1 className="text-[16px] text-white">종목차익</h1>
+        <span className="text-[12px] text-[#8b8b8e]">{master?.count}종목 · 근월 {master?.front_month} · {master?.updated}</span>
+        <div className="ml-auto">
           <input
             type="text"
-            placeholder="종목명 / 코드 검색"
+            placeholder="종목 검색"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            className="w-52 rounded-md bg-bg-surface px-3 py-1.5 text-xs text-t1 placeholder:text-t4 outline-none focus:ring-1 focus:ring-accent/50 transition-all"
+            className="w-56 rounded-lg bg-[#1e1e22] px-4 py-2 text-[13px] text-white placeholder:text-[#5a5a5e] outline-none focus:ring-1 focus:ring-white/20"
           />
-          <span className="text-[11px] text-t4 font-mono">{filtered.length}건</span>
         </div>
       </div>
 
       {/* 테이블 */}
-      <div className="flex-1 overflow-auto min-h-0">
-        <table className="w-max min-w-full">
-          <thead className="sticky top-0 z-20 bg-bg-primary">
-            {/* 그룹 라벨 */}
-            <tr className="text-[10px] text-t4 tracking-wide uppercase">
-              <th colSpan={3} className="pl-5 pr-6 py-1.5 text-left font-normal sticky left-0 bg-bg-primary z-30">종목</th>
-              <th colSpan={3} className="px-2 py-1.5 text-center font-normal">가격</th>
-              <th colSpan={4} className="px-2 py-1.5 text-center font-normal">베이시스</th>
-              <th colSpan={3} className="px-2 py-1.5 text-center font-normal">거래</th>
-              <th colSpan={2} className="px-2 py-1.5 text-center font-normal">스프레드</th>
-              <th colSpan={3} className="px-2 py-1.5 text-center font-normal">배당</th>
-              <th colSpan={1} className="px-2 py-1.5 text-center font-normal">만기</th>
-              <th colSpan={2} className="px-2 py-1.5 text-center font-normal">액션</th>
-              <th colSpan={4} className="px-2 py-1.5 text-center font-normal">보유</th>
-            </tr>
-            {/* 컬럼 헤더 */}
-            <tr className="text-[11px] text-t3 border-b border-border-light">
-              <Col k="baseName" s={sortKey} a={sortAsc} sort={sort} left sticky className="pl-5 min-w-[110px]">종목명</Col>
-              <ColH sticky style={{ left: 110 }} className="min-w-[58px]">현물</ColH>
-              <ColH sticky style={{ left: 168 }} className="min-w-[66px] pr-6">선물</ColH>
-              <Col k="spotPrice" s={sortKey} a={sortAsc} sort={sort} className="min-w-[78px]">현물가</Col>
-              <Col k="futuresPrice" s={sortKey} a={sortAsc} sort={sort} className="min-w-[78px]">선물가</Col>
-              <ColH className="min-w-[78px]">이론가</ColH>
-              <Col k="theoreticalBasis" s={sortKey} a={sortAsc} sort={sort} className="min-w-[64px]">이론B</Col>
-              <Col k="marketBasis" s={sortKey} a={sortAsc} sort={sort} className="min-w-[64px]">시장B</Col>
-              <Col k="basisGap" s={sortKey} a={sortAsc} sort={sort} className="min-w-[64px]">갭</Col>
-              <Col k="basisGapBp" s={sortKey} a={sortAsc} sort={sort} className="min-w-[58px]">갭bp</Col>
-              <Col k="spotCumVolume" s={sortKey} a={sortAsc} sort={sort} className="min-w-[82px]">현물대금</Col>
-              <Col k="futuresVolume" s={sortKey} a={sortAsc} sort={sort} className="min-w-[68px]">선물량</Col>
-              <ColH className="min-w-[38px]">승수</ColH>
-              <Col k="spread" s={sortKey} a={sortAsc} sort={sort} className="min-w-[68px]">스프레드</Col>
-              <ColH className="min-w-[56px]">스프량</ColH>
-              <ColH className="min-w-[58px]">배당금</ColH>
-              <ColH className="min-w-[68px]">기준일</ColH>
-              <ColH className="min-w-[36px]">적용</ColH>
-              <Col k="daysLeft" s={sortKey} a={sortAsc} sort={sort} className="min-w-[44px]">잔존</Col>
-              <ColH className="min-w-[40px]">호가</ColH>
-              <ColH className="min-w-[40px]">스프</ColH>
-              <ColH className="min-w-[52px]">031</ColH>
-              <ColH className="min-w-[52px]">052</ColH>
-              <ColH className="min-w-[36px]">펀드</ColH>
-              <ColH className="min-w-[52px]">선물</ColH>
+      <div className="flex-1 overflow-auto min-h-0 px-2">
+        <table className="w-max min-w-full border-collapse">
+          <thead className="sticky top-0 z-20">
+            <tr className="text-[12px] text-[#8b8b8e] bg-[#131214]">
+              {/* 종목 */}
+              <Th sort={() => doSort('baseName')} active={sk === 'baseName'} asc={asc} left sticky className="pl-4 min-w-[160px]">종목</Th>
+              {/* 가격 */}
+              <Th sort={() => doSort('spotPrice')} active={sk === 'spotPrice'} asc={asc} className="min-w-[90px]">현물가</Th>
+              <Th sort={() => doSort('futuresPrice')} active={sk === 'futuresPrice'} asc={asc} className="min-w-[90px]">선물가</Th>
+              <Th className="min-w-[90px]">이론가</Th>
+              {/* 베이시스 */}
+              <Th sort={() => doSort('theoreticalBasis')} active={sk === 'theoreticalBasis'} asc={asc} className="min-w-[76px]">이론B</Th>
+              <Th sort={() => doSort('marketBasis')} active={sk === 'marketBasis'} asc={asc} className="min-w-[76px]">시장B</Th>
+              <Th sort={() => doSort('basisGap')} active={sk === 'basisGap'} asc={asc} className="min-w-[76px]">갭</Th>
+              <Th sort={() => doSort('basisGapBp')} active={sk === 'basisGapBp'} asc={asc} className="min-w-[68px]">갭(bp)</Th>
+              {/* 거래 */}
+              <Th sort={() => doSort('spotCumVolume')} active={sk === 'spotCumVolume'} asc={asc} className="min-w-[90px]">현물대금</Th>
+              <Th sort={() => doSort('futuresVolume')} active={sk === 'futuresVolume'} asc={asc} className="min-w-[76px]">선물량</Th>
+              <Th className="min-w-[44px]">승수</Th>
+              {/* 스프레드 */}
+              <Th sort={() => doSort('spread')} active={sk === 'spread'} asc={asc} className="min-w-[76px]">스프레드</Th>
+              <Th className="min-w-[64px]">스프량</Th>
+              {/* 배당 */}
+              <Th className="min-w-[64px]">배당금</Th>
+              <Th className="min-w-[72px]">기준일</Th>
+              <Th className="min-w-[40px]">적용</Th>
+              {/* 만기 */}
+              <Th sort={() => doSort('daysLeft')} active={sk === 'daysLeft'} asc={asc} className="min-w-[52px]">잔존</Th>
+              {/* 액션 */}
+              <Th className="min-w-[44px]">호가</Th>
+              <Th className="min-w-[44px]">스프</Th>
+              {/* 보유 */}
+              <Th className="min-w-[56px]">031</Th>
+              <Th className="min-w-[56px]">052</Th>
+              <Th className="min-w-[40px]">펀드</Th>
+              <Th className="min-w-[56px] pr-4">선물</Th>
             </tr>
           </thead>
-          <tbody className="text-[12px]">
+          <tbody>
             {filtered.map((r) => (
-              <tr key={r.baseCode} className="hover:bg-bg-surface/50 transition-colors">
-                {/* 종목 — 고정 */}
-                <td className="pl-5 pr-2 py-[7px] sticky left-0 bg-bg-base z-10 text-t1 truncate max-w-[110px]">
-                  {r.baseName}
-                </td>
-                <td className="px-1 py-[7px] sticky bg-bg-base z-10 tabular-nums text-[10px] text-t4 text-right" style={{ left: 110 }}>
-                  {r.baseCode}
-                </td>
-                <td className="pl-1 pr-6 py-[7px] sticky bg-bg-base z-10 tabular-nums text-[10px] text-t4 text-right" style={{ left: 168 }}>
-                  {r.frontCode}
+              <tr key={r.baseCode} className="border-b border-white/[0.04] hover:bg-white/[0.03] transition-colors">
+                {/* 종목 */}
+                <td className="pl-4 pr-4 py-3 sticky left-0 bg-[#131214] z-10">
+                  <div className="text-[14px] text-white leading-tight">{r.baseName}</div>
+                  <div className="text-[11px] text-[#5a5a5e] leading-tight mt-0.5 tabular-nums">
+                    {r.baseCode} / {r.frontCode}
+                  </div>
                 </td>
                 {/* 가격 */}
-                <V>{fP(r.spotPrice)}</V>
-                <V>{fP(r.futuresPrice)}</V>
-                <V dim>{fP(r.theoreticalPrice)}</V>
+                <C>{fP(r.spotPrice)}</C>
+                <C>{fP(r.futuresPrice)}</C>
+                <C sub>{fP(r.theoreticalPrice)}</C>
                 {/* 베이시스 */}
-                <V c={cB(r.theoreticalBasis)}>{fB(r.theoreticalBasis)}</V>
-                <V c={cB(r.marketBasis)}>{fB(r.marketBasis)}</V>
-                <V c={cB(r.basisGap)} bold>{fB(r.basisGap)}</V>
-                <V c={cB(r.basisGapBp)} bold>{fBp(r.basisGapBp)}</V>
+                <C c={cV(r.theoreticalBasis)}>{fB(r.theoreticalBasis)}</C>
+                <C c={cV(r.marketBasis)}>{fB(r.marketBasis)}</C>
+                <C c={cV(r.basisGap)}>{fB(r.basisGap)}</C>
+                <C c={cV(r.basisGapBp)}>{fBp(r.basisGapBp)}</C>
                 {/* 거래 */}
-                <V dim>{r.spotCumVolume ? fVol(r.spotCumVolume) : '-'}</V>
-                <V dim>{r.futuresVolume ? r.futuresVolume.toLocaleString() : '-'}</V>
-                <V vdim>{r.multiplier}</V>
+                <C sub>{r.spotCumVolume ? fVol(r.spotCumVolume) : '-'}</C>
+                <C sub>{r.futuresVolume ? r.futuresVolume.toLocaleString() : '-'}</C>
+                <C mute>{r.multiplier}</C>
                 {/* 스프레드 */}
-                <V c={cB(r.spread)}>{r.spread ? fB(r.spread) : '-'}</V>
-                <V dim>{r.spreadVolume ? r.spreadVolume.toLocaleString() : '-'}</V>
+                <C c={cV(r.spread)}>{r.spread ? fB(r.spread) : '-'}</C>
+                <C sub>{r.spreadVolume ? r.spreadVolume.toLocaleString() : '-'}</C>
                 {/* 배당 */}
-                <V dim>{r.dividend ? r.dividend.toLocaleString() : '-'}</V>
-                <V vdim>{r.dividendDate ? r.dividendDate.slice(5) : '-'}</V>
-                <V vdim>{r.dividendApplied ? 'Y' : '-'}</V>
+                <C sub>{r.dividend ? r.dividend.toLocaleString() : '-'}</C>
+                <C mute>{r.dividendDate ? r.dividendDate.slice(5) : '-'}</C>
+                <C mute>{r.dividendApplied ? 'Y' : '-'}</C>
                 {/* 만기 */}
-                <V vdim>{r.daysLeft > 0 ? `${r.daysLeft}일` : '-'}</V>
+                <C mute>{r.daysLeft > 0 ? `${r.daysLeft}` : '-'}</C>
                 {/* 액션 */}
-                <td className="px-1 py-[7px] text-center">
-                  <Btn>호가</Btn>
+                <td className="px-2 py-3 text-center">
+                  <button className="text-[11px] text-[#5a5a5e] hover:text-white transition-colors">호가</button>
                 </td>
-                <td className="px-1 py-[7px] text-center">
-                  <Btn>스프</Btn>
+                <td className="px-2 py-3 text-center">
+                  <button className="text-[11px] text-[#5a5a5e] hover:text-white transition-colors">스프</button>
                 </td>
                 {/* 보유 */}
-                <V dim>{r.holding031 || '-'}</V>
-                <V dim>{r.holding052 || '-'}</V>
-                <td className="px-1 py-[7px] text-center">
-                  <Btn>조회</Btn>
+                <C sub>{r.holding031 || '-'}</C>
+                <C sub>{r.holding052 || '-'}</C>
+                <td className="px-2 py-3 text-center">
+                  <button className="text-[11px] text-[#5a5a5e] hover:text-white transition-colors">조회</button>
                 </td>
-                <V dim>{r.futuresHolding || '-'}</V>
+                <C sub className="pr-4">{r.futuresHolding || '-'}</C>
               </tr>
             ))}
           </tbody>
@@ -266,67 +239,52 @@ export function StockArbitragePage() {
   )
 }
 
-// ── 헤더 셀 ──
+// ── 컴포넌트 ──
 
-function ColH({ children, className, sticky, style }: {
-  children: React.ReactNode; className?: string; sticky?: boolean; style?: React.CSSProperties
-}) {
-  return (
-    <th className={cn('px-2 py-1.5 font-normal text-right', sticky && 'sticky bg-bg-primary z-30', className)} style={style}>
-      {children}
-    </th>
-  )
+function Center({ children, className }: { children: React.ReactNode; className?: string }) {
+  return <div className="flex h-full items-center justify-center"><p className={cn('text-[13px] text-[#8b8b8e]', className)}>{children}</p></div>
 }
 
-function Col({ k, s, a, sort, children, className, left, sticky, style }: {
-  k: SortKey; s: SortKey; a: boolean; sort: (k: SortKey) => void
-  children: React.ReactNode; className?: string; left?: boolean; sticky?: boolean; style?: React.CSSProperties
+function Th({ children, className, sort, active, asc, left, sticky, style }: {
+  children: React.ReactNode; className?: string; sort?: () => void; active?: boolean; asc?: boolean
+  left?: boolean; sticky?: boolean; style?: React.CSSProperties
 }) {
-  const active = s === k
   return (
     <th
       className={cn(
-        'px-2 py-1.5 font-normal cursor-pointer select-none hover:text-t1 transition-colors',
+        'px-3 py-3 font-normal whitespace-nowrap border-b border-white/[0.06]',
         left ? 'text-left' : 'text-right',
-        active ? 'text-accent' : '',
-        sticky && 'sticky bg-bg-primary z-30',
+        sort ? 'cursor-pointer select-none hover:text-white transition-colors' : '',
+        active ? 'text-white' : '',
+        sticky && 'sticky left-0 bg-[#131214] z-30',
         className,
       )}
       style={style}
-      onClick={() => sort(k)}
+      onClick={sort}
     >
-      {children}{active && <span className="ml-0.5 text-[9px] opacity-60">{a ? '▲' : '▼'}</span>}
+      {children}
+      {active && <span className="ml-1 text-[9px] opacity-50">{asc ? '▲' : '▼'}</span>}
     </th>
   )
 }
 
-// ── 값 셀 ──
-
-function V({ children, c, dim, vdim, bold }: {
-  children: React.ReactNode; c?: string; dim?: boolean; vdim?: boolean; bold?: boolean
+function C({ children, c, sub, mute, className }: {
+  children: React.ReactNode; c?: string; sub?: boolean; mute?: boolean; className?: string
 }) {
   return (
     <td className={cn(
-      'px-2 py-[7px] tabular-nums text-right',
-      c || (dim ? 'text-t3' : vdim ? 'text-t4' : 'text-t1'),
-      bold && 'font-medium',
+      'px-3 py-3 text-right text-[14px] tabular-nums whitespace-nowrap',
+      c || (mute ? 'text-[#5a5a5e]' : sub ? 'text-[#8b8b8e]' : 'text-[#e0e0e3]'),
+      className,
     )}>
       {children}
     </td>
   )
 }
 
-function Btn({ children }: { children: React.ReactNode }) {
-  return (
-    <button className="px-2 py-0.5 rounded text-[10px] text-t4 hover:text-t1 hover:bg-bg-surface-2 transition-colors">
-      {children}
-    </button>
-  )
-}
-
 // ── 포맷 ──
 
-function cB(v: number) { return !v ? 'text-t4' : v > 0 ? 'text-up' : 'text-down' }
+function cV(v: number) { return !v ? 'text-[#5a5a5e]' : v > 0 ? 'text-[#00b26b]' : 'text-[#f6465d]' }
 function fP(v: number) { return v ? v.toLocaleString() : '-' }
 function fB(v: number) { return !v ? '-' : `${v > 0 ? '+' : ''}${v.toLocaleString(undefined, { maximumFractionDigits: 1 })}` }
 function fBp(v: number) { return !v ? '-' : `${v > 0 ? '+' : ''}${v.toFixed(1)}` }
