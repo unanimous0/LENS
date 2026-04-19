@@ -41,6 +41,7 @@
 
   --font-pretendard: 'Inter Variable', 'Inter', 'Pretendard Variable', 'Pretendard', -apple-system, BlinkMacSystemFont, sans-serif;
   --font-jetbrains: 'JetBrains Mono', 'SF Mono', 'Consolas', monospace;
+  --font-mono: 'Inter Variable', 'Inter', 'Pretendard Variable', 'Pretendard', -apple-system, BlinkMacSystemFont, sans-serif;
 }
 
 * {
