@@ -25,11 +25,12 @@ use ws::handler::ws_market;
 const PORT: u16 = 8200;
 const BROADCAST_CAPACITY: usize = 16384;
 
-/// 앱 공유 상태: broadcaster + 구독 명령 채널
+/// 앱 공유 상태: broadcaster + 구독 명령 채널 + 피드 모드
 #[derive(Clone)]
 pub struct AppState {
     broadcaster: Arc<Broadcaster>,
     sub_tx: mpsc::UnboundedSender<SubCommand>,
+    feed_mode: Arc<str>,
 }
 
 #[tokio::main]
@@ -155,12 +156,14 @@ async fn main() {
     let state = AppState {
         broadcaster,
         sub_tx,
+        feed_mode: Arc::from(mode.as_str()),
     };
 
     // 라우터
     let app = Router::new()
         .route("/ws/market", get(ws_market))
         .route("/health", get(health))
+        .route("/mode", get(get_mode))
         .route("/subscribe", post(subscribe))
         .route("/unsubscribe", post(unsubscribe))
         .with_state(state)
@@ -186,6 +189,10 @@ async fn main() {
 
 async fn health() -> &'static str {
     "ok"
+}
+
+async fn get_mode(State(state): State<AppState>) -> String {
+    state.feed_mode.to_string()
 }
 
 /// futures_master.json에서 종목명 매핑, 현물 코드 Set, 선물→현물 매핑, 코스닥 코드를 로드.
