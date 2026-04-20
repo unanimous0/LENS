@@ -2,26 +2,35 @@ mod feed;
 mod model;
 mod ws;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+use axum::extract::State;
 use axum::http::Method;
-use axum::routing::get;
-use axum::Router;
+use axum::routing::{get, post};
+use axum::{Json, Router};
+use serde::Deserialize;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tower_http::cors::{Any, CorsLayer};
-use tracing::info;
+use tracing::{info, warn};
 
 use feed::internal::InternalFeed;
 use feed::ls_api::LsApiFeed;
 use feed::mock::MockFeed;
-use feed::MarketFeed;
+use feed::{MarketFeed, SubCommand};
 use ws::broadcast::Broadcaster;
 use ws::handler::ws_market;
 
 const PORT: u16 = 8200;
 const BROADCAST_CAPACITY: usize = 16384;
+
+/// 앱 공유 상태: broadcaster + 구독 명령 채널
+#[derive(Clone)]
+pub struct AppState {
+    broadcaster: Arc<Broadcaster>,
+    sub_tx: mpsc::UnboundedSender<SubCommand>,
+}
 
 #[tokio::main]
 async fn main() {
@@ -41,9 +50,10 @@ async fn main() {
 
     // 피드 → 브로드캐스터 파이프라인
     let (tx, mut rx) = mpsc::channel(1024);
+    let (sub_tx, sub_rx) = mpsc::unbounded_channel::<SubCommand>();
     let feed_cancel = cancel.clone();
 
-    // 모드 선택: FEED_MODE 환경변수 (mock / ls_api)
+    // 모드 선택: FEED_MODE 환경변수 (mock / ls_api / internal)
     let mode = std::env::var("FEED_MODE").unwrap_or_else(|_| "mock".to_string());
     info!("Feed mode: {mode}");
 
@@ -52,42 +62,42 @@ async fn main() {
             let app_key = std::env::var("LS_APP_KEY").expect("LS_APP_KEY not set");
             let app_secret = std::env::var("LS_APP_SECRET").expect("LS_APP_SECRET not set");
 
-            // 기본 구독 종목 (환경변수 또는 기본값)
-            let subs_str = std::env::var("LS_SUBSCRIPTIONS").unwrap_or_else(|_| {
-                "S3_:005930,S3_:069500".to_string()
-            });
+            // futures_master.json에서 종목명 + 현물코드 + 선물→현물 매핑 + 코스닥 로드
+            let (master_names, master_stock_codes, futures_to_spot, kosdaq_codes) = load_futures_master();
 
-            let subscriptions: Vec<(String, String)> = subs_str
-                .split(',')
-                .filter_map(|s| {
-                    let parts: Vec<&str> = s.trim().split(':').collect();
-                    if parts.len() == 2 {
-                        Some((parts[0].to_string(), parts[1].to_string()))
-                    } else {
-                        None
-                    }
-                })
-                .collect();
+            // 마스터 기반으로 전체 종목 자동 구독 구성
+            let mut subscriptions: Vec<(String, String)> = Vec::new();
 
-            // 종목명 매핑 (TODO: REST API로 조회하여 자동 설정)
-            let mut names = HashMap::new();
-            names.insert("005930".to_string(), "삼성전자".to_string());
-            names.insert("069500".to_string(), "KODEX 200".to_string());
-            names.insert("A1165000".to_string(), "삼성전자 F 근월".to_string());
+            // 현물: 코스닥은 K3_, 나머지는 S3_
+            for code in &master_stock_codes {
+                let tr = if kosdaq_codes.contains(code) { "K3_" } else { "S3_" };
+                subscriptions.push((tr.to_string(), code.clone()));
+            }
 
-            info!("LS API subscriptions: {:?}", subscriptions);
+            // 선물: 근월물 JC0
+            for (futures_code, _spot_code) in &futures_to_spot {
+                // 근월물만 (코드가 65000으로 끝나는 것)
+                if futures_code.ends_with("65000") {
+                    subscriptions.push(("JC0".to_string(), futures_code.clone()));
+                }
+            }
 
-            let feed = LsApiFeed::new(app_key, app_secret, subscriptions, names);
+            info!("LS API auto-subscribe: {} codes ({} stocks, {} futures), {} kosdaq",
+                subscriptions.len(),
+                master_stock_codes.len(),
+                subscriptions.iter().filter(|(tr, _)| tr == "JC0").count(),
+                kosdaq_codes.len(),
+            );
+
+            let feed = LsApiFeed::new(app_key, app_secret, subscriptions, master_names, master_stock_codes, futures_to_spot, kosdaq_codes);
             tokio::spawn(async move {
-                feed.run(tx, feed_cancel).await;
+                feed.run(tx, sub_rx, feed_cancel).await;
             });
         }
         "internal" => {
             let ws_url = std::env::var("INTERNAL_WS_URL")
                 .unwrap_or_else(|_| "ws://10.21.1.208:41001".to_string());
 
-            // 구독 종목: "A005930,A069500,KA1165000" (내부망 형식)
-            // 또는 사용자 입력 형식도 OK: "005930,069500,A1165000"
             let subs_str = std::env::var("INTERNAL_SUBSCRIPTIONS").unwrap_or_else(|_| {
                 "A005930,A069500".to_string()
             });
@@ -105,26 +115,22 @@ async fn main() {
                 .map(|v| v == "true" || v == "1")
                 .unwrap_or(true);
 
-            // 종목명 매핑 (TODO: 자동 조회)
-            let mut names = HashMap::new();
-            names.insert("005930".to_string(), "삼성전자".to_string());
-            names.insert("069500".to_string(), "KODEX 200".to_string());
-            names.insert("364980".to_string(), "KODEX K-반도체".to_string());
-            names.insert("A1165000".to_string(), "삼성전자 F 근월".to_string());
-            names.insert("A0166000".to_string(), "코스닥150 F 근월".to_string());
+            // futures_master.json에서 종목명 로드
+            let (names, _, _, _) = load_futures_master();
 
-            info!("Internal subscriptions: {:?} (real_nav={real_nav})", subscribe_codes);
+            info!("Internal subscriptions: {:?} (real_nav={real_nav}), names: {} entries",
+                subscribe_codes, names.len());
 
             let feed = InternalFeed::new(ws_url, subscribe_codes, names, real_nav);
             tokio::spawn(async move {
-                feed.run(tx, feed_cancel).await;
+                feed.run(tx, sub_rx, feed_cancel).await;
             });
         }
         _ => {
             // Mock 모드 (기본)
             let feed = MockFeed;
             tokio::spawn(async move {
-                feed.run(tx, feed_cancel).await;
+                feed.run(tx, sub_rx, feed_cancel).await;
             });
         }
     }
@@ -146,11 +152,18 @@ async fn main() {
         .allow_methods([Method::GET, Method::POST])
         .allow_headers(Any);
 
+    let state = AppState {
+        broadcaster,
+        sub_tx,
+    };
+
     // 라우터
     let app = Router::new()
         .route("/ws/market", get(ws_market))
         .route("/health", get(health))
-        .with_state(broadcaster)
+        .route("/subscribe", post(subscribe))
+        .route("/unsubscribe", post(unsubscribe))
+        .with_state(state)
         .layer(cors);
 
     let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{PORT}"))
@@ -173,4 +186,91 @@ async fn main() {
 
 async fn health() -> &'static str {
     "ok"
+}
+
+/// futures_master.json에서 종목명 매핑, 현물 코드 Set, 선물→현물 매핑, 코스닥 코드를 로드.
+fn load_futures_master() -> (HashMap<String, String>, HashSet<String>, HashMap<String, String>, HashSet<String>) {
+    let mut names = HashMap::new();
+    let mut stock_codes = HashSet::new();
+    let mut futures_to_spot = HashMap::new();
+    let mut kosdaq_codes = HashSet::new();
+
+    let master_path = std::path::Path::new("../data/futures_master.json");
+    let data = match std::fs::read_to_string(master_path) {
+        Ok(d) => d,
+        Err(e) => {
+            warn!("futures_master.json not found: {e}");
+            return (names, stock_codes, futures_to_spot, kosdaq_codes);
+        }
+    };
+
+    let master: serde_json::Value = match serde_json::from_str(&data) {
+        Ok(v) => v,
+        Err(e) => {
+            warn!("futures_master.json parse failed: {e}");
+            return (names, stock_codes, futures_to_spot, kosdaq_codes);
+        }
+    };
+
+    if let Some(items) = master["items"].as_array() {
+        for item in items {
+            let base_code = item["base_code"].as_str().unwrap_or("");
+            let base_name = item["base_name"].as_str().unwrap_or("");
+
+            if !base_code.is_empty() && !base_name.is_empty() {
+                names.insert(base_code.to_string(), base_name.to_string());
+                stock_codes.insert(base_code.to_string());
+
+                // 코스닥 구분
+                let market = item["market"].as_str().unwrap_or("KOSPI");
+                if market == "KOSDAQ" {
+                    kosdaq_codes.insert(base_code.to_string());
+                }
+
+                if let Some(front) = item.get("front") {
+                    if let Some(code) = front["code"].as_str() {
+                        let fname = front["name"].as_str().unwrap_or(base_name);
+                        names.insert(code.to_string(), fname.to_string());
+                        futures_to_spot.insert(code.to_string(), base_code.to_string());
+                    }
+                }
+                if let Some(back) = item.get("back") {
+                    if let Some(code) = back["code"].as_str() {
+                        let bname = back["name"].as_str().unwrap_or(base_name);
+                        names.insert(code.to_string(), bname.to_string());
+                        futures_to_spot.insert(code.to_string(), base_code.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    info!("Loaded futures master: {} names, {} stock codes, {} futures→spot, {} kosdaq",
+        names.len(), stock_codes.len(), futures_to_spot.len(), kosdaq_codes.len());
+    (names, stock_codes, futures_to_spot, kosdaq_codes)
+}
+
+#[derive(Deserialize)]
+struct SubRequest {
+    codes: Vec<String>,
+}
+
+async fn subscribe(
+    State(state): State<AppState>,
+    Json(req): Json<SubRequest>,
+) -> Json<serde_json::Value> {
+    let count = req.codes.len();
+    info!("REST subscribe: {} codes", count);
+    let _ = state.sub_tx.send(SubCommand::Subscribe(req.codes));
+    Json(serde_json::json!({"status": "ok", "subscribed": count}))
+}
+
+async fn unsubscribe(
+    State(state): State<AppState>,
+    Json(req): Json<SubRequest>,
+) -> Json<serde_json::Value> {
+    let count = req.codes.len();
+    info!("REST unsubscribe: {} codes", count);
+    let _ = state.sub_tx.send(SubCommand::Unsubscribe(req.codes));
+    Json(serde_json::json!({"status": "ok", "unsubscribed": count}))
 }

@@ -14,7 +14,7 @@ use crate::model::internal::{
 use crate::model::message::WsMessage;
 use crate::model::tick::{EtfTick, FuturesTick, StockTick};
 
-use super::MarketFeed;
+use super::{MarketFeed, SubCommand};
 
 const MAX_RECONNECT_DELAY_SECS: u64 = 60;
 
@@ -82,6 +82,7 @@ impl InternalFeed {
     async fn connect_and_stream(
         &self,
         tx: &mpsc::Sender<WsMessage>,
+        sub_rx: &mut mpsc::UnboundedReceiver<SubCommand>,
         cancel: &CancellationToken,
     ) -> Result<(), String> {
         let (ws_stream, resp) = tokio_tungstenite::connect_async(&self.ws_url)
@@ -138,6 +139,33 @@ impl InternalFeed {
                             return Err("WebSocket stream ended".to_string());
                         }
                         _ => {}
+                    }
+                }
+                cmd = sub_rx.recv() => {
+                    use crate::model::internal::short_to_subscribe;
+                    match cmd {
+                        Some(SubCommand::Subscribe(codes)) => {
+                            let sub_codes: Vec<String> = codes.iter()
+                                .map(|c| short_to_subscribe(c))
+                                .collect();
+                            let sub_msg = serde_json::json!({
+                                "symbols": sub_codes,
+                                "real_nav": self.real_nav,
+                            });
+                            let _ = write.send(tungstenite::Message::Text(sub_msg.to_string().into())).await;
+                            info!("Runtime subscribe: {:?}", sub_codes);
+                        }
+                        Some(SubCommand::Unsubscribe(codes)) => {
+                            let unsub_codes: Vec<String> = codes.iter()
+                                .map(|c| short_to_subscribe(c))
+                                .collect();
+                            let unsub_msg = serde_json::json!({
+                                "unsubscribe": unsub_codes,
+                            });
+                            let _ = write.send(tungstenite::Message::Text(unsub_msg.to_string().into())).await;
+                            info!("Runtime unsubscribe: {:?}", unsub_codes);
+                        }
+                        None => {}
                     }
                 }
                 _ = cancel.cancelled() => {
@@ -379,7 +407,7 @@ impl InternalFeed {
 }
 
 impl MarketFeed for InternalFeed {
-    async fn run(&self, tx: mpsc::Sender<WsMessage>, cancel: CancellationToken) {
+    async fn run(&self, tx: mpsc::Sender<WsMessage>, mut sub_rx: mpsc::UnboundedReceiver<SubCommand>, cancel: CancellationToken) {
         let mut attempt = 0u32;
 
         loop {
@@ -387,7 +415,7 @@ impl MarketFeed for InternalFeed {
                 return;
             }
 
-            match self.connect_and_stream(&tx, &cancel).await {
+            match self.connect_and_stream(&tx, &mut sub_rx, &cancel).await {
                 Ok(()) => return,
                 Err(e) => {
                     attempt += 1;

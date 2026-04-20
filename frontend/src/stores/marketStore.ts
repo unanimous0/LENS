@@ -24,9 +24,14 @@ export const useMarketStore = create<MarketState>((set) => ({
     })),
   stockTicks: {},
   updateStockTick: (tick) =>
-    set((state) => ({
-      stockTicks: { ...state.stockTicks, [tick.code]: tick },
-    })),
+    set((state) => {
+      const prev = state.stockTicks[tick.code]
+      // cum_volume=0인 틱(JC0 유래)은 가격만 갱신, cum_volume은 기존값 유지
+      const merged = tick.cum_volume === 0
+        ? { ...tick, cum_volume: prev?.cum_volume ?? 0 }
+        : tick
+      return { stockTicks: { ...state.stockTicks, [tick.code]: merged } }
+    }),
   futuresTicks: {},
   updateFuturesTick: (tick) =>
     set((state) => ({

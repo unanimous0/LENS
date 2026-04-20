@@ -6,14 +6,14 @@ use axum::response::IntoResponse;
 use tokio::sync::broadcast;
 use tracing::{info, warn};
 
-use super::broadcast::Broadcaster;
+use crate::AppState;
 
 /// WebSocket 업그레이드 핸들러. /ws/market 엔드포인트.
 pub async fn ws_market(
     ws: WebSocketUpgrade,
-    broadcaster: axum::extract::State<Arc<Broadcaster>>,
+    state: axum::extract::State<AppState>,
 ) -> impl IntoResponse {
-    let rx = broadcaster.subscribe();
+    let rx = state.broadcaster.subscribe();
     ws.on_upgrade(move |socket| handle_client(socket, rx))
 }
 

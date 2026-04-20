@@ -7,7 +7,7 @@ use tokio_util::sync::CancellationToken;
 use crate::model::message::WsMessage;
 use crate::model::tick::{EtfTick, FuturesTick, StockTick};
 
-use super::MarketFeed;
+use super::{MarketFeed, SubCommand};
 
 struct MockEtf {
     code: &'static str,
@@ -53,7 +53,7 @@ static MOCK_FUTURES: &[MockFuture] = &[
 pub struct MockFeed;
 
 impl MarketFeed for MockFeed {
-    async fn run(&self, tx: mpsc::Sender<WsMessage>, cancel: CancellationToken) {
+    async fn run(&self, tx: mpsc::Sender<WsMessage>, _sub_rx: mpsc::UnboundedReceiver<SubCommand>, cancel: CancellationToken) {
         let mut rng = StdRng::from_os_rng();
 
         loop {

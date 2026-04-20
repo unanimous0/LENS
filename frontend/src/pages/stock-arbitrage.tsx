@@ -7,8 +7,10 @@ import { cn } from '@/lib/utils'
 interface MasterItem {
   base_code: string
   base_name: string
-  front: { code: string; name: string; expiry: string; days_left: number; multiplier: number }
-  back?: { code: string; name: string; expiry: string; days_left: number; multiplier: number }
+  spot_price?: number
+  spot_value?: number
+  front: { code: string; name: string; expiry: string; days_left: number; multiplier: number; price?: number; volume?: number }
+  back?: { code: string; name: string; expiry: string; days_left: number; multiplier: number; price?: number; volume?: number }
 }
 
 interface Master {
@@ -73,6 +75,9 @@ export function StockArbitragePage() {
       .catch((e) => { setError(e.message); setLoading(false) })
   }, [])
 
+  // 구독: Rust가 시작 시 마스터 기반으로 전체 자동 구독.
+  // 프론트에서는 별도 구독 관리 불필요.
+
   const rows = useMemo(() => {
     if (!master) return [] as Row[]
     return master.items.map((item, idx): Row => {
@@ -83,35 +88,27 @@ export function StockArbitragePage() {
       const fut = futuresTicks[sel.code]
       const otherFut = other ? futuresTicks[other.code] : undefined
 
-      const seed = parseInt(item.base_code.slice(-4), 10) || (idx + 1) * 137
-      const mock = !spot && !fut
-      const bp = mock ? 10000 + (seed % 50) * 5000 : 0
-      const sp = spot?.price ?? (mock ? bp : 0)
-      const fp = fut?.price ?? (mock ? bp + (seed % 200 - 100) : 0)
-      const mb = fut?.basis ?? (mock ? fp - sp : 0)
-      const tp = mock ? bp + (seed % 80 - 30) : 0
-      const tb = mock ? tp - sp : 0
-      const g = mock ? mb - tb : 0
-      const gbp = sp > 0 ? (g / sp) * 10000 : 0
-      const ofp = otherFut?.price ?? (mock ? fp + (seed % 60 - 20) : 0)
+      const sp = spot?.price ?? item.spot_price ?? 0
+      const fp = fut?.price ?? sel.price ?? 0
+      const mb = fp > 0 && sp > 0 ? fp - sp : (fut?.basis ?? 0)
+      const tb = 0 // 이론베이시스 (Phase B에서 구현)
+      const gap = mb - tb
+      const ofp = otherFut?.price ?? other?.price ?? 0
       // 스프레드: 항상 원월 - 근월
       const frontP = month === 'front' ? fp : ofp
       const backP = month === 'front' ? ofp : fp
       return {
         baseCode: item.base_code, baseName: item.base_name,
         frontCode: sel.code, backCode: other?.code ?? '',
-        multiplier: sel.multiplier, expiry: sel.expiry, daysLeft: sel.days_left || 28,
-        spotPrice: sp, spotCumVolume: spot?.cum_volume ?? (mock ? (seed % 300 + 50) * 1e8 : 0),
-        futuresPrice: fp, futuresVolume: fut?.volume ?? (mock ? seed % 2000 + 100 : 0),
-        theoreticalPrice: tp, theoreticalBasis: tb, marketBasis: mb, basisGap: g, basisGapBp: gbp,
+        multiplier: sel.multiplier, expiry: sel.expiry, daysLeft: sel.days_left || 0,
+        spotPrice: sp, spotCumVolume: (spot?.cum_volume || 0) > 0 ? spot!.cum_volume : (item.spot_value ?? 0),
+        futuresPrice: fp, futuresVolume: fut?.volume ?? sel.volume ?? 0,
+        theoreticalPrice: 0, theoreticalBasis: tb,
+        marketBasis: mb, basisGap: gap, basisGapBp: sp > 0 ? (gap / sp) * 10000 : 0,
         backPrice: backP, spread: backP > 0 && frontP > 0 ? backP - frontP : 0,
-        spreadVolume: mock ? seed % 500 : 0,
-        dividend: mock && seed % 3 === 0 ? (seed % 10 + 1) * 100 : 0,
-        dividendDate: mock && seed % 3 === 0 ? '2026-06-28' : '',
-        dividendApplied: mock && seed % 3 === 0,
-        holding031: mock && seed % 4 === 0 ? seed % 50000 + 1000 : 0,
-        holding052: mock && seed % 5 === 0 ? seed % 30000 + 500 : 0,
-        futuresHolding: mock && seed % 6 === 0 ? seed % 200 + 10 : 0,
+        spreadVolume: 0,
+        dividend: 0, dividendDate: '', dividendApplied: false,
+        holding031: 0, holding052: 0, futuresHolding: 0,
       }
     })
   }, [master, stockTicks, futuresTicks, month])
@@ -311,8 +308,8 @@ function fP(v: number) { return v ? v.toLocaleString() : '-' }
 function fB(v: number) { return `${v > 0 ? '+' : ''}${v.toLocaleString(undefined, { maximumFractionDigits: 1 })}` }
 function fBp(v: number) { return `${v > 0 ? '+' : ''}${v.toFixed(1)}` }
 function fVol(v: number) {
-  if (v >= 1e12) return `${(v / 1e12).toFixed(1)}조`
-  if (v >= 1e8) return `${(v / 1e8).toFixed(0)}억`
-  if (v >= 1e4) return `${(v / 1e4).toFixed(0)}만`
+  if (v >= 1e12) return `${(v / 1e12).toLocaleString(undefined, { maximumFractionDigits: 1, minimumFractionDigits: 1 })}조`
+  if (v >= 1e8) return `${Math.round(v / 1e8).toLocaleString()}억`
+  if (v >= 1e4) return `${Math.round(v / 1e4).toLocaleString()}만`
   return v.toLocaleString()
 }

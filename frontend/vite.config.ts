@@ -20,6 +20,11 @@ export default defineConfig({
         target: 'ws://localhost:8200',
         ws: true,
       },
+      '/realtime': {
+        target: 'http://localhost:8200',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/realtime/, ''),
+      },
     },
   },
 })

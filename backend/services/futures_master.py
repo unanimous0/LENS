@@ -57,28 +57,40 @@ def _extract_expiry_month(hname: str) -> str:
     return m.group(1) if m else ""
 
 
+def _second_thursday(year: int, month: int) -> date:
+    """해당 월의 둘째 목요일 날짜를 반환."""
+    # 1일의 요일 (0=월 ... 3=목 ... 6=일)
+    first = date(year, month, 1)
+    thu = 3  # Thursday
+    # 첫째 목요일: 1일이 목요일이면 1일, 아니면 다음 목요일
+    days_until_thu = (thu - first.weekday()) % 7
+    first_thu = 1 + days_until_thu
+    second_thu = first_thu + 7
+    return date(year, month, second_thu)
+
+
+def _next_month(year: int, month: int) -> tuple[int, int]:
+    return (year + 1, 1) if month == 12 else (year, month + 1)
+
+
 def _determine_front_back(today: date) -> tuple[str, str]:
     """현재 날짜 기준 근월/원월 판별.
-    주식선물 만기: 매월 둘째 주 목요일.
-    간단하게: 이번 달 15일 이전이면 이번 달이 근월, 아니면 다음 달이 근월."""
+    주식선물 만기: 매월 둘째 목요일.
+    만기일 당일까지는 해당 월이 근월, 만기일 다음날부터 다음 달이 근월."""
     y, m = today.year, today.month
-    if today.day <= 15:
-        front = f"{y}{m:02d}"
-        nm = m + 1 if m < 12 else 1
-        ny = y if m < 12 else y + 1
-        back = f"{ny}{nm:02d}"
+    expiry = _second_thursday(y, m)
+    if today <= expiry:
+        front_y, front_m = y, m
     else:
-        nm = m + 1 if m < 12 else 1
-        ny = y if m < 12 else y + 1
-        front = f"{ny}{nm:02d}"
-        nm2 = nm + 1 if nm < 12 else 1
-        ny2 = ny if nm < 12 else ny + 1
-        back = f"{ny2}{nm2:02d}"
-    return front, back
+        front_y, front_m = _next_month(y, m)
+    back_y, back_m = _next_month(front_y, front_m)
+    return f"{front_y}{front_m:02d}", f"{back_y}{back_m:02d}"
 
 
 async def fetch_and_save_master() -> dict:
     """LS API에서 주식선물 마스터 데이터를 가져와 JSON으로 저장."""
+    from dotenv import load_dotenv
+    load_dotenv()
     app_key = os.environ.get("LS_APP_KEY", "")
     app_secret = os.environ.get("LS_APP_SECRET", "")
     if not app_key or not app_secret:
@@ -101,6 +113,14 @@ async def fetch_and_save_master() -> dict:
             item["expiry"] = expiry
             by_base[item["basecode"]].append(item)
 
+    # t8436: 코스닥 종목 목록 (코스피/코스닥 구분용)
+    kosdaq_data = await _call_tr(token, "t8436", "stock/etc", {
+        "t8436InBlock": {"gubun": "2"},
+    })
+    kosdaq_codes = {}
+    for item in kosdaq_data.get("t8436OutBlock", []):
+        kosdaq_codes[item["shcode"]] = "KOSDAQ"
+
     today = date.today()
     front_month, back_month = _determine_front_back(today)
 
@@ -116,37 +136,52 @@ async def fetch_and_save_master() -> dict:
 
         # t8402 호출 (근월물) — 장 외 시간에는 실패할 수 있음
         front_detail = await _fetch_detail_safe(token, front["shcode"])
+        await _sleep(0.15)
         base_name = front_detail.get("basehname", front["hname"].strip().split("F")[0].strip())
         # base_code에서 A 접두사 제거 (A005930 → 005930)
         clean_base = base_code[1:] if base_code.startswith("A") and len(base_code) == 7 else base_code
 
+        spot_price = _parse_price(front_detail.get("baseprice", "0"))
+        spot_volume = int(_parse_price(front_detail.get("basevol", "0")))
         entry = {
             "base_code": clean_base,
             "base_name": base_name,
-            "front": {
-                "code": front["shcode"],
-                "name": front["hname"].strip(),
-                "expiry": front_detail.get("lastmonth", front["expiry"]),
-                "days_left": int(front_detail.get("jandatecnt", 0)),
-                "multiplier": _parse_multiplier(front_detail.get("mulcnt", "10")),
-            },
+            "market": kosdaq_codes.get(clean_base, "KOSPI"),
+            "spot_price": spot_price,
+            "spot_value": int(spot_price * spot_volume) if spot_price > 0 and spot_volume > 0 else 0,
+            "front": _build_month_entry(front, front_detail),
         }
 
         # t8402 호출 (원월물, 있으면)
         if back:
             back_detail = await _fetch_detail_safe(token, back["shcode"])
-            entry["back"] = {
-                "code": back["shcode"],
-                "name": back["hname"].strip(),
-                "expiry": back_detail.get("lastmonth", back["expiry"]),
-                "days_left": int(back_detail.get("jandatecnt", 0)),
-                "multiplier": _parse_multiplier(back_detail.get("mulcnt", "10")),
-            }
+            await _sleep(0.15)
+            entry["back"] = _build_month_entry(back, back_detail)
 
         items.append(entry)
 
-        # t8402 TPS = 10, 안전하게 0.12초 간격
-        await _sleep(0.12)
+    # 가격 누락된 항목 재시도 (TPS 제한으로 실패했을 수 있음)
+    await _sleep(2.0)
+    for entry in items:
+        if entry.get("spot_price", 0) == 0:
+            front_code = entry["front"]["code"]
+            detail = await _fetch_detail_safe(token, front_code)
+            if detail:
+                entry["spot_price"] = _parse_price(detail.get("baseprice", "0"))
+                entry["front"] = _build_month_entry(
+                    {"shcode": front_code, "hname": entry["front"]["name"]}, detail
+                )
+                if not entry.get("base_name") or entry["base_name"] == front_code:
+                    entry["base_name"] = detail.get("basehname", entry["base_name"])
+            await _sleep(0.3)
+            if "back" in entry and entry["back"].get("price", 0) == 0:
+                back_code = entry["back"]["code"]
+                bdetail = await _fetch_detail_safe(token, back_code)
+                if bdetail:
+                    entry["back"] = _build_month_entry(
+                        {"shcode": back_code, "hname": entry["back"]["name"]}, bdetail
+                    )
+                await _sleep(0.3)
 
     master = {
         "updated": today.isoformat(),
@@ -169,12 +204,34 @@ async def _fetch_detail(token: str, shcode: str) -> dict:
     return data.get("t8402OutBlock", {})
 
 
-async def _fetch_detail_safe(token: str, shcode: str) -> dict:
-    """t8402 호출. 실패 시 (장 외 등) 빈 dict 반환."""
+async def _fetch_detail_safe(token: str, shcode: str, retries: int = 3) -> dict:
+    """t8402 호출. 실패 시 재시도, 최종 실패 시 빈 dict 반환."""
+    for attempt in range(retries + 1):
+        try:
+            return await _fetch_detail(token, shcode)
+        except Exception:
+            if attempt < retries:
+                await _sleep(1.0)
+    return {}
+
+
+def _build_month_entry(item: dict, detail: dict) -> dict:
+    return {
+        "code": item["shcode"],
+        "name": item["hname"].strip(),
+        "expiry": detail.get("lastmonth", item.get("expiry", "")),
+        "days_left": int(detail.get("jandatecnt", 0)),
+        "multiplier": _parse_multiplier(detail.get("mulcnt", "10")),
+        "price": _parse_price(detail.get("price", "0")),
+        "volume": int(_parse_price(detail.get("volume", "0"))),
+    }
+
+
+def _parse_price(val: str) -> float:
     try:
-        return await _fetch_detail(token, shcode)
-    except Exception:
-        return {}
+        return float(val)
+    except (ValueError, TypeError):
+        return 0.0
 
 
 def _parse_multiplier(val: str) -> float:
@@ -217,14 +274,26 @@ def is_master_expired(master: dict) -> bool:
         return True
 
 
+def _is_stale(master: dict) -> bool:
+    """오늘 갱신되지 않았거나 만기 지났으면 True."""
+    updated = master.get("updated", "")
+    try:
+        updated_date = datetime.strptime(updated, "%Y-%m-%d").date()
+        if updated_date < date.today():
+            return True
+    except ValueError:
+        return True
+    return is_master_expired(master)
+
+
 async def ensure_master() -> dict:
-    """마스터 데이터가 유효하면 로드, 만기 지났으면 갱신 시도."""
+    """마스터 데이터가 유효하면 로드, stale이면 갱신 시도."""
     master = load_master()
 
-    if master and not is_master_expired(master):
+    if master and not _is_stale(master):
         return master
 
-    # 만기 지났거나 파일 없음 → LS API 호출 시도
+    # 오늘 아직 갱신 안 됐거나 만기 지남 → LS API 호출 시도
     try:
         master = await fetch_and_save_master()
         return master
