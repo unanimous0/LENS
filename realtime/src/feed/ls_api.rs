@@ -44,19 +44,25 @@ impl LsApiFeed {
 }
 
 impl MarketFeed for LsApiFeed {
-    async fn run(&self, tx: mpsc::Sender<WsMessage>, mut _sub_rx: mpsc::UnboundedReceiver<SubCommand>, cancel: CancellationToken) {
-        let chunks: Vec<Vec<(String, String)>> = self.subscriptions
-            .chunks(MAX_SUBS_PER_CONNECTION)
-            .map(|c| c.to_vec())
-            .collect();
+    async fn run(&self, tx: mpsc::Sender<WsMessage>, mut sub_rx: mpsc::UnboundedReceiver<SubCommand>, cancel: CancellationToken) {
+        // 고정 그룹 (현물 S3_/K3_ + 스프레드 D코드): 변경 없음
+        let fixed: Vec<(String, String)> = self.subscriptions.iter()
+            .filter(|(_, key)| !key.starts_with('A') || key.len() != 8)  // A+7자리 선물코드가 아닌 것
+            .cloned().collect();
 
-        let n = chunks.len();
-        info!("LS API: {} subscriptions → {} connections (max {} per conn)",
-            self.subscriptions.len(), n, MAX_SUBS_PER_CONNECTION);
+        // 전환 그룹 (선물 JC0 A코드): 월물 전환 대상
+        let initial_futures: Vec<(String, String)> = self.subscriptions.iter()
+            .filter(|(tr, key)| tr == "JC0" && key.starts_with('A') && key.len() == 8)
+            .cloned().collect();
 
-        let mut handles = Vec::new();
+        info!("LS API: fixed={} (spot+spread), switchable={} (futures)",
+            fixed.len(), initial_futures.len());
 
-        for (i, chunk) in chunks.into_iter().enumerate() {
+        // 고정 그룹 연결 시작
+        let fixed_chunks: Vec<Vec<(String, String)>> = fixed
+            .chunks(MAX_SUBS_PER_CONNECTION).map(|c| c.to_vec()).collect();
+
+        for (i, chunk) in fixed_chunks.into_iter().enumerate() {
             let tx = tx.clone();
             let cancel = cancel.clone();
             let app_key = self.app_key.clone();
@@ -65,7 +71,7 @@ impl MarketFeed for LsApiFeed {
             let stock_codes = self.stock_codes.clone();
             let futures_to_spot = self.futures_to_spot.clone();
 
-            handles.push(tokio::spawn(async move {
+            tokio::spawn(async move {
                 let mut attempt = 0u32;
                 loop {
                     if cancel.is_cancelled() { return; }
@@ -76,7 +82,7 @@ impl MarketFeed for LsApiFeed {
                         Err(e) => {
                             attempt += 1;
                             let delay = (2u64.pow(attempt.min(5))).min(MAX_RECONNECT_DELAY_SECS);
-                            warn!("conn[{i}] disconnected: {e} — reconnecting in {delay}s");
+                            warn!("fixed[{i}] disconnected: {e} — reconnecting in {delay}s");
                             tokio::select! {
                                 _ = tokio::time::sleep(std::time::Duration::from_secs(delay)) => {}
                                 _ = cancel.cancelled() => { return; }
@@ -84,12 +90,119 @@ impl MarketFeed for LsApiFeed {
                         }
                     }
                 }
-            }));
+            });
         }
 
-        for h in handles {
-            let _ = h.await;
+        // 전환 그룹: 선물 연결 관리
+        let app_key = self.app_key.clone();
+        let app_secret = self.app_secret.clone();
+        let names = self.names.clone();
+        let stock_codes = self.stock_codes.clone();
+        let futures_to_spot = self.futures_to_spot.clone();
+
+        // 초기 선물 연결 시작
+        let mut futures_cancel = CancellationToken::new();
+        spawn_futures_connections(
+            &initial_futures, &app_key, &app_secret, &names, &stock_codes,
+            &futures_to_spot, &tx, &cancel, &futures_cancel,
+        );
+
+        // sub_rx에서 전환 명령 대기
+        loop {
+            tokio::select! {
+                cmd = sub_rx.recv() => {
+                    match cmd {
+                        Some(SubCommand::Subscribe(codes)) => {
+                            // 기존 선물 연결 종료
+                            futures_cancel.cancel();
+                            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+                            // 새 선물 코드로 연결
+                            let new_futures: Vec<(String, String)> = codes.iter()
+                                .map(|c| ("JC0".to_string(), c.clone()))
+                                .collect();
+                            info!("Switching futures: {} codes", new_futures.len());
+
+                            futures_cancel = CancellationToken::new();
+                            spawn_futures_connections(
+                                &new_futures, &app_key, &app_secret, &names, &stock_codes,
+                                &futures_to_spot, &tx, &cancel, &futures_cancel,
+                            );
+                        }
+                        Some(SubCommand::Unsubscribe(_)) => {
+                            // 선물 연결만 종료
+                            futures_cancel.cancel();
+                        }
+                        None => break,
+                    }
+                }
+                _ = cancel.cancelled() => {
+                    futures_cancel.cancel();
+                    return;
+                }
+            }
         }
+    }
+}
+
+/// 선물 전용 연결 그룹 스폰 (전환 가능)
+fn spawn_futures_connections(
+    futures: &[(String, String)],
+    app_key: &str, app_secret: &str,
+    names: &HashMap<String, String>,
+    stock_codes: &HashSet<String>,
+    futures_to_spot: &HashMap<String, String>,
+    tx: &mpsc::Sender<WsMessage>,
+    global_cancel: &CancellationToken,
+    futures_cancel: &CancellationToken,
+) {
+    let chunks: Vec<Vec<(String, String)>> = futures
+        .chunks(MAX_SUBS_PER_CONNECTION).map(|c| c.to_vec()).collect();
+
+    for (i, chunk) in chunks.into_iter().enumerate() {
+        let tx = tx.clone();
+        let gc = global_cancel.clone();
+        let fc = futures_cancel.clone();
+        let ak = app_key.to_string();
+        let as_ = app_secret.to_string();
+        let n = names.clone();
+        let sc = stock_codes.clone();
+        let f2s = futures_to_spot.clone();
+
+        tokio::spawn(async move {
+            let combined_cancel = CancellationToken::new();
+            let gc2 = gc.clone();
+            let fc2 = fc.clone();
+            let cc = combined_cancel.clone();
+            // global 또는 futures cancel 어느 쪽이든 이 연결 종료
+            tokio::spawn(async move {
+                tokio::select! {
+                    _ = gc2.cancelled() => cc.cancel(),
+                    _ = fc2.cancelled() => cc.cancel(),
+                }
+            });
+
+            let mut attempt = 0u32;
+            loop {
+                if combined_cancel.is_cancelled() { return; }
+                let conn_id = 100 + i; // 고정 그룹과 구분
+                match run_single_connection(
+                    conn_id, &ak, &as_, &chunk, &n, &sc, &f2s, &tx, &combined_cancel,
+                ).await {
+                    Ok(()) => return,
+                    Err(e) => {
+                        if combined_cancel.is_cancelled() { return; }
+                        attempt += 1;
+                        let delay = (2u64.pow(attempt.min(5))).min(MAX_RECONNECT_DELAY_SECS);
+                        warn!("futures[{i}] disconnected: {e} — reconnecting in {delay}s");
+                        tokio::select! {
+                            _ = tokio::time::sleep(std::time::Duration::from_secs(delay)) => {}
+                            _ = combined_cancel.cancelled() => { return; }
+                        }
+                    }
+                }
+            }
+        });
     }
 }
 

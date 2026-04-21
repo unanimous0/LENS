@@ -78,8 +78,20 @@ export function StockArbitragePage() {
       .catch((e) => { setError(e.message); setLoading(false) })
   }, [])
 
-  // 구독: Rust가 시작 시 마스터 기반으로 전체 자동 구독.
-  // 프론트에서는 별도 구독 관리 불필요.
+  // 월물 전환 시 선물 구독 전환 (현물/스프레드는 고정)
+  useEffect(() => {
+    if (!master) return
+    const futuresCodes = master.items
+      .map((i) => (i as any)[month]?.code)
+      .filter(Boolean) as string[]
+    if (futuresCodes.length > 0) {
+      fetch('/realtime/subscribe', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ codes: futuresCodes }),
+      }).catch(() => {})
+    }
+  }, [master, month])
 
   const rows = useMemo(() => {
     if (!master) return [] as Row[]
