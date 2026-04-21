@@ -283,14 +283,7 @@ def is_master_expired(master: dict) -> bool:
 
 
 def _is_stale(master: dict) -> bool:
-    """오늘 갱신되지 않았거나 만기 지났으면 True."""
-    updated = master.get("updated", "")
-    try:
-        updated_date = datetime.strptime(updated, "%Y-%m-%d").date()
-        if updated_date < date.today():
-            return True
-    except ValueError:
-        return True
+    """만기 지났으면 True. 일자 기준 갱신은 불필요 (정적 데이터)."""
     return is_master_expired(master)
 
 
@@ -322,6 +315,43 @@ async def _background_refresh():
         await fetch_and_save_master()
     except Exception:
         pass
+
+
+async def check_and_update_multipliers() -> dict[str, float]:
+    """마스터의 승수가 변경됐는지 체크. 변경 있으면 마스터 파일 업데이트.
+    t8402로 근월물만 조회 (250건, ~30초)."""
+    from dotenv import load_dotenv
+    load_dotenv()
+    app_key = os.environ.get("LS_APP_KEY", "")
+    app_secret = os.environ.get("LS_APP_SECRET", "")
+    if not app_key or not app_secret:
+        return {}
+
+    master = load_master()
+    if not master:
+        return {}
+
+    token = await _get_token(app_key, app_secret)
+    changed = {}
+
+    for item in master["items"]:
+        code = item["front"]["code"]
+        old_mul = item["front"].get("multiplier", 10)
+        detail = await _fetch_detail_safe(token, code, retries=1)
+        if detail:
+            new_mul = _parse_multiplier(detail.get("mulcnt", "10"))
+            if new_mul != old_mul:
+                changed[code] = new_mul
+                item["front"]["multiplier"] = new_mul
+                if "back" in item:
+                    item["back"]["multiplier"] = new_mul
+        await _sleep(0.12)
+
+    if changed:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        MASTER_FILE.write_text(json.dumps(master, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    return changed
 
 
 async def fetch_prices_batch(codes: list[str]) -> dict[str, dict]:

@@ -1,6 +1,6 @@
 """종목차익 API"""
 from fastapi import APIRouter, HTTPException
-from services.futures_master import ensure_master, fetch_and_save_master, load_master
+from services.futures_master import ensure_master, fetch_and_save_master, load_master, check_and_update_multipliers
 
 router = APIRouter(prefix="/arbitrage", tags=["arbitrage"])
 
@@ -22,6 +22,16 @@ async def refresh_master():
     try:
         master = await fetch_and_save_master()
         return {"status": "ok", "count": master["count"], "updated": master["updated"]}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/master/check-multipliers")
+async def check_multipliers():
+    """승수 변경 체크. 변경된 종목만 반환."""
+    try:
+        changed = await check_and_update_multipliers()
+        return {"status": "ok", "changed": len(changed), "details": changed}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
