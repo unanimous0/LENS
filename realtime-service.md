@@ -772,11 +772,23 @@ LENS/
 - [x] OAuth2 토큰 발급 + 끊기면 자동 재발급
 - [x] WebSocket 클라이언트 (tokio-tungstenite, native-tls)
 - [x] WebSocket 접속: `/websocket` 경로 + User-Agent/Accept-Language 필수 헤더 (WAF 통과)
-- [x] TR별 구독: S3_(주식/ETF 체결), JC0(주식선물 체결), FC0(지수선물 체결)
-- [x] 프론트엔드 메시지 포맷으로 변환 (EtfTick, FuturesTick)
-- [x] `FEED_MODE` 환경변수로 mock/ls_api 전환
-- [x] 자동 재연결 (지수 백오프: 2s → 4s → 8s → ... → 최대 60s)
+- [x] TR별 구독: S3_(코스피 체결), K3_(코스닥 체결), JC0(주식선물 체결)
+- [x] 코스닥 종목 자동 감지 (t8436 목록 → 마스터 `market` 필드)
+- [x] **멀티 커넥션**: LS API 실제 제한 ~200개/연결 → 190개씩 분할하여 3개 연결 동시 운영 (500개 전체 커버)
+- [x] 시작 시 마스터 기반 500종목 자동 구독 (프론트 REST 구독 불필요)
+- [x] JC0 체결 시 기초자산 StockTick 동시 발행 (futures_to_spot 매핑)
+- [x] 프론트엔드 메시지 포맷으로 변환 (EtfTick, StockTick, FuturesTick)
+- [x] `FEED_MODE` 환경변수로 mock/ls_api/internal 전환
+- [x] `GET /mode` API (프론트 네트워크 토글 자동 반영)
+- [x] 자동 재연결 (연결별 독립 백오프: 2s → 4s → 8s → ... → 최대 60s)
 - [x] 데이터 검증: 내부망/외부망 동시 수집 비교 완료 (가격, 수량, 누적 일치)
+- [x] 프론트 최적화: 100ms 틱 버퍼링 (초당 10회 렌더), React StrictMode 제거
+- [x] 마스터 API 비동기 갱신 (stale이면 기존 데이터 즉시 반환 + 백그라운드 갱신)
+
+**LS API 제한 사항 (문서에 없지만 실측)**:
+- 단일 WebSocket 연결당 실시간 구독 상한: ~200개 (초과 시 정상처리 응답은 오지만 데이터 미수신)
+- 해결: 190개씩 분할하여 여러 연결 사용 (동일 토큰으로 다중 연결 가능)
+- KRX 데이터만 수신 (NXT 대체거래소 데이터는 별도 TR 필요, 현재 미사용)
 
 ### Phase 3: 사내 서버 연동 (내부망) — 완료
 
