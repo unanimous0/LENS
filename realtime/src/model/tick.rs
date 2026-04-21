@@ -27,6 +27,9 @@ pub struct StockTick {
     /// 당일 누적 거래량
     pub cum_volume: u64,
     pub timestamp: String,
+    /// true = t8402 초기값 (실시간 체결이 아님). 이미 실시간 값이 있으면 무시해야 함.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub is_initial: bool,
 }
 
 /// 선물 틱
@@ -40,4 +43,6 @@ pub struct FuturesTick {
     pub basis: f64,
     pub volume: u64,
     pub timestamp: String,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub is_initial: bool,
 }

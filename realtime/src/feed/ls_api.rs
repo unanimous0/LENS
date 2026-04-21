@@ -58,6 +58,23 @@ impl MarketFeed for LsApiFeed {
         info!("LS API: fixed={} (spot+spread), switchable={} (futures)",
             fixed.len(), initial_futures.len());
 
+        // 초기값 fetch (t8402) — WebSocket과 동시 실행, is_initial=true
+        {
+            let all_subs = self.subscriptions.clone();
+            let tx2 = tx.clone();
+            let cancel2 = cancel.clone();
+            let ak = self.app_key.clone();
+            let as_ = self.app_secret.clone();
+            let n = self.names.clone();
+            let sc = self.stock_codes.clone();
+            let f2s = self.futures_to_spot.clone();
+            tokio::spawn(async move {
+                super::ls_rest::fetch_initial_prices(
+                    &ak, &as_, &all_subs, &n, &sc, &f2s, &tx2, &cancel2,
+                ).await;
+            });
+        }
+
         // 고정 그룹 연결 시작
         let fixed_chunks: Vec<Vec<(String, String)>> = fixed
             .chunks(MAX_SUBS_PER_CONNECTION).map(|c| c.to_vec()).collect();
@@ -307,6 +324,7 @@ async fn handle_tick(
                 let _ = tx.send(WsMessage::StockTick(StockTick {
                     code: tr_key.into(), name: name.into(),
                     price, volume, cum_volume: value * 1_000_000, timestamp: now,
+                    is_initial: false,
                 })).await;
             } else {
                 let offerho = pf(&body["offerho"]);
@@ -329,6 +347,7 @@ async fn handle_tick(
             let _ = tx.send(WsMessage::FuturesTick(FuturesTick {
                 code: tr_key.into(), name: name.into(),
                 price, underlying_price: underlying, basis: r2(basis), volume, timestamp: now.clone(),
+                is_initial: false,
             })).await;
 
             if underlying > 0.0 {
@@ -337,6 +356,7 @@ async fn handle_tick(
                     let _ = tx.send(WsMessage::StockTick(StockTick {
                         code: spot_code.clone(), name: sname,
                         price: underlying, volume: 0, cum_volume: 0, timestamp: now,
+                        is_initial: false,
                     })).await;
                 }
             }

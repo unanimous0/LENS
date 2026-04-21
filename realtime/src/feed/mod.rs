@@ -1,5 +1,6 @@
 pub mod internal;
 pub mod ls_api;
+pub mod ls_rest;
 pub mod mock;
 
 use tokio::sync::mpsc;

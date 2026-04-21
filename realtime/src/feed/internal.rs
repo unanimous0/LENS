@@ -282,6 +282,7 @@ impl InternalFeed {
                 basis: round2(basis),
                 volume,
                 timestamp,
+                is_initial: false,
             });
             let _ = tx.send(msg).await;
         } else if state.is_etf {
@@ -321,6 +322,7 @@ impl InternalFeed {
                 volume,
                 cum_volume,
                 timestamp,
+                is_initial: false,
             });
             let _ = tx.send(msg).await;
         }

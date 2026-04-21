@@ -94,6 +94,7 @@ impl MarketFeed for MockFeed {
                     volume: rng.random_range(100..10000),
                     cum_volume: rng.random_range(100000..5000000),
                     timestamp: now,
+                    is_initial: false,
                 });
 
                 if tx.send(msg).await.is_err() {
@@ -115,6 +116,7 @@ impl MarketFeed for MockFeed {
                     underlying_price: round2(underlying),
                     basis: round2(basis),
                     volume: rng.random_range(100..5000),
+                    is_initial: false,
                     timestamp: now,
                 });
 
