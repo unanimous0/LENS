@@ -288,15 +288,18 @@ def _is_stale(master: dict) -> bool:
 
 
 async def ensure_master() -> dict:
-    """마스터 데이터가 유효하면 로드, stale이면 기존 반환 + 백그라운드 갱신."""
+    """마스터 데이터가 유효하면 로드, 만기 지났으면 갱신.
+    매일 첫 호출 시 승수 변경도 백그라운드 체크."""
     import asyncio
 
     master = load_master()
 
     if master and not _is_stale(master):
+        # 오늘 승수 체크 안 했으면 백그라운드로
+        _maybe_check_multipliers(asyncio.get_event_loop())
         return master
 
-    # stale이지만 기존 파일이 있으면 → 일단 반환, 백그라운드에서 갱신
+    # 만기 지남 → 기존 파일 즉시 반환 + 백그라운드 갱신
     if master:
         asyncio.create_task(_background_refresh())
         return master
@@ -309,10 +312,34 @@ async def ensure_master() -> dict:
         raise RuntimeError(f"마스터 데이터 없음, LS API 호출 실패: {e}")
 
 
+_last_multiplier_check: str = ""
+
+def _maybe_check_multipliers(loop):
+    """오늘 아직 승수 체크 안 했으면 백그라운드 실행."""
+    import asyncio
+    global _last_multiplier_check
+    today = date.today().isoformat()
+    if _last_multiplier_check == today:
+        return
+    _last_multiplier_check = today
+    asyncio.ensure_future(_background_multiplier_check())
+
+
 async def _background_refresh():
     """백그라운드에서 마스터 갱신. 실패해도 무시."""
     try:
         await fetch_and_save_master()
+    except Exception:
+        pass
+
+
+async def _background_multiplier_check():
+    """백그라운드에서 승수 변경 체크. 변경 있으면 마스터 파일 업데이트."""
+    try:
+        changed = await check_and_update_multipliers()
+        if changed:
+            import logging
+            logging.getLogger(__name__).warning(f"승수 변경 감지: {changed}")
     except Exception:
         pass
 
