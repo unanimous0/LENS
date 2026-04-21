@@ -79,6 +79,7 @@ export function StockArbitragePage() {
   }, [])
 
   // 월물 전환 시 선물 구독 전환 (현물/스프레드는 고정)
+  // 실시간 JC0 체결이 오면 즉시 갱신됨. 체결 전에는 마스터 초기값 표시.
   useEffect(() => {
     if (!master) return
     const futuresCodes = master.items

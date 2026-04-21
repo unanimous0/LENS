@@ -211,7 +211,7 @@ async def fetch_and_save_master() -> dict:
                     )
                 await _sleep(0.3)
 
-    master = {
+    master: dict = {
         "updated": today.isoformat(),
         "front_month": front_month,
         "back_month": back_month,
@@ -342,3 +342,26 @@ async def _background_refresh():
         await fetch_and_save_master()
     except Exception:
         pass
+
+
+async def fetch_prices_batch(codes: list[str]) -> dict[str, dict]:
+    """여러 선물 코드의 최신 가격을 t8402로 일괄 조회.
+    TPS 제한(10) 고려하여 순차 호출, 결과를 {code: {price, volume}} 딕셔너리로 반환."""
+    from dotenv import load_dotenv
+    load_dotenv()
+    app_key = os.environ.get("LS_APP_KEY", "")
+    app_secret = os.environ.get("LS_APP_SECRET", "")
+    if not app_key or not app_secret:
+        return {}
+
+    token = await _get_token(app_key, app_secret)
+    result = {}
+    for code in codes:
+        detail = await _fetch_detail_safe(token, code)
+        if detail:
+            result[code] = {
+                "price": _parse_price(detail.get("price", "0")),
+                "volume": int(_parse_price(detail.get("volume", "0"))),
+            }
+        await _sleep(0.12)  # TPS=10
+    return result

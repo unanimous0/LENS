@@ -24,3 +24,5 @@ async def refresh_master():
         return {"status": "ok", "count": master["count"], "updated": master["updated"]}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
