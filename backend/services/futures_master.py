@@ -143,7 +143,7 @@ async def fetch_and_save_master() -> dict:
             if base:
                 spread_by_base_filtered[base] = shcode
 
-    # 2. 근월/원월 필터 → t8402로 상세 조회
+    # 2. 근월/원월 필터 → 근월물만 t8402로 정적 정보(종목명, 만기, 승수) 조회
     items = []
     for base_code, futures_list in sorted(by_base.items()):
         futures_list.sort(key=lambda x: x["expiry"])
@@ -153,63 +153,44 @@ async def fetch_and_save_master() -> dict:
         if not front:
             continue
 
-        # t8402 호출 (근월물) — 장 외 시간에는 실패할 수 있음
+        # t8402: 근월물에서 정적 정보만 (종목명, 만기일, 승수)
         front_detail = await _fetch_detail_safe(token, front["shcode"])
-        await _sleep(0.15)
+        await _sleep(0.12)
         base_name = front_detail.get("basehname", front["hname"].strip().split("F")[0].strip())
-        # base_code에서 A 접두사 제거 (A005930 → 005930)
         clean_base = base_code[1:] if base_code.startswith("A") and len(base_code) == 7 else base_code
 
-        spot_price = _parse_price(front_detail.get("baseprice", "0"))
-        spot_volume = int(_parse_price(front_detail.get("basevol", "0")))
         entry = {
             "base_code": clean_base,
             "base_name": base_name,
             "market": kosdaq_codes.get(clean_base, "KOSPI"),
-            "spot_price": spot_price,
-            "spot_value": int(spot_price * spot_volume) if spot_price > 0 and spot_volume > 0 else 0,
-            "front": _build_month_entry(front, front_detail),
+            "front": _build_static_entry(front, front_detail),
         }
 
-        # t8402 호출 (원월물, 있으면)
+        # 원월물: t8402 호출 불필요, t8401 정보만으로 충분
         if back:
-            back_detail = await _fetch_detail_safe(token, back["shcode"])
-            await _sleep(0.15)
-            entry["back"] = _build_month_entry(back, back_detail)
+            entry["back"] = {
+                "code": back["shcode"],
+                "name": back["hname"].strip(),
+                "expiry": back_month,
+                "days_left": int(front_detail.get("jandatecnt", 0)) + 28,  # 근월 만기 + ~1개월 근사
+                "multiplier": _parse_multiplier(front_detail.get("mulcnt", "10")),  # 승수는 동일
+            }
 
-        # 스프레드 코드 (근월-차월) + 가격 조회
+        # 스프레드 코드 (t8401에서 이미 매칭, 가격은 실시간으로)
         spread_code = spread_by_base_filtered.get(base_code, "")
         if spread_code:
-            spread_detail = await _fetch_detail_safe(token, spread_code)
-            await _sleep(0.15)
             entry["spread_code"] = spread_code
-            entry["spread_price"] = _parse_price(spread_detail.get("price", "0"))
-            entry["spread_volume"] = int(_parse_price(spread_detail.get("volume", "0")))
 
         items.append(entry)
 
-    # 가격 누락된 항목 재시도 (TPS 제한으로 실패했을 수 있음)
-    await _sleep(2.0)
+    # 종목명 누락 재시도 (t8402 실패했을 경우)
+    await _sleep(1.0)
     for entry in items:
-        if entry.get("spot_price", 0) == 0:
-            front_code = entry["front"]["code"]
-            detail = await _fetch_detail_safe(token, front_code)
-            if detail:
-                entry["spot_price"] = _parse_price(detail.get("baseprice", "0"))
-                entry["front"] = _build_month_entry(
-                    {"shcode": front_code, "hname": entry["front"]["name"]}, detail
-                )
-                if not entry.get("base_name") or entry["base_name"] == front_code:
-                    entry["base_name"] = detail.get("basehname", entry["base_name"])
-            await _sleep(0.3)
-            if "back" in entry and entry["back"].get("price", 0) == 0:
-                back_code = entry["back"]["code"]
-                bdetail = await _fetch_detail_safe(token, back_code)
-                if bdetail:
-                    entry["back"] = _build_month_entry(
-                        {"shcode": back_code, "hname": entry["back"]["name"]}, bdetail
-                    )
-                await _sleep(0.3)
+        if not entry.get("base_name") or entry["base_name"] == entry["front"]["code"]:
+            detail = await _fetch_detail_safe(token, entry["front"]["code"])
+            if detail and detail.get("basehname"):
+                entry["base_name"] = detail["basehname"]
+            await _sleep(0.15)
 
     master: dict = {
         "updated": today.isoformat(),
@@ -243,15 +224,14 @@ async def _fetch_detail_safe(token: str, shcode: str, retries: int = 3) -> dict:
     return {}
 
 
-def _build_month_entry(item: dict, detail: dict) -> dict:
+def _build_static_entry(item: dict, detail: dict) -> dict:
+    """정적 정보만 (코드, 이름, 만기, 승수). 가격/거래량은 실시간으로."""
     return {
         "code": item["shcode"],
         "name": item["hname"].strip(),
         "expiry": detail.get("lastmonth", item.get("expiry", "")),
         "days_left": int(detail.get("jandatecnt", 0)),
         "multiplier": _parse_multiplier(detail.get("mulcnt", "10")),
-        "price": _parse_price(detail.get("price", "0")),
-        "volume": int(_parse_price(detail.get("volume", "0"))),
     }
 
 

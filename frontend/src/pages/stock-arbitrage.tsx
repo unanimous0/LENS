@@ -7,13 +7,9 @@ import { cn } from '@/lib/utils'
 interface MasterItem {
   base_code: string
   base_name: string
-  spot_price?: number
-  spot_value?: number
   spread_code?: string
-  spread_price?: number
-  spread_volume?: number
-  front: { code: string; name: string; expiry: string; days_left: number; multiplier: number; price?: number; volume?: number }
-  back?: { code: string; name: string; expiry: string; days_left: number; multiplier: number; price?: number; volume?: number }
+  front: { code: string; name: string; expiry: string; days_left: number; multiplier: number }
+  back?: { code: string; name: string; expiry: string; days_left: number; multiplier: number }
 }
 
 interface Master {
@@ -104,7 +100,7 @@ export function StockArbitragePage() {
       const fut = futuresTicks[sel.code]
       const otherFut = other ? futuresTicks[other.code] : undefined
 
-      const sp = spot?.price ?? item.spot_price ?? 0
+      const sp = spot?.price ?? 0  // 실시간 S3_/K3_만
       const fp = fut?.price ?? 0  // 실시간 JC0 체결만 표시
       const mb = fp > 0 && sp > 0 ? fp - sp : (fut?.basis ?? 0)
       const tb = 0 // 이론베이시스 (Phase B에서 구현)
@@ -117,21 +113,13 @@ export function StockArbitragePage() {
         baseCode: item.base_code, baseName: item.base_name,
         frontCode: sel.code, backCode: other?.code ?? '',
         multiplier: sel.multiplier, expiry: sel.expiry, daysLeft: sel.days_left || 0,
-        spotPrice: sp, spotCumVolume: (spot?.cum_volume || 0) > 0 ? spot!.cum_volume : (item.spot_value ?? 0),
+        spotPrice: sp, spotCumVolume: spot?.cum_volume ?? 0,
         futuresPrice: fp, futuresVolume: fut?.volume ?? 0,  // 실시간만
         theoreticalPrice: 0, theoreticalBasis: tb,
         marketBasis: mb, basisGap: gap, basisGapBp: sp > 0 ? (gap / sp) * 10000 : 0,
         backPrice: backP,
-        spread: (() => {
-          if (!item.spread_code) return backP > 0 && frontP > 0 ? backP - frontP : 0
-          const sTick = futuresTicks[item.spread_code]
-          if (sTick) return sTick.price
-          return item.spread_volume && item.spread_volume > 0 ? (item.spread_price ?? 0) : 0
-        })(),
-        spreadVolume: (() => {
-          if (!item.spread_code) return 0
-          return futuresTicks[item.spread_code]?.volume ?? item.spread_volume ?? 0
-        })(),
+        spread: item.spread_code ? (futuresTicks[item.spread_code]?.price ?? 0) : 0,
+        spreadVolume: item.spread_code ? (futuresTicks[item.spread_code]?.volume ?? 0) : 0,
         dividend: 0, dividendDate: '', dividendApplied: false,
         holding031: 0, holding052: 0, futuresHolding: 0,
       }
