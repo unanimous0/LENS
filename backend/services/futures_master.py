@@ -287,18 +287,30 @@ def _is_stale(master: dict) -> bool:
 
 
 async def ensure_master() -> dict:
-    """마스터 데이터가 유효하면 로드, stale이면 갱신 시도."""
+    """마스터 데이터가 유효하면 로드, stale이면 기존 반환 + 백그라운드 갱신."""
+    import asyncio
+
     master = load_master()
 
     if master and not _is_stale(master):
         return master
 
-    # 오늘 아직 갱신 안 됐거나 만기 지남 → LS API 호출 시도
+    # stale이지만 기존 파일이 있으면 → 일단 반환, 백그라운드에서 갱신
+    if master:
+        asyncio.create_task(_background_refresh())
+        return master
+
+    # 파일 자체가 없으면 → 동기 갱신 (최초 실행)
     try:
         master = await fetch_and_save_master()
         return master
     except Exception as e:
-        # LS API 호출 실패 (내부망 등) → 기존 파일이라도 반환
-        if master:
-            return master
         raise RuntimeError(f"마스터 데이터 없음, LS API 호출 실패: {e}")
+
+
+async def _background_refresh():
+    """백그라운드에서 마스터 갱신. 실패해도 무시."""
+    try:
+        await fetch_and_save_master()
+    except Exception:
+        pass
