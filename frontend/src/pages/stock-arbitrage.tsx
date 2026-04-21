@@ -49,8 +49,9 @@ interface Row {
 }
 
 type SK = keyof Pick<Row,
-  'baseName' | 'spotPrice' | 'futuresPrice' | 'marketBasis' | 'basisGapBp' |
-  'spotCumVolume' | 'futuresVolume' | 'spread' | 'daysLeft' | 'theoreticalBasis' | 'basisGap'
+  'baseName' | 'spotPrice' | 'futuresPrice' | 'theoreticalPrice' | 'marketBasis' | 'basisGapBp' |
+  'theoreticalBasis' | 'basisGap' | 'spotCumVolume' | 'futuresVolume' | 'multiplier' |
+  'spread' | 'spreadVolume' | 'dividend' | 'daysLeft'
 >
 
 const ABS_KEYS: SK[] = ['marketBasis', 'basisGapBp', 'basisGap', 'theoreticalBasis']
@@ -187,7 +188,7 @@ export function StockArbitragePage() {
               {/* 가격 */}
               <Th sort={() => doSort('spotPrice')} active={sk === 'spotPrice'} asc={asc} className="min-w-[74px]">현물가</Th>
               <Th sort={() => doSort('futuresPrice')} active={sk === 'futuresPrice'} asc={asc} className="min-w-[74px]">선물가</Th>
-              <Th className="min-w-[74px]">이론가</Th>
+              <Th sort={() => doSort('theoreticalPrice')} active={sk === 'theoreticalPrice'} asc={asc} className="min-w-[74px]">이론가</Th>
               {/* 베이시스 */}
               <Th sort={() => doSort('theoreticalBasis')} active={sk === 'theoreticalBasis'} asc={asc} className="min-w-[62px]">이론B</Th>
               <Th sort={() => doSort('marketBasis')} active={sk === 'marketBasis'} asc={asc} className="min-w-[62px]">시장B</Th>
@@ -196,12 +197,12 @@ export function StockArbitragePage() {
               {/* 거래 */}
               <Th sort={() => doSort('spotCumVolume')} active={sk === 'spotCumVolume'} asc={asc} className="min-w-[76px]">현물대금</Th>
               <Th sort={() => doSort('futuresVolume')} active={sk === 'futuresVolume'} asc={asc} className="min-w-[64px]">선물량</Th>
-              <Th className="min-w-[42px]">승수</Th>
+              <Th sort={() => doSort('multiplier')} active={sk === 'multiplier'} asc={asc} className="min-w-[42px]">승수</Th>
               {/* 스프레드 */}
               <Th sort={() => doSort('spread')} active={sk === 'spread'} asc={asc} className="min-w-[64px]">스프레드</Th>
-              <Th className="min-w-[52px]">스프량</Th>
+              <Th sort={() => doSort('spreadVolume')} active={sk === 'spreadVolume'} asc={asc} className="min-w-[52px]">스프량</Th>
               {/* 배당 */}
-              <Th className="min-w-[56px]">배당금</Th>
+              <Th sort={() => doSort('dividend')} active={sk === 'dividend'} asc={asc} className="min-w-[56px]">배당금</Th>
               <Th className="min-w-[62px]">기준일</Th>
               <Th className="min-w-[34px]">적용</Th>
               {/* 만기 */}
