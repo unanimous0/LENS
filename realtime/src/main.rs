@@ -50,7 +50,7 @@ async fn main() {
     let broadcaster = Arc::new(Broadcaster::new(BROADCAST_CAPACITY));
 
     // 피드 → 브로드캐스터 파이프라인
-    let (tx, mut rx) = mpsc::channel(1024);
+    let (tx, mut rx) = mpsc::channel(8192);
     let (sub_tx, sub_rx) = mpsc::unbounded_channel::<SubCommand>();
     let feed_cancel = cancel.clone();
 
@@ -141,7 +141,7 @@ async fn main() {
     tokio::spawn(async move {
         while let Some(msg) = rx.recv().await {
             match serde_json::to_string(&msg) {
-                Ok(json) => bc.send(Arc::from(json.as_str())),
+                Ok(json) => bc.send(Arc::from(json)),  // 소유권 이동, 복사 없음
                 Err(e) => tracing::error!("JSON serialization error: {}", e),
             }
         }

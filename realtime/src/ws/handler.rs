@@ -34,7 +34,7 @@ async fn handle_client(mut socket: WebSocket, mut rx: broadcast::Receiver<Arc<st
     loop {
         match rx.recv().await {
             Ok(json) => {
-                if socket.send(Message::Text(json.to_string().into())).await.is_err() {
+                if socket.send(Message::Text(String::from(&*json).into())).await.is_err() {
                     break;
                 }
             }

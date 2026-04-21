@@ -10,20 +10,24 @@ export function useWebSocket() {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
     const wsUrl = `${protocol}//${window.location.host}/ws/market`
 
-    // 틱 버퍼: 100ms마다 한번에 store 반영
-    const buf: Record<string, Record<string, any>> = { etf: {}, stock: {}, futures: {} }
+    // 틱 버퍼: 100ms마다 한번에 batch store 반영 (1번의 set() 호출)
+    let etfBuf: Record<string, any> = {}
+    let stockBuf: Record<string, any> = {}
+    let futuresBuf: Record<string, any> = {}
     let dirty = false
 
     const flush = setInterval(() => {
       if (!dirty) return
       dirty = false
       const store = useMarketStore.getState()
-      const eKeys = Object.keys(buf.etf)
-      if (eKeys.length) { for (const k of eKeys) store.updateETFTick(buf.etf[k]); buf.etf = {} }
-      const sKeys = Object.keys(buf.stock)
-      if (sKeys.length) { for (const k of sKeys) store.updateStockTick(buf.stock[k]); buf.stock = {} }
-      const fKeys = Object.keys(buf.futures)
-      if (fKeys.length) { for (const k of fKeys) store.updateFuturesTick(buf.futures[k]); buf.futures = {} }
+
+      const hasEtf = Object.keys(etfBuf).length > 0
+      const hasStock = Object.keys(stockBuf).length > 0
+      const hasFutures = Object.keys(futuresBuf).length > 0
+
+      if (hasEtf) { store.batchUpdateETFs(etfBuf); etfBuf = {} }
+      if (hasStock) { store.batchUpdateStocks(stockBuf); stockBuf = {} }
+      if (hasFutures) { store.batchUpdateFutures(futuresBuf); futuresBuf = {} }
     }, FLUSH_MS)
 
     function connect() {
@@ -40,9 +44,9 @@ export function useWebSocket() {
       socket.onmessage = (event) => {
         try {
           const msg = JSON.parse(event.data)
-          if (msg.type === 'etf_tick') buf.etf[msg.data.code] = msg.data
-          else if (msg.type === 'stock_tick') buf.stock[msg.data.code] = msg.data
-          else if (msg.type === 'futures_tick') buf.futures[msg.data.code] = msg.data
+          if (msg.type === 'etf_tick') etfBuf[msg.data.code] = msg.data
+          else if (msg.type === 'stock_tick') stockBuf[msg.data.code] = msg.data
+          else if (msg.type === 'futures_tick') futuresBuf[msg.data.code] = msg.data
           dirty = true
         } catch {}
       }
