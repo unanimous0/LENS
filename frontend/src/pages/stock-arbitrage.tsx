@@ -10,6 +10,8 @@ interface MasterItem {
   spot_price?: number
   spot_value?: number
   spread_code?: string
+  spread_price?: number
+  spread_volume?: number
   front: { code: string; name: string; expiry: string; days_left: number; multiplier: number; price?: number; volume?: number }
   back?: { code: string; name: string; expiry: string; days_left: number; multiplier: number; price?: number; volume?: number }
 }
@@ -110,13 +112,12 @@ export function StockArbitragePage() {
         spread: (() => {
           if (!item.spread_code) return backP > 0 && frontP > 0 ? backP - frontP : 0
           const sTick = futuresTicks[item.spread_code]
-          if (sTick) return sTick.price  // 실시간 틱 있으면 그대로
-          const sv = (item as any).spread_volume ?? 0
-          return sv > 0 ? ((item as any).spread_price ?? 0) : 0  // 오늘 거래 있을 때만 표시
+          if (sTick) return sTick.price
+          return item.spread_volume && item.spread_volume > 0 ? (item.spread_price ?? 0) : 0
         })(),
         spreadVolume: (() => {
           if (!item.spread_code) return 0
-          return futuresTicks[item.spread_code]?.volume ?? (item as any).spread_volume ?? 0
+          return futuresTicks[item.spread_code]?.volume ?? item.spread_volume ?? 0
         })(),
         dividend: 0, dividendDate: '', dividendApplied: false,
         holding031: 0, holding052: 0, futuresHolding: 0,

@@ -121,19 +121,6 @@ async def fetch_and_save_master() -> dict:
     for item in kosdaq_data.get("t8436OutBlock", []):
         kosdaq_codes[item["shcode"]] = "KOSDAQ"
 
-    # 스프레드 종목 매핑 (D코드, basecode → 스프레드 shcode)
-    # 근월-차월 스프레드만 (코드에 근월2자리+차월2자리 패턴)
-    spread_by_base: dict[str, str] = {}
-    for item in all_futures:
-        shcode = item.get("shcode", "")
-        if shcode.startswith("D") and shcode.endswith("S"):
-            base = item.get("basecode", "")
-            hname = item.get("hname", "")
-            # "SP 2605-2" 형태 → 근월-차월 스프레드 (가장 가까운 원월)
-            # 근월-차월(06)만 = 코드에 front_month[2:]+back_month[2: 포함
-            if base and base not in spread_by_base:
-                spread_by_base[base] = shcode
-
     today = date.today()
     front_month, back_month = _determine_front_back(today)
 
