@@ -105,7 +105,7 @@ export function StockArbitragePage() {
       const otherFut = other ? futuresTicks[other.code] : undefined
 
       const sp = spot?.price ?? item.spot_price ?? 0
-      const fp = fut?.price ?? sel.price ?? 0
+      const fp = fut?.price ?? 0  // 실시간 JC0만 표시, 마스터 stale 가격 사용 안 함
       const mb = fp > 0 && sp > 0 ? fp - sp : (fut?.basis ?? 0)
       const tb = 0 // 이론베이시스 (Phase B에서 구현)
       const gap = mb - tb
