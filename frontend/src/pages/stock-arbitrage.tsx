@@ -107,8 +107,12 @@ export function StockArbitragePage() {
         theoreticalPrice: 0, theoreticalBasis: tb,
         marketBasis: mb, basisGap: gap, basisGapBp: sp > 0 ? (gap / sp) * 10000 : 0,
         backPrice: backP,
-        spread: item.spread_code ? (futuresTicks[item.spread_code]?.price ?? 0) : (backP > 0 && frontP > 0 ? backP - frontP : 0),
-        spreadVolume: item.spread_code ? (futuresTicks[item.spread_code]?.volume ?? 0) : 0,
+        spread: item.spread_code
+          ? (futuresTicks[item.spread_code]?.price ?? (item as any).spread_price ?? 0)
+          : (backP > 0 && frontP > 0 ? backP - frontP : 0),
+        spreadVolume: item.spread_code
+          ? (futuresTicks[item.spread_code]?.volume ?? (item as any).spread_volume ?? 0)
+          : 0,
         dividend: 0, dividendDate: '', dividendApplied: false,
         holding031: 0, holding052: 0, futuresHolding: 0,
       }

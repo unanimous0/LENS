@@ -190,10 +190,14 @@ async def fetch_and_save_master() -> dict:
             await _sleep(0.15)
             entry["back"] = _build_month_entry(back, back_detail)
 
-        # 스프레드 코드 (근월-차월)
+        # 스프레드 코드 (근월-차월) + 가격 조회
         spread_code = spread_by_base_filtered.get(base_code, "")
         if spread_code:
+            spread_detail = await _fetch_detail_safe(token, spread_code)
+            await _sleep(0.15)
             entry["spread_code"] = spread_code
+            entry["spread_price"] = _parse_price(spread_detail.get("price", "0"))
+            entry["spread_volume"] = int(_parse_price(spread_detail.get("volume", "0")))
 
         items.append(entry)
 
