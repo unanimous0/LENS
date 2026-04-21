@@ -9,6 +9,7 @@ interface MasterItem {
   base_name: string
   spot_price?: number
   spot_value?: number
+  spread_code?: string
   front: { code: string; name: string; expiry: string; days_left: number; multiplier: number; price?: number; volume?: number }
   back?: { code: string; name: string; expiry: string; days_left: number; multiplier: number; price?: number; volume?: number }
 }
@@ -105,8 +106,9 @@ export function StockArbitragePage() {
         futuresPrice: fp, futuresVolume: fut?.volume ?? sel.volume ?? 0,
         theoreticalPrice: 0, theoreticalBasis: tb,
         marketBasis: mb, basisGap: gap, basisGapBp: sp > 0 ? (gap / sp) * 10000 : 0,
-        backPrice: backP, spread: backP > 0 && frontP > 0 ? backP - frontP : 0,
-        spreadVolume: 0,
+        backPrice: backP,
+        spread: item.spread_code ? (futuresTicks[item.spread_code]?.price ?? 0) : (backP > 0 && frontP > 0 ? backP - frontP : 0),
+        spreadVolume: item.spread_code ? (futuresTicks[item.spread_code]?.volume ?? 0) : 0,
         dividend: 0, dividendDate: '', dividendApplied: false,
         holding031: 0, holding052: 0, futuresHolding: 0,
       }

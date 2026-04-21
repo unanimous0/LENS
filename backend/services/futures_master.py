@@ -121,8 +121,40 @@ async def fetch_and_save_master() -> dict:
     for item in kosdaq_data.get("t8436OutBlock", []):
         kosdaq_codes[item["shcode"]] = "KOSDAQ"
 
+    # 스프레드 종목 매핑 (D코드, basecode → 스프레드 shcode)
+    # 근월-차월 스프레드만 (코드에 근월2자리+차월2자리 패턴)
+    spread_by_base: dict[str, str] = {}
+    for item in all_futures:
+        shcode = item.get("shcode", "")
+        if shcode.startswith("D") and shcode.endswith("S"):
+            base = item.get("basecode", "")
+            hname = item.get("hname", "")
+            # "SP 2605-2" 형태 → 근월-차월 스프레드 (가장 가까운 원월)
+            # 근월-차월(06)만 = 코드에 front_month[2:]+back_month[2: 포함
+            if base and base not in spread_by_base:
+                spread_by_base[base] = shcode
+
     today = date.today()
     front_month, back_month = _determine_front_back(today)
+
+    # 근월-차월 스프레드 필터링 (front_month+back_month 패턴)
+    fm_suffix = front_month[2:]  # "202605" → "0605" → 뒤 2자리 "05" → 코드에서는 "65"
+    # 선물코드에서 월 인코딩: 05→65, 06→66, 07→67, 09→69, 12→6C
+    month_to_code = {"01": "61", "02": "62", "03": "63", "04": "64", "05": "65",
+                     "06": "66", "07": "67", "08": "68", "09": "69", "10": "6A",
+                     "11": "6B", "12": "6C"}
+    front_code_suffix = month_to_code.get(front_month[4:], "65")
+    back_code_suffix = month_to_code.get(back_month[4:], "66")
+    spread_pattern = front_code_suffix + back_code_suffix  # "6566" for 05→06
+
+    # 정확한 근월-차월 스프레드만 선별
+    spread_by_base_filtered: dict[str, str] = {}
+    for item in all_futures:
+        shcode = item.get("shcode", "")
+        if shcode.startswith("D") and shcode.endswith("S") and spread_pattern in shcode:
+            base = item.get("basecode", "")
+            if base:
+                spread_by_base_filtered[base] = shcode
 
     # 2. 근월/원월 필터 → t8402로 상세 조회
     items = []
@@ -157,6 +189,11 @@ async def fetch_and_save_master() -> dict:
             back_detail = await _fetch_detail_safe(token, back["shcode"])
             await _sleep(0.15)
             entry["back"] = _build_month_entry(back, back_detail)
+
+        # 스프레드 코드 (근월-차월)
+        spread_code = spread_by_base_filtered.get(base_code, "")
+        if spread_code:
+            entry["spread_code"] = spread_code
 
         items.append(entry)
 

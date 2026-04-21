@@ -83,10 +83,17 @@ async fn main() {
                 }
             }
 
-            info!("LS API auto-subscribe: {} codes ({} stocks, {} futures), {} kosdaq",
+            // 스프레드: D코드, JC0로 구독
+            let spread_codes = load_spread_codes();
+            for code in &spread_codes {
+                subscriptions.push(("JC0".to_string(), code.clone()));
+            }
+
+            info!("LS API auto-subscribe: {} codes ({} stocks, {} futures, {} spreads), {} kosdaq",
                 subscriptions.len(),
                 master_stock_codes.len(),
-                subscriptions.iter().filter(|(tr, _)| tr == "JC0").count(),
+                subscriptions.iter().filter(|(tr, _)| tr == "JC0").count() - spread_codes.len(),
+                spread_codes.len(),
                 kosdaq_codes.len(),
             );
 
@@ -193,6 +200,30 @@ async fn health() -> &'static str {
 
 async fn get_mode(State(state): State<AppState>) -> String {
     state.feed_mode.to_string()
+}
+
+/// futures_master.json에서 스프레드 코드 목록 로드.
+fn load_spread_codes() -> Vec<String> {
+    let master_path = std::path::Path::new("../data/futures_master.json");
+    let data = match std::fs::read_to_string(master_path) {
+        Ok(d) => d,
+        Err(_) => return Vec::new(),
+    };
+    let master: serde_json::Value = match serde_json::from_str(&data) {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+    let mut codes = Vec::new();
+    if let Some(items) = master["items"].as_array() {
+        for item in items {
+            if let Some(code) = item["spread_code"].as_str() {
+                if !code.is_empty() {
+                    codes.push(code.to_string());
+                }
+            }
+        }
+    }
+    codes
 }
 
 /// futures_master.json에서 종목명 매핑, 현물 코드 Set, 선물→현물 매핑, 코스닥 코드를 로드.
