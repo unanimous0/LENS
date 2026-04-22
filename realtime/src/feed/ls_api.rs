@@ -420,20 +420,12 @@ async fn handle_tick(
 
             let _ = tx.send(WsMessage::FuturesTick(FuturesTick {
                 code: tr_key.into(), name: name.into(),
-                price, underlying_price: underlying, basis: r2(basis), volume, timestamp: now.clone(),
+                price, underlying_price: underlying, basis: r2(basis), volume, timestamp: now,
                 is_initial: false,
             })).await;
-
-            if underlying > 0.0 {
-                if let Some(spot_code) = futures_to_spot.get(tr_key) {
-                    let sname = names.get(spot_code).cloned().unwrap_or_else(|| spot_code.clone());
-                    let _ = tx.send(WsMessage::StockTick(StockTick {
-                        code: spot_code.clone(), name: sname,
-                        price: underlying, volume: 0, cum_volume: 0, timestamp: now,
-                        is_initial: false,
-                    })).await;
-                }
-            }
+            // 주의: 기초자산(현물) StockTick은 파생해서 보내지 않음.
+            // 현물은 S3_/K3_로 별도 구독 중이고, 여기서 보내면 cum_volume을 0으로 덮어써버려
+            // 현물대금이 빈 칸이 되는 문제가 발생함.
         }
         // 주식 호가 (KOSPI H1_, KOSDAQ HA_): 10호가
         "H1_" | "HA_" => {

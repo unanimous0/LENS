@@ -1,26 +1,47 @@
 use std::sync::Arc;
 
+use dashmap::DashMap;
 use tokio::sync::broadcast;
 
-/// 브로드캐스트 허브.
-/// 피드에서 받은 메시지를 JSON 직렬화 후 모든 WebSocket 클라이언트에 전달.
+/// 브로드캐스트 허브 + 최신 틱 스냅샷 캐시.
+///
+/// 클라이언트가 새로고침/재접속하면 과거 메시지는 받을 수 없다. 그래서 종목별
+/// "최신 상태"를 cache에 항상 최신 JSON으로 저장해두고, 접속 시 전체를 한 번에
+/// 쏴준 뒤 실시간 broadcast를 이어준다.
+///
+/// Orderbook처럼 빠르게 갱신되는 스트림은 캐시 안 함 (다음 호가가 곧 옴).
 #[derive(Clone)]
 pub struct Broadcaster {
     tx: broadcast::Sender<Arc<str>>,
+    /// key = "{type}:{code}" (예: "stock_tick:005930"). 최신 JSON 1개만 유지.
+    cache: Arc<DashMap<String, Arc<str>>>,
 }
 
 impl Broadcaster {
     pub fn new(capacity: usize) -> Self {
         let (tx, _) = broadcast::channel(capacity);
-        Self { tx }
+        Self {
+            tx,
+            cache: Arc::new(DashMap::new()),
+        }
     }
 
-    /// JSON 문자열을 모든 구독자에게 전송. 구독자가 없으면 무시.
+    /// 캐시 저장 + 브로드캐스트. 재접속 스냅샷에 포함됨.
+    pub fn send_cached(&self, key: String, json: Arc<str>) {
+        self.cache.insert(key, json.clone());
+        let _ = self.tx.send(json);
+    }
+
+    /// 캐시 없이 브로드캐스트만. Orderbook 등 재현 의미 적은 스트림용.
     pub fn send(&self, json: Arc<str>) {
         let _ = self.tx.send(json);
     }
 
-    /// 새 수신자 생성 (WebSocket 클라이언트용).
+    /// 현재 캐시의 모든 메시지 복제. 재접속 시 flush용.
+    pub fn snapshot(&self) -> Vec<Arc<str>> {
+        self.cache.iter().map(|e| e.value().clone()).collect()
+    }
+
     pub fn subscribe(&self) -> broadcast::Receiver<Arc<str>> {
         self.tx.subscribe()
     }

@@ -106,20 +106,10 @@ async fn fetch_futures_initial(
                     let _ = tx.send(WsMessage::FuturesTick(FuturesTick {
                         code: code.clone(), name: name.clone(),
                         price, underlying_price: underlying, basis: r2(basis), volume,
-                        timestamp: now.clone(), is_initial: true,
+                        timestamp: now, is_initial: true,
                     })).await;
-
-                    // 기초자산 StockTick (D코드 스프레드 제외)
-                    if underlying > 0.0 && code.starts_with('A') {
-                        if let Some(spot_code) = futures_to_spot.get(code.as_str()) {
-                            let sname = names.get(spot_code).cloned().unwrap_or_default();
-                            let _ = tx.send(WsMessage::StockTick(StockTick {
-                                code: spot_code.clone(), name: sname,
-                                price: underlying, volume: 0, cum_volume: 0,
-                                timestamp: now, is_initial: true,
-                            })).await;
-                        }
-                    }
+                    // 기초자산 StockTick은 여기서 파생하지 않음 — t1102가 250/250 커버하고,
+                    // 여기서 cum_volume=0으로 보내면 현물대금을 덮어써 공란이 됨.
                     count += 1;
                 } else {
                     failed += 1;

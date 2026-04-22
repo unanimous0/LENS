@@ -77,11 +77,13 @@ async fn main() {
 
     // 마스터 데이터 로드 (모든 모드에서 공유)
     let (master_names, master_stock_codes, futures_to_spot, kosdaq_codes) = load_futures_master();
-    // 만기 임박 스프레드만 자동 구독 (기본 7일, 환경변수로 조정)
+    // 스프레드 자동 구독: 기본은 전체(SPREAD_AUTO_DAYS 미설정 시 무제한).
+    // 환경변수로 "D-7 이내만" 같은 제한 가능.
     let spread_days = std::env::var("SPREAD_AUTO_DAYS")
-        .ok().and_then(|v| v.parse::<i64>().ok()).unwrap_or(7);
+        .ok().and_then(|v| v.parse::<i64>().ok()).unwrap_or(i64::MAX);
     let auto_spread_codes = load_auto_spread_codes(spread_days);
-    info!("Auto-spread: {} codes (days_left <= {})", auto_spread_codes.len(), spread_days);
+    info!("Auto-spread: {} codes (days_left <= {})", auto_spread_codes.len(),
+        if spread_days == i64::MAX { "∞".to_string() } else { spread_days.to_string() });
     let shared = Arc::new(MasterShared {
         master_names,
         master_stock_codes,
@@ -96,12 +98,27 @@ async fn main() {
     let (initial_handle, initial_sub_tx) =
         spawn_feed(&initial_mode, tx.clone(), &shared).expect("Failed to spawn initial feed");
 
-    // mpsc → broadcast 브릿지
+    // mpsc → broadcast 브릿지.
+    // 타입별로 cache key를 만들어 send_cached로 저장하면 재접속 클라이언트가 snapshot 복원.
+    // Orderbook은 스트림성이라 cache 없이 전달.
     let bc = broadcaster.clone();
     tokio::spawn(async move {
         while let Some(msg) = rx.recv().await {
+            let key = match &msg {
+                WsMessage::StockTick(t) => Some(format!("stock_tick:{}", t.code)),
+                WsMessage::FuturesTick(t) => Some(format!("futures_tick:{}", t.code)),
+                WsMessage::EtfTick(t) => Some(format!("etf_tick:{}", t.code)),
+                WsMessage::OrderbookTick(_) => None,
+            };
             match serde_json::to_string(&msg) {
-                Ok(json) => bc.send(Arc::from(json)),
+                Ok(json) => {
+                    let arc: Arc<str> = Arc::from(json);
+                    if let Some(k) = key {
+                        bc.send_cached(k, arc);
+                    } else {
+                        bc.send(arc);
+                    }
+                }
                 Err(e) => tracing::error!("JSON serialization error: {}", e),
             }
         }
