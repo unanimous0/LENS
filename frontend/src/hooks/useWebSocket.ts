@@ -1,23 +1,25 @@
 import { useEffect } from 'react'
 import { useMarketStore } from '../stores/marketStore'
 
-const FLUSH_MS = 100
-
 export function useWebSocket() {
   useEffect(() => {
     let stopped = false
     let ws: WebSocket | null = null
+    let rafId = 0
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
     const wsUrl = `${protocol}//${window.location.host}/ws/market`
 
-    // 틱 버퍼: 100ms마다 한번에 batch store 반영 (1번의 set() 호출)
+    // 틱 버퍼: 프레임마다 한 번 flush. setInterval(100ms) 대신 requestAnimationFrame으로
+    // 최악 지연을 100ms → ~16ms(60fps)로 단축. 탭 백그라운드에서는 rAF가 느려지므로
+    // 기존 100ms 인터벌보다 CPU 덜 먹음.
     let etfBuf: Record<string, any> = {}
     let stockBuf: Record<string, any> = {}
     let futuresBuf: Record<string, any> = {}
     let obBuf: Record<string, any> = {}
     let dirty = false
 
-    const flush = setInterval(() => {
+    const flush = () => {
+      rafId = requestAnimationFrame(flush)
       if (!dirty) return
       dirty = false
       const store = useMarketStore.getState()
@@ -31,7 +33,8 @@ export function useWebSocket() {
       if (hasStock) { store.batchUpdateStocks(stockBuf); stockBuf = {} }
       if (hasFutures) { store.batchUpdateFutures(futuresBuf); futuresBuf = {} }
       if (hasOb) { store.batchUpdateOrderbooks(obBuf); obBuf = {} }
-    }, FLUSH_MS)
+    }
+    rafId = requestAnimationFrame(flush)
 
     function connect() {
       if (stopped) return
@@ -67,7 +70,7 @@ export function useWebSocket() {
     connect()
     return () => {
       stopped = true
-      clearInterval(flush)
+      cancelAnimationFrame(rafId)
       if (ws) { ws.onclose = null; ws.close() }
     }
   }, [])
