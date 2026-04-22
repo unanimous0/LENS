@@ -7,6 +7,9 @@
 
 cd "$(dirname "$0")"
 
+# 각 백그라운드 작업을 별도 프로세스 그룹으로 — 종료 시 손자까지 모두 정리
+set -m
+
 # Node.js 버전 설정
 export NVM_DIR="$HOME/.nvm"
 [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
@@ -39,21 +42,17 @@ fi
 # 로그 디렉토리
 mkdir -p logs
 
-# 백엔드 실행 (백그라운드)
+# 백엔드 실행 (subshell로 감싸서 프로세스 그룹 리더 확보)
 echo "[백엔드] 시작 (포트 8100)..."
-cd backend
-uvicorn main:app --host 0.0.0.0 --port 8100 --reload 2>&1 | tee ../logs/backend.log &
+(cd backend && uvicorn main:app --host 0.0.0.0 --port 8100 --reload 2>&1 | tee ../logs/backend.log) &
 BACKEND_PID=$!
-cd ..
 
 # Rust 실시간 서비스: 먼저 blocking으로 빌드 후 바이너리 실행
 echo "[실시간] Rust 서비스 빌드..."
-cd realtime
-cargo build --release --quiet
+(cd realtime && cargo build --release --quiet)
 echo "[실시간] Rust 서비스 시작 (포트 8200)..."
-./target/release/lens-realtime 2>&1 | tee ../logs/realtime.log &
+(cd realtime && ./target/release/lens-realtime 2>&1 | tee ../logs/realtime.log) &
 REALTIME_PID=$!
-cd ..
 
 # Rust /health 응답 대기 (최대 10초) — 프론트 첫 fetch 실패 방지
 for i in $(seq 1 20); do
@@ -66,10 +65,8 @@ done
 
 # 프론트엔드 dev 모드 실행
 echo "[프론트엔드] dev 모드 시작 (포트 3100)..."
-cd frontend
-npx vite --host 0.0.0.0 --port 3100 &
+(cd frontend && npx vite --host 0.0.0.0 --port 3100) &
 FRONTEND_PID=$!
-cd ..
 
 echo ""
 echo "LENS 개발 서버 실행 완료"
@@ -79,5 +76,17 @@ echo "   실시간 WS:  http://localhost:8200"
 echo ""
 echo "종료: Ctrl+C"
 
-trap "kill $BACKEND_PID $REALTIME_PID $FRONTEND_PID 2>/dev/null; exit" INT TERM
+cleanup() {
+    echo ""
+    echo "[종료] 모든 프로세스 정리 중..."
+    # 프로세스 그룹 단위 SIGTERM — subshell + set -m 덕에 각 &는 별도 PGID
+    for pid in "$BACKEND_PID" "$REALTIME_PID" "$FRONTEND_PID"; do
+        kill -TERM -- "-$pid" 2>/dev/null
+    done
+    sleep 1
+    # 잔존 프로세스 백업 정리 (포트 기반)
+    fuser -k 3100/tcp 8100/tcp 8200/tcp 2>/dev/null
+    exit 0
+}
+trap cleanup INT TERM
 wait
