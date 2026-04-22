@@ -38,7 +38,9 @@ struct MasterShared {
     master_stock_codes: HashSet<String>,
     futures_to_spot: HashMap<String, String>,
     kosdaq_codes: HashSet<String>,
-    spread_codes: Vec<String>,
+    /// 만기 임박(SPREAD_AUTO_DAYS 이하) 종목의 스프레드 코드 — 자동 구독 대상.
+    /// 그 외 스프레드는 호가창에서 모달 열 때 동적 구독됨.
+    auto_spread_codes: Vec<String>,
 }
 
 /// 앱 공유 상태. 내부 변이 필드는 전부 Arc로 감싸 Clone 비용 최소화.
@@ -75,13 +77,17 @@ async fn main() {
 
     // 마스터 데이터 로드 (모든 모드에서 공유)
     let (master_names, master_stock_codes, futures_to_spot, kosdaq_codes) = load_futures_master();
-    let spread_codes = load_spread_codes();
+    // 만기 임박 스프레드만 자동 구독 (기본 7일, 환경변수로 조정)
+    let spread_days = std::env::var("SPREAD_AUTO_DAYS")
+        .ok().and_then(|v| v.parse::<i64>().ok()).unwrap_or(7);
+    let auto_spread_codes = load_auto_spread_codes(spread_days);
+    info!("Auto-spread: {} codes (days_left <= {})", auto_spread_codes.len(), spread_days);
     let shared = Arc::new(MasterShared {
         master_names,
         master_stock_codes,
         futures_to_spot,
         kosdaq_codes,
-        spread_codes,
+        auto_spread_codes,
     });
 
     // 초기 모드
@@ -180,16 +186,18 @@ fn spawn_feed(
                     subscriptions.push(("JC0".to_string(), futures_code.clone()));
                 }
             }
-            for code in &shared.spread_codes {
+            // 스프레드: 만기 임박(기본 D-7) 종목만 자동 구독.
+            // 그 외는 호가창에서 스프 모달 열 때만 동적 구독.
+            for code in &shared.auto_spread_codes {
                 subscriptions.push(("JC0".to_string(), code.clone()));
             }
 
             info!(
-                "LS API auto-subscribe: {} codes ({} stocks, {} futures, {} spreads), {} kosdaq",
+                "LS API auto-subscribe: {} codes ({} stocks, {} futures, {} auto-spreads), {} kosdaq",
                 subscriptions.len(),
                 shared.master_stock_codes.len(),
-                subscriptions.iter().filter(|(tr, _)| tr == "JC0").count() - shared.spread_codes.len(),
-                shared.spread_codes.len(),
+                subscriptions.iter().filter(|(tr, _)| tr == "JC0").count() - shared.auto_spread_codes.len(),
+                shared.auto_spread_codes.len(),
                 shared.kosdaq_codes.len(),
             );
 
@@ -289,8 +297,9 @@ async fn set_mode(
     })))
 }
 
-/// futures_master.json에서 스프레드 코드 목록 로드.
-fn load_spread_codes() -> Vec<String> {
+/// 만기 D-N 이내 종목의 스프레드 코드만 로드 (자동 구독용).
+/// 그 외 스프레드는 호가창에서 모달 열 때만 동적 구독.
+fn load_auto_spread_codes(days_threshold: i64) -> Vec<String> {
     let master_path = std::path::Path::new("../data/futures_master.json");
     let data = match std::fs::read_to_string(master_path) {
         Ok(d) => d,
@@ -303,6 +312,11 @@ fn load_spread_codes() -> Vec<String> {
     let mut codes = Vec::new();
     if let Some(items) = master["items"].as_array() {
         for item in items {
+            let days_left = item.get("front")
+                .and_then(|f| f.get("days_left"))
+                .and_then(|v| v.as_i64())
+                .unwrap_or(i64::MAX);
+            if days_left > days_threshold { continue; }
             if let Some(code) = item["spread_code"].as_str() {
                 if !code.is_empty() {
                     codes.push(code.to_string());
@@ -445,7 +459,10 @@ async fn subscribe_orderbook(
         codes.push(("JH0".to_string(), fut.clone()));
     }
     if let Some(spr) = &req.spread_code {
+        // 스프레드 호가창을 열면 호가(JH0)와 체결(JC0)을 함께 구독.
+        // 체결은 자동 구독 대상이 아니라 모달 열 때만 받음 (한도 보호).
         codes.push(("JH0".to_string(), spr.clone()));
+        codes.push(("JC0".to_string(), spr.clone()));
     }
 
     info!("REST orderbook subscribe: {:?}", codes);

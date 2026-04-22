@@ -71,53 +71,66 @@ pub async fn fetch_initial_prices(
     info!("Initial price fetch done: {f_count} futures + {s_count} stocks");
 }
 
+/// 요청 간 균등 간격 (초당 5건, TPS 10 한도 대비 여유). 버스트 방지.
+const REQ_INTERVAL: std::time::Duration = std::time::Duration::from_millis(200);
+/// HTTP 에러 시 재시도 횟수 (최초 1회 + 재시도 2회 = 총 3회)
+const MAX_RETRIES: usize = 2;
+
 /// t8402로 선물/스프레드 초기 가격 조회
 async fn fetch_futures_initial(
     token: &str,
     codes: &[String],
     names: &HashMap<String, String>,
-    stock_codes: &HashSet<String>,
+    _stock_codes: &HashSet<String>,
     futures_to_spot: &HashMap<String, String>,
     tx: &mpsc::Sender<WsMessage>,
     cancel: &CancellationToken,
 ) -> usize {
     let client = reqwest::Client::new();
     let mut count = 0;
-    let mut tps = 0;
+    let mut failed = 0;
 
     for code in codes {
         if cancel.is_cancelled() { return count; }
 
-        if let Ok(detail) = fetch_t8402(&client, token, code).await {
-            let price = pf(detail.get("price"));
-            let volume = pu(detail.get("volume"));
-            if price <= 0.0 { tps_wait(&mut tps).await; continue; }
+        match fetch_t8402(&client, token, code).await {
+            Ok(detail) => {
+                let price = pf(detail.get("price"));
+                let volume = pu(detail.get("volume"));
+                if price > 0.0 {
+                    let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.6f").to_string();
+                    let name = names.get(code.as_str()).cloned().unwrap_or_default();
+                    let underlying = pf(detail.get("baseprice"));
+                    let basis = if underlying > 0.0 { price - underlying } else { 0.0 };
 
-            let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.6f").to_string();
-            let name = names.get(code.as_str()).cloned().unwrap_or_default();
-            let underlying = pf(detail.get("baseprice"));
-            let basis = if underlying > 0.0 { price - underlying } else { 0.0 };
-
-            let _ = tx.send(WsMessage::FuturesTick(FuturesTick {
-                code: code.clone(), name: name.clone(),
-                price, underlying_price: underlying, basis: r2(basis), volume,
-                timestamp: now.clone(), is_initial: true,
-            })).await;
-
-            // 기초자산 StockTick (D코드 스프레드 제외)
-            if underlying > 0.0 && code.starts_with('A') {
-                if let Some(spot_code) = futures_to_spot.get(code.as_str()) {
-                    let sname = names.get(spot_code).cloned().unwrap_or_default();
-                    let _ = tx.send(WsMessage::StockTick(StockTick {
-                        code: spot_code.clone(), name: sname,
-                        price: underlying, volume: 0, cum_volume: 0,
-                        timestamp: now, is_initial: true,
+                    let _ = tx.send(WsMessage::FuturesTick(FuturesTick {
+                        code: code.clone(), name: name.clone(),
+                        price, underlying_price: underlying, basis: r2(basis), volume,
+                        timestamp: now.clone(), is_initial: true,
                     })).await;
+
+                    // 기초자산 StockTick (D코드 스프레드 제외)
+                    if underlying > 0.0 && code.starts_with('A') {
+                        if let Some(spot_code) = futures_to_spot.get(code.as_str()) {
+                            let sname = names.get(spot_code).cloned().unwrap_or_default();
+                            let _ = tx.send(WsMessage::StockTick(StockTick {
+                                code: spot_code.clone(), name: sname,
+                                price: underlying, volume: 0, cum_volume: 0,
+                                timestamp: now, is_initial: true,
+                            })).await;
+                        }
+                    }
+                    count += 1;
+                } else {
+                    failed += 1;
                 }
             }
-            count += 1;
+            Err(_) => { failed += 1; }
         }
-        tps_wait(&mut tps).await;
+        tokio::time::sleep(REQ_INTERVAL).await;
+    }
+    if failed > 0 {
+        warn!("t8402: {} codes failed after retries", failed);
     }
     count
 }
@@ -132,42 +145,39 @@ async fn fetch_stocks_initial(
 ) -> usize {
     let client = reqwest::Client::new();
     let mut count = 0;
-    let mut tps = 0;
+    let mut failed = 0;
 
     for code in codes {
         if cancel.is_cancelled() { return count; }
 
-        if let Ok(detail) = fetch_t1102(&client, token, code).await {
-            let price = pf(detail.get("price"));
-            let value = pu(detail.get("value")); // 백만원 단위 거래대금
-            if price <= 0.0 { tps_wait(&mut tps).await; continue; }
+        match fetch_t1102(&client, token, code).await {
+            Ok(detail) => {
+                let price = pf(detail.get("price"));
+                let value = pu(detail.get("value")); // 백만원 단위 거래대금
+                if price > 0.0 {
+                    let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.6f").to_string();
+                    let name = names.get(code.as_str()).cloned().unwrap_or_default();
 
-            let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.6f").to_string();
-            let name = names.get(code.as_str()).cloned().unwrap_or_default();
-
-            let _ = tx.send(WsMessage::StockTick(StockTick {
-                code: code.clone(), name,
-                price,
-                volume: 0,
-                cum_volume: value * 1_000_000, // 백만원 → 원
-                timestamp: now, is_initial: true,
-            })).await;
-            count += 1;
+                    let _ = tx.send(WsMessage::StockTick(StockTick {
+                        code: code.clone(), name,
+                        price,
+                        volume: 0,
+                        cum_volume: value * 1_000_000, // 백만원 → 원
+                        timestamp: now, is_initial: true,
+                    })).await;
+                    count += 1;
+                } else {
+                    failed += 1;
+                }
+            }
+            Err(_) => { failed += 1; }
         }
-        tps_wait(&mut tps).await;
+        tokio::time::sleep(REQ_INTERVAL).await;
+    }
+    if failed > 0 {
+        warn!("t1102: {} codes failed after retries", failed);
     }
     count
-}
-
-/// TPS 제한 대응: 9건마다 1초 대기, 그 외 50ms 간격
-async fn tps_wait(tps: &mut u32) {
-    *tps += 1;
-    if *tps >= 9 {
-        *tps = 0;
-        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-    } else {
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    }
 }
 
 pub async fn fetch_token(app_key: &str, app_secret: &str) -> Result<String, String> {
@@ -181,24 +191,62 @@ pub async fn fetch_token(app_key: &str, app_secret: &str) -> Result<String, Stri
 
 async fn fetch_t8402(client: &reqwest::Client, token: &str, code: &str) -> Result<serde_json::Map<String, serde_json::Value>, String> {
     let body = serde_json::json!({"t8402InBlock": {"focode": code}});
-    let resp = client.post(T8402_URL)
-        .header("Content-Type", "application/json")
-        .header("authorization", format!("Bearer {token}"))
-        .header("tr_cd", "t8402").header("tr_cont", "N")
-        .json(&body).send().await.map_err(|e| format!("{e}"))?;
-    let data: serde_json::Value = resp.json().await.map_err(|e| format!("{e}"))?;
-    data["t8402OutBlock"].as_object().cloned().ok_or("no data".into())
+    // HTTP 5xx 또는 네트워크 에러 시 1초 간격으로 MAX_RETRIES만큼 재시도
+    let mut last_err = String::new();
+    for attempt in 0..=MAX_RETRIES {
+        if attempt > 0 { tokio::time::sleep(std::time::Duration::from_secs(1)).await; }
+        match client.post(T8402_URL)
+            .header("Content-Type", "application/json")
+            .header("authorization", format!("Bearer {token}"))
+            .header("tr_cd", "t8402").header("tr_cont", "N")
+            .json(&body).send().await
+        {
+            Ok(resp) if resp.status().is_success() => {
+                match resp.json::<serde_json::Value>().await {
+                    Ok(data) => {
+                        if let Some(block) = data["t8402OutBlock"].as_object() {
+                            return Ok(block.clone());
+                        }
+                        // rsp_msg가 "기초자산정보가 없습니다" 같은 유의미 응답이면 재시도 무의미
+                        return Err(data.get("rsp_msg").and_then(|v| v.as_str()).unwrap_or("no data").into());
+                    }
+                    Err(e) => last_err = format!("parse: {e}"),
+                }
+            }
+            Ok(resp) => last_err = format!("http {}", resp.status()),
+            Err(e) => last_err = format!("send: {e}"),
+        }
+    }
+    Err(last_err)
 }
 
 async fn fetch_t1102(client: &reqwest::Client, token: &str, code: &str) -> Result<serde_json::Map<String, serde_json::Value>, String> {
     let body = serde_json::json!({"t1102InBlock": {"shcode": code}});
-    let resp = client.post(T1102_URL)
-        .header("Content-Type", "application/json")
-        .header("authorization", format!("Bearer {token}"))
-        .header("tr_cd", "t1102").header("tr_cont", "N")
-        .json(&body).send().await.map_err(|e| format!("{e}"))?;
-    let data: serde_json::Value = resp.json().await.map_err(|e| format!("{e}"))?;
-    data["t1102OutBlock"].as_object().cloned().ok_or("no data".into())
+    let mut last_err = String::new();
+    for attempt in 0..=MAX_RETRIES {
+        if attempt > 0 { tokio::time::sleep(std::time::Duration::from_secs(1)).await; }
+        match client.post(T1102_URL)
+            .header("Content-Type", "application/json")
+            .header("authorization", format!("Bearer {token}"))
+            .header("tr_cd", "t1102").header("tr_cont", "N")
+            .json(&body).send().await
+        {
+            Ok(resp) if resp.status().is_success() => {
+                match resp.json::<serde_json::Value>().await {
+                    Ok(data) => {
+                        if let Some(block) = data["t1102OutBlock"].as_object() {
+                            return Ok(block.clone());
+                        }
+                        return Err(data.get("rsp_msg").and_then(|v| v.as_str()).unwrap_or("no data").into());
+                    }
+                    Err(e) => last_err = format!("parse: {e}"),
+                }
+            }
+            Ok(resp) => last_err = format!("http {}", resp.status()),
+            Err(e) => last_err = format!("send: {e}"),
+        }
+    }
+    Err(last_err)
 }
 
 fn pf(v: Option<&serde_json::Value>) -> f64 {
