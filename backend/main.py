@@ -1,31 +1,16 @@
-"""LENS API -- unified entry point"""
-import asyncio
-from contextlib import asynccontextmanager
+"""LENS API -- unified entry point.
 
+실시간 시세/호가/모드 전환은 Rust 서비스(8200)가 전담한다.
+여기서는 파일 분석(대차·상환·대여)과 정적 JSON(마스터) REST만 제공.
+"""
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from core.config import settings
-from core.app_state import app_state
-from routers import arbitrage, borrowing, health, lending, market, repayment
-from routers.ws import router as ws_router, broadcast
+from routers import arbitrage, borrowing, health, lending, repayment
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    # Startup: connect adapter and start streaming
-    await app_state.adapter.connect()
-    app_state._stream_task = asyncio.create_task(
-        app_state._run_streams(broadcast)
-    )
-    yield
-    # Shutdown: clean up
-    if app_state._stream_task:
-        app_state._stream_task.cancel()
-    await app_state.adapter.disconnect()
-
-
-app = FastAPI(title=settings.APP_NAME, debug=settings.DEBUG, lifespan=lifespan)
+app = FastAPI(title=settings.APP_NAME, debug=settings.DEBUG)
 
 app.add_middleware(
     CORSMiddleware,
@@ -39,6 +24,4 @@ app.include_router(arbitrage.router, prefix="/api")
 app.include_router(borrowing.router, prefix="/api")
 app.include_router(health.router, prefix="/api")
 app.include_router(lending.router, prefix="/api")
-app.include_router(market.router, prefix="/api")
 app.include_router(repayment.router, prefix="/api")
-app.include_router(ws_router)
