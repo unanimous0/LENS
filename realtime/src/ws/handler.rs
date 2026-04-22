@@ -28,10 +28,13 @@ async fn handle_client(mut socket: WebSocket, broadcaster: Arc<Broadcaster>) {
         }
     }
 
-    // 순서 중요: subscribe를 먼저 걸고 snapshot을 보내야 중간에 들어오는 새 틱을 놓치지 않음.
+    // Trade-off 결정: 이 순서는 "메시지 유실 없음, 중복 가능"을 택한 것.
+    //  - subscribe() 먼저 → snapshot() → rx 수신 루프.
+    //  - subscribe ~ snapshot 사이에 도착한 tick은 cache에도 반영되고 rx에도 쌓임 → 같은 종목이
+    //    snapshot과 rx로 두 번 전달될 수 있음.
+    //  - 프론트 store는 멱등(같은 값 덮어씀)이라 무해. 대안인 "snapshot → subscribe" 순서는
+    //    사이 tick이 유실되는데, 트레이딩 화면에선 유실이 중복보다 위험하므로 거부.
     let mut rx = broadcaster.subscribe();
-
-    // 현재 캐시 스냅샷 전체 전송 — 재접속한 클라이언트가 기존 상태 복원.
     let snapshot = broadcaster.snapshot();
     info!("Flushing snapshot to new client: {} messages", snapshot.len());
     for json in snapshot {
