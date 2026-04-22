@@ -313,6 +313,9 @@ async fn set_mode(
         old.cancel.cancel();
         let _ = old.join.await;
     }
+    // 이전 모드 cache 전부 비움 (mock → ls_api 전환 시 mock 종목이 snapshot으로 섞이는 것 방지).
+    // 새 feed가 초기값 fetch하면 다시 채워짐.
+    state.broadcaster.clear_cache();
     *handle_guard = Some(new_handle);
     *state.sub_tx.write().unwrap() = new_sub_tx;
     *state.feed_mode.write().unwrap() = mode.clone();

@@ -45,4 +45,9 @@ impl Broadcaster {
     pub fn subscribe(&self) -> broadcast::Receiver<Arc<str>> {
         self.tx.subscribe()
     }
+
+    /// 캐시 전부 비움. 모드 전환 시 이전 모드의 stale 데이터를 날려야 함.
+    pub fn clear_cache(&self) {
+        self.cache.clear();
+    }
 }
