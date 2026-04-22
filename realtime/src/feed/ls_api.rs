@@ -19,14 +19,17 @@ const MAX_SUBS_PER_CONNECTION: usize = 190;
 
 /// LS증권 OpenAPI WebSocket 피드.
 /// 구독 수가 190개를 초과하면 여러 WebSocket 연결로 자동 분산.
+///
+/// 대형 map/set들은 `Arc<...>`로 저장. 연결 재생성(월물 전환·재연결)마다
+/// `.clone()` 호출되는데 HashMap/HashSet 전체 복제 대신 Arc refcount만 증가.
 pub struct LsApiFeed {
     pub app_key: String,
     pub app_secret: String,
     pub subscriptions: Vec<(String, String)>,
-    pub names: HashMap<String, String>,
-    pub stock_codes: HashSet<String>,
-    pub futures_to_spot: HashMap<String, String>,
-    pub kosdaq_codes: HashSet<String>,
+    pub names: Arc<HashMap<String, String>>,
+    pub stock_codes: Arc<HashSet<String>>,
+    pub futures_to_spot: Arc<HashMap<String, String>>,
+    pub kosdaq_codes: Arc<HashSet<String>>,
 }
 
 impl LsApiFeed {
@@ -39,7 +42,13 @@ impl LsApiFeed {
         futures_to_spot: HashMap<String, String>,
         kosdaq_codes: HashSet<String>,
     ) -> Self {
-        Self { app_key, app_secret, subscriptions, names, stock_codes, futures_to_spot, kosdaq_codes }
+        Self {
+            app_key, app_secret, subscriptions,
+            names: Arc::new(names),
+            stock_codes: Arc::new(stock_codes),
+            futures_to_spot: Arc::new(futures_to_spot),
+            kosdaq_codes: Arc::new(kosdaq_codes),
+        }
     }
 }
 
@@ -185,9 +194,9 @@ impl MarketFeed for LsApiFeed {
 fn spawn_futures_connections(
     futures: &[(String, String)],
     app_key: &str, app_secret: &str,
-    names: &HashMap<String, String>,
-    stock_codes: &HashSet<String>,
-    futures_to_spot: &HashMap<String, String>,
+    names: &Arc<HashMap<String, String>>,
+    stock_codes: &Arc<HashSet<String>>,
+    futures_to_spot: &Arc<HashMap<String, String>>,
     tx: &mpsc::Sender<WsMessage>,
     global_cancel: &CancellationToken,
     futures_cancel: &CancellationToken,
@@ -246,9 +255,9 @@ fn spawn_futures_connections(
 fn spawn_orderbook_connection(
     codes: &[(String, String)],
     app_key: &str, app_secret: &str,
-    names: &HashMap<String, String>,
-    stock_codes: &HashSet<String>,
-    futures_to_spot: &HashMap<String, String>,
+    names: &Arc<HashMap<String, String>>,
+    stock_codes: &Arc<HashSet<String>>,
+    futures_to_spot: &Arc<HashMap<String, String>>,
     tx: &mpsc::Sender<WsMessage>,
     global_cancel: &CancellationToken,
     ob_cancel: &CancellationToken,
@@ -303,9 +312,9 @@ async fn run_single_connection(
     app_key: &str,
     app_secret: &str,
     subscriptions: &[(String, String)],
-    names: &HashMap<String, String>,
-    stock_codes: &HashSet<String>,
-    futures_to_spot: &HashMap<String, String>,
+    names: &Arc<HashMap<String, String>>,
+    stock_codes: &Arc<HashSet<String>>,
+    futures_to_spot: &Arc<HashMap<String, String>>,
     tx: &mpsc::Sender<WsMessage>,
     cancel: &CancellationToken,
 ) -> Result<(), String> {
@@ -370,9 +379,9 @@ async fn run_single_connection(
 async fn handle_tick(
     text: &str,
     tx: &mpsc::Sender<WsMessage>,
-    names: &HashMap<String, String>,
-    stock_codes: &HashSet<String>,
-    futures_to_spot: &HashMap<String, String>,
+    names: &Arc<HashMap<String, String>>,
+    stock_codes: &Arc<HashSet<String>>,
+    futures_to_spot: &Arc<HashMap<String, String>>,
 ) {
     let data: serde_json::Value = match serde_json::from_str(text) {
         Ok(v) => v,
