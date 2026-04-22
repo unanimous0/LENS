@@ -155,6 +155,15 @@ async fn main() {
         .await
         .expect("Failed to bind port");
 
+    // Nagle 끄기: WebSocket은 작은 JSON 프레임을 자주 쏘는 구조라 Nagle이 켜져있으면
+    // 최대 40ms까지 지연된다. tap_io로 accept된 모든 TcpStream에 set_nodelay(true).
+    use axum::serve::ListenerExt;
+    let listener = listener.tap_io(|s| {
+        if let Err(e) = s.set_nodelay(true) {
+            tracing::warn!("set_nodelay failed: {e}");
+        }
+    });
+
     info!("Rust realtime service listening on port {PORT}");
 
     // Graceful shutdown
