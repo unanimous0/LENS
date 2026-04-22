@@ -5,7 +5,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::model::message::WsMessage;
-use crate::model::tick::{EtfTick, FuturesTick, StockTick};
+use crate::model::tick::{EtfTick, FuturesTick, OrderbookLevel, OrderbookTick, StockTick};
 
 use super::{MarketFeed, SubCommand};
 
@@ -53,8 +53,10 @@ static MOCK_FUTURES: &[MockFuture] = &[
 pub struct MockFeed;
 
 impl MarketFeed for MockFeed {
-    async fn run(&self, tx: mpsc::Sender<WsMessage>, _sub_rx: mpsc::UnboundedReceiver<SubCommand>, cancel: CancellationToken) {
+    async fn run(&self, tx: mpsc::Sender<WsMessage>, mut sub_rx: mpsc::UnboundedReceiver<SubCommand>, cancel: CancellationToken) {
         let mut rng = StdRng::from_os_rng();
+        // 호가 구독 중인 코드: (code, base_price, levels)
+        let mut ob_subs: Vec<(String, f64, usize)> = Vec::new();
 
         loop {
             // ETF 틱
@@ -77,9 +79,7 @@ impl MarketFeed for MockFeed {
                     timestamp: now,
                 });
 
-                if tx.send(msg).await.is_err() {
-                    return;
-                }
+                if tx.send(msg).await.is_err() { return; }
             }
 
             // 주식 틱
@@ -97,9 +97,7 @@ impl MarketFeed for MockFeed {
                     is_initial: false,
                 });
 
-                if tx.send(msg).await.is_err() {
-                    return;
-                }
+                if tx.send(msg).await.is_err() { return; }
             }
 
             // 선물 틱
@@ -120,16 +118,71 @@ impl MarketFeed for MockFeed {
                     timestamp: now,
                 });
 
-                if tx.send(msg).await.is_err() {
-                    return;
+                if tx.send(msg).await.is_err() { return; }
+            }
+
+            // 호가 틱 (구독 중인 종목만)
+            for (code, base, levels) in &ob_subs {
+                let mid = base * (1.0 + gauss(&mut rng, 0.001));
+                let tick_size = if mid > 100000.0 { 500.0 } else if mid > 50000.0 { 100.0 } else if mid > 10000.0 { 50.0 } else { 10.0 };
+                let mut asks = Vec::with_capacity(*levels);
+                let mut bids = Vec::with_capacity(*levels);
+                let mut total_ask = 0u64;
+                let mut total_bid = 0u64;
+                for i in 0..*levels {
+                    let aq = rng.random_range(100..5000);
+                    let bq = rng.random_range(100..5000);
+                    asks.push(OrderbookLevel {
+                        price: round2(mid + tick_size * (i as f64 + 1.0)),
+                        quantity: aq,
+                    });
+                    bids.push(OrderbookLevel {
+                        price: round2(mid - tick_size * (i as f64)),
+                        quantity: bq,
+                    });
+                    total_ask += aq;
+                    total_bid += bq;
                 }
+                let now = Utc::now().format("%Y-%m-%dT%H:%M:%S%.6f").to_string();
+                let msg = WsMessage::OrderbookTick(OrderbookTick {
+                    code: code.clone(), name: code.clone(),
+                    asks, bids, total_ask_qty: total_ask, total_bid_qty: total_bid,
+                    timestamp: now,
+                });
+                if tx.send(msg).await.is_err() { return; }
             }
 
             tokio::select! {
-                _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {}
+                _ = tokio::time::sleep(std::time::Duration::from_millis(500)) => {}
+                cmd = sub_rx.recv() => {
+                    if let Some(cmd) = cmd {
+                        match cmd {
+                            SubCommand::SubscribeOrderbook { codes } => {
+                                ob_subs.clear();
+                                for (tr, code) in &codes {
+                                    let base = mock_base_price(code);
+                                    let levels = if tr == "JH0" { 5 } else { 10 };
+                                    ob_subs.push((code.clone(), base, levels));
+                                }
+                            }
+                            SubCommand::UnsubscribeOrderbook => ob_subs.clear(),
+                            _ => {}
+                        }
+                    }
+                }
                 _ = cancel.cancelled() => { return; }
             }
         }
+    }
+}
+
+/// Mock 호가용 기본 가격 추정
+fn mock_base_price(code: &str) -> f64 {
+    match code {
+        "005930" => 58000.0,
+        "000660" => 135000.0,
+        "035420" => 210000.0,
+        _ => 50000.0,
     }
 }
 

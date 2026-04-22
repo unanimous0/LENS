@@ -14,6 +14,7 @@ export function useWebSocket() {
     let etfBuf: Record<string, any> = {}
     let stockBuf: Record<string, any> = {}
     let futuresBuf: Record<string, any> = {}
+    let obBuf: Record<string, any> = {}
     let dirty = false
 
     const flush = setInterval(() => {
@@ -24,10 +25,12 @@ export function useWebSocket() {
       const hasEtf = Object.keys(etfBuf).length > 0
       const hasStock = Object.keys(stockBuf).length > 0
       const hasFutures = Object.keys(futuresBuf).length > 0
+      const hasOb = Object.keys(obBuf).length > 0
 
       if (hasEtf) { store.batchUpdateETFs(etfBuf); etfBuf = {} }
       if (hasStock) { store.batchUpdateStocks(stockBuf); stockBuf = {} }
       if (hasFutures) { store.batchUpdateFutures(futuresBuf); futuresBuf = {} }
+      if (hasOb) { store.batchUpdateOrderbooks(obBuf); obBuf = {} }
     }, FLUSH_MS)
 
     function connect() {
@@ -47,6 +50,7 @@ export function useWebSocket() {
           if (msg.type === 'etf_tick') etfBuf[msg.data.code] = msg.data
           else if (msg.type === 'stock_tick') stockBuf[msg.data.code] = msg.data
           else if (msg.type === 'futures_tick') futuresBuf[msg.data.code] = msg.data
+          else if (msg.type === 'orderbook_tick') obBuf[msg.data.code] = msg.data
           dirty = true
         } catch {}
       }

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use chrono::{DateTime, Utc};
 use futures_util::{SinkExt, StreamExt};
@@ -12,7 +12,7 @@ use crate::model::internal::{
     INDEX_EXCHANGE_NAV, INDEX_FUTURES_IDEAL, INDEX_QUOTE, INDEX_REAL_NAV, INDEX_TRADE,
 };
 use crate::model::message::WsMessage;
-use crate::model::tick::{EtfTick, FuturesTick, StockTick};
+use crate::model::tick::{EtfTick, FuturesTick, OrderbookLevel, OrderbookTick, StockTick};
 
 use super::{MarketFeed, SubCommand};
 
@@ -84,6 +84,8 @@ impl InternalFeed {
         tx: &mpsc::Sender<WsMessage>,
         sub_rx: &mut mpsc::UnboundedReceiver<SubCommand>,
         cancel: &CancellationToken,
+        current_switchable: &mut Vec<String>,
+        active_ob_codes: &mut HashSet<String>,
     ) -> Result<(), String> {
         let (ws_stream, resp) = tokio_tungstenite::connect_async(&self.ws_url)
             .await
@@ -119,11 +121,11 @@ impl InternalFeed {
                 msg = read.next() => {
                     match msg {
                         Some(Ok(tungstenite::Message::Text(text))) => {
-                            self.handle_message(&text, tx, &mut isin_cache, &mut states).await;
+                            self.handle_message(&text, tx, &mut isin_cache, &mut states, active_ob_codes).await;
                         }
                         Some(Ok(tungstenite::Message::Binary(data))) => {
                             if let Ok(text) = String::from_utf8(data.to_vec()) {
-                                self.handle_message(&text, tx, &mut isin_cache, &mut states).await;
+                                self.handle_message(&text, tx, &mut isin_cache, &mut states, active_ob_codes).await;
                             }
                         }
                         Some(Ok(tungstenite::Message::Close(frame))) => {
@@ -145,6 +147,15 @@ impl InternalFeed {
                     use crate::model::internal::short_to_subscribe;
                     match cmd {
                         Some(SubCommand::Subscribe(codes)) => {
+                            // 이전 전환 그룹 해지
+                            if !current_switchable.is_empty() {
+                                let unsub_msg = serde_json::json!({
+                                    "unsubscribe": &current_switchable,
+                                });
+                                let _ = write.send(tungstenite::Message::Text(unsub_msg.to_string().into())).await;
+                                info!("Auto-unsubscribe previous: {} codes", current_switchable.len());
+                            }
+                            // 새 코드 구독
                             let sub_codes: Vec<String> = codes.iter()
                                 .map(|c| short_to_subscribe(c))
                                 .collect();
@@ -153,7 +164,8 @@ impl InternalFeed {
                                 "real_nav": self.real_nav,
                             });
                             let _ = write.send(tungstenite::Message::Text(sub_msg.to_string().into())).await;
-                            info!("Runtime subscribe: {:?}", sub_codes);
+                            info!("Runtime subscribe: {:?} ({} codes)", sub_codes.first(), sub_codes.len());
+                            *current_switchable = sub_codes;
                         }
                         Some(SubCommand::Unsubscribe(codes)) => {
                             let unsub_codes: Vec<String> = codes.iter()
@@ -164,6 +176,21 @@ impl InternalFeed {
                             });
                             let _ = write.send(tungstenite::Message::Text(unsub_msg.to_string().into())).await;
                             info!("Runtime unsubscribe: {:?}", unsub_codes);
+                            // 전환 그룹에서도 제거
+                            current_switchable.retain(|c| !unsub_codes.contains(c));
+                        }
+                        Some(SubCommand::SubscribeOrderbook { codes }) => {
+                            // 내부망은 호가가 자동으로 오므로 서버 구독 불필요.
+                            // 활성 코드만 추적하여 발행 필터링.
+                            active_ob_codes.clear();
+                            for (_, code) in &codes {
+                                active_ob_codes.insert(code.clone());
+                            }
+                            info!("Orderbook filter active: {} codes", active_ob_codes.len());
+                        }
+                        Some(SubCommand::UnsubscribeOrderbook) => {
+                            active_ob_codes.clear();
+                            info!("Orderbook filter cleared");
                         }
                         None => {}
                     }
@@ -183,6 +210,7 @@ impl InternalFeed {
         tx: &mpsc::Sender<WsMessage>,
         isin_cache: &mut HashMap<String, String>,
         states: &mut HashMap<String, SymbolState>,
+        active_ob_codes: &HashSet<String>,
     ) {
         if text.starts_with('{') {
             match serde_json::from_str::<serde_json::Value>(text) {
@@ -212,7 +240,7 @@ impl InternalFeed {
                     self.handle_trade(&trade, tx, isin_cache, states).await;
                 }
                 InternalMsg::LpBookSnapshot(book) => {
-                    self.handle_book(&book, isin_cache, states);
+                    self.handle_book(&book, tx, isin_cache, states, active_ob_codes).await;
                 }
                 InternalMsg::Index(index) => {
                     self.handle_index(&index, isin_cache, states);
@@ -328,27 +356,66 @@ impl InternalFeed {
         }
     }
 
-    /// LpBookSnapshot → best bid/ask 저장
-    fn handle_book(
+    /// LpBookSnapshot → best bid/ask 저장 + OrderbookTick 발행 (활성 코드만)
+    async fn handle_book(
         &self,
         book: &LpBookSnapshot,
+        tx: &mpsc::Sender<WsMessage>,
         isin_cache: &mut HashMap<String, String>,
         states: &mut HashMap<String, SymbolState>,
+        active_ob_codes: &HashSet<String>,
     ) {
         let short_code = match self.resolve_code(&book.s, isin_cache) {
             Some(c) => c.clone(),
             None => return,
         };
 
-        let state = states.entry(short_code).or_default();
+        let state = states.entry(short_code.clone()).or_default();
 
-        // best bid = b[0][0], best ask = a[0][0]
+        // best bid/ask 저장 (ETF 스프레드 계산용 — 항상)
         if let Some(first_bid) = book.b.first() {
             state.best_bid = parse_f64(&first_bid[0]);
         }
         if let Some(first_ask) = book.a.first() {
             state.best_ask = parse_f64(&first_ask[0]);
         }
+
+        // 활성 호가 코드가 아니면 발행 안 함 (직렬화+브로드캐스트 비용 절약)
+        if active_ob_codes.is_empty() || !active_ob_codes.contains(&short_code) {
+            return;
+        }
+
+        // OrderbookTick 발행
+        let mut asks = Vec::with_capacity(book.a.len());
+        let mut bids = Vec::with_capacity(book.b.len());
+        let mut total_ask = 0u64;
+        let mut total_bid = 0u64;
+
+        for level in &book.a {
+            let price = parse_f64(&level[0]);
+            let qty: u64 = level[1].parse().unwrap_or(0);
+            if price > 0.0 {
+                total_ask += qty;
+                asks.push(OrderbookLevel { price, quantity: qty });
+            }
+        }
+        for level in &book.b {
+            let price = parse_f64(&level[0]);
+            let qty: u64 = level[1].parse().unwrap_or(0);
+            if price > 0.0 {
+                total_bid += qty;
+                bids.push(OrderbookLevel { price, quantity: qty });
+            }
+        }
+
+        let name = self.names.get(&short_code).cloned().unwrap_or_else(|| short_code.clone());
+        let timestamp = epoch_us_to_iso(book.et);
+
+        let _ = tx.send(WsMessage::OrderbookTick(OrderbookTick {
+            code: short_code, name,
+            asks, bids, total_ask_qty: total_ask, total_bid_qty: total_bid,
+            timestamp,
+        })).await;
     }
 
     /// Index → fl 비트마스크에 따라 state 갱신
@@ -411,13 +478,16 @@ impl InternalFeed {
 impl MarketFeed for InternalFeed {
     async fn run(&self, tx: mpsc::Sender<WsMessage>, mut sub_rx: mpsc::UnboundedReceiver<SubCommand>, cancel: CancellationToken) {
         let mut attempt = 0u32;
+        // 재연결 시에도 유지되는 상태
+        let mut current_switchable: Vec<String> = Vec::new();
+        let mut active_ob_codes: HashSet<String> = HashSet::new();
 
         loop {
             if cancel.is_cancelled() {
                 return;
             }
 
-            match self.connect_and_stream(&tx, &mut sub_rx, &cancel).await {
+            match self.connect_and_stream(&tx, &mut sub_rx, &cancel, &mut current_switchable, &mut active_ob_codes).await {
                 Ok(()) => return,
                 Err(e) => {
                     attempt += 1;

@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useMarketStore } from '@/stores/marketStore'
 import { cn } from '@/lib/utils'
+import { OrderbookModal, SpreadOrderbookModal } from '@/components/OrderbookModal'
 
 // ── 타입 ──
 
@@ -43,6 +44,7 @@ interface Row {
   dividend: number
   dividendDate: string
   dividendApplied: boolean
+  spreadCode: string
   holding031: number
   holding052: number
   futuresHolding: number
@@ -64,6 +66,10 @@ export function StockArbitragePage() {
   const [sk, setSk] = useState<SK>('basisGapBp')
   const [asc, setAsc] = useState(false)
   const [month, setMonth] = useState<'front' | 'back'>('front')
+  const [obTarget, setObTarget] = useState<{ spotCode: string; futuresCode: string; spotName: string } | null>(null)
+  const [spreadTarget, setSpreadTarget] = useState<{ spreadCode: string; spotName: string } | null>(null)
+  const closeOb = useCallback(() => setObTarget(null), [])
+  const closeSpread = useCallback(() => setSpreadTarget(null), [])
 
   const stockTicks = useMarketStore((s) => s.stockTicks)
   const futuresTicks = useMarketStore((s) => s.futuresTicks)
@@ -121,6 +127,7 @@ export function StockArbitragePage() {
         backPrice: backP,
         spread: item.spread_code ? (futuresTicks[item.spread_code]?.price ?? 0) : 0,
         spreadVolume: item.spread_code ? (futuresTicks[item.spread_code]?.volume ?? 0) : 0,
+        spreadCode: item.spread_code ?? '',
         dividend: 0, dividendDate: '', dividendApplied: false,
         holding031: 0, holding052: 0, futuresHolding: 0,
       }
@@ -228,8 +235,8 @@ export function StockArbitragePage() {
                   </div>
                 </td>
                 {/* 가격 */}
-                <C>{fP(r.spotPrice)}</C>
-                <C>{fP(r.futuresPrice)}</C>
+                <PriceCell value={r.spotPrice} formatted={fP(r.spotPrice)} />
+                <PriceCell value={r.futuresPrice} formatted={fP(r.futuresPrice)} />
                 <C sub>{fP(r.theoreticalPrice)}</C>
                 {/* 베이시스 */}
                 <C c={cV(r.theoreticalBasis)}>{fB(r.theoreticalBasis)}</C>
@@ -250,17 +257,23 @@ export function StockArbitragePage() {
                 {/* 만기 */}
                 <C mute>{r.daysLeft > 0 ? `${r.daysLeft}` : '-'}</C>
                 {/* 액션 */}
-                <td className="px-2 py-[11px] text-center">
-                  <button className="text-[10px] text-[#5a5a5e] hover:text-white transition-colors">호가</button>
+                <td className="px-1 py-[11px] text-center align-middle">
+                  <button
+                    onClick={() => setObTarget({ spotCode: r.baseCode, futuresCode: r.frontCode, spotName: r.baseName })}
+                    className="text-[10px] text-white/90 bg-[#2a2a2e] border border-white/10 rounded px-2.5 py-[3px] hover:bg-[#444448] transition-colors"
+                  >호가</button>
                 </td>
-                <td className="px-2 py-[11px] text-center">
-                  <button className="text-[10px] text-[#5a5a5e] hover:text-white transition-colors">스프</button>
+                <td className="px-1 py-[11px] text-center align-middle">
+                  <button
+                    onClick={() => r.spreadCode && setSpreadTarget({ spreadCode: r.spreadCode, spotName: r.baseName })}
+                    className={cn('text-[10px] rounded px-2.5 py-[3px] border transition-colors', r.spreadCode ? 'text-white/90 bg-[#2a2a2e] border-white/10 hover:bg-[#444448]' : 'text-[#3a3a3e] border-transparent cursor-default')}
+                  >스프</button>
                 </td>
                 {/* 보유 */}
                 <C>{r.holding031 ? r.holding031.toLocaleString() : '-'}</C>
                 <C>{r.holding052 ? r.holding052.toLocaleString() : '-'}</C>
-                <td className="px-2 py-[11px] text-center">
-                  <button className="text-[10px] text-[#5a5a5e] hover:text-white transition-colors">조회</button>
+                <td className="px-1 py-[11px] text-center align-middle">
+                  <button className="text-[10px] text-white/90 bg-[#2a2a2e] border border-white/10 rounded px-2.5 py-[3px] hover:bg-[#444448] transition-colors">조회</button>
                 </td>
                 <C sub className="pr-4">{r.futuresHolding ? r.futuresHolding.toLocaleString() : '-'}</C>
               </tr>
@@ -268,6 +281,25 @@ export function StockArbitragePage() {
           </tbody>
         </table>
       </div>
+
+      {/* 호가창 모달 */}
+      {obTarget && (
+        <OrderbookModal
+          spotCode={obTarget.spotCode}
+          futuresCode={obTarget.futuresCode}
+          spotName={obTarget.spotName}
+          onClose={closeOb}
+        />
+      )}
+
+      {/* 스프레드 호가창 모달 */}
+      {spreadTarget && (
+        <SpreadOrderbookModal
+          spreadCode={spreadTarget.spreadCode}
+          spotName={spreadTarget.spotName}
+          onClose={closeSpread}
+        />
+      )}
     </div>
   )
 }
@@ -307,10 +339,36 @@ function C({ children, c, sub, mute, className }: {
   return (
     <td className={cn(
       'px-2 py-[11px] text-right text-[11px] tabular-nums whitespace-nowrap',
-      c || (mute ? 'text-[#5a5a5e]' : sub ? 'text-[#8b8b8e]' : 'text-[#e0e0e3]'),
+      c || 'text-white',
       className,
     )}>
       {children}
+    </td>
+  )
+}
+
+/** 가격 변동 시 배경 플래시 셀 (0.3초) */
+function PriceCell({ value, formatted }: { value: number; formatted: string }) {
+  const ref = useRef<HTMLTableCellElement>(null)
+  const prev = useRef(value)
+
+  useEffect(() => {
+    if (prev.current === value || !ref.current) { prev.current = value; return }
+    const dir = value > prev.current ? 'up' : 'down'
+    prev.current = value
+    const el = ref.current
+    el.style.backgroundColor = dir === 'up' ? 'rgba(0,178,107,0.15)' : 'rgba(187,74,101,0.15)'
+    const t = setTimeout(() => { el.style.backgroundColor = '' }, 300)
+    return () => clearTimeout(t)
+  }, [value])
+
+  return (
+    <td
+      ref={ref}
+      className="px-2 py-[11px] text-right text-[11px] tabular-nums whitespace-nowrap text-white"
+      style={{ transition: 'background-color 0.3s ease-out' }}
+    >
+      {formatted}
     </td>
   )
 }

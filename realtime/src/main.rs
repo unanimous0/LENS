@@ -31,6 +31,7 @@ pub struct AppState {
     broadcaster: Arc<Broadcaster>,
     sub_tx: mpsc::UnboundedSender<SubCommand>,
     feed_mode: Arc<str>,
+    kosdaq_codes: Arc<HashSet<String>>,
 }
 
 #[tokio::main]
@@ -54,6 +55,10 @@ async fn main() {
     let (sub_tx, sub_rx) = mpsc::unbounded_channel::<SubCommand>();
     let feed_cancel = cancel.clone();
 
+    // futures_master.json에서 공통 데이터 로드 (모든 모드에서 사용)
+    let (master_names, master_stock_codes, futures_to_spot, kosdaq_codes) = load_futures_master();
+    let kosdaq_codes_shared = Arc::new(kosdaq_codes.clone());
+
     // 모드 선택: FEED_MODE 환경변수 (mock / ls_api / internal)
     let mode = std::env::var("FEED_MODE").unwrap_or_else(|_| "mock".to_string());
     info!("Feed mode: {mode}");
@@ -62,9 +67,6 @@ async fn main() {
         "ls_api" => {
             let app_key = std::env::var("LS_APP_KEY").expect("LS_APP_KEY not set");
             let app_secret = std::env::var("LS_APP_SECRET").expect("LS_APP_SECRET not set");
-
-            // futures_master.json에서 종목명 + 현물코드 + 선물→현물 매핑 + 코스닥 로드
-            let (master_names, master_stock_codes, futures_to_spot, kosdaq_codes) = load_futures_master();
 
             // 마스터 기반으로 전체 종목 자동 구독 구성
             let mut subscriptions: Vec<(String, String)> = Vec::new();
@@ -77,7 +79,6 @@ async fn main() {
 
             // 선물: 근월물 JC0
             for (futures_code, _spot_code) in &futures_to_spot {
-                // 근월물만 (코드가 65000으로 끝나는 것)
                 if futures_code.ends_with("65000") {
                     subscriptions.push(("JC0".to_string(), futures_code.clone()));
                 }
@@ -123,13 +124,10 @@ async fn main() {
                 .map(|v| v == "true" || v == "1")
                 .unwrap_or(true);
 
-            // futures_master.json에서 종목명 로드
-            let (names, _, _, _) = load_futures_master();
-
             info!("Internal subscriptions: {:?} (real_nav={real_nav}), names: {} entries",
-                subscribe_codes, names.len());
+                subscribe_codes, master_names.len());
 
-            let feed = InternalFeed::new(ws_url, subscribe_codes, names, real_nav);
+            let feed = InternalFeed::new(ws_url, subscribe_codes, master_names, real_nav);
             tokio::spawn(async move {
                 feed.run(tx, sub_rx, feed_cancel).await;
             });
@@ -164,6 +162,7 @@ async fn main() {
         broadcaster,
         sub_tx,
         feed_mode: Arc::from(mode.as_str()),
+        kosdaq_codes: kosdaq_codes_shared,
     };
 
     // 라우터
@@ -173,6 +172,8 @@ async fn main() {
         .route("/mode", get(get_mode))
         .route("/subscribe", post(subscribe))
         .route("/unsubscribe", post(unsubscribe))
+        .route("/orderbook/subscribe", post(subscribe_orderbook))
+        .route("/orderbook/unsubscribe", post(unsubscribe_orderbook))
         .with_state(state)
         .layer(cors);
 
@@ -311,4 +312,45 @@ async fn unsubscribe(
     info!("REST unsubscribe: {} codes", count);
     let _ = state.sub_tx.send(SubCommand::Unsubscribe(req.codes));
     Json(serde_json::json!({"status": "ok", "unsubscribed": count}))
+}
+
+#[derive(Deserialize)]
+struct OrderbookRequest {
+    #[serde(default)]
+    spot_code: Option<String>,
+    #[serde(default)]
+    futures_code: Option<String>,
+    #[serde(default)]
+    spread_code: Option<String>,
+}
+
+async fn subscribe_orderbook(
+    State(state): State<AppState>,
+    Json(req): Json<OrderbookRequest>,
+) -> Json<serde_json::Value> {
+    let mut codes: Vec<(String, String)> = Vec::new();
+
+    if let Some(spot) = &req.spot_code {
+        let tr = if state.kosdaq_codes.contains(spot) { "HA_" } else { "H1_" };
+        codes.push((tr.to_string(), spot.clone()));
+    }
+    if let Some(fut) = &req.futures_code {
+        codes.push(("JH0".to_string(), fut.clone()));
+    }
+    if let Some(spr) = &req.spread_code {
+        codes.push(("JH0".to_string(), spr.clone()));
+    }
+
+    info!("REST orderbook subscribe: {:?}", codes);
+    let count = codes.len();
+    let _ = state.sub_tx.send(SubCommand::SubscribeOrderbook { codes });
+    Json(serde_json::json!({"status": "ok", "subscribed": count}))
+}
+
+async fn unsubscribe_orderbook(
+    State(state): State<AppState>,
+) -> Json<serde_json::Value> {
+    info!("REST orderbook unsubscribe");
+    let _ = state.sub_tx.send(SubCommand::UnsubscribeOrderbook);
+    Json(serde_json::json!({"status": "ok"}))
 }

@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { ETFTick, StockTick, FuturesTick, NetworkMode } from '../types/market'
+import type { ETFTick, StockTick, FuturesTick, OrderbookTick, NetworkMode } from '../types/market'
 
 interface MarketState {
   networkMode: NetworkMode
@@ -13,6 +13,11 @@ interface MarketState {
   futuresTicks: Record<string, FuturesTick>
   updateFuturesTick: (tick: FuturesTick) => void
   batchUpdateFutures: (ticks: Record<string, FuturesTick>) => void
+  orderbookTicks: Record<string, OrderbookTick>
+  updateOrderbookTick: (tick: OrderbookTick) => void
+  batchUpdateOrderbooks: (ticks: Record<string, OrderbookTick>) => void
+  clearOrderbook: (code: string) => void
+  clearOrderbooks: () => void
   connected: boolean
   setConnected: (v: boolean) => void
 }
@@ -71,6 +76,22 @@ export const useMarketStore = create<MarketState>((set) => ({
       }
       return changed ? { futuresTicks: next } : state
     }),
+  orderbookTicks: {},
+  updateOrderbookTick: (tick) =>
+    set((state) => ({ orderbookTicks: { ...state.orderbookTicks, [tick.code]: tick } })),
+  batchUpdateOrderbooks: (ticks) =>
+    set((state) => {
+      const next = { ...state.orderbookTicks, ...ticks }
+      return { orderbookTicks: next }
+    }),
+  clearOrderbook: (code) =>
+    set((state) => {
+      if (!state.orderbookTicks[code]) return state
+      const next = { ...state.orderbookTicks }
+      delete next[code]
+      return { orderbookTicks: next }
+    }),
+  clearOrderbooks: () => set({ orderbookTicks: {} }),
   connected: false,
   setConnected: (v) => set({ connected: v }),
 }))

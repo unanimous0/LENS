@@ -46,3 +46,26 @@ pub struct FuturesTick {
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub is_initial: bool,
 }
+
+/// 호가 단일 레벨 (가격 + 잔량)
+#[derive(Debug, Clone, Serialize)]
+pub struct OrderbookLevel {
+    pub price: f64,
+    pub quantity: u64,
+}
+
+/// 호가 틱 — 현물(H1_/HA_) 10호가, 선물(JH0) 5호가
+#[derive(Debug, Clone, Serialize)]
+pub struct OrderbookTick {
+    pub code: String,
+    pub name: String,
+    /// 매도호가 (낮은가→높은가, index 0이 최우선 매도)
+    pub asks: Vec<OrderbookLevel>,
+    /// 매수호가 (높은가→낮은가, index 0이 최우선 매수)
+    pub bids: Vec<OrderbookLevel>,
+    /// 총 매도잔량
+    pub total_ask_qty: u64,
+    /// 총 매수잔량
+    pub total_bid_qty: u64,
+    pub timestamp: String,
+}

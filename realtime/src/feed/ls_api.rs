@@ -8,7 +8,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 use crate::model::message::WsMessage;
-use crate::model::tick::{EtfTick, FuturesTick, StockTick};
+use crate::model::tick::{EtfTick, FuturesTick, OrderbookLevel, OrderbookTick, StockTick};
 
 use super::{MarketFeed, SubCommand};
 
@@ -124,6 +124,9 @@ impl MarketFeed for LsApiFeed {
             &futures_to_spot, &tx, &cancel, &futures_cancel,
         );
 
+        // 호가 전용 연결 (온디맨드)
+        let mut ob_cancel = CancellationToken::new();
+
         // sub_rx에서 전환 명령 대기
         loop {
             tokio::select! {
@@ -147,14 +150,30 @@ impl MarketFeed for LsApiFeed {
                             );
                         }
                         Some(SubCommand::Unsubscribe(_)) => {
-                            // 선물 연결만 종료
                             futures_cancel.cancel();
+                        }
+                        Some(SubCommand::SubscribeOrderbook { codes }) => {
+                            // 기존 호가 연결 종료
+                            ob_cancel.cancel();
+                            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+                            info!("Orderbook subscribe: {:?}", codes);
+                            ob_cancel = CancellationToken::new();
+                            spawn_orderbook_connection(
+                                &codes, &app_key, &app_secret, &names,
+                                &stock_codes, &futures_to_spot, &tx, &cancel, &ob_cancel,
+                            );
+                        }
+                        Some(SubCommand::UnsubscribeOrderbook) => {
+                            info!("Orderbook unsubscribe");
+                            ob_cancel.cancel();
                         }
                         None => break,
                     }
                 }
                 _ = cancel.cancelled() => {
                     futures_cancel.cancel();
+                    ob_cancel.cancel();
                     return;
                 }
             }
@@ -221,6 +240,61 @@ fn spawn_futures_connections(
             }
         });
     }
+}
+
+/// 호가 전용 연결 스폰 (온디맨드, 최대 2-3 종목)
+fn spawn_orderbook_connection(
+    codes: &[(String, String)],
+    app_key: &str, app_secret: &str,
+    names: &HashMap<String, String>,
+    stock_codes: &HashSet<String>,
+    futures_to_spot: &HashMap<String, String>,
+    tx: &mpsc::Sender<WsMessage>,
+    global_cancel: &CancellationToken,
+    ob_cancel: &CancellationToken,
+) {
+    let codes = codes.to_vec();
+    let tx = tx.clone();
+    let gc = global_cancel.clone();
+    let fc = ob_cancel.clone();
+    let ak = app_key.to_string();
+    let as_ = app_secret.to_string();
+    let n = names.clone();
+    let sc = stock_codes.clone();
+    let f2s = futures_to_spot.clone();
+
+    tokio::spawn(async move {
+        let combined = CancellationToken::new();
+        let gc2 = gc.clone();
+        let fc2 = fc.clone();
+        let cc = combined.clone();
+        tokio::spawn(async move {
+            tokio::select! {
+                _ = gc2.cancelled() => cc.cancel(),
+                _ = fc2.cancelled() => cc.cancel(),
+            }
+        });
+
+        let mut attempt = 0u32;
+        loop {
+            if combined.is_cancelled() { return; }
+            match run_single_connection(
+                200, &ak, &as_, &codes, &n, &sc, &f2s, &tx, &combined,
+            ).await {
+                Ok(()) => return,
+                Err(e) => {
+                    if combined.is_cancelled() { return; }
+                    attempt += 1;
+                    let delay = (2u64.pow(attempt.min(5))).min(MAX_RECONNECT_DELAY_SECS);
+                    warn!("orderbook disconnected: {e} — reconnecting in {delay}s");
+                    tokio::select! {
+                        _ = tokio::time::sleep(std::time::Duration::from_secs(delay)) => {}
+                        _ = combined.cancelled() => { return; }
+                    }
+                }
+            }
+        }
+    });
 }
 
 /// 단일 WebSocket 연결: 토큰 발급 → 연결 → 구독 → 수신 루프
@@ -361,8 +435,63 @@ async fn handle_tick(
                 }
             }
         }
+        // 주식 호가 (KOSPI H1_, KOSDAQ HA_): 10호가
+        "H1_" | "HA_" => {
+            let (asks, bids) = parse_orderbook_levels(body, 10);
+            let total_ask = pu(&body["totofferrem"]);
+            let total_bid = pu(&body["totbidrem"]);
+            let _ = tx.send(WsMessage::OrderbookTick(OrderbookTick {
+                code: tr_key.into(), name: name.into(),
+                asks, bids, total_ask_qty: total_ask, total_bid_qty: total_bid,
+                timestamp: now,
+            })).await;
+        }
+        // 주식선물/스프레드 호가 (JH0): 5호가
+        "JH0" => {
+            let (asks, bids) = parse_orderbook_levels(body, 5);
+            let total_ask = pu(&body["totofferrem"]);
+            let total_bid = pu(&body["totbidrem"]);
+            let _ = tx.send(WsMessage::OrderbookTick(OrderbookTick {
+                code: tr_key.into(), name: name.into(),
+                asks, bids, total_ask_qty: total_ask, total_bid_qty: total_bid,
+                timestamp: now,
+            })).await;
+        }
         _ => {}
     }
+}
+
+/// 호가 레벨 정적 키 (format!() 할당 제거)
+static OB_KEYS: [(&str, &str, &str, &str); 10] = [
+    ("offerho1", "offerrem1", "bidho1", "bidrem1"),
+    ("offerho2", "offerrem2", "bidho2", "bidrem2"),
+    ("offerho3", "offerrem3", "bidho3", "bidrem3"),
+    ("offerho4", "offerrem4", "bidho4", "bidrem4"),
+    ("offerho5", "offerrem5", "bidho5", "bidrem5"),
+    ("offerho6", "offerrem6", "bidho6", "bidrem6"),
+    ("offerho7", "offerrem7", "bidho7", "bidrem7"),
+    ("offerho8", "offerrem8", "bidho8", "bidrem8"),
+    ("offerho9", "offerrem9", "bidho9", "bidrem9"),
+    ("offerho10", "offerrem10", "bidho10", "bidrem10"),
+];
+
+/// 호가 레벨 파싱: offerho1~N, bidho1~N, offerrem1~N, bidrem1~N
+fn parse_orderbook_levels(body: &serde_json::Value, levels: usize) -> (Vec<OrderbookLevel>, Vec<OrderbookLevel>) {
+    let mut asks = Vec::with_capacity(levels);
+    let mut bids = Vec::with_capacity(levels);
+    for &(ak, ark, bk, brk) in &OB_KEYS[..levels] {
+        let ask_price = pf(&body[ak]);
+        let ask_qty = pu(&body[ark]);
+        let bid_price = pf(&body[bk]);
+        let bid_qty = pu(&body[brk]);
+        if ask_price > 0.0 {
+            asks.push(OrderbookLevel { price: ask_price, quantity: ask_qty });
+        }
+        if bid_price > 0.0 {
+            bids.push(OrderbookLevel { price: bid_price, quantity: bid_qty });
+        }
+    }
+    (asks, bids)
 }
 
 fn pf(v: &serde_json::Value) -> f64 {

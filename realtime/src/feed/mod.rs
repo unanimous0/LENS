@@ -10,10 +10,14 @@ use crate::model::message::WsMessage;
 /// 런타임 구독 변경 명령.
 #[derive(Debug, Clone)]
 pub enum SubCommand {
-    /// 종목 코드 추가 구독
+    /// 종목 코드 추가 구독 (월물 전환용)
     Subscribe(Vec<String>),
-    /// 종목 코드 구독 해제
+    /// 종목 코드 구독 해제 (월물 전환용)
     Unsubscribe(Vec<String>),
+    /// 호가 온디맨드 구독. codes = (TR코드, 종목코드) 쌍.
+    SubscribeOrderbook { codes: Vec<(String, String)> },
+    /// 호가 구독 해제
+    UnsubscribeOrderbook,
 }
 
 /// 시장 데이터 피드 trait.

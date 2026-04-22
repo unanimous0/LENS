@@ -30,6 +30,21 @@ export interface FuturesTick {
   timestamp: string
 }
 
+export interface OrderbookLevel {
+  price: number
+  quantity: number
+}
+
+export interface OrderbookTick {
+  code: string
+  name: string
+  asks: OrderbookLevel[]
+  bids: OrderbookLevel[]
+  total_ask_qty: number
+  total_bid_qty: number
+  timestamp: string
+}
+
 export interface PortfolioGreeks {
   total_delta: number
   total_gamma: number
