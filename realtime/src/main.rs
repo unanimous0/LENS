@@ -44,6 +44,11 @@ struct MasterShared {
     /// 만기 임박(SPREAD_AUTO_DAYS 이하) 종목의 스프레드 코드 — 자동 구독 대상.
     /// 그 외 스프레드는 호가창에서 모달 열 때 동적 구독됨.
     auto_spread_codes: Vec<String>,
+    /// 마스터 원본 순서대로의 현물 코드 — 구독 순서를 결정적으로 만들기 위해.
+    /// HashSet 순회는 매 실행마다 순서가 달라져서 재현 디버깅이 어려움.
+    ordered_stock_codes: Vec<String>,
+    /// 원본 순서의 근월 선물 코드.
+    ordered_front_futures: Vec<String>,
 }
 
 /// 앱 공유 상태. 내부 변이 필드는 전부 Arc로 감싸 Clone 비용 최소화.
@@ -79,7 +84,7 @@ async fn main() {
     let (tx, mut rx) = mpsc::channel::<WsMessage>(8192);
 
     // 마스터 데이터 로드 (모든 모드에서 공유)
-    let (master_names, master_stock_codes, futures_to_spot, kosdaq_codes) = load_futures_master();
+    let lm = load_futures_master();
     // 스프레드 자동 구독: 기본은 전체(SPREAD_AUTO_DAYS 미설정 시 무제한).
     // 환경변수로 "D-7 이내만" 같은 제한 가능.
     let spread_days = std::env::var("SPREAD_AUTO_DAYS")
@@ -88,11 +93,13 @@ async fn main() {
     info!("Auto-spread: {} codes (days_left <= {})", auto_spread_codes.len(),
         if spread_days == i64::MAX { "∞".to_string() } else { spread_days.to_string() });
     let shared = Arc::new(MasterShared {
-        master_names,
-        master_stock_codes,
-        futures_to_spot,
-        kosdaq_codes,
+        master_names: lm.names,
+        master_stock_codes: lm.stock_codes,
+        futures_to_spot: lm.futures_to_spot,
+        kosdaq_codes: lm.kosdaq_codes,
         auto_spread_codes,
+        ordered_stock_codes: lm.ordered_stocks,
+        ordered_front_futures: lm.ordered_front_futures,
     });
 
     // 초기 모드
@@ -201,8 +208,10 @@ fn spawn_feed(
             let app_secret = std::env::var("LS_APP_SECRET")
                 .map_err(|_| "LS_APP_SECRET not set".to_string())?;
 
+            // 마스터 원본 순서대로 구독 — HashSet 순회는 비결정적이라
+            // 실행마다 "어떤 종목이 먼저 뜨는지"가 달라져 디버깅이 어려움.
             let mut subscriptions: Vec<(String, String)> = Vec::new();
-            for code in &shared.master_stock_codes {
+            for code in &shared.ordered_stock_codes {
                 let tr = if shared.kosdaq_codes.contains(code) {
                     "K3_"
                 } else {
@@ -210,10 +219,8 @@ fn spawn_feed(
                 };
                 subscriptions.push((tr.to_string(), code.clone()));
             }
-            for (futures_code, _) in &shared.futures_to_spot {
-                if futures_code.ends_with("65000") {
-                    subscriptions.push(("JC0".to_string(), futures_code.clone()));
-                }
+            for futures_code in &shared.ordered_front_futures {
+                subscriptions.push(("JC0".to_string(), futures_code.clone()));
             }
             // 스프레드: 만기 임박(기본 D-7) 종목만 자동 구독.
             // 그 외는 호가창에서 스프 모달 열 때만 동적 구독.
@@ -359,24 +366,34 @@ fn load_auto_spread_codes(days_threshold: i64) -> Vec<String> {
     codes
 }
 
-/// futures_master.json에서 종목명 매핑, 현물 코드 Set, 선물→현물 매핑, 코스닥 코드를 로드.
-fn load_futures_master() -> (
-    HashMap<String, String>,
-    HashSet<String>,
-    HashMap<String, String>,
-    HashSet<String>,
-) {
-    let mut names = HashMap::new();
-    let mut stock_codes = HashSet::new();
-    let mut futures_to_spot = HashMap::new();
-    let mut kosdaq_codes = HashSet::new();
+/// futures_master.json 로드 결과. HashSet/HashMap은 lookup용, Vec은 구독 순서용.
+struct LoadedMaster {
+    names: HashMap<String, String>,
+    stock_codes: HashSet<String>,
+    futures_to_spot: HashMap<String, String>,
+    kosdaq_codes: HashSet<String>,
+    /// 마스터 items 원본 순서의 base_code. 구독 순서 결정용.
+    ordered_stocks: Vec<String>,
+    /// 원본 순서의 front 선물 코드. 근월 JC0 구독 순서용.
+    ordered_front_futures: Vec<String>,
+}
+
+fn load_futures_master() -> LoadedMaster {
+    let mut m = LoadedMaster {
+        names: HashMap::new(),
+        stock_codes: HashSet::new(),
+        futures_to_spot: HashMap::new(),
+        kosdaq_codes: HashSet::new(),
+        ordered_stocks: Vec::new(),
+        ordered_front_futures: Vec::new(),
+    };
 
     let master_path = std::path::Path::new("../data/futures_master.json");
     let data = match std::fs::read_to_string(master_path) {
         Ok(d) => d,
         Err(e) => {
             warn!("futures_master.json not found: {e}");
-            return (names, stock_codes, futures_to_spot, kosdaq_codes);
+            return m;
         }
     };
 
@@ -384,7 +401,7 @@ fn load_futures_master() -> (
         Ok(v) => v,
         Err(e) => {
             warn!("futures_master.json parse failed: {e}");
-            return (names, stock_codes, futures_to_spot, kosdaq_codes);
+            return m;
         }
     };
 
@@ -394,26 +411,28 @@ fn load_futures_master() -> (
             let base_name = item["base_name"].as_str().unwrap_or("");
 
             if !base_code.is_empty() && !base_name.is_empty() {
-                names.insert(base_code.to_string(), base_name.to_string());
-                stock_codes.insert(base_code.to_string());
+                m.names.insert(base_code.to_string(), base_name.to_string());
+                m.stock_codes.insert(base_code.to_string());
+                m.ordered_stocks.push(base_code.to_string());
 
                 let market = item["market"].as_str().unwrap_or("KOSPI");
                 if market == "KOSDAQ" {
-                    kosdaq_codes.insert(base_code.to_string());
+                    m.kosdaq_codes.insert(base_code.to_string());
                 }
 
                 if let Some(front) = item.get("front") {
                     if let Some(code) = front["code"].as_str() {
                         let fname = front["name"].as_str().unwrap_or(base_name);
-                        names.insert(code.to_string(), fname.to_string());
-                        futures_to_spot.insert(code.to_string(), base_code.to_string());
+                        m.names.insert(code.to_string(), fname.to_string());
+                        m.futures_to_spot.insert(code.to_string(), base_code.to_string());
+                        m.ordered_front_futures.push(code.to_string());
                     }
                 }
                 if let Some(back) = item.get("back") {
                     if let Some(code) = back["code"].as_str() {
                         let bname = back["name"].as_str().unwrap_or(base_name);
-                        names.insert(code.to_string(), bname.to_string());
-                        futures_to_spot.insert(code.to_string(), base_code.to_string());
+                        m.names.insert(code.to_string(), bname.to_string());
+                        m.futures_to_spot.insert(code.to_string(), base_code.to_string());
                     }
                 }
             }
@@ -422,12 +441,12 @@ fn load_futures_master() -> (
 
     info!(
         "Loaded futures master: {} names, {} stock codes, {} futures→spot, {} kosdaq",
-        names.len(),
-        stock_codes.len(),
-        futures_to_spot.len(),
-        kosdaq_codes.len()
+        m.names.len(),
+        m.stock_codes.len(),
+        m.futures_to_spot.len(),
+        m.kosdaq_codes.len()
     );
-    (names, stock_codes, futures_to_spot, kosdaq_codes)
+    m
 }
 
 #[derive(Deserialize)]
