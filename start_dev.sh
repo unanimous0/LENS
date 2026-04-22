@@ -39,19 +39,16 @@ else
     echo "[수동지정] FEED_MODE=$FEED_MODE"
 fi
 
-# 로그 디렉토리
-mkdir -p logs
-
 # 백엔드 실행 (subshell로 감싸서 프로세스 그룹 리더 확보)
 echo "[백엔드] 시작 (포트 8100)..."
-(cd backend && uvicorn main:app --host 0.0.0.0 --port 8100 --reload 2>&1 | tee ../logs/backend.log) &
+(cd backend && uvicorn main:app --host 0.0.0.0 --port 8100 --reload) &
 BACKEND_PID=$!
 
 # Rust 실시간 서비스: 먼저 blocking으로 빌드 후 바이너리 실행
 echo "[실시간] Rust 서비스 빌드..."
 (cd realtime && cargo build --release --quiet)
 echo "[실시간] Rust 서비스 시작 (포트 8200)..."
-(cd realtime && ./target/release/lens-realtime 2>&1 | tee ../logs/realtime.log) &
+(cd realtime && ./target/release/lens-realtime) &
 REALTIME_PID=$!
 
 # Rust /health 응답 대기 (최대 10초) — 프론트 첫 fetch 실패 방지
