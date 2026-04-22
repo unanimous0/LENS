@@ -11,9 +11,12 @@ export function NetworkToggle() {
   const { networkMode, setNetworkMode, connected } = useMarketStore()
 
   async function handleSwitch(mode: NetworkMode) {
+    // 프론트 'external' ↔ Rust 'ls_api' 매핑
+    const rustMode = mode === 'external' ? 'ls_api' : mode
     try {
-      const res = await fetch(`/api/network/mode/${mode}`, { method: 'POST' })
+      const res = await fetch(`/realtime/mode/${rustMode}`, { method: 'POST' })
       if (res.ok) setNetworkMode(mode)
+      else console.error('네트워크 전환 실패:', await res.text())
     } catch (err) {
       console.error('네트워크 전환 실패:', err)
     }
