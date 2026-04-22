@@ -17,6 +17,7 @@ dist-ssr/
 # Logs
 *.log
 npm-debug.log*
+logs/
 
 # Editor
 .vscode/

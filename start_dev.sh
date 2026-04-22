@@ -36,10 +36,13 @@ else
     echo "[수동지정] FEED_MODE=$FEED_MODE"
 fi
 
+# 로그 디렉토리
+mkdir -p logs
+
 # 백엔드 실행 (백그라운드)
 echo "[백엔드] 시작 (포트 8100)..."
 cd backend
-uvicorn main:app --host 0.0.0.0 --port 8100 --reload &
+uvicorn main:app --host 0.0.0.0 --port 8100 --reload 2>&1 | tee ../logs/backend.log &
 BACKEND_PID=$!
 cd ..
 
@@ -48,7 +51,7 @@ echo "[실시간] Rust 서비스 빌드..."
 cd realtime
 cargo build --release --quiet
 echo "[실시간] Rust 서비스 시작 (포트 8200)..."
-./target/release/lens-realtime &
+./target/release/lens-realtime 2>&1 | tee ../logs/realtime.log &
 REALTIME_PID=$!
 cd ..
 
