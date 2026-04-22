@@ -43,12 +43,23 @@ uvicorn main:app --host 0.0.0.0 --port 8100 --reload &
 BACKEND_PID=$!
 cd ..
 
-# Rust 실시간 서비스 실행 (백그라운드)
-echo "[실시간] Rust 서비스 시작 (포트 8200)..."
+# Rust 실시간 서비스: 먼저 blocking으로 빌드 후 바이너리 실행
+echo "[실시간] Rust 서비스 빌드..."
 cd realtime
-cargo run --release &
+cargo build --release --quiet
+echo "[실시간] Rust 서비스 시작 (포트 8200)..."
+./target/release/lens-realtime &
 REALTIME_PID=$!
 cd ..
+
+# Rust /health 응답 대기 (최대 10초) — 프론트 첫 fetch 실패 방지
+for i in $(seq 1 20); do
+    if curl -sf http://localhost:8200/health >/dev/null 2>&1; then
+        echo "[실시간] 준비됨"
+        break
+    fi
+    sleep 0.5
+done
 
 # 프론트엔드 dev 모드 실행
 echo "[프론트엔드] dev 모드 시작 (포트 3100)..."
