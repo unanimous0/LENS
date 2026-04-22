@@ -24,7 +24,10 @@ use ws::broadcast::Broadcaster;
 use ws::handler::ws_market;
 
 const PORT: u16 = 8200;
-const BROADCAST_CAPACITY: usize = 16384;
+/// 브로드캐스트 링버퍼 크기. 500종목 × ~2 tps ≈ 1000 msg/s 기준,
+/// 4096이면 슬로우 클라이언트에 약 4초 여유. 그 이상 밀리면 Lagged → skip.
+/// 16384는 22초 버퍼로 과했음.
+const BROADCAST_CAPACITY: usize = 4096;
 
 /// 런타임 피드 핸들: cancel token + JoinHandle
 struct FeedHandle {
