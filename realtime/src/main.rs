@@ -3,7 +3,9 @@ mod model;
 mod ws;
 
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock as StdRwLock};
+use std::time::Instant;
 
 use axum::extract::{Path, State};
 use axum::http::{Method, StatusCode};
@@ -28,6 +30,22 @@ const PORT: u16 = 8200;
 /// 4096이면 슬로우 클라이언트에 약 4초 여유. 그 이상 밀리면 Lagged → skip.
 /// 16384는 22초 버퍼로 과했음.
 const BROADCAST_CAPACITY: usize = 4096;
+
+/// 틱 처리 파이프라인 성능 카운터. `/debug/stats`로 노출.
+/// hotspot이 JSON 직렬화인지 / send_cached(cache+broadcast) 쪽인지 구분 목적.
+#[derive(Default)]
+pub struct Stats {
+    /// mpsc→broadcast 브리지에서 처리한 총 틱 수.
+    tick_count: AtomicU64,
+    /// serde_json::to_string 누적 소요 시간 (ns).
+    serialize_ns: AtomicU64,
+    serialize_calls: AtomicU64,
+    /// Broadcaster::send_cached / send 누적 (cache insert + broadcast).
+    send_ns: AtomicU64,
+    send_calls: AtomicU64,
+    /// 프로세스 시작 시각.
+    started: std::sync::OnceLock<Instant>,
+}
 
 /// 런타임 피드 핸들: cancel token + JoinHandle
 struct FeedHandle {
@@ -64,6 +82,8 @@ pub struct AppState {
     /// broadcaster로 가는 tx. 모드 전환해도 고정 (WebSocket 연결 유지).
     tx: mpsc::Sender<WsMessage>,
     shared: Arc<MasterShared>,
+    /// 성능 카운터. `/debug/stats`로 확인.
+    stats: Arc<Stats>,
 }
 
 #[tokio::main]
@@ -111,7 +131,10 @@ async fn main() {
     // mpsc → broadcast 브릿지.
     // 타입별로 cache key를 만들어 send_cached로 저장하면 재접속 클라이언트가 snapshot 복원.
     // Orderbook은 스트림성이라 cache 없이 전달.
+    let stats = Arc::new(Stats::default());
+    let _ = stats.started.set(Instant::now());
     let bc = broadcaster.clone();
+    let stats_bridge = stats.clone();
     tokio::spawn(async move {
         while let Some(msg) = rx.recv().await {
             let key = match &msg {
@@ -120,14 +143,24 @@ async fn main() {
                 WsMessage::EtfTick(t) => Some(format!("etf_tick:{}", t.code)),
                 WsMessage::OrderbookTick(_) => None,
             };
-            match serde_json::to_string(&msg) {
+            let t_ser_start = Instant::now();
+            let ser = serde_json::to_string(&msg);
+            let ser_elapsed = t_ser_start.elapsed().as_nanos() as u64;
+            stats_bridge.serialize_ns.fetch_add(ser_elapsed, Ordering::Relaxed);
+            stats_bridge.serialize_calls.fetch_add(1, Ordering::Relaxed);
+            match ser {
                 Ok(json) => {
                     let arc: Arc<str> = Arc::from(json);
+                    let t_send_start = Instant::now();
                     if let Some(k) = key {
                         bc.send_cached(k, arc);
                     } else {
                         bc.send(arc);
                     }
+                    let send_elapsed = t_send_start.elapsed().as_nanos() as u64;
+                    stats_bridge.send_ns.fetch_add(send_elapsed, Ordering::Relaxed);
+                    stats_bridge.send_calls.fetch_add(1, Ordering::Relaxed);
+                    stats_bridge.tick_count.fetch_add(1, Ordering::Relaxed);
                 }
                 Err(e) => tracing::error!("JSON serialization error: {}", e),
             }
@@ -141,6 +174,7 @@ async fn main() {
         feed_handle: Arc::new(TokioMutex::new(Some(initial_handle))),
         tx,
         shared,
+        stats,
     };
 
     // CORS
@@ -158,6 +192,7 @@ async fn main() {
         .route("/unsubscribe", post(unsubscribe))
         .route("/orderbook/subscribe", post(subscribe_orderbook))
         .route("/orderbook/unsubscribe", post(unsubscribe_orderbook))
+        .route("/debug/stats", get(debug_stats))
         .with_state(state.clone())
         .layer(cors);
 
@@ -534,4 +569,32 @@ async fn unsubscribe_orderbook(State(state): State<AppState>) -> Json<serde_json
         .unwrap()
         .send(SubCommand::UnsubscribeOrderbook);
     Json(serde_json::json!({"status": "ok"}))
+}
+
+/// 틱 처리 파이프라인 성능 카운터. 9번(Arc<str> 인터닝 / struct deserialize)
+/// 적용 여부를 판단하기 위한 실측 근거 수집용.
+async fn debug_stats(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let s = &state.stats;
+    let ticks = s.tick_count.load(Ordering::Relaxed);
+    let ser_ns = s.serialize_ns.load(Ordering::Relaxed);
+    let ser_calls = s.serialize_calls.load(Ordering::Relaxed);
+    let send_ns = s.send_ns.load(Ordering::Relaxed);
+    let send_calls = s.send_calls.load(Ordering::Relaxed);
+    let uptime_s = s.started.get().map(|i| i.elapsed().as_secs_f64()).unwrap_or(0.0);
+    let avg = |n: u64, c: u64| if c > 0 { n / c } else { 0 };
+    Json(serde_json::json!({
+        "uptime_sec": uptime_s,
+        "ticks_total": ticks,
+        "ticks_per_sec": if uptime_s > 0.0 { ticks as f64 / uptime_s } else { 0.0 },
+        "serialize": {
+            "calls": ser_calls,
+            "total_ns": ser_ns,
+            "avg_ns": avg(ser_ns, ser_calls),
+        },
+        "send_cached": {
+            "calls": send_calls,
+            "total_ns": send_ns,
+            "avg_ns": avg(send_ns, send_calls),
+        },
+    }))
 }
