@@ -97,7 +97,8 @@ async fn fetch_futures_initial(
             Ok(detail) => {
                 let price = pf(detail.get("price"));
                 let volume = pu(detail.get("volume"));
-                if price > 0.0 {
+                // 스프레드(D코드)는 근월-차월 차이라 음수가 정상. 0.0만 "무데이터"로 skip.
+                if price != 0.0 {
                     let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.6f").to_string();
                     let name = names.get(code.as_str()).cloned().unwrap_or_default();
                     let underlying = pf(detail.get("baseprice"));
