@@ -43,6 +43,17 @@ pub struct Stats {
     /// Broadcaster::send_cached / send 누적 (cache insert + broadcast).
     send_ns: AtomicU64,
     send_calls: AtomicU64,
+    /// 구독자 0명이라 OrderbookTick 직렬화 스킵한 횟수.
+    tick_skipped_no_subscribers: AtomicU64,
+    /// broadcast Lagged로 슬로우 클라이언트가 놓친 메시지 수 누적.
+    pub ws_lag_total: AtomicU64,
+    /// LS WS 연결 재시도 횟수 (전 conn 합계).
+    pub reconnect_count: AtomicU64,
+    /// 초기 가격 fetch 실패 분류 카운터 (ls_rest).
+    pub fetch_no_data: AtomicU64,
+    pub fetch_http_5xx: AtomicU64,
+    pub fetch_tps: AtomicU64,
+    pub fetch_other: AtomicU64,
     /// 프로세스 시작 시각.
     started: std::sync::OnceLock<Instant>,
 }
@@ -122,17 +133,18 @@ async fn main() {
         ordered_front_futures: lm.ordered_front_futures,
     });
 
+    let stats = Arc::new(Stats::default());
+    let _ = stats.started.set(Instant::now());
+
     // 초기 모드
     let initial_mode = std::env::var("FEED_MODE").unwrap_or_else(|_| "mock".to_string());
     info!("Initial feed mode: {initial_mode}");
     let (initial_handle, initial_sub_tx) =
-        spawn_feed(&initial_mode, tx.clone(), &shared).expect("Failed to spawn initial feed");
+        spawn_feed(&initial_mode, tx.clone(), &shared, &stats).expect("Failed to spawn initial feed");
 
     // mpsc → broadcast 브릿지.
     // 타입별로 cache key를 만들어 send_cached로 저장하면 재접속 클라이언트가 snapshot 복원.
     // Orderbook은 스트림성이라 cache 없이 전달.
-    let stats = Arc::new(Stats::default());
-    let _ = stats.started.set(Instant::now());
     let bc = broadcaster.clone();
     let stats_bridge = stats.clone();
     tokio::spawn(async move {
@@ -143,6 +155,12 @@ async fn main() {
                 WsMessage::EtfTick(t) => Some(format!("etf_tick:{}", t.code)),
                 WsMessage::OrderbookTick(_) => None,
             };
+            // 캐시 안 하는 스트림(OrderbookTick) + 연결된 WS 클라이언트 0명 → 직렬화 스킵.
+            // 캐시 대상 틱은 새 클라이언트 스냅샷 복원에 필요해서 항상 직렬화해야 함.
+            if key.is_none() && bc.receiver_count() == 0 {
+                stats_bridge.tick_skipped_no_subscribers.fetch_add(1, Ordering::Relaxed);
+                continue;
+            }
             let t_ser_start = Instant::now();
             let ser = serde_json::to_string(&msg);
             let ser_elapsed = t_ser_start.elapsed().as_nanos() as u64;
@@ -231,6 +249,7 @@ fn spawn_feed(
     mode: &str,
     tx: mpsc::Sender<WsMessage>,
     shared: &Arc<MasterShared>,
+    stats: &Arc<Stats>,
 ) -> Result<(FeedHandle, mpsc::UnboundedSender<SubCommand>), String> {
     let cancel = CancellationToken::new();
     let (sub_tx, sub_rx) = mpsc::unbounded_channel::<SubCommand>();
@@ -280,6 +299,7 @@ fn spawn_feed(
                 shared.master_stock_codes.clone(),
                 shared.futures_to_spot.clone(),
                 shared.kosdaq_codes.clone(),
+                stats.clone(),
             );
             tokio::spawn(async move { feed.run(tx, sub_rx, cancel_c).await })
         }
@@ -349,7 +369,7 @@ async fn set_mode(
     }
 
     // 새 feed 먼저 spawn 시도 (실패 시 기존 feed 유지)
-    let (new_handle, new_sub_tx) = spawn_feed(&mode, state.tx.clone(), &state.shared)
+    let (new_handle, new_sub_tx) = spawn_feed(&mode, state.tx.clone(), &state.shared, &state.stats)
         .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
 
     // 성공했으니 기존 feed 교체
@@ -586,6 +606,10 @@ async fn debug_stats(State(state): State<AppState>) -> Json<serde_json::Value> {
         "uptime_sec": uptime_s,
         "ticks_total": ticks,
         "ticks_per_sec": if uptime_s > 0.0 { ticks as f64 / uptime_s } else { 0.0 },
+        "ticks_skipped_no_subscribers": s.tick_skipped_no_subscribers.load(Ordering::Relaxed),
+        "ws_clients": state.broadcaster.receiver_count(),
+        "ws_lag_total": s.ws_lag_total.load(Ordering::Relaxed),
+        "reconnect_count": s.reconnect_count.load(Ordering::Relaxed),
         "serialize": {
             "calls": ser_calls,
             "total_ns": ser_ns,
@@ -595,6 +619,12 @@ async fn debug_stats(State(state): State<AppState>) -> Json<serde_json::Value> {
             "calls": send_calls,
             "total_ns": send_ns,
             "avg_ns": avg(send_ns, send_calls),
+        },
+        "fetch_failures": {
+            "no_data": s.fetch_no_data.load(Ordering::Relaxed),
+            "http_5xx": s.fetch_http_5xx.load(Ordering::Relaxed),
+            "tps": s.fetch_tps.load(Ordering::Relaxed),
+            "other": s.fetch_other.load(Ordering::Relaxed),
         },
     }))
 }

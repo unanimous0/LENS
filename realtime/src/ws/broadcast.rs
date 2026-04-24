@@ -46,6 +46,12 @@ impl Broadcaster {
         self.tx.subscribe()
     }
 
+    /// 현재 연결된 WS 클라이언트 수. 구독자 0명이면 OrderbookTick 같은 캐시 안 하는
+    /// 스트림은 직렬화부터 스킵 가능.
+    pub fn receiver_count(&self) -> usize {
+        self.tx.receiver_count()
+    }
+
     /// 캐시 전부 비움. 모드 전환 시 이전 모드의 stale 데이터를 날려야 함.
     pub fn clear_cache(&self) {
         self.cache.clear();

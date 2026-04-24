@@ -1,3 +1,4 @@
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use axum::extract::ws::{Message, WebSocket};
@@ -7,7 +8,7 @@ use tokio::sync::broadcast;
 use tracing::{info, warn};
 
 use crate::ws::broadcast::Broadcaster;
-use crate::AppState;
+use crate::{AppState, Stats};
 
 /// WebSocket 업그레이드 핸들러. /ws/market 엔드포인트.
 pub async fn ws_market(
@@ -15,10 +16,11 @@ pub async fn ws_market(
     state: axum::extract::State<AppState>,
 ) -> impl IntoResponse {
     let bc = state.broadcaster.clone();
-    ws.on_upgrade(move |socket| handle_client(socket, bc))
+    let stats = state.stats.clone();
+    ws.on_upgrade(move |socket| handle_client(socket, bc, stats))
 }
 
-async fn handle_client(mut socket: WebSocket, broadcaster: Arc<Broadcaster>) {
+async fn handle_client(mut socket: WebSocket, broadcaster: Arc<Broadcaster>, stats: Arc<Stats>) {
     info!("WebSocket client connected");
 
     // 프론트엔드가 보내는 "subscribe" 메시지 대기 (기존 Python 호환)
@@ -61,6 +63,7 @@ async fn handle_client(mut socket: WebSocket, broadcaster: Arc<Broadcaster>) {
                 }
             }
             Err(broadcast::error::RecvError::Lagged(n)) => {
+                stats.ws_lag_total.fetch_add(n, Ordering::Relaxed);
                 warn!("Client lagged, skipped {} messages", n);
             }
             Err(broadcast::error::RecvError::Closed) => {

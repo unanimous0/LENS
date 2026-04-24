@@ -53,10 +53,8 @@ interface Row {
 type SK = keyof Pick<Row,
   'baseName' | 'spotPrice' | 'futuresPrice' | 'theoreticalPrice' | 'marketBasis' | 'basisGapBp' |
   'theoreticalBasis' | 'basisGap' | 'spotCumVolume' | 'futuresVolume' | 'multiplier' |
-  'spread' | 'spreadVolume' | 'dividend' | 'daysLeft'
+  'spread' | 'spreadVolume' | 'dividend'
 >
-
-const ABS_KEYS: SK[] = ['marketBasis', 'basisGapBp', 'basisGap', 'theoreticalBasis']
 
 export function StockArbitragePage() {
   const [master, setMaster] = useState<Master | null>(null)
@@ -66,6 +64,18 @@ export function StockArbitragePage() {
   const [sk, setSk] = useState<SK>('basisGapBp')
   const [asc, setAsc] = useState(false)
   const [month, setMonth] = useState<'front' | 'back'>('front')
+  const [rate, setRate] = useState<number>(() => {
+    const saved = localStorage.getItem('arbitrage.rate')
+    const n = saved ? parseFloat(saved) : NaN
+    return Number.isFinite(n) ? n : 2.8
+  })
+  const [rateDraft, setRateDraft] = useState<string>(() => String(rate))
+  useEffect(() => { localStorage.setItem('arbitrage.rate', String(rate)) }, [rate])
+  const commitRate = () => {
+    const n = parseFloat(rateDraft)
+    if (Number.isFinite(n) && n >= 0) setRate(n)
+    else setRateDraft(String(rate))
+  }
   const [obTarget, setObTarget] = useState<{ spotCode: string; futuresCode: string; spotName: string } | null>(null)
   const [spreadTarget, setSpreadTarget] = useState<{ spreadCode: string; spotName: string } | null>(null)
   const closeOb = useCallback(() => setObTarget(null), [])
@@ -110,7 +120,11 @@ export function StockArbitragePage() {
       const sp = spot?.price ?? 0  // 실시간 S3_/K3_만
       const fp = fut?.price ?? 0  // 실시간 JC0 체결만 표시
       const mb = fp > 0 && sp > 0 ? fp - sp : (fut?.basis ?? 0)
-      const tb = 0 // 이론베이시스 (Phase B에서 구현)
+      // 이론가 = 현물 × (1 + r × d/365) - 배당 (배당은 배당 화면 연동 후 적용)
+      const dLeft = sel.days_left || 0
+      const dividend = 0
+      const tp = sp > 0 ? sp * (1 + (rate / 100) * dLeft / 365) - dividend : 0
+      const tb = tp > 0 ? tp - sp : 0
       const gap = mb - tb
       const ofp = otherFut?.price ?? other?.price ?? 0
       // 스프레드: 항상 원월 - 근월
@@ -122,7 +136,7 @@ export function StockArbitragePage() {
         multiplier: sel.multiplier, expiry: sel.expiry, daysLeft: sel.days_left || 0,
         spotPrice: sp, spotCumVolume: spot?.cum_volume ?? 0,
         futuresPrice: fp, futuresVolume: fut?.volume ?? 0,  // 실시간만
-        theoreticalPrice: 0, theoreticalBasis: tb,
+        theoreticalPrice: tp, theoreticalBasis: tb,
         marketBasis: mb, basisGap: gap, basisGapBp: sp > 0 ? (gap / sp) * 10000 : 0,
         backPrice: backP,
         spread: item.spread_code ? (futuresTicks[item.spread_code]?.price ?? 0) : 0,
@@ -132,7 +146,7 @@ export function StockArbitragePage() {
         holding031: 0, holding052: 0, futuresHolding: 0,
       }
     })
-  }, [master, stockTicks, futuresTicks, month])
+  }, [master, stockTicks, futuresTicks, month, rate])
 
   const filtered = useMemo(() => {
     let list = rows
@@ -143,7 +157,6 @@ export function StockArbitragePage() {
     list.sort((a, b) => {
       const av = a[sk] ?? 0, bv = b[sk] ?? 0
       if (sk === 'baseName') return asc ? String(av).localeCompare(String(bv)) : String(bv).localeCompare(String(av))
-      if (ABS_KEYS.includes(sk)) return asc ? Math.abs(+av) - Math.abs(+bv) : Math.abs(+bv) - Math.abs(+av)
       return asc ? +av - +bv : +bv - +av
     })
     return list
@@ -153,6 +166,11 @@ export function StockArbitragePage() {
 
   if (loading) return <Center>마스터 데이터 로딩 중...</Center>
   if (error) return <Center className="text-down">로드 실패: {error}</Center>
+
+  const selInfo = master?.items[0]?.[month]
+  const selExpiry = selInfo?.expiry ?? ''
+  const selDaysLeft = selInfo?.days_left ?? 0
+  const todayStr = new Date().toISOString().slice(0, 10)
 
   return (
     <div className="flex flex-col h-full bg-black">
@@ -173,7 +191,27 @@ export function StockArbitragePage() {
             원월물
           </button>
         </div>
-        <span className="text-[10px] text-[#8b8b8e]">{master?.count}종목 · {master?.updated}</span>
+        {/* 금리 입력 */}
+        <div className="flex items-center gap-1.5 rounded-md bg-[#1e1e22] h-[28px] px-2.5">
+          <span className="text-[10px] text-[#8b8b8e]">금리</span>
+          <input
+            type="number"
+            step="0.1"
+            value={rateDraft}
+            onChange={(e) => setRateDraft(e.target.value)}
+            onBlur={commitRate}
+            onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }}
+            className="w-10 bg-transparent text-[11px] text-white tabular-nums outline-none text-right [appearance:textfield] [&::-webkit-inner-spin-button]:hidden [&::-webkit-outer-spin-button]:hidden"
+          />
+          <span className="text-[10px] text-[#8b8b8e]">%</span>
+        </div>
+        {/* 날짜 / 잔존 */}
+        <div className="flex items-center gap-3 text-[10px] text-[#8b8b8e] tabular-nums">
+          <span>오늘 <span className="text-white">{fmtDate(todayStr)}</span></span>
+          <span>만기 <span className="text-white">{fmtExpiry(selExpiry)}</span></span>
+          <span>잔존 <span className="text-white">{selDaysLeft}</span>일</span>
+        </div>
+        <span className="text-[10px] text-[#8b8b8e]">마스터 갱신일 <span className="text-[#d1d1d6] tabular-nums">{master?.updated ?? '-'}</span></span>
         <div className="ml-auto">
           <input
             type="text"
@@ -212,8 +250,6 @@ export function StockArbitragePage() {
               <Th sort={() => doSort('dividend')} active={sk === 'dividend'} asc={asc} className="min-w-[56px]">배당금</Th>
               <Th className="min-w-[62px]">기준일</Th>
               <Th className="min-w-[34px]">적용</Th>
-              {/* 만기 */}
-              <Th sort={() => doSort('daysLeft')} active={sk === 'daysLeft'} asc={asc} className="min-w-[44px]">잔존</Th>
               {/* 액션 */}
               <Th className="min-w-[38px]">호가</Th>
               <Th className="min-w-[38px]">스프</Th>
@@ -237,11 +273,11 @@ export function StockArbitragePage() {
                 {/* 가격 */}
                 <PriceCell value={r.spotPrice} formatted={fP(r.spotPrice)} />
                 <PriceCell value={r.futuresPrice} formatted={fP(r.futuresPrice)} />
-                <C sub>{fP(r.theoreticalPrice)}</C>
+                <C sub>{r.theoreticalPrice ? Math.round(r.theoreticalPrice).toLocaleString() : '-'}</C>
                 {/* 베이시스 */}
-                <C c={cV(r.theoreticalBasis)}>{fB(r.theoreticalBasis)}</C>
+                <C c={cV(r.theoreticalBasis)}>{fBi(r.theoreticalBasis)}</C>
                 <C c={cV(r.marketBasis)}>{fB(r.marketBasis)}</C>
-                <C c={cV(r.basisGap)}>{fB(r.basisGap)}</C>
+                <C c={cV(r.basisGap)}>{fBi(r.basisGap)}</C>
                 <C c={cV(r.basisGapBp)}>{fBp(r.basisGapBp)}</C>
                 {/* 거래 */}
                 <C sub>{r.spotCumVolume ? fVol(r.spotCumVolume) : '-'}</C>
@@ -254,8 +290,6 @@ export function StockArbitragePage() {
                 <C sub>{r.dividend ? r.dividend.toLocaleString() : '-'}</C>
                 <C mute>{r.dividendDate ? r.dividendDate.slice(5) : '-'}</C>
                 <C mute>{r.dividendApplied ? 'Y' : '-'}</C>
-                {/* 만기 */}
-                <C mute>{r.daysLeft > 0 ? `${r.daysLeft}` : '-'}</C>
                 {/* 액션 */}
                 <td className="px-1 py-[11px] text-center align-middle">
                   <button
@@ -378,7 +412,14 @@ function PriceCell({ value, formatted }: { value: number; formatted: string }) {
 function cV(v: number) { return v === 0 ? 'text-[#e0e0e3]' : v > 0 ? 'text-[#00b26b]' : 'text-[#bb4a65]' }
 function fP(v: number) { return v ? v.toLocaleString() : '-' }
 function fB(v: number) { return `${v > 0 ? '+' : ''}${v.toLocaleString(undefined, { maximumFractionDigits: 1 })}` }
-function fBp(v: number) { return `${v > 0 ? '+' : ''}${v.toFixed(1)}` }
+function fBi(v: number) { const r = Math.round(v); return `${r > 0 ? '+' : ''}${r.toLocaleString()}` }
+function fBp(v: number) { return `${v > 0 ? '+' : ''}${v.toFixed(2)}` }
+function fmtDate(s: string) { return s.length >= 10 ? s.slice(5, 10) : s }
+function fmtExpiry(e: string) {
+  if (e.length === 8) return `${e.slice(4, 6)}-${e.slice(6, 8)}`
+  if (e.length === 6) return `${e.slice(4, 6)}월`
+  return e || '-'
+}
 function fVol(v: number) {
   if (v >= 1e12) return `${(v / 1e12).toLocaleString(undefined, { maximumFractionDigits: 1, minimumFractionDigits: 1 })}조`
   if (v >= 1e8) return `${Math.round(v / 1e8).toLocaleString()}억`

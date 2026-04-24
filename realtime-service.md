@@ -811,13 +811,19 @@ LENS/
 
 ### 성능 최적화 (484종목 실운영 시 적용)
 
-채널 버퍼 증가는 적용 완료 (mpsc 256→1024, broadcast 4096→16384). 아래는 프로파일링 후 필요 시 적용:
+채널 버퍼 증가는 적용 완료 (mpsc 256→8192, broadcast 4096). 10단계 최적화 커밋(`5ef7dbf`~`13aabbb`)에서 LTO/codegen-unit, Arc 공유, 스냅샷 캐시, Nagle off, rAF 플러시, 마스터순 구독, `/debug/stats` 등 반영.
 
-- [ ] **LpBookSnapshot 파싱 최소화**: 현재 10호가 전부 파싱 중 (호가창 등에서 사용 예정이므로 당분간 유지). 과부하 확인 시 best bid/ask만 파싱하도록 최적화 검토
-- [ ] **String clone 제거**: `handle_trade()`에서 매 틱마다 `short_code.clone()`, `name.clone()` 발생. → `Arc<str>`로 코드/이름을 한 번 할당 후 재사용
-- [ ] **타임스탬프 캐싱**: `epoch_us_to_iso()`, `Utc::now().format()`가 매 틱 호출. → 같은 배열 내 메시지는 타임스탬프 공유, 또는 정수 타임스탬프로 보내고 프론트에서 포맷
-- [ ] **구독자 없을 때 직렬화 스킵**: mpsc→broadcast 브릿지에서 클라이언트 없어도 `serde_json::to_string()` 호출. → broadcast 수신자 수 체크 후 스킵
-- [ ] **과부하 모니터링 도입**: 채널 사용률, 틱 처리 지연(서버 시각 vs 브로드캐스트 시각), 메시지 드롭 수(Lagged) 등을 로그 또는 `/metrics` 엔드포인트로 노출. 위 최적화 항목의 적용 판단 기준으로 사용
+**2026-04-24 재검토 결과** (에이전트 3개 병렬 토의): 남은 항목 대부분 750종목·~300tps 현실 부하에선 측정 불가 수준이라 judgment = **"측정 → 필요시"**.
+
+- [x] **구독자 없을 때 직렬화 스킵**: `OrderbookTick` (캐시 없음) + `ws_clients == 0` 조합만 스킵. 캐시 대상 틱은 snapshot 복원을 위해 항상 직렬화. `ticks_skipped_no_subscribers` 카운터로 효과 관측.
+- [x] **과부하 모니터링 (`/debug/stats` 확장)**: `ws_clients`, `ws_lag_total` (broadcast Lagged 누적), `reconnect_count` (LS WS 재접속 총합), `fetch_failures.{no_data, http_5xx, tps, other}` 추가. 초기 fetch 실패율 분류는 `ls_rest.rs::classify_error`로 자동. 어제의 "205 failed" 같은 단일 경고가 이제 `warn!("t8402 failures: no_data=X http_5xx=Y tps=Z other=W")`로 분해돼 찍힘.
+- [ ] **LpBookSnapshot 파싱 최소화** — **SKIP**. `OrderbookModal.tsx`가 10호가 전부 사용. 프런트 회귀 리스크가 절약보다 큼.
+- [ ] **String clone → `Arc<str>`** — **DEFER**. Blast radius 크고 (SymbolState 키 / `message.rs` 3개 struct / HashMap) 현 부하에서 `/debug/stats` serialize avg_ns가 측정 임계 아래. `serialize.avg_ns > 20μs` 관측되면 재검토.
+- [ ] **타임스탬프 캐싱** — **DEFER**. `Utc::now().format(...).to_string()`은 ~500ns + 1 alloc이지만 staleness 리스크가 있고 현 부하에선 체감 불가.
+
+### 재연결 로직 (LS WS)
+
+`ls_api.rs`의 3개 연결 그룹(고정 / 선물 / 호가) 모두 `run_single_connection` 리턴값이 `Err`일 때 exponential backoff (최대 60s)로 재시도. 성공 시 재구독. 스냅샷 캐시는 재연결 구간에도 보존되어 프런트가 데이터 공백 없이 이어감. 재접속 횟수는 `/debug/stats.reconnect_count`에 누적. 실제 TCP 끊김 시나리오는 `sudo iptables -I OUTPUT -d openapi.ls-sec.co.kr -j DROP`로 5초 차단 → 로그/카운터 확인으로 스모크 테스트 가능 (SIGSTOP은 연결 유지된 채 프로세스만 멈춰서 재연결 트리거 X).
 
 ### Phase 4+: 계산 모듈 확장
 

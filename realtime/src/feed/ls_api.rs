@@ -7,8 +7,11 @@ use tokio_tungstenite::tungstenite::{self, client::IntoClientRequest, http::Head
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
+use std::sync::atomic::Ordering;
+
 use crate::model::message::WsMessage;
 use crate::model::tick::{EtfTick, FuturesTick, OrderbookLevel, OrderbookTick, StockTick};
+use crate::Stats;
 
 use super::{MarketFeed, SubCommand};
 
@@ -30,6 +33,7 @@ pub struct LsApiFeed {
     pub stock_codes: Arc<HashSet<String>>,
     pub futures_to_spot: Arc<HashMap<String, String>>,
     pub kosdaq_codes: Arc<HashSet<String>>,
+    pub stats: Arc<Stats>,
 }
 
 impl LsApiFeed {
@@ -41,6 +45,7 @@ impl LsApiFeed {
         stock_codes: HashSet<String>,
         futures_to_spot: HashMap<String, String>,
         kosdaq_codes: HashSet<String>,
+        stats: Arc<Stats>,
     ) -> Self {
         Self {
             app_key, app_secret, subscriptions,
@@ -48,6 +53,7 @@ impl LsApiFeed {
             stock_codes: Arc::new(stock_codes),
             futures_to_spot: Arc::new(futures_to_spot),
             kosdaq_codes: Arc::new(kosdaq_codes),
+            stats,
         }
     }
 }
@@ -77,9 +83,10 @@ impl MarketFeed for LsApiFeed {
             let n = self.names.clone();
             let sc = self.stock_codes.clone();
             let f2s = self.futures_to_spot.clone();
+            let stats = self.stats.clone();
             tokio::spawn(async move {
                 super::ls_rest::fetch_initial_prices(
-                    &ak, &as_, &all_subs, &n, &sc, &f2s, &tx2, &cancel2,
+                    &ak, &as_, &all_subs, &n, &sc, &f2s, &tx2, &cancel2, &stats,
                 ).await;
             });
         }
@@ -96,6 +103,7 @@ impl MarketFeed for LsApiFeed {
             let names = self.names.clone();
             let stock_codes = self.stock_codes.clone();
             let futures_to_spot = self.futures_to_spot.clone();
+            let stats = self.stats.clone();
 
             tokio::spawn(async move {
                 let mut attempt = 0u32;
@@ -107,6 +115,7 @@ impl MarketFeed for LsApiFeed {
                         Ok(()) => return,
                         Err(e) => {
                             attempt += 1;
+                            stats.reconnect_count.fetch_add(1, Ordering::Relaxed);
                             let delay = (2u64.pow(attempt.min(5))).min(MAX_RECONNECT_DELAY_SECS);
                             warn!("fixed[{i}] disconnected: {e} — reconnecting in {delay}s");
                             tokio::select! {
@@ -128,9 +137,10 @@ impl MarketFeed for LsApiFeed {
 
         // 초기 선물 연결 시작
         let mut futures_cancel = CancellationToken::new();
+        let stats = self.stats.clone();
         spawn_futures_connections(
             &initial_futures, &app_key, &app_secret, &names, &stock_codes,
-            &futures_to_spot, &tx, &cancel, &futures_cancel,
+            &futures_to_spot, &tx, &cancel, &futures_cancel, &stats,
         );
 
         // 호가 전용 연결 (온디맨드)
@@ -155,7 +165,7 @@ impl MarketFeed for LsApiFeed {
                             futures_cancel = CancellationToken::new();
                             spawn_futures_connections(
                                 &new_futures, &app_key, &app_secret, &names, &stock_codes,
-                                &futures_to_spot, &tx, &cancel, &futures_cancel,
+                                &futures_to_spot, &tx, &cancel, &futures_cancel, &stats,
                             );
                         }
                         Some(SubCommand::Unsubscribe(_)) => {
@@ -170,7 +180,7 @@ impl MarketFeed for LsApiFeed {
                             ob_cancel = CancellationToken::new();
                             spawn_orderbook_connection(
                                 &codes, &app_key, &app_secret, &names,
-                                &stock_codes, &futures_to_spot, &tx, &cancel, &ob_cancel,
+                                &stock_codes, &futures_to_spot, &tx, &cancel, &ob_cancel, &stats,
                             );
                         }
                         Some(SubCommand::UnsubscribeOrderbook) => {
@@ -200,6 +210,7 @@ fn spawn_futures_connections(
     tx: &mpsc::Sender<WsMessage>,
     global_cancel: &CancellationToken,
     futures_cancel: &CancellationToken,
+    stats: &Arc<Stats>,
 ) {
     let chunks: Vec<Vec<(String, String)>> = futures
         .chunks(MAX_SUBS_PER_CONNECTION).map(|c| c.to_vec()).collect();
@@ -213,6 +224,7 @@ fn spawn_futures_connections(
         let n = names.clone();
         let sc = stock_codes.clone();
         let f2s = futures_to_spot.clone();
+        let stats = stats.clone();
 
         tokio::spawn(async move {
             let combined_cancel = CancellationToken::new();
@@ -238,6 +250,7 @@ fn spawn_futures_connections(
                     Err(e) => {
                         if combined_cancel.is_cancelled() { return; }
                         attempt += 1;
+                        stats.reconnect_count.fetch_add(1, Ordering::Relaxed);
                         let delay = (2u64.pow(attempt.min(5))).min(MAX_RECONNECT_DELAY_SECS);
                         warn!("futures[{i}] disconnected: {e} — reconnecting in {delay}s");
                         tokio::select! {
@@ -261,6 +274,7 @@ fn spawn_orderbook_connection(
     tx: &mpsc::Sender<WsMessage>,
     global_cancel: &CancellationToken,
     ob_cancel: &CancellationToken,
+    stats: &Arc<Stats>,
 ) {
     let codes = codes.to_vec();
     let tx = tx.clone();
@@ -271,6 +285,7 @@ fn spawn_orderbook_connection(
     let n = names.clone();
     let sc = stock_codes.clone();
     let f2s = futures_to_spot.clone();
+    let stats = stats.clone();
 
     tokio::spawn(async move {
         let combined = CancellationToken::new();
@@ -294,6 +309,7 @@ fn spawn_orderbook_connection(
                 Err(e) => {
                     if combined.is_cancelled() { return; }
                     attempt += 1;
+                    stats.reconnect_count.fetch_add(1, Ordering::Relaxed);
                     let delay = (2u64.pow(attempt.min(5))).min(MAX_RECONNECT_DELAY_SECS);
                     warn!("orderbook disconnected: {e} — reconnecting in {delay}s");
                     tokio::select! {

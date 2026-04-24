@@ -2,6 +2,8 @@
 //! WebSocket 구독과 동시에 실행 — 실시간 체결이 먼저 오면 초기값은 프론트에서 무시.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::Ordering;
+use std::sync::Arc;
 
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -9,6 +11,34 @@ use tracing::{info, warn};
 
 use crate::model::message::WsMessage;
 use crate::model::tick::{StockTick, FuturesTick};
+use crate::Stats;
+
+/// LS OpenAPI 에러 메시지 분류.
+/// - no_data: rsp_msg가 "데이터 없음" 계열 (상장폐지/체결이력 없는 스프레드 등) — 정상 꼬리
+/// - http_5xx: 서버 장애
+/// - tps: TPS 한도 초과 (429/rate)
+/// - other: 네트워크/파싱/미분류
+fn classify_error(msg: &str) -> &'static str {
+    let lc = msg.to_lowercase();
+    if msg.contains("없") || lc.contains("no data") {
+        "no_data"
+    } else if lc.contains("http 5") || lc.contains("timeout") {
+        "http_5xx"
+    } else if msg.contains("429") || msg.contains("초과") || lc.contains("tps") || lc.contains("rate limit") {
+        "tps"
+    } else {
+        "other"
+    }
+}
+
+fn bump_fail(stats: &Stats, kind: &str) {
+    match kind {
+        "no_data" => stats.fetch_no_data.fetch_add(1, Ordering::Relaxed),
+        "http_5xx" => stats.fetch_http_5xx.fetch_add(1, Ordering::Relaxed),
+        "tps" => stats.fetch_tps.fetch_add(1, Ordering::Relaxed),
+        _ => stats.fetch_other.fetch_add(1, Ordering::Relaxed),
+    };
+}
 
 const TOKEN_URL: &str = "https://openapi.ls-sec.co.kr:8080/oauth2/token";
 const T8402_URL: &str = "https://openapi.ls-sec.co.kr:8080/futureoption/market-data";
@@ -25,6 +55,7 @@ pub async fn fetch_initial_prices(
     futures_to_spot: &HashMap<String, String>,
     tx: &mpsc::Sender<WsMessage>,
     cancel: &CancellationToken,
+    stats: &Arc<Stats>,
 ) {
     let token = match fetch_token(app_key, app_secret).await {
         Ok(t) => t,
@@ -52,8 +83,9 @@ pub async fn fetch_initial_prices(
     let names1 = names.clone();
     let sc1 = stock_codes.clone();
     let f2s1 = futures_to_spot.clone();
+    let stats1 = stats.clone();
     let h1 = tokio::spawn(async move {
-        fetch_futures_initial(&token1, &futures_codes, &names1, &sc1, &f2s1, &tx1, &cancel1).await
+        fetch_futures_initial(&token1, &futures_codes, &names1, &sc1, &f2s1, &tx1, &cancel1, &stats1).await
     });
 
     // t1102 (현물) — 별도 태스크 (병렬)
@@ -61,8 +93,9 @@ pub async fn fetch_initial_prices(
     let cancel2 = cancel.clone();
     let token2 = token.clone();
     let names2 = names.clone();
+    let stats2 = stats.clone();
     let h2 = tokio::spawn(async move {
-        fetch_stocks_initial(&token2, &spot_codes, &names2, &tx2, &cancel2).await
+        fetch_stocks_initial(&token2, &spot_codes, &names2, &tx2, &cancel2, &stats2).await
     });
 
     let (r1, r2) = tokio::join!(h1, h2);
@@ -82,13 +115,17 @@ async fn fetch_futures_initial(
     codes: &[String],
     names: &HashMap<String, String>,
     _stock_codes: &HashSet<String>,
-    futures_to_spot: &HashMap<String, String>,
+    _futures_to_spot: &HashMap<String, String>,
     tx: &mpsc::Sender<WsMessage>,
     cancel: &CancellationToken,
+    stats: &Arc<Stats>,
 ) -> usize {
     let client = reqwest::Client::new();
     let mut count = 0;
-    let mut failed = 0;
+    let mut fail_no_data = 0;
+    let mut fail_http_5xx = 0;
+    let mut fail_tps = 0;
+    let mut fail_other = 0;
 
     for code in codes {
         if cancel.is_cancelled() { return count; }
@@ -113,15 +150,27 @@ async fn fetch_futures_initial(
                     // 여기서 cum_volume=0으로 보내면 현물대금을 덮어써 공란이 됨.
                     count += 1;
                 } else {
-                    failed += 1;
+                    // price==0: LS는 200 OK를 줬으나 체결이력/가격 없는 종목.
+                    fail_no_data += 1;
+                    bump_fail(stats, "no_data");
                 }
             }
-            Err(_) => { failed += 1; }
+            Err(e) => {
+                let kind = classify_error(&e);
+                match kind {
+                    "no_data" => fail_no_data += 1,
+                    "http_5xx" => fail_http_5xx += 1,
+                    "tps" => fail_tps += 1,
+                    _ => fail_other += 1,
+                }
+                bump_fail(stats, kind);
+            }
         }
         tokio::time::sleep(REQ_INTERVAL).await;
     }
+    let failed = fail_no_data + fail_http_5xx + fail_tps + fail_other;
     if failed > 0 {
-        warn!("t8402: {} codes failed after retries", failed);
+        warn!("t8402 failures: no_data={fail_no_data} http_5xx={fail_http_5xx} tps={fail_tps} other={fail_other}");
     }
     count
 }
@@ -133,10 +182,14 @@ async fn fetch_stocks_initial(
     names: &HashMap<String, String>,
     tx: &mpsc::Sender<WsMessage>,
     cancel: &CancellationToken,
+    stats: &Arc<Stats>,
 ) -> usize {
     let client = reqwest::Client::new();
     let mut count = 0;
-    let mut failed = 0;
+    let mut fail_no_data = 0;
+    let mut fail_http_5xx = 0;
+    let mut fail_tps = 0;
+    let mut fail_other = 0;
 
     for code in codes {
         if cancel.is_cancelled() { return count; }
@@ -158,15 +211,26 @@ async fn fetch_stocks_initial(
                     })).await;
                     count += 1;
                 } else {
-                    failed += 1;
+                    fail_no_data += 1;
+                    bump_fail(stats, "no_data");
                 }
             }
-            Err(_) => { failed += 1; }
+            Err(e) => {
+                let kind = classify_error(&e);
+                match kind {
+                    "no_data" => fail_no_data += 1,
+                    "http_5xx" => fail_http_5xx += 1,
+                    "tps" => fail_tps += 1,
+                    _ => fail_other += 1,
+                }
+                bump_fail(stats, kind);
+            }
         }
         tokio::time::sleep(REQ_INTERVAL).await;
     }
+    let failed = fail_no_data + fail_http_5xx + fail_tps + fail_other;
     if failed > 0 {
-        warn!("t1102: {} codes failed after retries", failed);
+        warn!("t1102 failures: no_data={fail_no_data} http_5xx={fail_http_5xx} tps={fail_tps} other={fail_other}");
     }
     count
 }
