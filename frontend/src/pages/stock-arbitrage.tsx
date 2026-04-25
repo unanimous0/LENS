@@ -160,7 +160,14 @@ export function StockArbitragePage() {
     }
     list.sort((a, b) => {
       const av = a[sk] ?? 0, bv = b[sk] ?? 0
-      if (sk === 'baseName') return asc ? String(av).localeCompare(String(bv)) : String(bv).localeCompare(String(av))
+      if (sk === 'baseName') {
+        const as = String(av), bs = String(bv)
+        // 영문 시작이면 한글보다 우선. 같은 언어 내에선 알파벳/가나다 순.
+        const aEng = /^[A-Za-z]/.test(as)
+        const bEng = /^[A-Za-z]/.test(bs)
+        if (aEng !== bEng) return asc ? (aEng ? -1 : 1) : (aEng ? 1 : -1)
+        return asc ? as.localeCompare(bs) : bs.localeCompare(as)
+      }
       return asc ? +av - +bv : +bv - +av
     })
     return list
