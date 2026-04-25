@@ -177,9 +177,9 @@ export function StockArbitragePage() {
   const todayStr = new Date().toISOString().slice(0, 10)
 
   return (
-    <div className="flex flex-col h-full bg-black">
-      {/* 헤더 */}
-      <div className="px-6 py-4 flex items-center gap-5 shrink-0">
+    <div className="flex flex-col bg-black">
+      {/* 헤더 — main 스크롤 시 상단에 sticky */}
+      <div className="px-6 py-4 flex items-center gap-5 shrink-0 sticky top-0 z-30 bg-black">
         <h1 className="text-[14px] text-white">종목차익</h1>
         <div className="flex items-center gap-1 rounded-md bg-[#1e1e22] p-0.5">
           <button
@@ -227,10 +227,10 @@ export function StockArbitragePage() {
         </div>
       </div>
 
-      {/* 테이블 */}
-      <div className="flex-1 overflow-auto min-h-0 px-2">
+      {/* 테이블 — main 스크롤에 thead가 페이지 헤더 바로 아래에 sticky */}
+      <div className="px-2">
         <table className="w-max min-w-full border-collapse">
-          <thead className="sticky top-0 z-20">
+          <thead className="sticky top-[60px] z-20">
             <tr className="text-[10px] text-[#8b8b8e] bg-black">
               {/* 종목 */}
               <Th sort={() => doSort('baseName')} active={sk === 'baseName'} asc={asc} left sticky className="pl-4 min-w-[110px]">종목</Th>
