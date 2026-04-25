@@ -16,6 +16,7 @@ dist-ssr/
 
 # Logs
 *.log
+logs/
 npm-debug.log*
 
 # Editor

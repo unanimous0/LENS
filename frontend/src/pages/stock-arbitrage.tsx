@@ -41,6 +41,7 @@ interface Row {
   backPrice: number
   spread: number
   spreadVolume: number
+  spreadHasTick: boolean
   dividend: number
   dividendDate: string
   dividendApplied: boolean
@@ -141,6 +142,9 @@ export function StockArbitragePage() {
         backPrice: backP,
         spread: item.spread_code ? (futuresTicks[item.spread_code]?.price ?? 0) : 0,
         spreadVolume: item.spread_code ? (futuresTicks[item.spread_code]?.volume ?? 0) : 0,
+        // tick 존재 여부는 price 값과 독립. 스프레드는 근월=원월이면 price=0이 정상이므로
+        // falsy 판정으로 "-" 처리하면 안 됨.
+        spreadHasTick: !!(item.spread_code && futuresTicks[item.spread_code]),
         spreadCode: item.spread_code ?? '',
         dividend: 0, dividendDate: '', dividendApplied: false,
         holding031: 0, holding052: 0, futuresHolding: 0,
@@ -284,7 +288,7 @@ export function StockArbitragePage() {
                 <C sub>{r.futuresVolume ? r.futuresVolume.toLocaleString() : '-'}</C>
                 <C mute>{r.multiplier % 1 === 0 ? r.multiplier : r.multiplier.toFixed(2)}</C>
                 {/* 스프레드 */}
-                <C c={cV(r.spread)}>{r.spread ? fB(r.spread) : '-'}</C>
+                <C c={cV(r.spread)}>{r.spreadHasTick ? fB(r.spread) : '-'}</C>
                 <C sub>{r.spreadVolume ? r.spreadVolume.toLocaleString() : '-'}</C>
                 {/* 배당 */}
                 <C sub>{r.dividend ? r.dividend.toLocaleString() : '-'}</C>

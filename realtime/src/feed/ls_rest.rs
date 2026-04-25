@@ -134,8 +134,10 @@ async fn fetch_futures_initial(
             Ok(detail) => {
                 let price = pf(detail.get("price"));
                 let volume = pu(detail.get("volume"));
-                // 스프레드(D코드)는 근월-차월 차이라 음수가 정상. 0.0만 "무데이터"로 skip.
-                if price != 0.0 {
+                // "체결 없으면 공란" 원칙 (stock-arbitrage.md): 오늘 거래량이 0이면
+                // t8402의 price는 전일 종가가 이월된 stale 값이라 initial tick 발행 안 함.
+                // 당일 체결(WS JC0)이 들어오면 그때 실제 값으로 갱신됨.
+                if volume > 0 {
                     let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.6f").to_string();
                     let name = names.get(code.as_str()).cloned().unwrap_or_default();
                     let underlying = pf(detail.get("baseprice"));
@@ -150,7 +152,7 @@ async fn fetch_futures_initial(
                     // 여기서 cum_volume=0으로 보내면 현물대금을 덮어써 공란이 됨.
                     count += 1;
                 } else {
-                    // price==0: LS는 200 OK를 줬으나 체결이력/가격 없는 종목.
+                    // volume==0: 오늘 체결 없음 (price는 전일 종가). stale 회피 위해 skip.
                     fail_no_data += 1;
                     bump_fail(stats, "no_data");
                 }
@@ -198,7 +200,9 @@ async fn fetch_stocks_initial(
             Ok(detail) => {
                 let price = pf(detail.get("price"));
                 let value = pu(detail.get("value")); // 백만원 단위 거래대금
-                if price > 0.0 {
+                // "체결 없으면 공란" 원칙: 당일 거래대금 0이면 price도 전일 종가 stale 값.
+                // S3_/K3_ 실시간 체결이 들어오면 그때 갱신됨.
+                if value > 0 {
                     let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.6f").to_string();
                     let name = names.get(code.as_str()).cloned().unwrap_or_default();
 
@@ -211,6 +215,7 @@ async fn fetch_stocks_initial(
                     })).await;
                     count += 1;
                 } else {
+                    // value==0: 오늘 거래 없음 → stale 회피 위해 skip.
                     fail_no_data += 1;
                     bump_fail(stats, "no_data");
                 }

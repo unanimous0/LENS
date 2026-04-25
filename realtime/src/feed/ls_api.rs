@@ -19,6 +19,10 @@ const WS_URL: &str = "wss://openapi.ls-sec.co.kr:9443/websocket";
 const TOKEN_URL: &str = "https://openapi.ls-sec.co.kr:8080/oauth2/token";
 const MAX_RECONNECT_DELAY_SECS: u64 = 60;
 const MAX_SUBS_PER_CONNECTION: usize = 190;
+/// 수신 유휴 타임아웃. 장중에 N초 이상 Text/Binary 메시지가 없으면 LS 서버가
+/// 스트림을 멈춘 것으로 간주하고 재연결. Ping/Pong은 데이터로 취급 안 함
+/// (LS가 ping은 보내면서 실제 틱은 멈추는 silent stall 케이스 커버).
+const IDLE_TIMEOUT_SECS: u64 = 15;
 
 /// LS증권 OpenAPI WebSocket 피드.
 /// 구독 수가 190개를 초과하면 여러 WebSocket 연결로 자동 분산.
@@ -362,16 +366,20 @@ async fn run_single_connection(
     }
     info!("conn[{conn_id}] all subscribed");
 
-    // 수신 루프
+    // 수신 루프. IDLE_TIMEOUT_SECS 동안 Text/Binary 없으면 silent stall로 판정 → 재연결.
+    let idle_limit = std::time::Duration::from_secs(IDLE_TIMEOUT_SECS);
+    let mut last_data = tokio::time::Instant::now();
     loop {
         tokio::select! {
             msg = read.next() => {
                 match msg {
                     Some(Ok(tungstenite::Message::Text(text))) => {
+                        last_data = tokio::time::Instant::now();
                         handle_tick(&text, tx, names, stock_codes, futures_to_spot).await;
                     }
                     Some(Ok(tungstenite::Message::Binary(data))) => {
                         if let Ok(text) = String::from_utf8(data.to_vec()) {
+                            last_data = tokio::time::Instant::now();
                             handle_tick(&text, tx, names, stock_codes, futures_to_spot).await;
                         }
                     }
@@ -386,6 +394,9 @@ async fn run_single_connection(
             _ = cancel.cancelled() => {
                 let _ = write.send(tungstenite::Message::Close(None)).await;
                 return Ok(());
+            }
+            _ = tokio::time::sleep_until(last_data + idle_limit) => {
+                return Err(format!("idle {IDLE_TIMEOUT_SECS}s — LS server silent"));
             }
         }
     }

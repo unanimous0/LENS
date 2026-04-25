@@ -10,6 +10,14 @@ cd "$(dirname "$0")"
 # 각 백그라운드 작업을 별도 프로세스 그룹으로 — 종료 시 손자까지 모두 정리
 set -m
 
+# 로그 디렉토리 + 자동 만료 (14일).
+# tee로 stdout/stderr를 터미널과 파일에 동시 기록.
+# 같은 날 여러 번 재시작하면 같은 파일에 append됨.
+mkdir -p logs
+LOG_DAY=$(date +%Y%m%d)
+find logs/ -name "*.log*" -mtime +14 -delete 2>/dev/null
+echo "[로그] logs/{backend,realtime}.log.${LOG_DAY} 에 기록 (14일 후 자동 삭제)"
+
 # Node.js 버전 설정
 export NVM_DIR="$HOME/.nvm"
 [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
@@ -41,14 +49,14 @@ fi
 
 # 백엔드 실행 (subshell로 감싸서 프로세스 그룹 리더 확보)
 echo "[백엔드] 시작 (포트 8100)..."
-(cd backend && uvicorn main:app --host 0.0.0.0 --port 8100 --reload) &
+(cd backend && uvicorn main:app --host 0.0.0.0 --port 8100 --reload 2>&1 | tee -a "../logs/backend.log.${LOG_DAY}") &
 BACKEND_PID=$!
 
 # Rust 실시간 서비스: 먼저 blocking으로 빌드 후 바이너리 실행
 echo "[실시간] Rust 서비스 빌드..."
 (cd realtime && cargo build --release --quiet)
 echo "[실시간] Rust 서비스 시작 (포트 8200)..."
-(cd realtime && ./target/release/lens-realtime) &
+(cd realtime && ./target/release/lens-realtime 2>&1 | tee -a "../logs/realtime.log.${LOG_DAY}") &
 REALTIME_PID=$!
 
 # Rust /health 응답 대기 (최대 10초) — 프론트 첫 fetch 실패 방지
