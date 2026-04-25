@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
@@ -7,7 +8,7 @@ use tokio_tungstenite::tungstenite::{self, client::IntoClientRequest, http::Head
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::model::message::WsMessage;
 use crate::model::tick::{EtfTick, FuturesTick, OrderbookLevel, OrderbookTick, StockTick};
@@ -19,10 +20,26 @@ const WS_URL: &str = "wss://openapi.ls-sec.co.kr:9443/websocket";
 const TOKEN_URL: &str = "https://openapi.ls-sec.co.kr:8080/oauth2/token";
 const MAX_RECONNECT_DELAY_SECS: u64 = 60;
 const MAX_SUBS_PER_CONNECTION: usize = 190;
-/// 수신 유휴 타임아웃. 장중에 N초 이상 Text/Binary 메시지가 없으면 LS 서버가
-/// 스트림을 멈춘 것으로 간주하고 재연결. Ping/Pong은 데이터로 취급 안 함
-/// (LS가 ping은 보내면서 실제 틱은 멈추는 silent stall 케이스 커버).
-const IDLE_TIMEOUT_SECS: u64 = 15;
+/// 수신 유휴 타임아웃 (장중 한정).
+/// 5개 WS 연결이 공유하는 last_data_us 기준이라 "feed 전체"가 N초 침묵해야 발동.
+/// 개별 연결이 illiquid 종목만 담당해 조용해도, 다른 연결이 데이터 받으면 reset됨.
+/// 장 시간 외에는 게이트 통해 완전 비활성 (밤새 재접속 spam 방지).
+const IDLE_TIMEOUT_SECS: u64 = 30;
+
+fn now_us() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_micros() as u64).unwrap_or(0)
+}
+
+/// KST 평일 09:00~15:45만 true. 토/일 + 야간 시간대엔 idle timeout 비활성.
+/// 시스템 timezone이 KST라고 가정 (서버 KST). 휴장일은 별도 처리 안 함 — 1년에
+/// 몇 번 false positive 재접속이 일어나지만 backoff로 60초마다 1회라 무해.
+fn is_market_hours() -> bool {
+    use chrono::{Datelike, Local, Timelike, Weekday};
+    let now = Local::now();
+    if matches!(now.weekday(), Weekday::Sat | Weekday::Sun) { return false; }
+    let mins = now.hour() * 60 + now.minute();
+    (9 * 60..15 * 60 + 45).contains(&mins)
+}
 
 /// LS증권 OpenAPI WebSocket 피드.
 /// 구독 수가 190개를 초과하면 여러 WebSocket 연결로 자동 분산.
@@ -38,6 +55,9 @@ pub struct LsApiFeed {
     pub futures_to_spot: Arc<HashMap<String, String>>,
     pub kosdaq_codes: Arc<HashSet<String>>,
     pub stats: Arc<Stats>,
+    /// Feed-level 마지막 데이터 수신 시각 (UNIX micros). 5개 WS 연결이 공유.
+    /// 어느 연결에서든 Text/Binary 메시지 받으면 갱신 → idle timeout 판정에 사용.
+    pub last_data_us: Arc<AtomicU64>,
 }
 
 impl LsApiFeed {
@@ -58,6 +78,7 @@ impl LsApiFeed {
             futures_to_spot: Arc::new(futures_to_spot),
             kosdaq_codes: Arc::new(kosdaq_codes),
             stats,
+            last_data_us: Arc::new(AtomicU64::new(now_us())),
         }
     }
 }
@@ -108,13 +129,14 @@ impl MarketFeed for LsApiFeed {
             let stock_codes = self.stock_codes.clone();
             let futures_to_spot = self.futures_to_spot.clone();
             let stats = self.stats.clone();
+            let last_data_us = self.last_data_us.clone();
 
             tokio::spawn(async move {
                 let mut attempt = 0u32;
                 loop {
                     if cancel.is_cancelled() { return; }
                     match run_single_connection(
-                        i, &app_key, &app_secret, &chunk, &names, &stock_codes, &futures_to_spot, &tx, &cancel,
+                        i, &app_key, &app_secret, &chunk, &names, &stock_codes, &futures_to_spot, &tx, &cancel, &last_data_us,
                     ).await {
                         Ok(()) => return,
                         Err(e) => {
@@ -142,9 +164,10 @@ impl MarketFeed for LsApiFeed {
         // 초기 선물 연결 시작
         let mut futures_cancel = CancellationToken::new();
         let stats = self.stats.clone();
+        let last_data_us = self.last_data_us.clone();
         spawn_futures_connections(
             &initial_futures, &app_key, &app_secret, &names, &stock_codes,
-            &futures_to_spot, &tx, &cancel, &futures_cancel, &stats,
+            &futures_to_spot, &tx, &cancel, &futures_cancel, &stats, &last_data_us,
         );
 
         // 호가 전용 연결 (온디맨드)
@@ -169,7 +192,7 @@ impl MarketFeed for LsApiFeed {
                             futures_cancel = CancellationToken::new();
                             spawn_futures_connections(
                                 &new_futures, &app_key, &app_secret, &names, &stock_codes,
-                                &futures_to_spot, &tx, &cancel, &futures_cancel, &stats,
+                                &futures_to_spot, &tx, &cancel, &futures_cancel, &stats, &last_data_us,
                             );
                         }
                         Some(SubCommand::Unsubscribe(_)) => {
@@ -184,7 +207,7 @@ impl MarketFeed for LsApiFeed {
                             ob_cancel = CancellationToken::new();
                             spawn_orderbook_connection(
                                 &codes, &app_key, &app_secret, &names,
-                                &stock_codes, &futures_to_spot, &tx, &cancel, &ob_cancel, &stats,
+                                &stock_codes, &futures_to_spot, &tx, &cancel, &ob_cancel, &stats, &last_data_us,
                             );
                         }
                         Some(SubCommand::UnsubscribeOrderbook) => {
@@ -215,6 +238,7 @@ fn spawn_futures_connections(
     global_cancel: &CancellationToken,
     futures_cancel: &CancellationToken,
     stats: &Arc<Stats>,
+    last_data_us: &Arc<AtomicU64>,
 ) {
     let chunks: Vec<Vec<(String, String)>> = futures
         .chunks(MAX_SUBS_PER_CONNECTION).map(|c| c.to_vec()).collect();
@@ -229,6 +253,7 @@ fn spawn_futures_connections(
         let sc = stock_codes.clone();
         let f2s = futures_to_spot.clone();
         let stats = stats.clone();
+        let last_data_us = last_data_us.clone();
 
         tokio::spawn(async move {
             let combined_cancel = CancellationToken::new();
@@ -248,7 +273,7 @@ fn spawn_futures_connections(
                 if combined_cancel.is_cancelled() { return; }
                 let conn_id = 100 + i; // 고정 그룹과 구분
                 match run_single_connection(
-                    conn_id, &ak, &as_, &chunk, &n, &sc, &f2s, &tx, &combined_cancel,
+                    conn_id, &ak, &as_, &chunk, &n, &sc, &f2s, &tx, &combined_cancel, &last_data_us,
                 ).await {
                     Ok(()) => return,
                     Err(e) => {
@@ -279,6 +304,7 @@ fn spawn_orderbook_connection(
     global_cancel: &CancellationToken,
     ob_cancel: &CancellationToken,
     stats: &Arc<Stats>,
+    last_data_us: &Arc<AtomicU64>,
 ) {
     let codes = codes.to_vec();
     let tx = tx.clone();
@@ -290,6 +316,7 @@ fn spawn_orderbook_connection(
     let sc = stock_codes.clone();
     let f2s = futures_to_spot.clone();
     let stats = stats.clone();
+    let last_data_us = last_data_us.clone();
 
     tokio::spawn(async move {
         let combined = CancellationToken::new();
@@ -307,7 +334,7 @@ fn spawn_orderbook_connection(
         loop {
             if combined.is_cancelled() { return; }
             match run_single_connection(
-                200, &ak, &as_, &codes, &n, &sc, &f2s, &tx, &combined,
+                200, &ak, &as_, &codes, &n, &sc, &f2s, &tx, &combined, &last_data_us,
             ).await {
                 Ok(()) => return,
                 Err(e) => {
@@ -337,6 +364,7 @@ async fn run_single_connection(
     futures_to_spot: &Arc<HashMap<String, String>>,
     tx: &mpsc::Sender<WsMessage>,
     cancel: &CancellationToken,
+    last_data_us: &Arc<AtomicU64>,
 ) -> Result<(), String> {
     // 토큰 발급
     let client = reqwest::Client::new();
@@ -366,20 +394,22 @@ async fn run_single_connection(
     }
     info!("conn[{conn_id}] all subscribed");
 
-    // 수신 루프. IDLE_TIMEOUT_SECS 동안 Text/Binary 없으면 silent stall로 판정 → 재연결.
-    let idle_limit = std::time::Duration::from_secs(IDLE_TIMEOUT_SECS);
-    let mut last_data = tokio::time::Instant::now();
+    // 수신 루프. Feed-level last_data_us 기준으로 idle 판정 (어느 연결에서든
+    // 데이터 오면 reset). 장 시간 외에는 게이트로 비활성화.
+    let idle_limit_us: u64 = IDLE_TIMEOUT_SECS * 1_000_000;
+    // 폴링 간격 — 매 5초마다 last_data_us 확인 (정확도 vs 오버헤드 trade-off)
+    let poll_interval = std::time::Duration::from_secs(5);
     loop {
         tokio::select! {
             msg = read.next() => {
                 match msg {
                     Some(Ok(tungstenite::Message::Text(text))) => {
-                        last_data = tokio::time::Instant::now();
+                        last_data_us.store(now_us(), Ordering::Relaxed);
                         handle_tick(&text, tx, names, stock_codes, futures_to_spot).await;
                     }
                     Some(Ok(tungstenite::Message::Binary(data))) => {
                         if let Ok(text) = String::from_utf8(data.to_vec()) {
-                            last_data = tokio::time::Instant::now();
+                            last_data_us.store(now_us(), Ordering::Relaxed);
                             handle_tick(&text, tx, names, stock_codes, futures_to_spot).await;
                         }
                     }
@@ -395,8 +425,13 @@ async fn run_single_connection(
                 let _ = write.send(tungstenite::Message::Close(None)).await;
                 return Ok(());
             }
-            _ = tokio::time::sleep_until(last_data + idle_limit) => {
-                return Err(format!("idle {IDLE_TIMEOUT_SECS}s — LS server silent"));
+            _ = tokio::time::sleep(poll_interval) => {
+                // 장 시간 외엔 idle 판정 안 함 (밤새 재접속 spam 방지)
+                if !is_market_hours() { continue; }
+                let elapsed_us = now_us().saturating_sub(last_data_us.load(Ordering::Relaxed));
+                if elapsed_us > idle_limit_us {
+                    return Err(format!("feed idle {}s — LS silent", elapsed_us / 1_000_000));
+                }
             }
         }
     }
