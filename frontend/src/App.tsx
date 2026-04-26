@@ -7,6 +7,7 @@ import { DashboardPage } from './pages/dashboard'
 import { MarketPage } from './pages/market'
 import { LendingPage } from './pages/lending'
 import { StockArbitragePage } from './pages/stock-arbitrage'
+import { DividendsPage } from './pages/dividends'
 import type { NetworkMode } from './types/market'
 
 function AppLayout() {
@@ -41,6 +42,7 @@ function AppLayout() {
             <Route path="/position" element={<StubPage label="포지션" />} />
             <Route path="/supply-demand" element={<StubPage label="수급" />} />
             <Route path="/stock-arbitrage" element={<StockArbitragePage />} />
+            <Route path="/dividends" element={<DividendsPage />} />
           </Routes>
         </div>
       </main>

@@ -7,7 +7,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from core.config import settings
-from routers import arbitrage, borrowing, health, lending, repayment
+from routers import arbitrage, borrowing, dividends, health, lending, repayment
 
 
 app = FastAPI(title=settings.APP_NAME, debug=settings.DEBUG)
@@ -22,6 +22,7 @@ app.add_middleware(
 
 app.include_router(arbitrage.router, prefix="/api")
 app.include_router(borrowing.router, prefix="/api")
+app.include_router(dividends.router, prefix="/api")
 app.include_router(health.router, prefix="/api")
 app.include_router(lending.router, prefix="/api")
 app.include_router(repayment.router, prefix="/api")

@@ -28,6 +28,7 @@ npm-debug.log*
 # Data files (sensitive)
 data/
 !data/futures_master.json
+!data/dividends_mock.json
 
 # Rust
 realtime/target/

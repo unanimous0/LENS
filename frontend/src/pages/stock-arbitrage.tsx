@@ -21,6 +21,15 @@ interface Master {
   items: MasterItem[]
 }
 
+interface Dividend {
+  code: string
+  ex_date: string | null
+  record_date: string
+  amount: number
+  period: string
+  confirmed: boolean
+}
+
 interface Row {
   baseCode: string
   baseName: string
@@ -59,6 +68,7 @@ type SK = keyof Pick<Row,
 
 export function StockArbitragePage() {
   const [master, setMaster] = useState<Master | null>(null)
+  const [dividends, setDividends] = useState<Dividend[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [search, setSearch] = useState('')
@@ -92,6 +102,23 @@ export function StockArbitragePage() {
       .catch((e) => { setError(e.message); setLoading(false) })
   }, [])
 
+  useEffect(() => {
+    fetch('/api/dividends')
+      .then((r) => r.ok ? r.json() : { items: [] })
+      .then((d) => setDividends(d.items ?? []))
+      .catch(() => {})  // 배당 API 실패는 치명적이지 않음 — dividend 0으로 떨어짐
+  }, [])
+
+  // 종목코드별 배당 인덱스 — 행 매칭 시 O(1) 조회
+  const divByCode = useMemo(() => {
+    const m: Record<string, Dividend[]> = {}
+    for (const d of dividends) {
+      if (!d.ex_date) continue
+      ;(m[d.code] ??= []).push(d)
+    }
+    return m
+  }, [dividends])
+
   // 월물 전환 시 선물 구독 전환 (현물/스프레드는 고정)
   // 실시간 JC0 체결이 오면 즉시 갱신됨. 체결 전에는 마스터 초기값 표시.
   useEffect(() => {
@@ -110,6 +137,7 @@ export function StockArbitragePage() {
 
   const rows = useMemo(() => {
     if (!master) return [] as Row[]
+    const today = new Date().toISOString().slice(0, 10)
     return master.items.map((item, idx): Row => {
       const spot = stockTicks[item.base_code]
       // 선택된 월물에 따라 선물 데이터 참조
@@ -121,10 +149,21 @@ export function StockArbitragePage() {
       const sp = spot?.price ?? 0  // 실시간 S3_/K3_만
       const fp = fut?.price ?? 0  // 실시간 JC0 체결만 표시
       const mb = fp > 0 && sp > 0 ? fp - sp : (fut?.basis ?? 0)
-      // 이론가 = 현물 × (1 + r × d/365) - 배당 (배당은 배당 화면 연동 후 적용)
+
+      // 배당 매칭: 오늘 ~ 선택 월물 만기일 사이에 배당락이 있으면 합산.
+      // 만기일은 master.expiry (YYYYMMDD or YYYYMM)에서 직접 파싱 — days_left는 마스터
+      // 갱신일 기준이라 며칠 stale될 수 있음.
+      const cutoff = expiryToCutoffDate(sel.expiry)
+      const applicable = (divByCode[item.base_code] ?? [])
+        .filter((d) => d.ex_date && d.ex_date >= today && d.ex_date <= cutoff)
+      const totalDividend = applicable.reduce((s, d) => s + d.amount, 0)
+      const earliestExDate = applicable.length > 0
+        ? applicable.reduce((min, d) => d.ex_date! < min ? d.ex_date! : min, applicable[0].ex_date!)
+        : ''
+
+      // 이론가 = 현물 × (1 + r × d/365) - 배당
       const dLeft = sel.days_left || 0
-      const dividend = 0
-      const tp = sp > 0 ? sp * (1 + (rate / 100) * dLeft / 365) - dividend : 0
+      const tp = sp > 0 ? sp * (1 + (rate / 100) * dLeft / 365) - totalDividend : 0
       const tb = tp > 0 ? tp - sp : 0
       const gap = mb - tb
       const ofp = otherFut?.price ?? other?.price ?? 0
@@ -146,11 +185,13 @@ export function StockArbitragePage() {
         // falsy 판정으로 "-" 처리하면 안 됨.
         spreadHasTick: !!(item.spread_code && futuresTicks[item.spread_code]),
         spreadCode: item.spread_code ?? '',
-        dividend: 0, dividendDate: '', dividendApplied: false,
+        dividend: totalDividend,
+        dividendDate: earliestExDate,
+        dividendApplied: applicable.length > 0,
         holding031: 0, holding052: 0, futuresHolding: 0,
       }
     })
-  }, [master, stockTicks, futuresTicks, month, rate])
+  }, [master, stockTicks, futuresTicks, month, rate, divByCode])
 
   const filtered = useMemo(() => {
     let list = rows
@@ -430,6 +471,21 @@ function fmtExpiry(e: string) {
   if (e.length === 8) return `${e.slice(4, 6)}-${e.slice(6, 8)}`
   if (e.length === 6) return `${e.slice(4, 6)}월`
   return e || '-'
+}
+/** 만기 문자열을 ISO 일자(YYYY-MM-DD)로 변환. 배당 매칭 cutoff 계산용.
+ *  YYYYMMDD: 그 날짜 그대로
+ *  YYYYMM (back month — 정확한 만기일 미상): 해당 월 말일 사용 */
+function expiryToCutoffDate(e: string): string {
+  if (e.length === 8) {
+    return `${e.slice(0, 4)}-${e.slice(4, 6)}-${e.slice(6, 8)}`
+  }
+  if (e.length === 6) {
+    const year = parseInt(e.slice(0, 4), 10)
+    const month = parseInt(e.slice(4, 6), 10)
+    const lastDay = new Date(year, month, 0).getDate()
+    return `${year}-${String(month).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`
+  }
+  return ''
 }
 function fVol(v: number) {
   if (v >= 1e12) return `${(v / 1e12).toLocaleString(undefined, { maximumFractionDigits: 1, minimumFractionDigits: 1 })}조`
