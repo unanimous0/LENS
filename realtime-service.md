@@ -825,6 +825,50 @@ LENS/
 
 `ls_api.rs`의 3개 연결 그룹(고정 / 선물 / 호가) 모두 `run_single_connection` 리턴값이 `Err`일 때 exponential backoff (최대 60s)로 재시도. 성공 시 재구독. 스냅샷 캐시는 재연결 구간에도 보존되어 프런트가 데이터 공백 없이 이어감. 재접속 횟수는 `/debug/stats.reconnect_count`에 누적. 실제 TCP 끊김 시나리오는 `sudo iptables -I OUTPUT -d openapi.ls-sec.co.kr -j DROP`로 5초 차단 → 로그/카운터 확인으로 스모크 테스트 가능 (SIGSTOP은 연결 유지된 채 프로세스만 멈춰서 재연결 트리거 X).
 
+### LS API abuse 보호 (2026-04-27 인시던트 대응)
+
+당일 사건: 빠른 frontend re-subscribe (HMR/멀티탭) + 내부 idle timeout 버그(`last_data_us` reset 누락 → 무한 재연결) 결합으로 LS-측 abuse heuristic 발동, 데이터 송신 중단. 5겹 방어 도입 (`commit 2d4b331` + 후속 race fix):
+
+1. **OAuth 토큰 캐시** (`ls_rest.rs::get_or_fetch_token`)
+   - 프로세스 단위 `OnceLock<TokioMutex<Option<CachedToken>>>` + 23h TTL
+   - `fetch_initial_prices`와 `run_single_connection` 모두 같은 캐시 사용
+   - 재연결 60회 → 토큰 요청 1회로 압축 (LS abuse 신호의 가장 큰 트리거 제거)
+
+2. **Subscribe dedupe — 2겹 방어**
+   - 프론트 (`stock-arbitrage.tsx`): `useRef<lastSubKey>`로 `(month, sorted-codes)` 동일하면 skip
+   - 백엔드 (`ls_api.rs::run`): `current_futures_key` 추적, 동일 코드 셋 들어오면 `info!("Subscribe: same N codes — skip")` 후 no-op
+   - HMR/멀티탭/직접 호출 어느 경로든 storm 차단
+
+3. **두 timestamp 분리** (`ls_api.rs::run_single_connection`)
+   - `last_data_us`: 실제 Text/Binary 받은 시각만 갱신 → **뱃지 표시용** (정직한 데이터 age)
+   - `last_subscribe_us`: subscribe 완료 시각만 갱신 → **idle grace 윈도우 anchor**
+   - idle 판정: `max(last_data, last_subscribe)` — 재연결 직후 30초 grace 보존하면서 뱃지는 거짓말 안 함
+   - 분리 전 버그: subscribe 시 `last_data_us` reset → 뱃지 영원히 "fresh" + 무한 재연결 루프
+
+4. **Silent reconnect 백오프 escalation** (`ls_api.rs` 3개 spawn 루프)
+   - 연속 5회 데이터 0인 재연결 후 → backoff 60s → **300s** (5분) 전환
+   - LS가 침묵 중일 때 우리 부하 줄여 abuse 신호 약화
+   - `stats.tick_count` delta로 silent 여부 판정, 데이터 들어오면 카운터 0 reset
+
+5. **모드 전환 쿨다운** (`main.rs::set_mode`)
+   - 5초 내 재전환 시 `429 Too Many Requests` 반환
+   - **TOCTOU race fix**: read+check+claim을 한 write 락 critical section에 묶음 → 동시 요청도 1개만 통과
+   - `mock → ls_api` 전환 시 `feed_last_data_us = now_us()` reset (뱃지가 잘못된 stale 빨간불 안 뜨도록)
+
+### 운영 가시성 — Feed 헬스 뱃지
+
+`/debug/stats`에 `feed_mode` / `feed_state` / `feed_age_sec` / `is_market_hours` 추가. 프론트 `useFeedHealth` hook이 5초 폴링하여 `marketStore`에 푸시, `NetworkToggle`에 색 뱃지 + hover 툴팁 표시.
+
+| 상태 | 색 | 의미 |
+|------|------|------|
+| `fresh` | 🟢 정상 | ls_api + 30초 내 데이터 |
+| `quiet` | 🟡 잠잠 | 30초~5분 침묵 |
+| `stale` | 🔴 멈춤 | 5분+ 침묵 (LS 차단 의심) |
+| `closed` | ⚪ 휴장 | KST 평일 09:00~15:45 외 |
+| `mock`/`internal` | ⚫ | LS 미사용 모드 |
+
+**Stale watcher**: 백그라운드 태스크가 매 분 `feed_age_sec`를 검사해 stale 진입 transition 감지 시 `broadcaster.clear_cache()` 1회 호출. 5분+ 침묵 후 재접속한 클라이언트가 옛 가격을 "현재"로 받는 상황 방지.
+
 ### Phase 4+: 계산 모듈 확장
 
 화면이 추가될 때마다 `calc/` 아래 모듈 추가:

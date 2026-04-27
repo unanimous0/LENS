@@ -164,6 +164,29 @@ WebSocket 기반 실시간 ETF/선물 데이터 스트리밍.
 
 ---
 
+## 배당 (`/dividends`)
+
+배당 데이터 조회 + 다가오는 배당 시각화. Finance_Data DB가 SSOT, LENS는 read-only 소비자.
+
+- 4개 요약 카드: 전체 배당 / 다가오는 30일 / 다가오는 90일 + 확정률 / 평균 수익률
+- **다가오는 90일 산점도** (Recharts): x=오늘로부터 일수, y=시가배당률, 점 크기=배당금, 색=확정/예상
+- **종목 클릭 시 과거 이력 막대 차트**: 분기·반기·연 배당 추이
+- 테이블: 종목 / 배당락일 / 기준일 / 결의일 / 지급일 / 1주당 / 수익률 / 구분 / 정관 / 출처 / 상태 / 원문↗
+- 정정공시 이력 펼치기 (`v2 ▶` 배지 클릭)
+- 추정값 호버 → `estimation_basis` 툴팁
+- 출처별 색 배지 (DART / SEIBro / KRX / ESTIMATE)
+- 정관 그룹 A/B 시각 구분 (A=warning, B=blue, hover로 의미 설명)
+
+**데이터 소스 우선순위** (`backend/routers/dividends.py`):
+1. `data/dividends.json` (Finance_Data export — 운영 시 우선)
+2. `data/dividends_mock.json` (개발용 mock)
+
+**캐싱**: 일자 단위 메모리 캐시 (장중엔 데이터 안 바뀌므로). 종목명은 `futures_master.json`에서 자동 join.
+
+**종목차익 페이지 통합**: 행별로 `(today ≤ ex_date ≤ 만기일)` 매칭 배당 합산 → 이론가 식의 `D` 자리에 자동 반영.
+
+---
+
 ## 데이터 어댑터 패턴
 
 `MarketDataAdapter` ABC로 데이터 소스 추상화:

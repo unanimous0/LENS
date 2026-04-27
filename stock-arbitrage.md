@@ -161,13 +161,18 @@
 ### Phase B: 이론가 + 배당
 
 - [x] 금리 입력 UI (상단, % 고정 단위, localStorage 유지, commit-on-blur)
-- [x] 이론가/이론B/갭 실시간 계산 (`S × (1 + r × T/365) - D`, D=0 고정)
+- [x] 이론가/이론B/갭 실시간 계산 (`S × (1 + r × T/365) - D`)
 - [x] 테이블 포맷: 이론가/이론B/갭은 1의 자리, 갭bp는 소수점 둘째자리로 통일
 - [x] 정렬 기준을 절댓값에서 실제 값으로 복귀 (이론B/시장B/갭/갭bp)
 - [x] 헤더에 오늘 / 만기 / 잔존일 / 마스터 갱신일 표시 (잔존 열은 중복이라 제거)
-- [ ] 배당 데이터 관리 (DART API + 과거 패턴) — 배당 화면과 연동 후 `dividend` 필드에 주입
+- [x] 종목명 정렬 영문 우선 (KB금융 → 가나전자 순)
+- [x] 종목명·페이지 헤더·thead sticky (스크롤 시 컬럼명 유지)
+- [x] 배당 데이터 매칭 (Phase 2): `/api/dividends` fetch → `code → dividends` 인덱스 → 행별 `(today ~ 만기일)` 사이 배당 합산해서 `dividend` 필드 채움. `expiryToCutoffDate`로 master.expiry(YYYYMMDD/YYYYMM) → ISO 변환 (days_left는 마스터 갱신일 기준이라 stale 가능)
+- [x] 스프레드 표시 정합성: `spreadHasTick` 플래그로 "tick 존재" vs "값 0" 구분 — 스프레드 가격이 정확히 0인 경우 (근월=원월) "0" 표시, 데이터 없으면 "-"
+- [x] 초기 fetch stale 회피: t8402 `volume==0` / t1102 `value==0`이면 initial tick skip (전일 종가가 "현재가"로 떠 stale 노출되는 문제 차단)
+- [x] 수치 필터 (필터 ▶ 토글, 헤더 안): 선물량 ≥ / |갭bp| ≥ / 스프량 ≥, 프리셋 칩, commit-on-blur, localStorage 유지, `47/250` 카운트 표시
 - [ ] Rust에서 이론가 계산 → futures_tick에 포함
-- [ ] 이론베이시스, 베이시스갭, 갭bp 컬럼 활성화
+- [ ] 이론베이시스, 베이시스갭, 갭bp 컬럼 활성화 (현재 frontend에서 계산 중, 실데이터 들어오면 검증)
 
 ### Phase C: 호가창 + 스프레드
 

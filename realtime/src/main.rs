@@ -219,6 +219,32 @@ async fn main() {
         last_mode_change: Arc::new(StdRwLock::new(Instant::now())),
     };
 
+    // 스냅샷 캐시 stale watcher.
+    // LS가 5분+ 침묵 시 broadcaster.cache가 옛 가격을 stale 상태로 보유 →
+    // 재접속 클라이언트가 받은 스냅샷이 "지금 가격"인 양 표시되는 문제 방지.
+    // ls_api 모드에서만 동작, 매 분 polling, stale 진입 transition에 1회만 clear.
+    {
+        let bg_state = state.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+            interval.tick().await;  // 시작 직후 1회 tick은 즉시 발생, skip
+            let mut last_was_stale = false;
+            loop {
+                interval.tick().await;
+                let mode = bg_state.feed_mode.read().unwrap().clone();
+                if mode != "ls_api" { last_was_stale = false; continue; }
+                let last_us = bg_state.feed_last_data_us.load(Ordering::Relaxed);
+                let age_us = now_us().saturating_sub(last_us);
+                let is_stale = age_us > 300_000_000;  // 5분
+                if is_stale && !last_was_stale {
+                    bg_state.broadcaster.clear_cache();
+                    warn!("Feed stale (5min+ silent) — cleared snapshot cache to avoid serving outdated prices");
+                }
+                last_was_stale = is_stale;
+            }
+        });
+    }
+
     // CORS
     let cors = CorsLayer::new()
         .allow_origin(Any)
@@ -396,9 +422,11 @@ async fn set_mode(
         }
     }
 
-    // 쿨다운 체크 — N초 내 재전환 차단 (LS API abuse 방지).
+    // 쿨다운 체크 + 슬롯 claim을 한 critical section에서 처리.
+    // 두 동시 요청이 read-then-write 사이를 비집고 들어가 둘 다 spawn_feed 호출하는
+    // TOCTOU race 방지 — write 락 잡고 즉시 갱신 후 후속 작업 진행.
     {
-        let last = *state.last_mode_change.read().unwrap();
+        let mut last = state.last_mode_change.write().unwrap();
         let elapsed = last.elapsed().as_secs();
         if elapsed < MODE_COOLDOWN_SECS {
             let remain = MODE_COOLDOWN_SECS - elapsed;
@@ -407,6 +435,14 @@ async fn set_mode(
                 format!("mode change cooldown — wait {remain}s"),
             ));
         }
+        *last = Instant::now();  // 즉시 claim
+    }
+
+    // ls_api로 전환 시 feed_last_data_us reset.
+    // 안 하면: mock 10분 돈 후 ls_api 켜면 last_data_us=10분전 → 뱃지 즉시 "stale"
+    // (LS 연결도 시작 안 했는데). 또는 직전 ls_api 데이터가 잔존해 잠시 "fresh" 거짓말.
+    if mode == "ls_api" {
+        state.feed_last_data_us.store(now_us(), Ordering::Relaxed);
     }
 
     // 새 feed 먼저 spawn 시도 (실패 시 기존 feed 유지)
@@ -425,7 +461,6 @@ async fn set_mode(
     *handle_guard = Some(new_handle);
     *state.sub_tx.write().unwrap() = new_sub_tx;
     *state.feed_mode.write().unwrap() = mode.clone();
-    *state.last_mode_change.write().unwrap() = Instant::now();
 
     info!("Feed mode switched to: {mode}");
     Ok(Json(serde_json::json!({
