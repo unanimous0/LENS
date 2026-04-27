@@ -1,6 +1,8 @@
 import { create } from 'zustand'
 import type { ETFTick, StockTick, FuturesTick, OrderbookTick, NetworkMode } from '../types/market'
 
+export type FeedState = 'fresh' | 'quiet' | 'stale' | 'closed' | 'mock' | 'internal' | 'unknown'
+
 interface MarketState {
   networkMode: NetworkMode
   setNetworkMode: (mode: NetworkMode) => void
@@ -20,6 +22,9 @@ interface MarketState {
   clearOrderbooks: () => void
   connected: boolean
   setConnected: (v: boolean) => void
+  feedState: FeedState
+  feedAgeSec: number
+  setFeedHealth: (state: FeedState, ageSec: number) => void
 }
 
 /** is_initial 틱은 이미 실시간 데이터가 있으면 무시 */
@@ -94,4 +99,7 @@ export const useMarketStore = create<MarketState>((set) => ({
   clearOrderbooks: () => set({ orderbookTicks: {} }),
   connected: false,
   setConnected: (v) => set({ connected: v }),
+  feedState: 'unknown',
+  feedAgeSec: 0,
+  setFeedHealth: (feedState, feedAgeSec) => set({ feedState, feedAgeSec }),
 }))

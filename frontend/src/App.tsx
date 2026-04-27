@@ -2,6 +2,7 @@ import { useEffect } from 'react'
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { TopNav } from './components/layout/top-nav'
 import { useWebSocket } from './hooks/useWebSocket'
+import { useFeedHealth } from './hooks/useFeedHealth'
 import { useMarketStore } from './stores/marketStore'
 import { DashboardPage } from './pages/dashboard'
 import { MarketPage } from './pages/market'
@@ -12,6 +13,7 @@ import type { NetworkMode } from './types/market'
 
 function AppLayout() {
   useWebSocket()
+  useFeedHealth()
 
   // Rust 서비스에서 현재 피드 모드 조회
   useEffect(() => {

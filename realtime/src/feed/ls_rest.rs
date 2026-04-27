@@ -3,9 +3,10 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
+use std::time::{Duration, Instant};
 
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Mutex as TokioMutex};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
@@ -44,6 +45,47 @@ const TOKEN_URL: &str = "https://openapi.ls-sec.co.kr:8080/oauth2/token";
 const T8402_URL: &str = "https://openapi.ls-sec.co.kr:8080/futureoption/market-data";
 const T1102_URL: &str = "https://openapi.ls-sec.co.kr:8080/stock/market-data";
 
+/// LS OAuth 토큰 TTL — 실제 24시간이지만 1시간 마진 두고 23시간 후 갱신.
+/// 매 WS 재연결마다 토큰 받지 않게 프로세스 단위로 캐시.
+const TOKEN_TTL: Duration = Duration::from_secs(23 * 3600);
+
+struct CachedToken {
+    token: String,
+    fetched_at: Instant,
+}
+
+static TOKEN_CACHE: OnceLock<TokioMutex<Option<CachedToken>>> = OnceLock::new();
+
+fn token_cache() -> &'static TokioMutex<Option<CachedToken>> {
+    TOKEN_CACHE.get_or_init(|| TokioMutex::new(None))
+}
+
+/// 캐시된 토큰을 반환. TTL 지났으면 새로 발급. 없거나 401 받았을 때
+/// `invalidate_token_cache()` 호출 후 재시도하면 됨.
+pub async fn get_or_fetch_token(app_key: &str, app_secret: &str) -> Result<String, String> {
+    let cache = token_cache();
+    let mut guard = cache.lock().await;
+
+    if let Some(c) = guard.as_ref() {
+        if c.fetched_at.elapsed() < TOKEN_TTL {
+            return Ok(c.token.clone());
+        }
+    }
+
+    // 만료/없음 → 새로 발급
+    let new_token = fetch_token(app_key, app_secret).await?;
+    info!("token cache: refreshed (was {})", if guard.is_some() { "expired" } else { "empty" });
+    *guard = Some(CachedToken { token: new_token.clone(), fetched_at: Instant::now() });
+    Ok(new_token)
+}
+
+/// LS가 401 또는 토큰 무효 응답 줄 때 캐시 강제 무효화.
+#[allow(dead_code)]
+pub async fn invalidate_token_cache() {
+    *token_cache().lock().await = None;
+    info!("token cache: invalidated");
+}
+
 /// 구독 목록의 모든 종목에 대해 초기 가격 조회.
 /// t8402(선물/스프레드)와 t1102(현물)을 **병렬 태스크**로 동시 실행.
 pub async fn fetch_initial_prices(
@@ -57,7 +99,7 @@ pub async fn fetch_initial_prices(
     cancel: &CancellationToken,
     stats: &Arc<Stats>,
 ) {
-    let token = match fetch_token(app_key, app_secret).await {
+    let token = match get_or_fetch_token(app_key, app_secret).await {
         Ok(t) => t,
         Err(e) => { warn!("Initial price: token failed: {e}"); return; }
     };

@@ -156,18 +156,23 @@ export function StockArbitragePage() {
 
   // 월물 전환 시 선물 구독 전환 (현물/스프레드는 고정)
   // 실시간 JC0 체결이 오면 즉시 갱신됨. 체결 전에는 마스터 초기값 표시.
+  // dedupe: master 객체 ref만 바뀌고 코드 셋이 동일하면 (HMR/리로드/탭 다중 등)
+  // 백엔드에 같은 subscribe를 또 보내지 않음. 이게 없으면 LS API에 storm 발생.
+  const lastSubKey = useRef<string>('')
   useEffect(() => {
     if (!master) return
     const futuresCodes = master.items
       .map((i) => (i as any)[month]?.code)
       .filter(Boolean) as string[]
-    if (futuresCodes.length > 0) {
-      fetch('/realtime/subscribe', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ codes: futuresCodes }),
-      }).catch(() => {})
-    }
+    if (futuresCodes.length === 0) return
+    const key = `${month}:${futuresCodes.slice().sort().join(',')}`
+    if (key === lastSubKey.current) return
+    lastSubKey.current = key
+    fetch('/realtime/subscribe', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ codes: futuresCodes }),
+    }).catch(() => {})
   }, [master, month])
 
   const rows = useMemo(() => {

@@ -95,6 +95,27 @@ pub struct AppState {
     shared: Arc<MasterShared>,
     /// 성능 카운터. `/debug/stats`로 확인.
     stats: Arc<Stats>,
+    /// LS API 피드 마지막 데이터 수신 시각 (UNIX micros). 모드 무관하게 보관 —
+    /// `/debug/stats::feed_age_sec`로 노출하고 LsApiFeed에 같은 Arc 주입.
+    feed_last_data_us: Arc<AtomicU64>,
+    /// 마지막 모드 전환 시각. 빠른 토글(mock↔ls_api) 시 매번 fresh 토큰 + 5 WS +
+    /// 750 REST 돌아서 LS abuse 위험 → 쿨다운으로 차단.
+    last_mode_change: Arc<StdRwLock<Instant>>,
+}
+
+fn now_us() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_micros() as u64).unwrap_or(0)
+}
+
+/// KST 평일 09:00~15:45 — debug_stats에서 feed_state 산출용. ls_api.rs와 중복이지만
+/// 거기 모듈 함수는 private이고 한 줄짜리라 복제 OK.
+fn is_market_hours_kst() -> bool {
+    use chrono::{Datelike, Local, Timelike, Weekday};
+    let now = Local::now();
+    if matches!(now.weekday(), Weekday::Sat | Weekday::Sun) { return false; }
+    let mins = now.hour() * 60 + now.minute();
+    (9 * 60..15 * 60 + 45).contains(&mins)
 }
 
 #[tokio::main]
@@ -135,12 +156,13 @@ async fn main() {
 
     let stats = Arc::new(Stats::default());
     let _ = stats.started.set(Instant::now());
+    let feed_last_data_us = Arc::new(AtomicU64::new(now_us()));
 
     // 초기 모드
     let initial_mode = std::env::var("FEED_MODE").unwrap_or_else(|_| "mock".to_string());
     info!("Initial feed mode: {initial_mode}");
     let (initial_handle, initial_sub_tx) =
-        spawn_feed(&initial_mode, tx.clone(), &shared, &stats).expect("Failed to spawn initial feed");
+        spawn_feed(&initial_mode, tx.clone(), &shared, &stats, &feed_last_data_us).expect("Failed to spawn initial feed");
 
     // mpsc → broadcast 브릿지.
     // 타입별로 cache key를 만들어 send_cached로 저장하면 재접속 클라이언트가 snapshot 복원.
@@ -193,6 +215,8 @@ async fn main() {
         tx,
         shared,
         stats,
+        feed_last_data_us,
+        last_mode_change: Arc::new(StdRwLock::new(Instant::now())),
     };
 
     // CORS
@@ -250,6 +274,7 @@ fn spawn_feed(
     tx: mpsc::Sender<WsMessage>,
     shared: &Arc<MasterShared>,
     stats: &Arc<Stats>,
+    feed_last_data_us: &Arc<AtomicU64>,
 ) -> Result<(FeedHandle, mpsc::UnboundedSender<SubCommand>), String> {
     let cancel = CancellationToken::new();
     let (sub_tx, sub_rx) = mpsc::unbounded_channel::<SubCommand>();
@@ -300,6 +325,7 @@ fn spawn_feed(
                 shared.futures_to_spot.clone(),
                 shared.kosdaq_codes.clone(),
                 stats.clone(),
+                feed_last_data_us.clone(),
             );
             tokio::spawn(async move { feed.run(tx, sub_rx, cancel_c).await })
         }
@@ -354,6 +380,8 @@ async fn get_mode(State(state): State<AppState>) -> String {
 }
 
 /// 런타임 피드 모드 전환. 기존 feed cancel → await join → 새 feed spawn.
+const MODE_COOLDOWN_SECS: u64 = 5;
+
 async fn set_mode(
     State(state): State<AppState>,
     Path(mode): Path<String>,
@@ -368,8 +396,21 @@ async fn set_mode(
         }
     }
 
+    // 쿨다운 체크 — N초 내 재전환 차단 (LS API abuse 방지).
+    {
+        let last = *state.last_mode_change.read().unwrap();
+        let elapsed = last.elapsed().as_secs();
+        if elapsed < MODE_COOLDOWN_SECS {
+            let remain = MODE_COOLDOWN_SECS - elapsed;
+            return Err((
+                StatusCode::TOO_MANY_REQUESTS,
+                format!("mode change cooldown — wait {remain}s"),
+            ));
+        }
+    }
+
     // 새 feed 먼저 spawn 시도 (실패 시 기존 feed 유지)
-    let (new_handle, new_sub_tx) = spawn_feed(&mode, state.tx.clone(), &state.shared, &state.stats)
+    let (new_handle, new_sub_tx) = spawn_feed(&mode, state.tx.clone(), &state.shared, &state.stats, &state.feed_last_data_us)
         .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
 
     // 성공했으니 기존 feed 교체
@@ -384,6 +425,7 @@ async fn set_mode(
     *handle_guard = Some(new_handle);
     *state.sub_tx.write().unwrap() = new_sub_tx;
     *state.feed_mode.write().unwrap() = mode.clone();
+    *state.last_mode_change.write().unwrap() = Instant::now();
 
     info!("Feed mode switched to: {mode}");
     Ok(Json(serde_json::json!({
@@ -602,6 +644,28 @@ async fn debug_stats(State(state): State<AppState>) -> Json<serde_json::Value> {
     let send_calls = s.send_calls.load(Ordering::Relaxed);
     let uptime_s = s.started.get().map(|i| i.elapsed().as_secs_f64()).unwrap_or(0.0);
     let avg = |n: u64, c: u64| if c > 0 { n / c } else { 0 };
+
+    // Feed health 산출.
+    // mock/internal 모드는 별도 상태로 분리 (LS API와 무관).
+    // ls_api 모드는 장 시간 + 마지막 데이터 시각 기반:
+    //   장 시간 외 → "closed"
+    //   <30s → "fresh", <300s → "quiet", >=300s → "stale"
+    let mode = state.feed_mode.read().unwrap().clone();
+    let last_us = state.feed_last_data_us.load(Ordering::Relaxed);
+    let age_us = now_us().saturating_sub(last_us);
+    let age_sec = age_us as f64 / 1_000_000.0;
+    let feed_state = match mode.as_str() {
+        "mock" => "mock",
+        "internal" => "internal",
+        "ls_api" => {
+            if !is_market_hours_kst() { "closed" }
+            else if age_us < 30_000_000 { "fresh" }
+            else if age_us < 300_000_000 { "quiet" }
+            else { "stale" }
+        }
+        _ => "unknown",
+    };
+
     Json(serde_json::json!({
         "uptime_sec": uptime_s,
         "ticks_total": ticks,
@@ -610,6 +674,10 @@ async fn debug_stats(State(state): State<AppState>) -> Json<serde_json::Value> {
         "ws_clients": state.broadcaster.receiver_count(),
         "ws_lag_total": s.ws_lag_total.load(Ordering::Relaxed),
         "reconnect_count": s.reconnect_count.load(Ordering::Relaxed),
+        "feed_mode": mode,
+        "feed_state": feed_state,
+        "feed_age_sec": age_sec,
+        "is_market_hours": is_market_hours_kst(),
         "serialize": {
             "calls": ser_calls,
             "total_ns": ser_ns,
