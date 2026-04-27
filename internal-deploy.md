@@ -53,6 +53,13 @@ rm -f /home/una0/projects/LENS_full.z* /home/una0/projects/LENS_full.zip
 rm -f /home/una0/projects/LENS_update.z* /home/una0/projects/LENS_update.zip
 ```
 
+### TODO: 빌드 자동화 스크립트
+
+현재는 매번 수동 zip 명령. 다음 개선 가능:
+- [ ] `scripts/build_internal_package.sh` — `LENS_update.zip` 자동 생성 (제외 패턴 한 곳에 정의)
+- [ ] Finance_Data 측 `dividends.json` export 자동 포함 (외부망에서 빌드 시점 기준 최신본 복사)
+- [ ] 빌드 결과에 자동 버전 stamp (git rev + 빌드 일시)
+
 ## pip 패키지 갱신 (requirements-win.txt 변경 시에만)
 
 ```bash
