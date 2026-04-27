@@ -133,17 +133,26 @@ impl MarketFeed for LsApiFeed {
 
             tokio::spawn(async move {
                 let mut attempt = 0u32;
+                let mut silent_count = 0u32;
                 loop {
                     if cancel.is_cancelled() { return; }
+                    let ticks_before = stats.tick_count.load(Ordering::Relaxed);
                     match run_single_connection(
                         i, &app_key, &app_secret, &chunk, &names, &stock_codes, &futures_to_spot, &tx, &cancel, &last_data_us,
                     ).await {
                         Ok(()) => return,
                         Err(e) => {
+                            let ticks_after = stats.tick_count.load(Ordering::Relaxed);
+                            if ticks_after > ticks_before { silent_count = 0; } else { silent_count += 1; }
                             attempt += 1;
                             stats.reconnect_count.fetch_add(1, Ordering::Relaxed);
-                            let delay = (2u64.pow(attempt.min(5))).min(MAX_RECONNECT_DELAY_SECS);
-                            warn!("fixed[{i}] disconnected: {e} — reconnecting in {delay}s");
+                            let delay = if silent_count >= 5 { 300 }
+                                else { (2u64.pow(attempt.min(5))).min(MAX_RECONNECT_DELAY_SECS) };
+                            if silent_count >= 5 {
+                                warn!("fixed[{i}] silent {silent_count} cycles — LS likely blocking, extended backoff {delay}s");
+                            } else {
+                                warn!("fixed[{i}] disconnected: {e} — reconnecting in {delay}s");
+                            }
                             tokio::select! {
                                 _ = tokio::time::sleep(std::time::Duration::from_secs(delay)) => {}
                                 _ = cancel.cancelled() => { return; }
@@ -269,19 +278,28 @@ fn spawn_futures_connections(
             });
 
             let mut attempt = 0u32;
+            let mut silent_count = 0u32;
             loop {
                 if combined_cancel.is_cancelled() { return; }
                 let conn_id = 100 + i; // 고정 그룹과 구분
+                let ticks_before = stats.tick_count.load(Ordering::Relaxed);
                 match run_single_connection(
                     conn_id, &ak, &as_, &chunk, &n, &sc, &f2s, &tx, &combined_cancel, &last_data_us,
                 ).await {
                     Ok(()) => return,
                     Err(e) => {
                         if combined_cancel.is_cancelled() { return; }
+                        let ticks_after = stats.tick_count.load(Ordering::Relaxed);
+                        if ticks_after > ticks_before { silent_count = 0; } else { silent_count += 1; }
                         attempt += 1;
                         stats.reconnect_count.fetch_add(1, Ordering::Relaxed);
-                        let delay = (2u64.pow(attempt.min(5))).min(MAX_RECONNECT_DELAY_SECS);
-                        warn!("futures[{i}] disconnected: {e} — reconnecting in {delay}s");
+                        let delay = if silent_count >= 5 { 300 }
+                            else { (2u64.pow(attempt.min(5))).min(MAX_RECONNECT_DELAY_SECS) };
+                        if silent_count >= 5 {
+                            warn!("futures[{i}] silent {silent_count} cycles — LS likely blocking, extended backoff {delay}s");
+                        } else {
+                            warn!("futures[{i}] disconnected: {e} — reconnecting in {delay}s");
+                        }
                         tokio::select! {
                             _ = tokio::time::sleep(std::time::Duration::from_secs(delay)) => {}
                             _ = combined_cancel.cancelled() => { return; }
@@ -331,18 +349,27 @@ fn spawn_orderbook_connection(
         });
 
         let mut attempt = 0u32;
+        let mut silent_count = 0u32;
         loop {
             if combined.is_cancelled() { return; }
+            let ticks_before = stats.tick_count.load(Ordering::Relaxed);
             match run_single_connection(
                 200, &ak, &as_, &codes, &n, &sc, &f2s, &tx, &combined, &last_data_us,
             ).await {
                 Ok(()) => return,
                 Err(e) => {
                     if combined.is_cancelled() { return; }
+                    let ticks_after = stats.tick_count.load(Ordering::Relaxed);
+                    if ticks_after > ticks_before { silent_count = 0; } else { silent_count += 1; }
                     attempt += 1;
                     stats.reconnect_count.fetch_add(1, Ordering::Relaxed);
-                    let delay = (2u64.pow(attempt.min(5))).min(MAX_RECONNECT_DELAY_SECS);
-                    warn!("orderbook disconnected: {e} — reconnecting in {delay}s");
+                    let delay = if silent_count >= 5 { 300 }
+                        else { (2u64.pow(attempt.min(5))).min(MAX_RECONNECT_DELAY_SECS) };
+                    if silent_count >= 5 {
+                        warn!("orderbook silent {silent_count} cycles — LS likely blocking, extended backoff {delay}s");
+                    } else {
+                        warn!("orderbook disconnected: {e} — reconnecting in {delay}s");
+                    }
                     tokio::select! {
                         _ = tokio::time::sleep(std::time::Duration::from_secs(delay)) => {}
                         _ = combined.cancelled() => { return; }
@@ -393,6 +420,12 @@ async fn run_single_connection(
         write.send(tungstenite::Message::Text(msg.to_string().into())).await.map_err(|e| format!("sub: {e}"))?;
     }
     info!("conn[{conn_id}] all subscribed");
+
+    // subscribe 직후 last_data_us를 현재 시각으로 reset.
+    // 안 하면: feed가 한번 침묵하면 → 모든 재연결이 fresh 30초 grace 없이
+    // 즉시 idle 타임아웃 발동 (last_data_us는 프로세스 시작 시각이라 이미 stale).
+    // 결과: 무한 재연결 루프 + LS API에 abuse heuristic 트리거.
+    last_data_us.store(now_us(), Ordering::Relaxed);
 
     // 수신 루프. Feed-level last_data_us 기준으로 idle 판정 (어느 연결에서든
     // 데이터 오면 reset). 장 시간 외에는 게이트로 비활성화.
