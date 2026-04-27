@@ -88,6 +88,40 @@ export function StockArbitragePage() {
     if (Number.isFinite(n) && n >= 0) setRate(n)
     else setRateDraft(String(rate))
   }
+
+  // 수치 필터 (≥ 임계값). 0 = 미적용. localStorage 유지.
+  type Filters = { futVol: number; gapBp: number; spreadVol: number }
+  const DEFAULT_FILTERS: Filters = { futVol: 0, gapBp: 0, spreadVol: 0 }
+  const [filters, setFilters] = useState<Filters>(() => {
+    const saved = localStorage.getItem('arbitrage.filters')
+    if (!saved) return DEFAULT_FILTERS
+    try { return { ...DEFAULT_FILTERS, ...JSON.parse(saved) } } catch { return DEFAULT_FILTERS }
+  })
+  const [filterDrafts, setFilterDrafts] = useState({
+    futVol: filters.futVol > 0 ? String(filters.futVol) : '',
+    gapBp: filters.gapBp > 0 ? String(filters.gapBp) : '',
+    spreadVol: filters.spreadVol > 0 ? String(filters.spreadVol) : '',
+  })
+  useEffect(() => { localStorage.setItem('arbitrage.filters', JSON.stringify(filters)) }, [filters])
+  const [filterOpen, setFilterOpen] = useState(false)
+
+  const commitFilter = (key: keyof Filters) => {
+    const raw = filterDrafts[key]
+    const n = parseFloat(raw)
+    const val = Number.isFinite(n) && n > 0 ? n : 0
+    setFilters((p) => ({ ...p, [key]: val }))
+    setFilterDrafts((p) => ({ ...p, [key]: val > 0 ? String(val) : '' }))
+  }
+  const setPreset = (key: keyof Filters, val: number) => {
+    setFilters((p) => ({ ...p, [key]: val }))
+    setFilterDrafts((p) => ({ ...p, [key]: String(val) }))
+  }
+  const resetFilters = () => {
+    setFilters(DEFAULT_FILTERS)
+    setFilterDrafts({ futVol: '', gapBp: '', spreadVol: '' })
+  }
+  const activeFilterCount =
+    (filters.futVol > 0 ? 1 : 0) + (filters.gapBp > 0 ? 1 : 0) + (filters.spreadVol > 0 ? 1 : 0)
   const [obTarget, setObTarget] = useState<{ spotCode: string; futuresCode: string; spotName: string } | null>(null)
   const [spreadTarget, setSpreadTarget] = useState<{ spreadCode: string; spotName: string } | null>(null)
   const closeOb = useCallback(() => setObTarget(null), [])
@@ -200,6 +234,10 @@ export function StockArbitragePage() {
       const q = search.toLowerCase()
       list = list.filter((r) => r.baseName.toLowerCase().includes(q) || r.baseCode.includes(q) || r.frontCode.toLowerCase().includes(q))
     }
+    // 수치 필터 — 빈 값(0)은 미적용. 갭bp는 절댓값 기준.
+    if (filters.futVol > 0) list = list.filter((r) => r.futuresVolume >= filters.futVol)
+    if (filters.gapBp > 0) list = list.filter((r) => Math.abs(r.basisGapBp) >= filters.gapBp)
+    if (filters.spreadVol > 0) list = list.filter((r) => r.spreadVolume >= filters.spreadVol)
     list.sort((a, b) => {
       const av = a[sk] ?? 0, bv = b[sk] ?? 0
       if (sk === 'baseName') {
@@ -213,7 +251,7 @@ export function StockArbitragePage() {
       return asc ? +av - +bv : +bv - +av
     })
     return list
-  }, [rows, search, sk, asc])
+  }, [rows, search, sk, asc, filters])
 
   const doSort = (k: SK) => { if (sk === k) setAsc(!asc); else { setSk(k); setAsc(false) } }
 
@@ -227,59 +265,121 @@ export function StockArbitragePage() {
 
   return (
     <div className="flex flex-col bg-black">
-      {/* 헤더 — main 스크롤 시 상단에 sticky */}
-      <div className="px-6 py-4 flex items-center gap-5 shrink-0 sticky top-0 z-30 bg-black">
-        <h1 className="text-[14px] text-white">종목차익</h1>
-        <div className="flex items-center gap-1 rounded-md bg-[#1e1e22] p-0.5">
+      {/* 헤더 — main 스크롤 시 상단에 sticky. 필터 펼치면 두 번째 줄 추가됨. */}
+      <div className="shrink-0 sticky top-0 z-30 bg-black">
+        <div className="px-6 py-4 flex items-center gap-5">
+          <h1 className="text-[14px] text-white">종목차익</h1>
+          <div className="flex items-center gap-1 rounded-md bg-[#1e1e22] p-0.5">
+            <button
+              onClick={() => setMonth('front')}
+              className={cn('px-3 py-1 rounded text-[11px] transition-colors', month === 'front' ? 'bg-[#2e2e32] text-white' : 'text-[#8b8b8e] hover:text-white')}
+            >
+              근월물
+            </button>
+            <button
+              onClick={() => setMonth('back')}
+              className={cn('px-3 py-1 rounded text-[11px] transition-colors', month === 'back' ? 'bg-[#2e2e32] text-white' : 'text-[#8b8b8e] hover:text-white')}
+            >
+              원월물
+            </button>
+          </div>
+          {/* 금리 입력 */}
+          <div className="flex items-center gap-1.5 rounded-md bg-[#1e1e22] h-[28px] px-2.5">
+            <span className="text-[10px] text-[#8b8b8e]">금리</span>
+            <input
+              type="number"
+              step="0.1"
+              value={rateDraft}
+              onChange={(e) => setRateDraft(e.target.value)}
+              onBlur={commitRate}
+              onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }}
+              className="w-10 bg-transparent text-[11px] text-white tabular-nums outline-none text-right [appearance:textfield] [&::-webkit-inner-spin-button]:hidden [&::-webkit-outer-spin-button]:hidden"
+            />
+            <span className="text-[10px] text-[#8b8b8e]">%</span>
+          </div>
+          {/* 날짜 / 잔존 */}
+          <div className="flex items-center gap-3 text-[10px] text-[#8b8b8e] tabular-nums">
+            <span>오늘 <span className="text-white">{fmtDate(todayStr)}</span></span>
+            <span>만기 <span className="text-white">{fmtExpiry(selExpiry)}</span></span>
+            <span>잔존 <span className="text-white">{selDaysLeft}</span>일</span>
+          </div>
+          <span className="text-[10px] text-[#8b8b8e]">마스터 갱신일 <span className="text-[#d1d1d6] tabular-nums">{master?.updated ?? '-'}</span></span>
+          {/* 필터 토글 */}
           <button
-            onClick={() => setMonth('front')}
-            className={cn('px-3 py-1 rounded text-[11px] transition-colors', month === 'front' ? 'bg-[#2e2e32] text-white' : 'text-[#8b8b8e] hover:text-white')}
+            onClick={() => setFilterOpen((v) => !v)}
+            className={cn(
+              'flex items-center gap-1 rounded-md h-[28px] px-2.5 text-[11px] transition-colors',
+              activeFilterCount > 0 ? 'bg-accent/15 text-accent' : 'bg-[#1e1e22] text-[#8b8b8e] hover:text-white',
+            )}
           >
-            근월물
+            <span>필터 {filterOpen ? '▼' : '▶'}</span>
+            {activeFilterCount > 0 && <span className="font-mono tabular-nums">{activeFilterCount}</span>}
           </button>
-          <button
-            onClick={() => setMonth('back')}
-            className={cn('px-3 py-1 rounded text-[11px] transition-colors', month === 'back' ? 'bg-[#2e2e32] text-white' : 'text-[#8b8b8e] hover:text-white')}
-          >
-            원월물
-          </button>
+          {filterOpen && (
+            <button
+              onClick={resetFilters}
+              disabled={activeFilterCount === 0}
+              className="h-[28px] rounded bg-[#1e1e22] px-3 text-[12px] text-[#00b26b] hover:bg-[#2e2e32] disabled:cursor-not-allowed disabled:hover:bg-[#1e1e22] transition-colors"
+            >
+              초기화
+            </button>
+          )}
+          {activeFilterCount > 0 && master && (
+            <span className="text-[10px] text-[#8b8b8e] tabular-nums">
+              <span className="text-white">{filtered.length}</span> / {master.count}
+            </span>
+          )}
+          <div className="ml-auto">
+            <input
+              type="text"
+              placeholder="종목 검색"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="w-56 rounded-lg bg-[#1e1e22] px-4 py-2 text-[13px] text-white placeholder:text-[#5a5a5e] outline-none focus:ring-1 focus:ring-white/20"
+            />
+          </div>
         </div>
-        {/* 금리 입력 */}
-        <div className="flex items-center gap-1.5 rounded-md bg-[#1e1e22] h-[28px] px-2.5">
-          <span className="text-[10px] text-[#8b8b8e]">금리</span>
-          <input
-            type="number"
-            step="0.1"
-            value={rateDraft}
-            onChange={(e) => setRateDraft(e.target.value)}
-            onBlur={commitRate}
-            onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }}
-            className="w-10 bg-transparent text-[11px] text-white tabular-nums outline-none text-right [appearance:textfield] [&::-webkit-inner-spin-button]:hidden [&::-webkit-outer-spin-button]:hidden"
-          />
-          <span className="text-[10px] text-[#8b8b8e]">%</span>
-        </div>
-        {/* 날짜 / 잔존 */}
-        <div className="flex items-center gap-3 text-[10px] text-[#8b8b8e] tabular-nums">
-          <span>오늘 <span className="text-white">{fmtDate(todayStr)}</span></span>
-          <span>만기 <span className="text-white">{fmtExpiry(selExpiry)}</span></span>
-          <span>잔존 <span className="text-white">{selDaysLeft}</span>일</span>
-        </div>
-        <span className="text-[10px] text-[#8b8b8e]">마스터 갱신일 <span className="text-[#d1d1d6] tabular-nums">{master?.updated ?? '-'}</span></span>
-        <div className="ml-auto">
-          <input
-            type="text"
-            placeholder="종목 검색"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="w-56 rounded-lg bg-[#1e1e22] px-4 py-2 text-[13px] text-white placeholder:text-[#5a5a5e] outline-none focus:ring-1 focus:ring-white/20"
-          />
-        </div>
+        {filterOpen && (
+          <div className="px-6 pb-2 pt-0.5 flex items-center gap-5 flex-wrap">
+            <FilterField
+              label="선물량 ≥"
+              draft={filterDrafts.futVol}
+              setDraft={(v) => setFilterDrafts((p) => ({ ...p, futVol: v }))}
+              onCommit={() => commitFilter('futVol')}
+              presets={[1000, 10000]}
+              presetLabels={['1천', '1만']}
+              onPreset={(v) => setPreset('futVol', v)}
+              unit="계약"
+            />
+            <FilterField
+              label="|갭bp| ≥"
+              draft={filterDrafts.gapBp}
+              setDraft={(v) => setFilterDrafts((p) => ({ ...p, gapBp: v }))}
+              onCommit={() => commitFilter('gapBp')}
+              presets={[30, 50, 70, 100]}
+              presetLabels={['30', '50', '70', '100']}
+              onPreset={(v) => setPreset('gapBp', v)}
+              unit="bp"
+            />
+            <FilterField
+              label="스프량 ≥"
+              draft={filterDrafts.spreadVol}
+              setDraft={(v) => setFilterDrafts((p) => ({ ...p, spreadVol: v }))}
+              onCommit={() => commitFilter('spreadVol')}
+              presets={[100, 1000]}
+              presetLabels={['100', '1천']}
+              onPreset={(v) => setPreset('spreadVol', v)}
+              unit="계약"
+            />
+          </div>
+        )}
       </div>
 
-      {/* 테이블 — main 스크롤에 thead가 페이지 헤더 바로 아래에 sticky */}
+      {/* 테이블 — main 스크롤에 thead가 페이지 헤더 바로 아래에 sticky.
+          필터 펼침 여부에 따라 top 오프셋 변경 (헤더 높이 ~60 / ~120). */}
       <div className="px-2">
         <table className="w-max min-w-full border-collapse">
-          <thead className="sticky top-[60px] z-20">
+          <thead className={cn('sticky z-20', filterOpen ? 'top-[100px]' : 'top-[60px]')}>
             <tr className="text-[10px] text-[#8b8b8e] bg-black">
               {/* 종목 */}
               <Th sort={() => doSort('baseName')} active={sk === 'baseName'} asc={asc} left sticky className="pl-4 min-w-[110px]">종목</Th>
@@ -467,6 +567,54 @@ function fP(v: number) { return v ? v.toLocaleString() : '-' }
 function fB(v: number) { return `${v > 0 ? '+' : ''}${v.toLocaleString(undefined, { maximumFractionDigits: 1 })}` }
 function fBi(v: number) { const r = Math.round(v); return `${r > 0 ? '+' : ''}${r.toLocaleString()}` }
 function fBp(v: number) { return `${v > 0 ? '+' : ''}${v.toFixed(2)}` }
+// ── 필터 필드 ──
+
+function FilterField({
+  label, draft, setDraft, onCommit, presets, presetLabels, onPreset, unit,
+}: {
+  label: string
+  draft: string
+  setDraft: (v: string) => void
+  onCommit: () => void
+  presets: number[]
+  presetLabels: string[]
+  onPreset: (v: number) => void
+  unit: string
+}) {
+  const isActive = draft.trim().length > 0 && parseFloat(draft) > 0
+  return (
+    <div className="flex items-center gap-2">
+      <span className="text-[12px] text-[#8b8b8e] whitespace-nowrap">{label}</span>
+      <div className={cn(
+        'flex items-center gap-1 rounded-md h-[28px] px-2.5',
+        isActive ? 'bg-accent/15 ring-1 ring-accent/40' : 'bg-[#1e1e22]',
+      )}>
+        <input
+          type="number"
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={onCommit}
+          onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }}
+          className="w-16 bg-transparent text-[13px] text-white tabular-nums outline-none text-right [appearance:textfield] [&::-webkit-inner-spin-button]:hidden [&::-webkit-outer-spin-button]:hidden"
+          placeholder="—"
+        />
+        <span className="text-[12px] text-[#8b8b8e]">{unit}</span>
+      </div>
+      <div className="flex items-center gap-1">
+        {presets.map((p, i) => (
+          <button
+            key={p}
+            onClick={() => onPreset(p)}
+            className="h-[28px] rounded bg-[#1e1e22] px-2 text-[12px] text-[#8b8b8e] hover:bg-[#2e2e32] hover:text-white transition-colors"
+          >
+            {presetLabels[i]}
+          </button>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 function fmtDate(s: string) { return s.length >= 10 ? s.slice(5, 10) : s }
 function fmtExpiry(e: string) {
   if (e.length === 8) return `${e.slice(4, 6)}-${e.slice(6, 8)}`
