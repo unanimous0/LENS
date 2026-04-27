@@ -24,10 +24,11 @@ interface Master {
 interface Dividend {
   code: string
   ex_date: string | null
-  record_date: string
+  record_date: string | null
   amount: number
   period: string
   confirmed: boolean
+  is_latest?: boolean
 }
 
 interface Row {

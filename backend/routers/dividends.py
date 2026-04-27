@@ -75,16 +75,22 @@ async def list_dividends(
     code: Optional[str] = None,
     from_date: Optional[str] = None,
     to_date: Optional[str] = None,
+    include_stale: bool = False,
 ):
     """배당 데이터 조회.
 
     필터:
     - code: 특정 종목코드만
     - from_date / to_date: 배당락일 기준 범위 (YYYY-MM-DD)
+    - include_stale: 정정공시로 대체된 과거 버전까지 포함 (기본 False — is_latest=true만)
     """
     _ensure_loaded()
 
     items = _cache.items
+    if not include_stale:
+        # 기본: 각 (code, fiscal_year, period) 그룹의 최신 버전만.
+        # 정정 이력은 각 item.revisions 배열에 임베드돼 있음.
+        items = [d for d in items if d.get("is_latest", True)]
     if code:
         items = [d for d in items if d.get("code") == code]
     if from_date:
