@@ -71,7 +71,7 @@ export function DividendsPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [search, setSearch] = useState('')
-  const [sk, setSk] = useState<SK>('name')
+  const [sk, setSk] = useState<SK>('upcomingDate')
   const [asc, setAsc] = useState(true)
   const [selectedCode, setSelectedCode] = useState<string | null>(null)
 
