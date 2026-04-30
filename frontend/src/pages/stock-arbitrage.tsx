@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useMarketStore } from '@/stores/marketStore'
 import { cn } from '@/lib/utils'
 import { OrderbookModal, SpreadOrderbookModal } from '@/components/OrderbookModal'
@@ -31,6 +31,13 @@ interface Dividend {
   is_latest?: boolean
 }
 
+interface DividendItem {
+  ex_date: string
+  amount: number
+  period: string
+  confirmed: boolean
+}
+
 interface Row {
   baseCode: string
   baseName: string
@@ -54,7 +61,9 @@ interface Row {
   spreadHasTick: boolean
   dividend: number
   dividendDate: string
-  dividendApplied: boolean
+  dividendConfirmedAmt: number
+  dividendEstimatedAmt: number
+  dividendItems: DividendItem[]
   spreadCode: string
   holding031: number
   holding052: number
@@ -196,10 +205,22 @@ export function StockArbitragePage() {
       const cutoff = expiryToCutoffDate(sel.expiry)
       const applicable = (divByCode[item.base_code] ?? [])
         .filter((d) => d.ex_date && d.ex_date >= today && d.ex_date <= cutoff)
-      const totalDividend = applicable.reduce((s, d) => s + d.amount, 0)
-      const earliestExDate = applicable.length > 0
-        ? applicable.reduce((min, d) => d.ex_date! < min ? d.ex_date! : min, applicable[0].ex_date!)
-        : ''
+      let totalDividend = 0
+      let confirmedAmt = 0, estimatedAmt = 0
+      const dividendItems: DividendItem[] = []
+      for (const d of applicable) {
+        totalDividend += d.amount
+        if (d.confirmed === false) estimatedAmt += d.amount
+        else confirmedAmt += d.amount
+        dividendItems.push({
+          ex_date: d.ex_date!,
+          amount: d.amount,
+          period: d.period,
+          confirmed: d.confirmed !== false,
+        })
+      }
+      dividendItems.sort((a, b) => a.ex_date.localeCompare(b.ex_date))
+      const earliestExDate = dividendItems[0]?.ex_date ?? ''
 
       // 이론가 = 현물 × (1 + r × d/365) - 배당
       const dLeft = sel.days_left || 0
@@ -227,7 +248,9 @@ export function StockArbitragePage() {
         spreadCode: item.spread_code ?? '',
         dividend: totalDividend,
         dividendDate: earliestExDate,
-        dividendApplied: applicable.length > 0,
+        dividendConfirmedAmt: confirmedAmt,
+        dividendEstimatedAmt: estimatedAmt,
+        dividendItems,
         holding031: 0, holding052: 0, futuresHolding: 0,
       }
     })
@@ -406,8 +429,7 @@ export function StockArbitragePage() {
               <Th sort={() => doSort('spreadVolume')} active={sk === 'spreadVolume'} asc={asc} className="min-w-[52px]">스프량</Th>
               {/* 배당 */}
               <Th sort={() => doSort('dividend')} active={sk === 'dividend'} asc={asc} className="min-w-[56px]">배당금</Th>
-              <Th className="min-w-[62px]">기준일</Th>
-              <Th className="min-w-[34px]">적용</Th>
+              <Th className="min-w-[62px]">배당락</Th>
               {/* 액션 */}
               <Th className="min-w-[38px]">호가</Th>
               <Th className="min-w-[38px]">스프</Th>
@@ -445,9 +467,8 @@ export function StockArbitragePage() {
                 <C c={cV(r.spread)}>{r.spreadHasTick ? fB(r.spread) : '-'}</C>
                 <C sub>{r.spreadVolume ? r.spreadVolume.toLocaleString() : '-'}</C>
                 {/* 배당 */}
-                <C sub>{r.dividend ? r.dividend.toLocaleString() : '-'}</C>
+                <DividendAmountCell row={r} />
                 <C mute>{r.dividendDate ? r.dividendDate.slice(5) : '-'}</C>
-                <C mute>{r.dividendApplied ? 'Y' : '-'}</C>
                 {/* 액션 */}
                 <td className="px-1 py-[11px] text-center align-middle">
                   <button
@@ -535,6 +556,68 @@ function C({ children, c, sub, mute, className }: {
       className,
     )}>
       {children}
+    </td>
+  )
+}
+
+/** 배당금 셀 — 색깔로 확정/추정 구분, 호버 시 항목별 분해 툴팁.
+ * 화면 아래쪽 행은 툴팁이 잘리니 사용 가능 공간을 보고 위/아래 자동 배치. */
+function DividendAmountCell({ row }: { row: Row }) {
+  const items = row.dividendItems
+  const cellRef = useRef<HTMLTableCellElement>(null)
+  const [openUp, setOpenUp] = useState(false)
+
+  if (items.length === 0) {
+    return <td className="px-2 py-[11px] text-right text-[11px] tabular-nums whitespace-nowrap text-white">-</td>
+  }
+  const allConfirmed = row.dividendEstimatedAmt === 0
+  const allEstimated = row.dividendConfirmedAmt === 0
+  const color = allConfirmed ? 'text-up' : allEstimated ? 'text-warning' : 'text-white'
+  const showSum = items.length > 1
+  // 툴팁 대략 높이: 항목당 ~22px + 합계 줄 ~28px + 패딩 ~16px
+  const estTooltipHeight = items.length * 22 + (showSum ? 28 : 0) + 16
+
+  const handleEnter = () => {
+    if (!cellRef.current) return
+    const rect = cellRef.current.getBoundingClientRect()
+    setOpenUp(window.innerHeight - rect.bottom < estTooltipHeight + 8)
+  }
+
+  return (
+    <td
+      ref={cellRef}
+      onMouseEnter={handleEnter}
+      className="px-2 py-[11px] text-right text-[11px] tabular-nums whitespace-nowrap relative group/div cursor-help"
+    >
+      <span className={color}>{row.dividend.toLocaleString()}</span>
+      <div className={cn(
+        'hidden group-hover/div:block absolute z-30 right-0 w-72 bg-bg-surface-2 border border-border-light rounded px-3 py-2 text-[11px] text-left pointer-events-none shadow-lg',
+        openUp ? 'bottom-full mb-1' : 'top-full mt-1',
+      )}>
+        <div className="grid grid-cols-[auto_auto_1fr_auto] gap-x-3 gap-y-1 items-baseline">
+          {items.map((d, i) => (
+            <Fragment key={i}>
+              <span className="text-t3 font-mono">{d.ex_date}</span>
+              <span className="text-t4 text-[10px] uppercase tracking-wide">{d.period}</span>
+              <span className={cn('text-right tabular-nums', d.confirmed ? 'text-up' : 'text-warning')}>
+                {d.amount.toLocaleString()}원
+              </span>
+              <span className={cn('text-[10px] font-medium', d.confirmed ? 'text-up' : 'text-warning')}>
+                {d.confirmed ? '확정' : '예상'}
+              </span>
+            </Fragment>
+          ))}
+          {showSum && (
+            <>
+              <div className="col-span-4 border-t border-border-light my-0.5" />
+              <span className="text-t2 font-medium">합계</span>
+              <span></span>
+              <span className="text-right tabular-nums text-t1 font-medium">{row.dividend.toLocaleString()}원</span>
+              <span></span>
+            </>
+          )}
+        </div>
+      </div>
     </td>
   )
 }

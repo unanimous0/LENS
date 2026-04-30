@@ -35,6 +35,24 @@ interface LendingResponse {
   total_unmet: number;
 }
 
+// 가상 정렬 키 — 백엔드가 안 주는 계산 컬럼들 (1D 기대수익, 상태 배지, 대여 합계)
+type VirtualSortKey = "expected_yield" | "status_order" | "lending_sum";
+type SortKey = keyof StockResult | VirtualSortKey;
+
+function getSortValue(r: StockResult, key: SortKey): number | string {
+  switch (key) {
+    case "expected_yield":
+      return r.total_combined > 0 ? r.total_combined * r.prev_close * r.rate / 100 / 365 : 0;
+    case "status_order":
+      // 0: 수량 없음 / 1: 수량 있음 / 2: 초과 수량 — 오름차순이면 부족→정상→초과
+      return r.total_combined === 0 ? 0 : r.total_combined > r.requested_qty ? 2 : 1;
+    case "lending_sum":
+      return r.funds.reduce((s, f) => s + f.lending, 0);
+    default:
+      return r[key as keyof StockResult] as number | string;
+  }
+}
+
 function fmt(n: number) {
   return n.toLocaleString("ko-KR");
 }
@@ -57,7 +75,7 @@ export function LendingAvailabilityPage() {
   const [folderPath, setFolderPath] = useState(() => localStorage.getItem("lens_lending_path") ?? "");
   const [showPathInput, setShowPathInput] = useState(true);
   const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
-  const [sortKey, setSortKey] = useState<keyof StockResult>("total_combined");
+  const [sortKey, setSortKey] = useState<SortKey>("total_combined");
   const [sortAsc, setSortAsc] = useState(false);
   const [filterOpen, setFilterOpen] = useState(true);
   const [restrictedSuffixes, setRestrictedSuffixes] = useState<string[]>(DEFAULT_RESTRICTED);
@@ -132,7 +150,7 @@ export function LendingAvailabilityPage() {
     }
   };
 
-  const handleSort = (key: keyof StockResult) => {
+  const handleSort = (key: SortKey) => {
     if (sortKey === key) {
       setSortAsc((prev) => !prev);
     } else {
@@ -143,8 +161,8 @@ export function LendingAvailabilityPage() {
 
   const sortedResults = data
     ? [...data.results].sort((a, b) => {
-        const av = a[sortKey];
-        const bv = b[sortKey];
+        const av = getSortValue(a, sortKey);
+        const bv = getSortValue(b, sortKey);
         if (typeof av === "number" && typeof bv === "number") {
           return sortAsc ? av - bv : bv - av;
         }
@@ -422,12 +440,12 @@ export function LendingAvailabilityPage() {
                     <SortTh align="right" sortKey="rate" label="요율" current={sortKey} asc={sortAsc} onSort={handleSort} />
                     <SortTh align="right" sortKey="total_free" label="담보가능수량" current={sortKey} asc={sortAsc} onSort={handleSort} />
                     <SortTh align="right" sortKey="repay_scheduled" label="상환예정" current={sortKey} asc={sortAsc} onSort={handleSort} />
-                    <th className="text-right px-4 py-2.5 font-medium">담보가능-상환예정</th>
+                    <SortTh align="right" sortKey="total_free" label="담보가능-상환예정" current={sortKey} asc={sortAsc} onSort={handleSort} />
                     <SortTh align="right" sortKey="total_locked" label="담보" current={sortKey} asc={sortAsc} onSort={handleSort} />
                     <SortTh align="right" sortKey="total_combined" label="대여가능수량" current={sortKey} asc={sortAsc} onSort={handleSort} />
-                    <th className="text-right px-4 py-2.5 font-medium">1D 기대수익</th>
-                    <th className="text-center px-4 py-2.5 font-medium">상태</th>
-                    <th className="text-right px-4 py-2.5 font-medium">대여</th>
+                    <SortTh align="right" sortKey="expected_yield" label="1D 기대수익" current={sortKey} asc={sortAsc} onSort={handleSort} />
+                    <SortTh align="center" sortKey="status_order" label="상태" current={sortKey} asc={sortAsc} onSort={handleSort} />
+                    <SortTh align="right" sortKey="lending_sum" label="대여" current={sortKey} asc={sortAsc} onSort={handleSort} />
                   </tr>
                 </thead>
                 <tbody>
@@ -470,12 +488,12 @@ function SortTh({
   asc,
   onSort,
 }: {
-  align: "left" | "right";
-  sortKey: keyof StockResult;
+  align: "left" | "right" | "center";
+  sortKey: SortKey;
   label: string;
-  current: keyof StockResult;
+  current: SortKey;
   asc: boolean;
-  onSort: (key: keyof StockResult) => void;
+  onSort: (key: SortKey) => void;
 }) {
   const active = current === sortKey;
   return (
