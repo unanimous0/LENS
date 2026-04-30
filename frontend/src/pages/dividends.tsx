@@ -447,7 +447,7 @@ export function DividendsPage() {
               <col style={{ width: 64 }} />
             </colgroup>
             <thead className="sticky top-0 z-10">
-              <tr className="text-[11px] text-t3 bg-bg-primary border-b border-border-light/50">
+              <tr className="text-[11px] text-t3 bg-bg-primary">
                 <th rowSpan={2} className="text-center px-2 py-2 font-medium align-middle bg-bg-primary">No</th>
                 <th rowSpan={2} className="text-left px-2 py-2 font-medium align-middle cursor-pointer select-none hover:text-t1 transition-colors bg-bg-primary"
                   onClick={() => doSort('name')}>
