@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import * as XLSX from "xlsx";
 import { formatSheet } from "@/lib/excel";
 import { CopyButton } from "@/components/copy-button";
@@ -35,17 +35,56 @@ interface LendingResponse {
   total_unmet: number;
 }
 
-// 가상 정렬 키 — 백엔드가 안 주는 계산 컬럼들 (1D 기대수익, 상태 배지, 대여 합계)
-type VirtualSortKey = "expected_yield" | "status_order" | "lending_sum";
+// 모드: 화면에 표시되는 대여가능수량 의미.
+//  - demand: 차입자 문의수량 한도까지만 (현실 — 1D 기대수익 정확)
+//  - supply: 담보가능 전체 (잠재 capacity)
+type LendingMode = "demand" | "supply";
+
+// 가상 정렬 키 — 백엔드가 안 주는 계산 컬럼들 (대여가능수량은 모드 의존, 1D 기대수익, 상태 배지, 대여 합계)
+type VirtualSortKey = "effective_lending" | "expected_yield" | "status_order" | "lending_sum";
 type SortKey = keyof StockResult | VirtualSortKey;
 
-function getSortValue(r: StockResult, key: SortKey): number | string {
+/** 현재 모드 기준의 "실제 대여 가정 수량". 1D 기대수익/상태/정렬의 단일 진실. */
+function effectiveLending(r: StockResult, mode: LendingMode): number {
+  return mode === "demand" ? Math.min(r.total_combined, r.requested_qty) : r.total_combined;
+}
+
+/** 펀드별 분배 — backend의 상환차감 sort 룰과 동일.
+ *  계정 052 우선(MM 펀드), 같은 계정 내에서는 collateral_free 큰 순. cap까지만 채움. */
+function allocateLending(funds: FundBreakdown[], cap: number): Map<string, number> {
+  const sorted = [...funds].sort((a, b) => {
+    const aIs052 = String(a.account_code).replace(/^0+/, "") === "52";
+    const bIs052 = String(b.account_code).replace(/^0+/, "") === "52";
+    if (aIs052 !== bIs052) return aIs052 ? -1 : 1;
+    return b.collateral_free - a.collateral_free;
+  });
+  const out = new Map<string, number>();
+  let remaining = Math.max(0, cap);
+  for (const f of sorted) {
+    const fundCap = f.collateral_free + f.collateral_locked;
+    const alloc = Math.min(fundCap, remaining);
+    out.set(f.fund_code, alloc);
+    remaining -= alloc;
+  }
+  return out;
+}
+
+function getSortValue(r: StockResult, key: SortKey, mode: LendingMode): number | string {
   switch (key) {
-    case "expected_yield":
-      return r.total_combined > 0 ? r.total_combined * r.prev_close * r.rate / 100 / 365 : 0;
-    case "status_order":
-      // 0: 수량 없음 / 1: 수량 있음 / 2: 초과 수량 — 오름차순이면 부족→정상→초과
-      return r.total_combined === 0 ? 0 : r.total_combined > r.requested_qty ? 2 : 1;
+    case "effective_lending":
+      return effectiveLending(r, mode);
+    case "expected_yield": {
+      const q = effectiveLending(r, mode);
+      return q > 0 ? q * r.prev_close * r.rate / 100 / 365 : 0;
+    }
+    case "status_order": {
+      // 0:없음 / 1:부족 / 2:충족 / 3:초과(supply 모드 전용)
+      const q = effectiveLending(r, mode);
+      if (q === 0) return 0;
+      if (q < r.requested_qty) return 1;
+      if (q === r.requested_qty) return 2;
+      return 3;
+    }
     case "lending_sum":
       return r.funds.reduce((s, f) => s + f.lending, 0);
     default:
@@ -75,8 +114,9 @@ export function LendingAvailabilityPage() {
   const [folderPath, setFolderPath] = useState(() => localStorage.getItem("lens_lending_path") ?? "");
   const [showPathInput, setShowPathInput] = useState(true);
   const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
-  const [sortKey, setSortKey] = useState<SortKey>("total_combined");
+  const [sortKey, setSortKey] = useState<SortKey>("effective_lending");
   const [sortAsc, setSortAsc] = useState(false);
+  const [lendingMode, setLendingMode] = useState<LendingMode>("demand");
   const [filterOpen, setFilterOpen] = useState(true);
   const [restrictedSuffixes, setRestrictedSuffixes] = useState<string[]>(DEFAULT_RESTRICTED);
   const [suffixInput, setSuffixInput] = useState("");
@@ -161,8 +201,8 @@ export function LendingAvailabilityPage() {
 
   const sortedResults = data
     ? [...data.results].sort((a, b) => {
-        const av = getSortValue(a, sortKey);
-        const bv = getSortValue(b, sortKey);
+        const av = getSortValue(a, sortKey, lendingMode);
+        const bv = getSortValue(b, sortKey, lendingMode);
         if (typeof av === "number" && typeof bv === "number") {
           return sortAsc ? av - bv : bv - av;
         }
@@ -172,11 +212,28 @@ export function LendingAvailabilityPage() {
       })
     : [];
 
+  // Summary 카드용 합계 — 모드에 따라 cap 반영. 1Y = qty * 가격 * 요율 / 100, 1D = / 365.
+  const modeTotals = useMemo(() => {
+    if (!data) return { qty: 0, value: 0, yearly: 0, daily: 0 };
+    let qty = 0, value = 0, yearly = 0;
+    for (const r of data.results) {
+      const q = effectiveLending(r, lendingMode);
+      qty += q;
+      value += q * r.prev_close;
+      yearly += q * r.prev_close * r.rate / 100;
+    }
+    return { qty, value, yearly: Math.round(yearly), daily: Math.round(yearly / 365) };
+  }, [data, lendingMode]);
+
   const exportToExcel = () => {
     if (!data) return;
+    const modeLabel = lendingMode === "demand" ? "수요 기준 (문의 한도)" : "공급 기준 (담보 전체)";
     const rows: Record<string, string | number>[] = [];
     for (const r of sortedResults) {
       const activeFunds = r.funds.filter((f) => f.collateral_free + f.collateral_locked > 0);
+      const qty = effectiveLending(r, lendingMode);
+      const status = qty === 0 ? "수량 없음" : qty < r.requested_qty ? "부족" : qty === r.requested_qty ? "충족" : "초과";
+      const allocs = allocateLending(r.funds, qty);
       for (const f of activeFunds) {
         rows.push({
           펀드코드: f.fund_code,
@@ -186,21 +243,29 @@ export function LendingAvailabilityPage() {
           담보가능수량: f.collateral_free,
           담보: f.collateral_locked,
           합산: f.collateral_free + f.collateral_locked,
+          할당: allocs.get(f.fund_code) ?? 0,
           문의수량: r.requested_qty,
           요율: r.rate,
-          상태: r.total_combined === 0 ? "수량 없음" : r.total_combined > r.requested_qty ? "초과 수량" : "수량 있음",
+          상태: status,
           대여: f.lending,
         });
       }
     }
-    // 시트1: 종목별 합산
-    const summaryRows = sortedResults.map((r) => ({
-      종목코드: r.stock_code,
-      종목명: cleanName(r.stock_name),
-      합산수량: r.total_combined,
-      합계: r.total_combined,
-      요율: r.rate,
-    }));
+    // 시트1: 종목별 합산 — 모드 반영된 대여가능수량/1D 기대수익
+    const summaryRows = sortedResults.map((r) => {
+      const qty = effectiveLending(r, lendingMode);
+      return {
+        종목코드: r.stock_code,
+        종목명: cleanName(r.stock_name),
+        문의수량: r.requested_qty,
+        담보가능합계: r.total_combined,
+        대여가능수량: qty,
+        추가대여가능: r.total_combined - qty,
+        "1D_기대수익": qty > 0 ? Math.round(qty * r.prev_close * r.rate / 100 / 365) : 0,
+        요율: r.rate,
+        기준: modeLabel,
+      };
+    });
     const ws1 = XLSX.utils.json_to_sheet(summaryRows);
     formatSheet(ws1);
 
@@ -267,12 +332,31 @@ export function LendingAvailabilityPage() {
           {loading && <span className="text-xs text-green font-mono">처리 중...</span>}
           {error && <span className="text-xs text-down font-mono">{error}</span>}
           {data && (
-            <button
-              className="ml-auto h-[30px] rounded bg-bg-surface-2 px-3 text-xs text-t2 font-medium hover:bg-bg-surface-3 active:scale-95 transition-all"
-              onClick={exportToExcel}
-            >
-              엑셀 저장
-            </button>
+            <div className="ml-auto flex items-center gap-3">
+              {/* 수요/공급 토글 — 1D 기대수익과 대여가능수량 컬럼의 의미 결정 */}
+              <div className="flex h-[30px]" role="group" aria-label="대여가능수량 기준 전환">
+                <button
+                  className={`h-full px-2.5 rounded-l text-xs font-medium transition-all ${lendingMode === "demand" ? "bg-bg-surface-2 text-t1" : "bg-bg-base text-t4 hover:text-t3"}`}
+                  onClick={() => setLendingMode("demand")}
+                  title="문의수량 한도까지 대여 가정 — 1D 기대수익 현실치"
+                >
+                  수요 기준
+                </button>
+                <button
+                  className={`h-full px-2.5 rounded-r text-xs font-medium transition-all ${lendingMode === "supply" ? "bg-bg-surface-2 text-t1" : "bg-bg-base text-t4 hover:text-t3"}`}
+                  onClick={() => setLendingMode("supply")}
+                  title="담보가능 전체 대여 가정 — 잠재 capacity"
+                >
+                  공급 기준
+                </button>
+              </div>
+              <button
+                className="h-[30px] rounded bg-bg-surface-2 px-3 text-xs text-t2 font-medium hover:bg-bg-surface-3 active:scale-95 transition-all"
+                onClick={exportToExcel}
+              >
+                엑셀 저장
+              </button>
+            </div>
           )}
         </div>
         {!showPathInput && (
@@ -354,13 +438,16 @@ export function LendingAvailabilityPage() {
           {/* Summary Cards */}
           <div className="panel p-4">
             <div className="flex justify-end mb-2">
-              <CopyButton rows={sortedResults.map((r) => ({
-                종목코드: r.stock_code, 종목명: r.stock_name, 문의수량: r.requested_qty,
-                요율: r.rate, 담보가능수량: r.total_free + (r.repay_scheduled ?? 0),
-                상환예정: r.repay_scheduled, "담보가능-상환예정": r.total_free,
-                담보: r.total_locked, 대여가능수량: r.total_combined,
-                "1D기대수익": r.total_combined > 0 ? Math.round(r.total_combined * r.prev_close * r.rate / 100 / 365) : 0,
-              }))} />
+              <CopyButton rows={sortedResults.map((r) => {
+                const qty = effectiveLending(r, lendingMode);
+                return {
+                  종목코드: r.stock_code, 종목명: r.stock_name, 문의수량: r.requested_qty,
+                  요율: r.rate, 담보가능수량: r.total_free + (r.repay_scheduled ?? 0),
+                  상환예정: r.repay_scheduled, "담보가능-상환예정": r.total_free,
+                  담보: r.total_locked, 대여가능수량: qty,
+                  "1D기대수익": qty > 0 ? Math.round(qty * r.prev_close * r.rate / 100 / 365) : 0,
+                };
+              })} />
             </div>
             <div className="grid grid-cols-4 gap-3">
               <div className="panel-inner rounded p-4">
@@ -388,13 +475,13 @@ export function LendingAvailabilityPage() {
               <div className="panel-inner rounded p-4">
                 <p className="text-xs text-t3 mb-1">총 대여가능 수량</p>
                 <p className="font-mono text-2xl font-semibold text-t1">
-                  {fmt(data.results.reduce((s, r) => s + r.total_combined, 0))}
+                  {fmt(modeTotals.qty)}
                 </p>
               </div>
               <div className="panel-inner rounded p-4">
                 <p className="text-xs text-t3 mb-1">총 대여가능 금액</p>
                 <p className="font-mono text-2xl font-semibold text-t1">
-                  {fmt(data.results.reduce((s, r) => s + r.total_combined * r.prev_close, 0))}
+                  {fmt(modeTotals.value)}
                 </p>
               </div>
               <div className="panel-inner rounded p-4">
@@ -402,13 +489,13 @@ export function LendingAvailabilityPage() {
                   <div className="flex-1 flex flex-col justify-between border-r border-border pr-3">
                     <p className="text-xs text-t3 mb-1">1Y 기대수익</p>
                     <p className="font-mono text-lg font-semibold text-up">
-                      {fmt(Math.round(data.results.reduce((s, r) => s + r.total_combined * r.prev_close * r.rate / 100, 0)))}
+                      {fmt(modeTotals.yearly)}
                     </p>
                   </div>
                   <div className="flex-1 flex flex-col justify-between pl-3">
                     <p className="text-xs text-t3 mb-1">1D 기대수익</p>
                     <p className="font-mono text-lg font-semibold text-up">
-                      {fmt(Math.round(data.results.reduce((s, r) => s + r.total_combined * r.prev_close * r.rate / 100 / 365, 0)))}
+                      {fmt(modeTotals.daily)}
                     </p>
                   </div>
                 </div>
@@ -442,7 +529,7 @@ export function LendingAvailabilityPage() {
                     <SortTh align="right" sortKey="repay_scheduled" label="상환예정" current={sortKey} asc={sortAsc} onSort={handleSort} />
                     <SortTh align="right" sortKey="total_free" label="담보가능-상환예정" current={sortKey} asc={sortAsc} onSort={handleSort} />
                     <SortTh align="right" sortKey="total_locked" label="담보" current={sortKey} asc={sortAsc} onSort={handleSort} />
-                    <SortTh align="right" sortKey="total_combined" label="대여가능수량" current={sortKey} asc={sortAsc} onSort={handleSort} />
+                    <SortTh align="right" sortKey="effective_lending" label="대여가능수량" current={sortKey} asc={sortAsc} onSort={handleSort} />
                     <SortTh align="right" sortKey="expected_yield" label="1D 기대수익" current={sortKey} asc={sortAsc} onSort={handleSort} />
                     <SortTh align="center" sortKey="status_order" label="상태" current={sortKey} asc={sortAsc} onSort={handleSort} />
                     <SortTh align="right" sortKey="lending_sum" label="대여" current={sortKey} asc={sortAsc} onSort={handleSort} />
@@ -454,6 +541,7 @@ export function LendingAvailabilityPage() {
                       key={r.stock_code}
                       no={i + 1}
                       result={r}
+                      mode={lendingMode}
                       expanded={expandedRows.has(r.stock_code)}
                       onToggle={() => toggleRow(r.stock_code)}
                     />
@@ -514,14 +602,25 @@ function SortTh({
 function ResultRow({
   no,
   result: r,
+  mode,
   expanded,
   onToggle,
 }: {
   no: number;
   result: StockResult;
+  mode: LendingMode;
   expanded: boolean;
   onToggle: () => void;
 }) {
+  // 모드 의존: 화면 표시 수량(qty), 잠재 여유분(surplus), 1D 기대수익, 상태, 펀드별 분배
+  const qty = effectiveLending(r, mode);
+  const surplus = r.total_combined - qty;
+  const yieldKrw = qty > 0 ? Math.round(qty * r.prev_close * r.rate / 100 / 365) : 0;
+  // 4단계 상태: 없음 / 부족 / 충족 / 초과 (초과는 supply 모드에서 total > 문의수량 일 때만)
+  const status: "none" | "short" | "match" | "over" =
+    qty === 0 ? "none" : qty < r.requested_qty ? "short" : qty === r.requested_qty ? "match" : "over";
+  // 펀드별 분배 (수요 모드에서 cap이 걸리면 일부 펀드는 0이거나 부분 분배). 합 = qty.
+  const allocations = useMemo(() => allocateLending(r.funds, qty), [r.funds, qty]);
   return (
     <>
       <tr
@@ -570,29 +669,35 @@ function ResultRow({
         <td className={`px-4 py-2.5 text-right font-mono ${r.total_locked > 0 ? "text-warning" : "text-t2"}`}>
           {fmt(r.total_locked)}
         </td>
+        {/* 대여가능수량 — 수요 모드: min(담보, 문의)+여유배지 / 공급 모드: 담보 전체 */}
         <td
-          className={`px-4 py-2.5 text-right font-mono font-semibold ${
-            r.total_combined > 0 ? "text-up" : "text-t1"
-          }`}
+          className={`px-4 py-2.5 text-right font-mono font-semibold ${qty > 0 ? "text-up" : "text-t1"}`}
+          title={mode === "demand" && surplus > 0
+            ? `담보가능 ${fmt(r.total_combined)}주 중 문의 ${fmt(r.requested_qty)}주만 가정\n여유 +${fmt(surplus)}주 (협상 가능)`
+            : undefined}
         >
-          {fmt(r.total_combined)}
+          <div className="flex items-baseline justify-end gap-1.5 leading-none">
+            {mode === "demand" && surplus > 0 && (
+              <span className="text-[10px] font-medium text-warning">+{fmt(surplus)}</span>
+            )}
+            <span>{fmt(qty)}</span>
+          </div>
         </td>
         <td className="px-4 py-2.5 text-right font-mono text-t2">
-          {r.total_combined > 0 ? fmt(Math.round(r.total_combined * r.prev_close * r.rate / 100 / 365)) : ""}
+          {yieldKrw > 0 ? fmt(yieldKrw) : ""}
         </td>
         <td className="px-4 py-2.5 text-center">
-          {r.total_combined === 0 ? (
-            <span className="font-mono text-[11px] font-semibold px-2 py-0.5 rounded-sm bg-down-bg text-down">
-              수량 없음
-            </span>
-          ) : r.total_combined > r.requested_qty ? (
-            <span className="font-mono text-[11px] font-semibold px-2 py-0.5 rounded-sm bg-warning/12 text-warning">
-              초과 수량
-            </span>
-          ) : (
-            <span className="font-mono text-[11px] font-semibold px-2 py-0.5 rounded-sm bg-up-bg text-up">
-              수량 있음
-            </span>
+          {status === "none" && (
+            <span className="font-mono text-[11px] font-semibold px-2 py-0.5 rounded-sm bg-down-bg text-down">수량 없음</span>
+          )}
+          {status === "short" && (
+            <span className="font-mono text-[11px] font-semibold px-2 py-0.5 rounded-sm bg-warning/12 text-warning">부족</span>
+          )}
+          {status === "match" && (
+            <span className="font-mono text-[11px] font-semibold px-2 py-0.5 rounded-sm bg-up-bg text-up">충족</span>
+          )}
+          {status === "over" && (
+            <span className="font-mono text-[11px] font-semibold px-2 py-0.5 rounded-sm bg-up-bg text-up">초과</span>
           )}
         </td>
         <td className="px-4 py-2.5 text-right font-mono text-t2">
@@ -612,7 +717,7 @@ function ResultRow({
             <td className="px-4 py-1.5 text-right text-xs text-t3 font-medium">상환차감</td>
             <td className="px-4 py-1.5 text-right text-xs text-t3 font-medium">담보가능-상환예정</td>
             <td className="px-4 py-1.5 text-right text-xs text-t3 font-medium">담보</td>
-            <td className="px-4 py-1.5 text-right text-xs text-t3 font-medium">합산</td>
+            <td className="px-4 py-1.5 text-right text-xs text-t3 font-medium" title={mode === "demand" ? "수요 모드: 계정 052 우선, 같은 계정 내 collateral_free 큰 순으로 cap만큼 분배" : "공급 모드: 펀드별 합산(= 담보가능 + 담보)"}>할당</td>
             <td></td>
             <td></td>
             <td className="px-4 py-1.5 text-right text-xs text-t3 font-medium">대여</td>
@@ -649,9 +754,20 @@ function ResultRow({
               <td className={`px-4 py-2 text-right font-mono text-xs ${f.collateral_locked > 0 ? "text-up" : "text-t1"}`}>
                 {fmt(f.collateral_locked)}
               </td>
-              <td className="px-4 py-2 text-right font-mono text-xs text-t2">
-                {fmt(f.collateral_free + f.collateral_locked)}
-              </td>
+              {/* 할당: 수요 모드면 cap에 맞춘 펀드별 분배, 공급 모드면 합산(= 분배 결과 자체) */}
+              {(() => {
+                const fundCap = f.collateral_free + f.collateral_locked;
+                const alloc = allocations.get(f.fund_code) ?? 0;
+                const partial = alloc > 0 && alloc < fundCap;
+                const empty = alloc === 0;
+                const cls = empty ? "text-t4" : partial ? "text-warning" : "text-t2";
+                return (
+                  <td className={`px-4 py-2 text-right font-mono text-xs ${cls}`}
+                      title={partial ? `펀드 capacity ${fmt(fundCap)} 중 ${fmt(alloc)}만 분배` : empty ? `펀드 capacity ${fmt(fundCap)} (이번 cap에서 할당 없음)` : undefined}>
+                    {fmt(alloc)}
+                  </td>
+                );
+              })()}
               <td></td>
               <td></td>
               <td className="px-4 py-2 text-right font-mono text-xs text-t3">
