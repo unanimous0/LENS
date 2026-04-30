@@ -36,3 +36,6 @@ realtime/vendor/
 
 # Internal deploy
 internal_sending/
+
+# Playwright MCP debug artifacts (screenshots, console logs, page snapshots)
+.playwright-mcp/
