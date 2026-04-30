@@ -397,7 +397,7 @@ export function DividendsPage() {
                       contentStyle={{ background: 'var(--color-bg-surface-2)', border: '1px solid var(--color-border)', borderRadius: 4, fontSize: 11 }}
                       itemStyle={{ color: 'var(--color-t2)' }}
                       formatter={(v: any) => [`${(v as number).toLocaleString()}원`, '배당금']} />
-                    <Bar dataKey="amount">
+                    <Bar dataKey="amount" isAnimationActive={false}>
                       {history.map((h, i) => (
                         <Cell key={i} fill={h.confirmed ? 'var(--color-up)' : 'var(--color-warning)'} />
                       ))}
