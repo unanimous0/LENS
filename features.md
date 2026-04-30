@@ -166,24 +166,63 @@ WebSocket 기반 실시간 ETF/선물 데이터 스트리밍.
 
 ## 배당 (`/dividends`)
 
-배당 데이터 조회 + 다가오는 배당 시각화. Finance_Data DB가 SSOT, LENS는 read-only 소비자.
+배당 데이터 조회 + 다가오는 배당 시각화 + LENS-side 추정. Finance_Data DB가 SSOT, LENS는 read-only 소비자 + 추정 레이어.
 
-- 4개 요약 카드: 전체 배당 / 다가오는 30일 / 다가오는 90일 + 확정률 / 평균 수익률
-- **다가오는 90일 산점도** (Recharts): x=오늘로부터 일수, y=시가배당률, 점 크기=배당금, 색=확정/예상
-- **종목 클릭 시 과거 이력 막대 차트**: 분기·반기·연 배당 추이
-- 테이블: 종목 / 배당락일 / 기준일 / 결의일 / 지급일 / 1주당 / 수익률 / 구분 / 정관 / 출처 / 상태 / 원문↗
-- 정정공시 이력 펼치기 (`v2 ▶` 배지 클릭)
-- 추정값 호버 → `estimation_basis` 툴팁
-- 출처별 색 배지 (DART / SEIBro / KRX / ESTIMATE)
-- 정관 그룹 A/B 시각 구분 (A=warning, B=blue, hover로 의미 설명)
+### 메인 테이블 — 종목당 1행 (이벤트 뷰 → 종목별 뷰)
 
-**데이터 소스 우선순위** (`backend/routers/dividends.py`):
+| 컬럼 | 설명 |
+|------|------|
+| No / 종목 / 정관 | 종목 메타 |
+| **다가오는 배당** [배당락일·배당금·상태·구분·정정·원문] | 미래 (확정 + LENS 추정) |
+| **최근 배당** [배당락일·배당금·상태·구분·정정·원문] | 과거 가장 최근 1건 |
+| 수익률 (YYYY 예상) | 올해 calendar year `yield_pct` 합산 |
+
+- **모든 컬럼 정렬 가능**, 빈 값 항상 맨 아래
+- **가상화** (@tanstack/react-virtual) — 1,500+종목 가뿐
+- 그룹 사이 vertical border로 다가오는/최근 시각 분리
+- 다가오는 배당락일·배당금: 초록 텍스트 (text-up)
+- 상태 배지: 확정(초록) / 예상(주황 + estimation_basis 호버 툴팁)
+- 정관 호버 시 그리드 툴팁 (A=변경기입, B=미변경기입 + 추정 신뢰도)
+- sticky 헤더 갭 fix (`borderCollapse: collapse` + bg-bg-primary 명시)
+
+### 우측 디테일 패널 (종목 클릭 시)
+
+- 종목 헤더 + BarChart 추이 (Inter 폰트로 막대 위 배당금 라벨)
+- 카드 목록 — 그 종목 전체 이력
+  - 좌측 세로줄: 확정=초록, 예상=주황 (3px)
+  - 배당락일·D±N·구분·출처·상태 배지 + 풀 디테일
+  - 정정공시 이력 grid (버전·배당금·배당락일·기준일·공시일·원문)
+- 종목 재클릭 또는 × 버튼으로 닫힘
+
+### 차트 (좌·우 별개 패널로 분리)
+
+- **다가오는 배당 (90일 내)** Scatter — y=배당수익률(%), x=D-day, 모든 점 균일 크기, 모두 초록
+  - hover 툴팁: 종목명/코드 + grid (배당락일/D-day/배당금/수익률/구분/상태)
+  - 미선택 시 자동 폴백 (정렬된 첫 행)
+- **배당 추이** BarChart — 선택 종목 최근 10건 (확정=초록, 예상=주황)
+
+### 데이터 소스 우선순위 (`backend/routers/dividends.py`)
 1. `data/dividends.json` (Finance_Data export — 운영 시 우선)
 2. `data/dividends_mock.json` (개발용 mock)
 
-**캐싱**: 일자 단위 메모리 캐시 (장중엔 데이터 안 바뀌므로). 종목명은 `futures_master.json`에서 자동 join.
+**캐싱**: 날짜 + mtime 기반 자동 reload. ETL 파일 갱신 시 즉시 반영.
 
-**종목차익 페이지 통합**: 행별로 `(today ≤ ex_date ≤ 만기일)` 매칭 배당 합산 → 이론가 식의 `D` 자리에 자동 반영.
+**종목명 fallback**: API의 `name` (Finance_Data DART corp_name) → 마스터 → 코드 순.
+
+### LENS-side 추정 레이어 (`backend/services/dividend_estimator.py`)
+
+DB는 사실(DART 확정)만, 추정은 매 요청 동적 계산.
+
+- 각 (code, period)별 가장 최근 확정 배당 → 1년 / 2년 후 동일 날짜 후보
+- 금액: 작년 동일 period 그대로 (보수적)
+- horizon: today + 12개월
+- 마지막 배당 > 730일 전이면 skip (회사가 배당 중단했을 가능성)
+- 결과: `confirmed=False`, `source='ESTIMATE'`, 합성 ID `est-{code}-{period}-{year}`
+- 프론트가 노란빛 + "예상" 배지로 자동 구분
+
+### 종목차익 페이지 통합
+
+행별로 `(today ≤ ex_date ≤ 만기일)` 매칭 배당 합산 → 이론가 식의 `D` 자리에 자동 반영. 추정 배당도 포함됨.
 
 ---
 

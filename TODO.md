@@ -4,7 +4,7 @@
 
 ## 🟢 외부 의존 — 대기 중
 
-- [ ] **Finance_Data 배당 ETL 완성** — 그쪽이 `data/dividends.json` 떨어뜨리면 LENS는 자동 swap (코드 변경 0). `backend/routers/dividends.py:14-16`이 export 파일 우선순위로 자동 인식
+- [x] ~~**Finance_Data 배당 ETL 완성**~~ — 2026-04-29 완료. 1,377→7,876 row, 583→1,527 종목. mtime 자동 reload로 LENS 코드 변경 0
 - [ ] **LS API 정상 복구 확인** — 2026-04-27 abuse 의심으로 데이터 0건이었음. 다음 거래일에 `/debug/stats.feed_state == fresh`, `ticks_per_sec` 정상치(100+) 들어오는지
 
 ## 🔴 미구현 페이지 (탑 네비에 stub만)
@@ -33,7 +33,12 @@
 - 종목차익 페이지 작업 → [`stock-arbitrage.md`](stock-arbitrage.md) Phase B/C/D/E
 - 실시간 서비스 최적화 / Phase 4+ → [`realtime-service.md`](realtime-service.md)
 - 내부망 배포 빌드 자동화 → [`internal-deploy.md`](internal-deploy.md) "빌드 자동화 스크립트" 섹션
-- 배당 페이지 추가 기능 (필터/CSV/캘린더) → 실데이터 swap 후 결정
+- 배당 페이지 → [`features.md`](features.md) 배당 섹션 (재구성 완료, 추정 레이어 + 우측 패널 + 가상화)
+
+## 💤 향후 처리 (deferred)
+
+- **추정 로직 이상치 처리** — 특별배당 (이지홀딩스 23.8% 등) 자동 감지해 추정 제외. 종목별 (code, period) 중앙값 대비 N배 이상이면 skip. 사용 중 이상 발견되면 재평가
+- **종목차익 ↔ 배당 추정 연동 검증** — 이론가 계산이 LENS 추정 배당까지 잡는지 다음 거래일 확인
 
 ---
 

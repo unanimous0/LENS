@@ -15,6 +15,8 @@ from typing import Optional
 
 from fastapi import APIRouter, HTTPException
 
+from services.dividend_estimator import estimate_dividends
+
 router = APIRouter(prefix="/dividends", tags=["dividends"])
 
 DATA_DIR = Path(__file__).resolve().parents[2] / "data"
@@ -24,7 +26,9 @@ EXPORT_FILE = DATA_DIR / "dividends.json"  # Finance_Data export (실제 운영 
 
 class _Cache:
     loaded_on: Optional[date] = None
+    src_mtime: float = 0.0
     items: list[dict] = []
+    estimates: list[dict] = []  # LENS 측 추정 (DB에 없음, 매 reload 시 재계산)
     exported_at: Optional[str] = None
     name_by_code: dict[str, str] = {}
 
@@ -49,15 +53,21 @@ def _load_master_names() -> dict[str, str]:
 
 
 def _ensure_loaded() -> None:
-    """첫 호출 또는 일자 변경 시 cache 갱신."""
+    """첫 호출, 일자 변경, 또는 파일 mtime 변경 시 cache 갱신.
+
+    daily_update가 같은 날짜에 dividends.json을 갱신하는 케이스를 잡기 위해
+    mtime도 함께 비교한다. (날짜만 보면 ETL이 같은 날에 돌아도 cache stale)
+    """
     today = date.today()
-    if _cache.loaded_on == today:
-        return
 
     # 우선순위: 실제 export 파일 → mock
     src = EXPORT_FILE if EXPORT_FILE.exists() else MOCK_FILE
     if not src.exists():
         raise HTTPException(status_code=503, detail="배당 데이터 파일 없음")
+
+    src_mtime = src.stat().st_mtime
+    if _cache.loaded_on == today and _cache.src_mtime == src_mtime:
+        return
 
     try:
         data = json.loads(src.read_text(encoding="utf-8"))
@@ -67,7 +77,10 @@ def _ensure_loaded() -> None:
     _cache.items = data.get("items", [])
     _cache.exported_at = data.get("exported_at")
     _cache.name_by_code = _load_master_names()
+    # 추정 배당 — 과거 패턴 기반 미래 추정. today에 의존하니 캐시 무효화 시 같이 재계산.
+    _cache.estimates = estimate_dividends(_cache.items, today)
     _cache.loaded_on = today
+    _cache.src_mtime = src_mtime
 
 
 @router.get("")
@@ -76,6 +89,7 @@ async def list_dividends(
     from_date: Optional[str] = None,
     to_date: Optional[str] = None,
     include_stale: bool = False,
+    include_estimates: bool = True,
 ):
     """배당 데이터 조회.
 
@@ -83,10 +97,12 @@ async def list_dividends(
     - code: 특정 종목코드만
     - from_date / to_date: 배당락일 기준 범위 (YYYY-MM-DD)
     - include_stale: 정정공시로 대체된 과거 버전까지 포함 (기본 False — is_latest=true만)
+    - include_estimates: LENS 측 추정 배당 포함 (기본 True — source='ESTIMATE', confirmed=False)
     """
     _ensure_loaded()
 
-    items = _cache.items
+    # 확정 + (옵션) 추정
+    items = _cache.items + (_cache.estimates if include_estimates else [])
     if not include_stale:
         # 기본: 각 (code, fiscal_year, period) 그룹의 최신 버전만.
         # 정정 이력은 각 item.revisions 배열에 임베드돼 있음.
@@ -98,11 +114,14 @@ async def list_dividends(
     if to_date:
         items = [d for d in items if (d.get("ex_date") or "") <= to_date]
 
-    # 종목명 주입 (마스터에 없는 코드는 코드 그대로)
-    enriched = [
-        {**d, "name": _cache.name_by_code.get(d.get("code", ""), d.get("code", ""))}
-        for d in items
-    ]
+    # 종목명: Finance_Data export의 name 우선 → 마스터 fallback → 코드 fallback.
+    # Finance_Data가 stocks 테이블 LEFT JOIN으로 name을 채워 보내므로 1,224/1,246 건은 그대로 사용.
+    # 22건은 name=null (상폐/미등록) → 마스터 또는 코드로 떨어짐.
+    def _resolve_name(d: dict) -> str:
+        code = d.get("code", "")
+        return d.get("name") or _cache.name_by_code.get(code) or code
+
+    enriched = [{**d, "name": _resolve_name(d)} for d in items]
     enriched.sort(key=lambda d: d.get("ex_date") or "")
 
     return {
