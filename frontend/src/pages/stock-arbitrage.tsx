@@ -711,22 +711,26 @@ function IntradayCell({ row }: { row: Row }) {
         )}
       </div>
       <div className={cn(
-        'hidden group-hover/intra:block absolute z-30 left-1/2 -translate-x-1/2 w-44 bg-bg-surface-2 border border-border-light rounded px-3 py-2 text-[11px] text-left pointer-events-none shadow-lg',
+        'hidden group-hover/intra:block absolute z-30 left-1/2 -translate-x-1/2 w-52 bg-bg-surface-2 border border-border-light rounded px-3 py-2 text-[11px] text-left pointer-events-none shadow-lg',
         openUp ? 'bottom-full mb-1' : 'top-full mt-1',
       )}>
         {valid ? (
-          <div className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 items-baseline tabular-nums">
+          <div className="grid grid-cols-[auto_1fr_auto] gap-x-3 gap-y-1 items-baseline tabular-nums">
             <span className="text-t3">고가</span>
-            <span className="text-right text-up">{hi.toLocaleString()}</span>
+            <span className="text-right text-t1">{hi.toLocaleString()}</span>
+            <RateBadge value={pc > 0 ? ((hi - pc) / pc) * 100 : null} />
             <span className="text-t3">현재</span>
             <span className="text-right text-t1 font-medium">{cur.toLocaleString()}</span>
+            <RateBadge value={pc > 0 ? rate : null} />
             <span className="text-t3">저가</span>
-            <span className="text-right text-down">{lo.toLocaleString()}</span>
+            <span className="text-right text-t1">{lo.toLocaleString()}</span>
+            <RateBadge value={pc > 0 ? ((lo - pc) / pc) * 100 : null} />
             {pc > 0 && (
               <>
-                <span className="text-t3 col-span-2 border-t border-border-light my-0.5" />
+                <span className="col-span-3 border-t border-border-light my-0.5" />
                 <span className="text-t3">전일</span>
-                <span className="text-right text-t2">{pc.toLocaleString()}</span>
+                <span className="text-right text-t1">{pc.toLocaleString()}</span>
+                <span />
               </>
             )}
           </div>
@@ -735,6 +739,16 @@ function IntradayCell({ row }: { row: Row }) {
         )}
       </div>
     </td>
+  )
+}
+
+function RateBadge({ value }: { value: number | null }) {
+  if (value == null) return <span />
+  const cls = value > 0 ? 'text-up' : value < 0 ? 'text-down' : 'text-t3'
+  return (
+    <span className={cn('text-right text-[10px] tabular-nums', cls)}>
+      {value > 0 ? '+' : ''}{value.toFixed(2)}%
+    </span>
   )
 }
 
