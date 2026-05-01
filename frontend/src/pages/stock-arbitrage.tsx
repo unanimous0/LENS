@@ -85,6 +85,13 @@ export function StockArbitragePage() {
   const [sk, setSk] = useState<SK>('basisGapBp')
   const [asc, setAsc] = useState(false)
   const [month, setMonth] = useState<'front' | 'back'>('front')
+  // 이론가: 시장베이시스 - 이론베이시스 (단기 차익, 이론 수렴 가정)
+  // 이론0원: 시장베이시스 - 0 (만기 holding 가정 — 만기엔 이론베이시스 0으로 수렴)
+  const [basisMode, setBasisMode] = useState<'theory' | 'zero'>(() => {
+    const saved = localStorage.getItem('arbitrage.basisMode')
+    return saved === 'zero' ? 'zero' : 'theory'
+  })
+  useEffect(() => { localStorage.setItem('arbitrage.basisMode', basisMode) }, [basisMode])
   const [rate, setRate] = useState<number>(() => {
     const saved = localStorage.getItem('arbitrage.rate')
     const n = saved ? parseFloat(saved) : NaN
@@ -226,7 +233,7 @@ export function StockArbitragePage() {
       const dLeft = sel.days_left || 0
       const tp = sp > 0 ? sp * (1 + (rate / 100) * dLeft / 365) - totalDividend : 0
       const tb = tp > 0 ? tp - sp : 0
-      const gap = mb - tb
+      const gap = mb - (basisMode === 'zero' ? 0 : tb)
       const ofp = otherFut?.price ?? other?.price ?? 0
       // 스프레드: 항상 원월 - 근월
       const frontP = month === 'front' ? fp : ofp
@@ -237,7 +244,7 @@ export function StockArbitragePage() {
         multiplier: sel.multiplier, expiry: sel.expiry, daysLeft: sel.days_left || 0,
         spotPrice: sp, spotCumVolume: spot?.cum_volume ?? 0,
         futuresPrice: fp, futuresVolume: fut?.volume ?? 0,  // 실시간만
-        theoreticalPrice: tp, theoreticalBasis: tb,
+        theoreticalPrice: tp, theoreticalBasis: basisMode === 'zero' ? 0 : tb,
         marketBasis: mb, basisGap: gap, basisGapBp: sp > 0 ? (gap / sp) * 10000 : 0,
         backPrice: backP,
         spread: item.spread_code ? (futuresTicks[item.spread_code]?.price ?? 0) : 0,
@@ -254,7 +261,7 @@ export function StockArbitragePage() {
         holding031: 0, holding052: 0, futuresHolding: 0,
       }
     })
-  }, [master, stockTicks, futuresTicks, month, rate, divByCode])
+  }, [master, stockTicks, futuresTicks, month, rate, divByCode, basisMode])
 
   const filtered = useMemo(() => {
     let list = rows
@@ -309,6 +316,23 @@ export function StockArbitragePage() {
               className={cn('px-3 py-1 rounded text-[11px] transition-colors', month === 'back' ? 'bg-[#2e2e32] text-white' : 'text-[#8b8b8e] hover:text-white')}
             >
               원월물
+            </button>
+          </div>
+          <div
+            className="flex items-center gap-1 rounded-md bg-[#1e1e22] p-0.5"
+            title={'이론가: 갭 = 시장베이시스 − 이론베이시스 (단기 차익, 이론 수렴 가정)\n이론0원: 갭 = 시장베이시스 − 0 (만기 holding 가정)'}
+          >
+            <button
+              onClick={() => setBasisMode('theory')}
+              className={cn('px-3 py-1 rounded text-[11px] transition-colors', basisMode === 'theory' ? 'bg-[#2e2e32] text-white' : 'text-[#8b8b8e] hover:text-white')}
+            >
+              이론가
+            </button>
+            <button
+              onClick={() => setBasisMode('zero')}
+              className={cn('px-3 py-1 rounded text-[11px] transition-colors', basisMode === 'zero' ? 'bg-[#2e2e32] text-white' : 'text-[#8b8b8e] hover:text-white')}
+            >
+              이론0원
             </button>
           </div>
           {/* 금리 입력 */}
