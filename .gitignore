@@ -25,11 +25,9 @@ npm-debug.log*
 .DS_Store
 *.sw?
 
-# Data files (sensitive)
-data/*
-!data/futures_master.json
-!data/dividends_mock.json
-!data/krx_holidays.json
+# Data files — 서버에서만 작업하고 내부망은 zip으로 옮기므로 git 추적 불필요.
+# 이미 commit된 futures_master.json/dividends_mock.json/krx_holidays.json은 그대로 추적됨.
+data/
 
 # Rust
 realtime/target/
