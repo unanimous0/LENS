@@ -26,9 +26,10 @@ npm-debug.log*
 *.sw?
 
 # Data files (sensitive)
-data/
+data/*
 !data/futures_master.json
 !data/dividends_mock.json
+!data/krx_holidays.json
 
 # Rust
 realtime/target/

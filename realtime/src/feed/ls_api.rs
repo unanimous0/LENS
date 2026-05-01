@@ -29,13 +29,14 @@ fn now_us() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_micros() as u64).unwrap_or(0)
 }
 
-/// KST 평일 09:00~15:45만 true. 토/일 + 야간 시간대엔 idle timeout 비활성.
-/// 시스템 timezone이 KST라고 가정 (서버 KST). 휴장일은 별도 처리 안 함 — 1년에
-/// 몇 번 false positive 재접속이 일어나지만 backoff로 60초마다 1회라 무해.
+/// KST 평일 09:00~15:45만 true. 토/일 + 야간 시간대 + KRX 휴장일엔 idle timeout 비활성.
+/// 시스템 timezone이 KST라고 가정 (서버 KST). 휴장일은 `data/krx_holidays.json` 참조 —
+/// 파일 없으면 폴백으로 평일/시간만 체크.
 fn is_market_hours() -> bool {
     use chrono::{Datelike, Local, Timelike, Weekday};
     let now = Local::now();
     if matches!(now.weekday(), Weekday::Sat | Weekday::Sun) { return false; }
+    if crate::holidays::is_krx_holiday(now.date_naive()) { return false; }
     let mins = now.hour() * 60 + now.minute();
     (9 * 60..15 * 60 + 45).contains(&mins)
 }

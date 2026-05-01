@@ -1,4 +1,5 @@
 mod feed;
+mod holidays;
 mod model;
 mod ws;
 
@@ -108,12 +109,13 @@ fn now_us() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_micros() as u64).unwrap_or(0)
 }
 
-/// KST 평일 09:00~15:45 — debug_stats에서 feed_state 산출용. ls_api.rs와 중복이지만
-/// 거기 모듈 함수는 private이고 한 줄짜리라 복제 OK.
+/// KST 평일 09:00~15:45, KRX 휴장일 제외 — debug_stats에서 feed_state 산출용.
+/// ls_api.rs의 is_market_hours()와 중복이지만 거기 모듈 함수는 private이라 복제 OK.
 fn is_market_hours_kst() -> bool {
     use chrono::{Datelike, Local, Timelike, Weekday};
     let now = Local::now();
     if matches!(now.weekday(), Weekday::Sat | Weekday::Sun) { return false; }
+    if holidays::is_krx_holiday(now.date_naive()) { return false; }
     let mins = now.hour() * 60 + now.minute();
     (9 * 60..15 * 60 + 45).contains(&mins)
 }
