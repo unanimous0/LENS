@@ -9,7 +9,12 @@ const MODES: { value: NetworkMode; label: string }[] = [
 ]
 
 export function NetworkToggle() {
-  const { networkMode, setNetworkMode, connected, feedState, feedAgeSec } = useMarketStore()
+  // 셀렉터로 필요한 필드만 구독 — store 통째 구독 시 매 tick 재렌더 방지.
+  const networkMode = useMarketStore((s) => s.networkMode)
+  const setNetworkMode = useMarketStore((s) => s.setNetworkMode)
+  const connected = useMarketStore((s) => s.connected)
+  const feedState = useMarketStore((s) => s.feedState)
+  const feedAgeSec = useMarketStore((s) => s.feedAgeSec)
 
   async function handleSwitch(mode: NetworkMode) {
     // 프론트 'external' ↔ Rust 'ls_api' 매핑
