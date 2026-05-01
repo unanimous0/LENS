@@ -351,6 +351,9 @@ impl InternalFeed {
                 cum_volume,
                 timestamp,
                 is_initial: false,
+                high: None,
+                low: None,
+                prev_close: None,
             });
             let _ = tx.send(msg).await;
         }

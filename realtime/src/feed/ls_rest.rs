@@ -247,6 +247,10 @@ async fn fetch_stocks_initial(
                 if value > 0 {
                     let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.6f").to_string();
                     let name = names.get(code.as_str()).cloned().unwrap_or_default();
+                    // t1102 응답 필드 (확인됨): high(고가), low(저가), recprice(전일종가)
+                    let h = pf(detail.get("high"));
+                    let l = pf(detail.get("low"));
+                    let pc = pf(detail.get("recprice"));
 
                     let _ = tx.send(WsMessage::StockTick(StockTick {
                         code: code.clone(), name,
@@ -254,6 +258,9 @@ async fn fetch_stocks_initial(
                         volume: 0,
                         cum_volume: value * 1_000_000, // 백만원 → 원
                         timestamp: now, is_initial: true,
+                        high: if h > 0.0 { Some(h) } else { None },
+                        low: if l > 0.0 { Some(l) } else { None },
+                        prev_close: if pc > 0.0 { Some(pc) } else { None },
                     })).await;
                     count += 1;
                 } else {

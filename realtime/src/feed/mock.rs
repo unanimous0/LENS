@@ -82,7 +82,7 @@ impl MarketFeed for MockFeed {
                 if tx.send(msg).await.is_err() { return; }
             }
 
-            // 주식 틱
+            // 주식 틱 — Mock: high/low/prev_close는 base_price 기준 결정값 (per-tick으로 막대가 춤추지 않게)
             for stock in MOCK_STOCKS {
                 let price = stock.base_price * (1.0 + gauss(&mut rng, 0.001));
                 let now = Utc::now().format("%Y-%m-%dT%H:%M:%S%.6f").to_string();
@@ -95,6 +95,9 @@ impl MarketFeed for MockFeed {
                     cum_volume: rng.random_range(100000..5000000),
                     timestamp: now,
                     is_initial: false,
+                    high: Some((stock.base_price * 1.012).round()),
+                    low: Some((stock.base_price * 0.988).round()),
+                    prev_close: Some((stock.base_price * 0.995).round()),
                 });
 
                 if tx.send(msg).await.is_err() { return; }

@@ -530,10 +530,16 @@ async fn handle_tick(
             let value = pu(&body["value"]);
 
             if stock_codes.contains(tr_key) {
+                // S3_/K3_는 body에 high/low 포함 (당일 고가/저가). 누락 시 None.
+                let h = pf(&body["high"]);
+                let l = pf(&body["low"]);
                 let _ = tx.send(WsMessage::StockTick(StockTick {
                     code: tr_key.into(), name: name.into(),
                     price, volume, cum_volume: value * 1_000_000, timestamp: now,
                     is_initial: false,
+                    high: if h > 0.0 { Some(h) } else { None },
+                    low: if l > 0.0 { Some(l) } else { None },
+                    prev_close: None,
                 })).await;
             } else {
                 let offerho = pf(&body["offerho"]);

@@ -30,6 +30,15 @@ pub struct StockTick {
     /// true = t8402 초기값 (실시간 체결이 아님). 이미 실시간 값이 있으면 무시해야 함.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub is_initial: bool,
+    /// 당일 고가 (없으면 미발행)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub high: Option<f64>,
+    /// 당일 저가
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub low: Option<f64>,
+    /// 전일 종가 (변화율 계산용). 초기값에서만 발행하면 충분.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prev_close: Option<f64>,
 }
 
 /// 선물 틱

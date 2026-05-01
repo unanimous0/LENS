@@ -47,6 +47,10 @@ interface Row {
   expiry: string
   daysLeft: number
   spotPrice: number
+  spotHigh: number
+  spotLow: number
+  spotPrevClose: number
+  spotChangeRate: number
   spotCumVolume: number
   futuresPrice: number
   futuresVolume: number
@@ -73,7 +77,7 @@ interface Row {
 type SK = keyof Pick<Row,
   'baseName' | 'spotPrice' | 'futuresPrice' | 'theoreticalPrice' | 'marketBasis' | 'basisGapBp' |
   'theoreticalBasis' | 'basisGap' | 'spotCumVolume' | 'futuresVolume' | 'multiplier' |
-  'spread' | 'spreadVolume' | 'dividend'
+  'spread' | 'spreadVolume' | 'dividend' | 'spotChangeRate'
 >
 
 export function StockArbitragePage() {
@@ -203,6 +207,10 @@ export function StockArbitragePage() {
       const otherFut = other ? futuresTicks[other.code] : undefined
 
       const sp = spot?.price ?? 0  // 실시간 S3_/K3_만
+      const sHigh = spot?.high ?? 0
+      const sLow = spot?.low ?? 0
+      const sPrevClose = spot?.prev_close ?? 0
+      const sChangeRate = sPrevClose > 0 && sp > 0 ? ((sp - sPrevClose) / sPrevClose) * 100 : 0
       const fp = fut?.price ?? 0  // 실시간 JC0 체결만 표시
       const mb = fp > 0 && sp > 0 ? fp - sp : (fut?.basis ?? 0)
 
@@ -242,7 +250,8 @@ export function StockArbitragePage() {
         baseCode: item.base_code, baseName: item.base_name,
         frontCode: sel.code, backCode: other?.code ?? '',
         multiplier: sel.multiplier, expiry: sel.expiry, daysLeft: sel.days_left || 0,
-        spotPrice: sp, spotCumVolume: spot?.cum_volume ?? 0,
+        spotPrice: sp, spotHigh: sHigh, spotLow: sLow, spotPrevClose: sPrevClose, spotChangeRate: sChangeRate,
+        spotCumVolume: spot?.cum_volume ?? 0,
         futuresPrice: fp, futuresVolume: fut?.volume ?? 0,  // 실시간만
         theoreticalPrice: tp, theoreticalBasis: basisMode === 'zero' ? 0 : tb,
         marketBasis: mb, basisGap: gap, basisGapBp: sp > 0 ? (gap / sp) * 10000 : 0,
@@ -435,6 +444,8 @@ export function StockArbitragePage() {
             <tr className="text-[10px] text-[#8b8b8e] bg-black">
               {/* 종목 */}
               <Th sort={() => doSort('baseName')} active={sk === 'baseName'} asc={asc} left sticky className="pl-4 min-w-[110px]">종목</Th>
+              {/* 일중 위치: 변화율 + 고저막대 */}
+              <Th sort={() => doSort('spotChangeRate')} active={sk === 'spotChangeRate'} asc={asc} className="min-w-[78px]">일중</Th>
               {/* 가격 */}
               <Th sort={() => doSort('spotPrice')} active={sk === 'spotPrice'} asc={asc} className="min-w-[74px]">현물가</Th>
               <Th sort={() => doSort('futuresPrice')} active={sk === 'futuresPrice'} asc={asc} className="min-w-[74px]">선물가</Th>
@@ -474,6 +485,8 @@ export function StockArbitragePage() {
                     {r.baseCode} / {r.frontCode}
                   </div>
                 </td>
+                {/* 일중 위치 */}
+                <IntradayCell row={r} />
                 {/* 가격 */}
                 <PriceCell value={r.spotPrice} formatted={fP(r.spotPrice)} />
                 <PriceCell value={r.futuresPrice} formatted={fP(r.futuresPrice)} />
@@ -647,6 +660,84 @@ function DividendAmountCell({ row }: { row: Row }) {
 }
 
 /** 가격 변동 시 배경 플래시 셀 (0.3초) */
+/**
+ * 일중 위치 셀 — 변화율 + 고저 막대 + 호버 tooltip
+ * 위: ±X.XX% (전일 종가 대비)
+ * 아래: ▌────●────▌ 형태로 현재가가 [low, high] 안에서 어디 있는지
+ */
+function IntradayCell({ row }: { row: Row }) {
+  const { spotHigh: hi, spotLow: lo, spotPrice: cur, spotChangeRate: rate, spotPrevClose: pc } = row
+  const cellRef = useRef<HTMLTableCellElement>(null)
+  const [openUp, setOpenUp] = useState(false)
+
+  const valid = cur > 0 && hi > 0 && lo > 0 && hi >= lo
+  const pos = valid ? (hi === lo ? 0.5 : Math.max(0, Math.min(1, (cur - lo) / (hi - lo)))) : 0.5
+  const rateClass = !pc || cur === 0 ? 'text-[#5a5a5e]' : rate > 0 ? 'text-[#00b26b]' : rate < 0 ? 'text-[#bb4a65]' : 'text-[#8b8b8e]'
+  const rateText = !pc || cur === 0 ? '-' : `${rate > 0 ? '+' : ''}${rate.toFixed(2)}%`
+
+  const handleEnter = () => {
+    if (!cellRef.current) return
+    const rect = cellRef.current.getBoundingClientRect()
+    setOpenUp(window.innerHeight - rect.bottom < 110)
+  }
+
+  return (
+    <td
+      ref={cellRef}
+      onMouseEnter={handleEnter}
+      className="px-2 py-[11px] align-middle relative group/intra cursor-help"
+    >
+      <div className="flex flex-col items-stretch gap-[3px]">
+        <div className={cn('text-[10px] tabular-nums text-right leading-none', rateClass)}>{rateText}</div>
+        {valid ? (
+          <div className="relative h-[7px]">
+            {/* 아래쪽으로 가리키는 삼각형 마커 (CSS border trick) */}
+            <div
+              className="absolute top-0"
+              style={{
+                left: `calc(${pos * 100}% - 4px)`,
+                width: 0,
+                height: 0,
+                borderLeft: '4px solid transparent',
+                borderRight: '4px solid transparent',
+                borderTop: '4px solid #d1d1d6',
+              }}
+            />
+            {/* 얇은 가로선 */}
+            <div className="absolute bottom-0 left-0 right-0 h-px bg-[#3a3a3e]" />
+          </div>
+        ) : (
+          <div className="h-[7px]"><div className="absolute bottom-0 left-0 right-0 h-px bg-[#1a1a1d]" /></div>
+        )}
+      </div>
+      <div className={cn(
+        'hidden group-hover/intra:block absolute z-30 left-1/2 -translate-x-1/2 w-44 bg-bg-surface-2 border border-border-light rounded px-3 py-2 text-[11px] text-left pointer-events-none shadow-lg',
+        openUp ? 'bottom-full mb-1' : 'top-full mt-1',
+      )}>
+        {valid ? (
+          <div className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 items-baseline tabular-nums">
+            <span className="text-t3">고가</span>
+            <span className="text-right text-up">{hi.toLocaleString()}</span>
+            <span className="text-t3">현재</span>
+            <span className="text-right text-t1 font-medium">{cur.toLocaleString()}</span>
+            <span className="text-t3">저가</span>
+            <span className="text-right text-down">{lo.toLocaleString()}</span>
+            {pc > 0 && (
+              <>
+                <span className="text-t3 col-span-2 border-t border-border-light my-0.5" />
+                <span className="text-t3">전일</span>
+                <span className="text-right text-t2">{pc.toLocaleString()}</span>
+              </>
+            )}
+          </div>
+        ) : (
+          <span className="text-t3">데이터 없음</span>
+        )}
+      </div>
+    </td>
+  )
+}
+
 function PriceCell({ value, formatted }: { value: number; formatted: string }) {
   const ref = useRef<HTMLTableCellElement>(null)
   const prev = useRef(value)

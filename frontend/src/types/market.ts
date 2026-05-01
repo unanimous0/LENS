@@ -17,6 +17,12 @@ export interface StockTick {
   volume: number
   cum_volume: number
   timestamp: string
+  /** 당일 고가 — 백엔드(S3_/K3_/t1102)가 보내거나, marketStore가 running max로 보강 */
+  high?: number
+  /** 당일 저가 */
+  low?: number
+  /** 전일 종가 — 변화율 계산용. 초기값에서 한 번 발행되고 store에서 sticky로 보존. */
+  prev_close?: number
 }
 
 export interface FuturesTick {
