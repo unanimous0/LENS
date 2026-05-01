@@ -14,7 +14,6 @@
 
 - [ ] **테스트 프레임워크 도입** — Vitest(프론트) + pytest(백엔드). 현재 0개
 - [ ] **logrotate 도입** — 현재 14일 만료는 `find -mtime`로 동작하나, 정식 logrotate가 더 robust (선택)
-- [ ] **NetworkToggle 셀렉터 패턴** — 현재 `useMarketStore()` 통째 구독 → 매 tick 재렌더 (rAF 60Hz cap이 있어 실제 영향 미미하지만 코드 위생)
 
 ## 📂 도메인 MD에서 관리 (포인터만)
 
