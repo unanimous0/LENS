@@ -224,7 +224,8 @@ async fn main() {
     // 스냅샷 캐시 stale watcher.
     // LS가 5분+ 침묵 시 broadcaster.cache가 옛 가격을 stale 상태로 보유 →
     // 재접속 클라이언트가 받은 스냅샷이 "지금 가격"인 양 표시되는 문제 방지.
-    // ls_api 모드에서만 동작, 매 분 polling, stale 진입 transition에 1회만 clear.
+    // ls_api 모드 + 장중에만 동작. 장 외(저녁/주말/휴장)엔 무신호가 정상이고
+    // 전일 종가를 참고용으로 계속 보여주는 게 더 유용하므로 wipe 안 함.
     {
         let bg_state = state.clone();
         tokio::spawn(async move {
@@ -235,6 +236,8 @@ async fn main() {
                 interval.tick().await;
                 let mode = bg_state.feed_mode.read().unwrap().clone();
                 if mode != "ls_api" { last_was_stale = false; continue; }
+                // 장 외에는 무신호가 정상 — 캐시 유지 (전일 종가 참고용)
+                if !is_market_hours_kst() { last_was_stale = false; continue; }
                 let last_us = bg_state.feed_last_data_us.load(Ordering::Relaxed);
                 let age_us = now_us().saturating_sub(last_us);
                 let is_stale = age_us > 300_000_000;  // 5분
