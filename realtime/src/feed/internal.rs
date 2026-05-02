@@ -311,6 +311,8 @@ impl InternalFeed {
                 volume,
                 timestamp,
                 is_initial: false,
+                open_interest: None,
+                open_interest_change: None,
             });
             let _ = tx.send(msg).await;
         } else if state.is_etf {

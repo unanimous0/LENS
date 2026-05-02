@@ -184,11 +184,16 @@ async fn fetch_futures_initial(
                     let name = names.get(code.as_str()).cloned().unwrap_or_default();
                     let underlying = pf(detail.get("baseprice"));
                     let basis = if underlying > 0.0 { price - underlying } else { 0.0 };
+                    // 미결제약정: mgjv(잔고), mgjvdiff(전일대비). 키 없으면 None.
+                    let oi = detail.get("mgjv").map(|v| pi(Some(v)));
+                    let oi_change = detail.get("mgjvdiff").map(|v| pi(Some(v)));
 
                     let _ = tx.send(WsMessage::FuturesTick(FuturesTick {
                         code: code.clone(), name: name.clone(),
                         price, underlying_price: underlying, basis: r2(basis), volume,
                         timestamp: now, is_initial: true,
+                        open_interest: oi,
+                        open_interest_change: oi_change,
                     })).await;
                     // 기초자산 StockTick은 여기서 파생하지 않음 — t1102가 250/250 커버하고,
                     // 여기서 cum_volume=0으로 보내면 현물대금을 덮어써 공란이 됨.
@@ -368,6 +373,13 @@ fn pf(v: Option<&serde_json::Value>) -> f64 {
 fn pu(v: Option<&serde_json::Value>) -> u64 {
     match v {
         Some(serde_json::Value::Number(n)) => n.as_u64().unwrap_or(0),
+        Some(serde_json::Value::String(s)) => s.parse().unwrap_or(0),
+        _ => 0,
+    }
+}
+fn pi(v: Option<&serde_json::Value>) -> i64 {
+    match v {
+        Some(serde_json::Value::Number(n)) => n.as_i64().unwrap_or(0),
         Some(serde_json::Value::String(s)) => s.parse().unwrap_or(0),
         _ => 0,
     }

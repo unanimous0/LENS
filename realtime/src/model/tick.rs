@@ -54,6 +54,12 @@ pub struct FuturesTick {
     pub timestamp: String,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub is_initial: bool,
+    /// 미결제약정수량 (LS JC0 openyak / t8402 mgjv)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub open_interest: Option<i64>,
+    /// 미결제약정 전일대비 증감 (LS JC0 openyakcha / t8402 mgjvdiff)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub open_interest_change: Option<i64>,
 }
 
 /// 호가 단일 레벨 (가격 + 잔량)

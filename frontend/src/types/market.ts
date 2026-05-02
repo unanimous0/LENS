@@ -34,6 +34,10 @@ export interface FuturesTick {
   basis: number
   volume: number
   timestamp: string
+  /** 미결제약정수량 (LS JC0 openyak / t8402 mgjv) */
+  open_interest?: number
+  /** 미결제약정 전일대비 증감 (LS JC0 openyakcha / t8402 mgjvdiff) */
+  open_interest_change?: number
 }
 
 export interface OrderbookLevel {

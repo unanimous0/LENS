@@ -54,6 +54,10 @@ interface Row {
   spotCumVolume: number
   futuresPrice: number
   futuresVolume: number
+  /** 미결제약정수량 (JC0 openyak / t8402 mgjv) — 데이터 없으면 undefined */
+  openInterest?: number
+  /** 미결제약정 전일대비 증감 */
+  openInterestChange?: number
   theoreticalPrice: number
   theoreticalBasis: number
   marketBasis: number
@@ -253,6 +257,8 @@ export function StockArbitragePage() {
         spotPrice: sp, spotHigh: sHigh, spotLow: sLow, spotPrevClose: sPrevClose, spotChangeRate: sChangeRate,
         spotCumVolume: spot?.cum_volume ?? 0,
         futuresPrice: fp, futuresVolume: fut?.volume ?? 0,  // 실시간만
+        openInterest: fut?.open_interest,
+        openInterestChange: fut?.open_interest_change,
         theoreticalPrice: tp, theoreticalBasis: basisMode === 'zero' ? 0 : tb,
         marketBasis: mb, basisGap: gap, basisGapBp: sp > 0 ? (gap / sp) * 10000 : 0,
         backPrice: backP,
@@ -498,7 +504,7 @@ export function StockArbitragePage() {
                 <C c={cV(r.basisGapBp)}>{fBp(r.basisGapBp)}</C>
                 {/* 거래 */}
                 <C sub>{r.spotCumVolume ? fVol(r.spotCumVolume) : '-'}</C>
-                <C sub>{r.futuresVolume ? r.futuresVolume.toLocaleString() : '-'}</C>
+                <FuturesVolumeCell row={r} />
                 <C mute>{r.multiplier % 1 === 0 ? r.multiplier : r.multiplier.toFixed(2)}</C>
                 {/* 스프레드 */}
                 <C c={cV(r.spread)}>{r.spreadHasTick ? fB(r.spread) : '-'}</C>
@@ -738,6 +744,62 @@ function IntradayCell({ row }: { row: Row }) {
           <span className="text-t3">데이터 없음</span>
         )}
       </div>
+    </td>
+  )
+}
+
+/** 선물량 셀 — 거래량 표시, 호버 시 미결제약정/전일대비/전일대비% 툴팁.
+ * 미결 = openyak (JC0 실시간) 또는 mgjv (t8402 초기). 갱신 주기 분당 ~1회. */
+function FuturesVolumeCell({ row }: { row: Row }) {
+  const cellRef = useRef<HTMLTableCellElement>(null)
+  const [openUp, setOpenUp] = useState(false)
+  const oi = row.openInterest
+  const oic = row.openInterestChange
+  const hasOI = typeof oi === 'number'
+  const prevOI = hasOI && typeof oic === 'number' ? oi - oic : null
+  const oicRate = prevOI && prevOI > 0 && typeof oic === 'number' ? (oic / prevOI) * 100 : null
+
+  const handleEnter = () => {
+    if (!cellRef.current) return
+    const rect = cellRef.current.getBoundingClientRect()
+    setOpenUp(window.innerHeight - rect.bottom < 90)
+  }
+
+  return (
+    <td
+      ref={cellRef}
+      onMouseEnter={handleEnter}
+      className={cn(
+        'px-2 py-[11px] text-right text-[11px] tabular-nums whitespace-nowrap relative group/oi',
+        hasOI ? 'cursor-help' : '',
+      )}
+    >
+      <span className="text-t2">{row.futuresVolume ? row.futuresVolume.toLocaleString() : '-'}</span>
+      {hasOI && (
+        <div className={cn(
+          'hidden group-hover/oi:block absolute z-30 right-0 w-56 bg-bg-surface-2 border border-border-light rounded px-3 py-2 text-[11px] text-left pointer-events-none shadow-lg',
+          openUp ? 'bottom-full mb-1' : 'top-full mt-1',
+        )}>
+          <div className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 items-baseline tabular-nums">
+            <span className="text-t3">미결수량</span>
+            <span className="text-right text-t1">{oi.toLocaleString()}</span>
+            <span className="text-t3">전일대비</span>
+            <span className={cn(
+              'text-right',
+              typeof oic !== 'number' ? 'text-t3' : oic > 0 ? 'text-up' : oic < 0 ? 'text-down' : 'text-t1',
+            )}>
+              {typeof oic === 'number' ? `${oic > 0 ? '+' : ''}${oic.toLocaleString()}` : '-'}
+            </span>
+            <span className="text-t3">전일대비%</span>
+            <span className={cn(
+              'text-right',
+              oicRate == null ? 'text-t3' : oicRate > 0 ? 'text-up' : oicRate < 0 ? 'text-down' : 'text-t1',
+            )}>
+              {oicRate == null ? '-' : `${oicRate > 0 ? '+' : ''}${oicRate.toFixed(2)}%`}
+            </span>
+          </div>
+        </div>
+      )}
     </td>
   )
 }

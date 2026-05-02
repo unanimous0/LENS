@@ -558,11 +558,17 @@ async fn handle_tick(
             let volume = pu(&body["volume"]);
             let underlying = pf(&body["basprice"]);
             let basis = if underlying > 0.0 { price - underlying } else { 0.0 };
+            // 미결제약정: openyak(잔고), openyakcha(전일대비). 0이 와도 유효값일 수 있어
+            // body에 키가 있는지로 판단 — 키가 없으면 None.
+            let oi = body.get("openyak").map(pi);
+            let oi_change = body.get("openyakcha").map(pi);
 
             let _ = tx.send(WsMessage::FuturesTick(FuturesTick {
                 code: tr_key.into(), name: name.into(),
                 price, underlying_price: underlying, basis: r2(basis), volume, timestamp: now,
                 is_initial: false,
+                open_interest: oi,
+                open_interest_change: oi_change,
             })).await;
             // 주의: 기초자산(현물) StockTick은 파생해서 보내지 않음.
             // 현물은 S3_/K3_로 별도 구독 중이고, 여기서 보내면 cum_volume을 0으로 덮어써버려
@@ -632,5 +638,8 @@ fn pf(v: &serde_json::Value) -> f64 {
 }
 fn pu(v: &serde_json::Value) -> u64 {
     match v { serde_json::Value::Number(n) => n.as_u64().unwrap_or(0), serde_json::Value::String(s) => s.parse().unwrap_or(0), _ => 0 }
+}
+fn pi(v: &serde_json::Value) -> i64 {
+    match v { serde_json::Value::Number(n) => n.as_i64().unwrap_or(0), serde_json::Value::String(s) => s.parse().unwrap_or(0), _ => 0 }
 }
 fn r2(v: f64) -> f64 { (v * 100.0).round() / 100.0 }

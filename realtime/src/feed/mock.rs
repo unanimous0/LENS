@@ -110,6 +110,10 @@ impl MarketFeed for MockFeed {
                 let basis = price - underlying;
                 let now = Utc::now().format("%Y-%m-%dT%H:%M:%S%.6f").to_string();
 
+                // 미결제약정: deterministic (base_price 기반) — 매 틱마다 흔들리지 않도록
+                let oi = (fut.base_price * 200.0) as i64;
+                let oi_change = -((fut.base_price * 1.5) as i64);
+
                 let msg = WsMessage::FuturesTick(FuturesTick {
                     code: fut.code.to_string(),
                     name: fut.name.to_string(),
@@ -119,6 +123,8 @@ impl MarketFeed for MockFeed {
                     volume: rng.random_range(100..5000),
                     is_initial: false,
                     timestamp: now,
+                    open_interest: Some(oi),
+                    open_interest_change: Some(oi_change),
                 });
 
                 if tx.send(msg).await.is_err() { return; }

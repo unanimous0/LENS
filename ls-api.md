@@ -94,7 +94,7 @@ Accept-Language: ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7
 | **HA_** | KOSDAQ 호가 | 10호가 잔량 | offerho1-10, bidho1-10 |
 | **FC0** | KOSPI200 선물 체결 | 가격+베이시스+지수 | price, ibasis, k200jisu, theoryprice, volume |
 | **FH0** | KOSPI200 선물 호가 | 5호가 잔량 | offerho1-5, bidho1-5, offerrem1-5, bidrem1-5 |
-| **JC0** | 주식선물 체결 | 주식선물 실시간 | price, volume, change |
+| **JC0** | 주식선물 체결 | 주식선물 실시간 | price, basprice, openyak, theoryprice, sbasis, ibasis |
 | **JH0** | 주식선물 호가 | 주식선물 호가 | 5호가 |
 | **OC0** | KOSPI200 옵션 체결 | 옵션 실시간 | price, iv, greeks |
 | **IJ_** | 지수 | 실시간 지수 | jisu, volume |
@@ -112,6 +112,25 @@ Accept-Language: ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7
 - `bidho1`, `offerho1` — 최우선 호가
 - `cpower` — 체결강도 (%)
 - `cgubun` — 매수/매도 구분
+
+### JC0 (주식선물 체결) 주요 필드
+
+LS 공식 C# 래퍼 `realtime_blocks.cs` 기준 — JC0 OutBlock에 FC0와 거의 동일한 필드가 옴:
+- `price`, `basprice`(기초자산현재가) — 베이시스 계산
+- `theoryprice`, `sbasis`, `ibasis`, `kasis`(괴리율) — 이론가/베이시스
+- **`openyak`** — 미결제약정수량 (정수)
+- **`openyakcha`** — 미결제약정 전일대비 증감 (정수, 음수 가능)
+- `volume`, `cvolume`, `cgubun` — 체결량/구분
+
+OI는 KRX가 매 체결마다 보내지 않고 분당 ~1회 스냅샷으로 갱신함. 1~5분 주기 모니터링 용도엔 충분.
+
+### t8402 (주식선물 현재가 REST) OI 필드
+
+초기값 fetch에 사용. 응답의 `t8402OutBlock`에:
+- `mgjv` — 미결제약정수량 (= JC0 `openyak`)
+- `mgjvdiff` — 미결제약정 전일대비 (= JC0 `openyakcha`)
+
+JC0와 t8402가 **다른 키 이름**으로 같은 정보를 줌. realtime 서비스에서 둘 다 파싱해 `FuturesTick.open_interest` / `open_interest_change` 필드로 통합 송출.
 
 ## 제한 사항
 
