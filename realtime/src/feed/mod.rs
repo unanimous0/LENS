@@ -10,10 +10,20 @@ use crate::model::message::WsMessage;
 /// 런타임 구독 변경 명령.
 #[derive(Debug, Clone)]
 pub enum SubCommand {
-    /// 종목 코드 추가 구독 (월물 전환용)
+    /// 선물 코드 셋 교체 (월물 전환용 — 이전 셋 무효화하고 새 셋만 유지).
+    /// stock-arbitrage 페이지의 월물 토글이 사용. JC0 TR 전용.
     Subscribe(Vec<String>),
-    /// 종목 코드 구독 해제 (월물 전환용)
+    /// 선물 셋 비우기 (월물 전환용).
     Unsubscribe(Vec<String>),
+    /// 주식/ETF 코드 누적 구독 (S3_/K3_). 기존 셋에 더함.
+    /// 다수 페이지가 각자 필요한 코드 추가/제거 가능 (replace 아닌 add/remove 시맨틱).
+    SubscribeStocks(Vec<String>),
+    /// 주식/ETF 코드 누적 구독 해제 — 셋에서만 빠짐.
+    UnsubscribeStocks(Vec<String>),
+    /// ETF iNAV 구독 (I5_) — 거래소 발행 실시간 NAV. ETF 코드만 의미 있음.
+    SubscribeInav(Vec<String>),
+    /// ETF iNAV 구독 해제.
+    UnsubscribeInav(Vec<String>),
     /// 호가 온디맨드 구독. codes = (TR코드, 종목코드) 쌍.
     SubscribeOrderbook { codes: Vec<(String, String)> },
     /// 호가 구독 해제

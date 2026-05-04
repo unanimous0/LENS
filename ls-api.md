@@ -98,7 +98,15 @@ Accept-Language: ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7
 | **JH0** | 주식선물 호가 | 주식선물 호가 | 5호가 |
 | **OC0** | KOSPI200 옵션 체결 | 옵션 실시간 | price, iv, greeks |
 | **IJ_** | 지수 | 실시간 지수 | jisu, volume |
-| **I5_** | ETF NAV | ETF 실시간 NAV | nav, diff |
+| **I5_** | ETF NAV | ETF 실시간 NAV (거래소 발행 iNAV, ~10초 주기) | nav, diff |
+
+### I5_ (ETF iNAV) 사용
+
+ETF주선교체 페이지에서 거래소 발행 iNAV를 EtfTick.nav로 채움. PDF 자체계산 NAV 인프라 (KOSPI/KOSDAQ TR 분류, 동적 t1102 등) 없이도 정확한 NAV 확보.
+
+- 구독 경로: 프론트 `usePageInavSubscriptions` → `POST /realtime/subscribe-inav` → Rust SubCommand `SubscribeInav` → I5_ TR 구독
+- 그룹: 별도 conn_id 300+ (stocks 그룹 200+와 분리)
+- main.rs bridge에서 EtfTick 필드 merge로 S3_(price)와 I5_(nav)가 충돌 없이 공존
 
 ### FC0 (선물 체결) 주요 필드
 

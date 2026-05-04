@@ -2,6 +2,7 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'rea
 import { useMarketStore } from '@/stores/marketStore'
 import { cn } from '@/lib/utils'
 import { OrderbookModal, SpreadOrderbookModal } from '@/components/OrderbookModal'
+import { usePageSubscriptions } from '@/hooks/usePageSubscriptions'
 
 // ── 타입 ──
 
@@ -178,26 +179,12 @@ export function StockArbitragePage() {
     return m
   }, [dividends])
 
-  // 월물 전환 시 선물 구독 전환 (현물/스프레드는 고정)
-  // 실시간 JC0 체결이 오면 즉시 갱신됨. 체결 전에는 마스터 초기값 표시.
-  // dedupe: master 객체 ref만 바뀌고 코드 셋이 동일하면 (HMR/리로드/탭 다중 등)
-  // 백엔드에 같은 subscribe를 또 보내지 않음. 이게 없으면 LS API에 storm 발생.
-  const lastSubKey = useRef<string>('')
-  useEffect(() => {
-    if (!master) return
-    const futuresCodes = master.items
-      .map((i) => (i as any)[month]?.code)
-      .filter(Boolean) as string[]
-    if (futuresCodes.length === 0) return
-    const key = `${month}:${futuresCodes.slice().sort().join(',')}`
-    if (key === lastSubKey.current) return
-    lastSubKey.current = key
-    fetch('/realtime/subscribe', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ codes: futuresCodes }),
-    }).catch(() => {})
+  // 월물 전환 시 선물 구독 전환. 페이지 이탈 시 자동 unsubscribe로 장 외 누적 방지.
+  const futuresCodes = useMemo(() => {
+    if (!master) return [] as string[]
+    return master.items.map((i) => (i as any)[month]?.code).filter(Boolean) as string[]
   }, [master, month])
+  usePageSubscriptions(futuresCodes)
 
   const rows = useMemo(() => {
     if (!master) return [] as Row[]
@@ -485,7 +472,7 @@ export function StockArbitragePage() {
             {filtered.map((r) => (
               <tr key={r.baseCode} className="border-b border-white/[0.04] bg-black hover:bg-[#1d1d1d] transition-colors">
                 {/* 종목 */}
-                <td className="pl-4 pr-3 py-[11px] sticky left-0 z-10" style={{ backgroundColor: 'inherit' }}>
+                <td className="pl-4 pr-3 py-[9px] sticky left-0 z-10" style={{ backgroundColor: 'inherit' }}>
                   <div className="text-[11px] text-white leading-none">{r.baseName}</div>
                   <div className="text-[9px] text-[#5a5a5e] leading-none mt-[2px] tabular-nums">
                     {r.baseCode} / {r.frontCode}
@@ -513,13 +500,13 @@ export function StockArbitragePage() {
                 <DividendAmountCell row={r} />
                 <C mute>{r.dividendDate ? r.dividendDate.slice(5) : '-'}</C>
                 {/* 액션 */}
-                <td className="px-1 py-[11px] text-center align-middle">
+                <td className="px-1 py-[9px] text-center align-middle">
                   <button
                     onClick={() => setObTarget({ spotCode: r.baseCode, futuresCode: r.frontCode, spotName: r.baseName })}
                     className="text-[10px] text-white/90 bg-[#2a2a2e] border border-white/10 rounded px-2.5 py-[3px] hover:bg-[#444448] transition-colors"
                   >호가</button>
                 </td>
-                <td className="px-1 py-[11px] text-center align-middle">
+                <td className="px-1 py-[9px] text-center align-middle">
                   <button
                     onClick={() => r.spreadCode && setSpreadTarget({ spreadCode: r.spreadCode, spotName: r.baseName })}
                     className={cn('text-[10px] rounded px-2.5 py-[3px] border transition-colors', r.spreadCode ? 'text-white/90 bg-[#2a2a2e] border-white/10 hover:bg-[#444448]' : 'text-[#3a3a3e] border-transparent cursor-default')}
@@ -528,7 +515,7 @@ export function StockArbitragePage() {
                 {/* 보유 */}
                 <C>{r.holding031 ? r.holding031.toLocaleString() : '-'}</C>
                 <C>{r.holding052 ? r.holding052.toLocaleString() : '-'}</C>
-                <td className="px-1 py-[11px] text-center align-middle">
+                <td className="px-1 py-[9px] text-center align-middle">
                   <button className="text-[10px] text-white/90 bg-[#2a2a2e] border border-white/10 rounded px-2.5 py-[3px] hover:bg-[#444448] transition-colors">조회</button>
                 </td>
                 <C sub className="pr-4">{r.futuresHolding ? r.futuresHolding.toLocaleString() : '-'}</C>
@@ -573,7 +560,7 @@ function Th({ children, className, sort, active, asc, left, sticky, style }: {
   return (
     <th
       className={cn(
-        'px-2 py-[11px] font-normal whitespace-nowrap border-b border-white/[0.06]',
+        'px-2 py-[9px] font-normal whitespace-nowrap border-b border-white/[0.06]',
         left ? 'text-left' : 'text-right',
         sort ? 'cursor-pointer select-none hover:text-white transition-colors' : '',
         active ? 'text-white' : '',
@@ -594,7 +581,7 @@ function C({ children, c, sub, mute, className }: {
 }) {
   return (
     <td className={cn(
-      'px-2 py-[11px] text-right text-[11px] tabular-nums whitespace-nowrap',
+      'px-2 py-[9px] text-right text-[11px] tabular-nums whitespace-nowrap',
       c || 'text-white',
       className,
     )}>
@@ -611,7 +598,7 @@ function DividendAmountCell({ row }: { row: Row }) {
   const [openUp, setOpenUp] = useState(false)
 
   if (items.length === 0) {
-    return <td className="px-2 py-[11px] text-right text-[11px] tabular-nums whitespace-nowrap text-white">-</td>
+    return <td className="px-2 py-[9px] text-right text-[11px] tabular-nums whitespace-nowrap text-white">-</td>
   }
   const allConfirmed = row.dividendEstimatedAmt === 0
   const allEstimated = row.dividendConfirmedAmt === 0
@@ -630,7 +617,7 @@ function DividendAmountCell({ row }: { row: Row }) {
     <td
       ref={cellRef}
       onMouseEnter={handleEnter}
-      className="px-2 py-[11px] text-right text-[11px] tabular-nums whitespace-nowrap relative group/div cursor-help"
+      className="px-2 py-[9px] text-right text-[11px] tabular-nums whitespace-nowrap relative group/div cursor-help"
     >
       <span className={color}>{row.dividend.toLocaleString()}</span>
       <div className={cn(
@@ -691,7 +678,7 @@ function IntradayCell({ row }: { row: Row }) {
     <td
       ref={cellRef}
       onMouseEnter={handleEnter}
-      className="px-2 py-[11px] align-middle relative group/intra cursor-help"
+      className="px-2 py-[9px] align-middle relative group/intra cursor-help"
     >
       <div className="flex flex-col items-stretch gap-[3px]">
         <div className={cn('text-[10px] tabular-nums text-right leading-none', rateClass)}>{rateText}</div>
@@ -770,7 +757,7 @@ function FuturesVolumeCell({ row }: { row: Row }) {
       ref={cellRef}
       onMouseEnter={handleEnter}
       className={cn(
-        'px-2 py-[11px] text-right text-[11px] tabular-nums whitespace-nowrap relative group/oi',
+        'px-2 py-[9px] text-right text-[11px] tabular-nums whitespace-nowrap relative group/oi',
         hasOI ? 'cursor-help' : '',
       )}
     >
@@ -831,7 +818,7 @@ function PriceCell({ value, formatted }: { value: number; formatted: string }) {
   return (
     <td
       ref={ref}
-      className="px-2 py-[11px] text-right text-[11px] tabular-nums whitespace-nowrap text-white"
+      className="px-2 py-[9px] text-right text-[11px] tabular-nums whitespace-nowrap text-white"
       style={{ transition: 'background-color 0.3s ease-out' }}
     >
       {formatted}

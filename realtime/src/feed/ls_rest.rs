@@ -225,7 +225,7 @@ async fn fetch_futures_initial(
 }
 
 /// t1102로 현물 초기 가격 + 거래대금 조회
-async fn fetch_stocks_initial(
+pub async fn fetch_stocks_initial(
     token: &str,
     codes: &[String],
     names: &HashMap<String, String>,

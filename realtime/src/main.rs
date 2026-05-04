@@ -12,6 +12,7 @@ use axum::extract::{Path, State};
 use axum::http::{Method, StatusCode};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use dashmap::DashMap;
 use serde::Deserialize;
 use tokio::sync::{mpsc, Mutex as TokioMutex};
 use tokio_util::sync::CancellationToken;
@@ -169,10 +170,41 @@ async fn main() {
     // mpsc → broadcast 브릿지.
     // 타입별로 cache key를 만들어 send_cached로 저장하면 재접속 클라이언트가 snapshot 복원.
     // Orderbook은 스트림성이라 cache 없이 전달.
+    //
+    // StockTick prev_close 백필 — 초기 t1102 응답에만 포함되고 라이브 S3_/K3_ 틱에는
+    // 없음. 라이브 틱이 캐시를 덮어쓰면 prev_close가 사라져서 재접속 클라이언트의
+    // snapshot에 빠지므로, code별 prev_close를 별도 보존하고 직렬화 직전에 채워줌.
+    let stock_prev_close: Arc<DashMap<String, f64>> = Arc::new(DashMap::new());
+    // EtfTick 필드 백필 — S3_(체결: price, volume)와 I5_(거래소 NAV) 두 스트림이 같은 EtfTick
+    // 캐시 키를 덮어쓰므로, 한쪽만 들어오면 다른 쪽 필드가 사라짐. code별로 각 필드 마지막 값을
+    // 보존하다 직렬화 직전에 0인 필드 채워줌.
+    #[derive(Default, Clone, Copy)]
+    struct EtfState { price: f64, nav: f64, volume: u64 }
+    let etf_state: Arc<DashMap<String, EtfState>> = Arc::new(DashMap::new());
     let bc = broadcaster.clone();
     let stats_bridge = stats.clone();
+    let prev_close_map = stock_prev_close.clone();
+    let etf_state_map = etf_state.clone();
     tokio::spawn(async move {
-        while let Some(msg) = rx.recv().await {
+        while let Some(mut msg) = rx.recv().await {
+            // StockTick prev_close 백필
+            if let WsMessage::StockTick(ref mut t) = msg {
+                match t.prev_close {
+                    Some(pc) => { prev_close_map.insert(t.code.clone(), pc); }
+                    None => {
+                        if let Some(pc) = prev_close_map.get(&t.code) {
+                            t.prev_close = Some(*pc);
+                        }
+                    }
+                }
+            }
+            // EtfTick price/nav/volume 백필 — 0인 필드는 이전 캐시에서 가져오고, 0 아닌 값은 저장.
+            if let WsMessage::EtfTick(ref mut t) = msg {
+                let mut prev = etf_state_map.entry(t.code.clone()).or_default();
+                if t.price > 0.0 { prev.price = t.price; } else { t.price = prev.price; }
+                if t.nav > 0.0 { prev.nav = t.nav; } else { t.nav = prev.nav; }
+                if t.volume > 0 { prev.volume = t.volume; } else { t.volume = prev.volume; }
+            }
             let key = match &msg {
                 WsMessage::StockTick(t) => Some(format!("stock_tick:{}", t.code)),
                 WsMessage::FuturesTick(t) => Some(format!("futures_tick:{}", t.code)),
@@ -263,7 +295,12 @@ async fn main() {
         .route("/mode/{mode}", post(set_mode))
         .route("/subscribe", post(subscribe))
         .route("/unsubscribe", post(unsubscribe))
+        .route("/subscribe-stocks", post(subscribe_stocks))
+        .route("/unsubscribe-stocks", post(unsubscribe_stocks))
+        .route("/subscribe-inav", post(subscribe_inav))
+        .route("/unsubscribe-inav", post(unsubscribe_inav))
         .route("/orderbook/subscribe", post(subscribe_orderbook))
+        .route("/orderbook/subscribe-bulk", post(subscribe_orderbook_bulk))
         .route("/orderbook/unsubscribe", post(unsubscribe_orderbook))
         .route("/debug/stats", get(debug_stats))
         .with_state(state.clone())
@@ -619,6 +656,56 @@ async fn unsubscribe(
     Json(serde_json::json!({"status": "ok", "unsubscribed": count}))
 }
 
+/// 주식/ETF 코드 누적 구독 (S3_/K3_). 선물 /subscribe와 격리된 그룹.
+async fn subscribe_stocks(
+    State(state): State<AppState>,
+    Json(req): Json<SubRequest>,
+) -> Json<serde_json::Value> {
+    let count = req.codes.len();
+    info!("REST subscribe-stocks: {} codes", count);
+    let _ = state
+        .sub_tx
+        .read()
+        .unwrap()
+        .send(SubCommand::SubscribeStocks(req.codes));
+    Json(serde_json::json!({"status": "ok", "subscribed": count}))
+}
+
+async fn unsubscribe_stocks(
+    State(state): State<AppState>,
+    Json(req): Json<SubRequest>,
+) -> Json<serde_json::Value> {
+    let count = req.codes.len();
+    info!("REST unsubscribe-stocks: {} codes", count);
+    let _ = state
+        .sub_tx
+        .read()
+        .unwrap()
+        .send(SubCommand::UnsubscribeStocks(req.codes));
+    Json(serde_json::json!({"status": "ok", "unsubscribed": count}))
+}
+
+/// ETF iNAV 누적 구독 (I5_) — 거래소 발행 NAV stream.
+async fn subscribe_inav(
+    State(state): State<AppState>,
+    Json(req): Json<SubRequest>,
+) -> Json<serde_json::Value> {
+    let count = req.codes.len();
+    info!("REST subscribe-inav: {} codes", count);
+    let _ = state.sub_tx.read().unwrap().send(SubCommand::SubscribeInav(req.codes));
+    Json(serde_json::json!({"status": "ok", "subscribed": count}))
+}
+
+async fn unsubscribe_inav(
+    State(state): State<AppState>,
+    Json(req): Json<SubRequest>,
+) -> Json<serde_json::Value> {
+    let count = req.codes.len();
+    info!("REST unsubscribe-inav: {} codes", count);
+    let _ = state.sub_tx.read().unwrap().send(SubCommand::UnsubscribeInav(req.codes));
+    Json(serde_json::json!({"status": "ok", "unsubscribed": count}))
+}
+
 #[derive(Deserialize)]
 struct OrderbookRequest {
     #[serde(default)]
@@ -627,6 +714,37 @@ struct OrderbookRequest {
     futures_code: Option<String>,
     #[serde(default)]
     spread_code: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct OrderbookBulkRequest {
+    codes: Vec<String>,
+}
+
+/// 일괄 호가 구독 — ETF 스크리너처럼 다수 종목 호가가 필요한 화면용.
+/// 단일 모달용 `subscribe_orderbook`과 달리 KOSPI/KOSDAQ 분류만 자동으로
+/// 처리. 선물 호가(JH0)는 미지원 — 필요 시 별도 엔드포인트 추가.
+async fn subscribe_orderbook_bulk(
+    State(state): State<AppState>,
+    Json(req): Json<OrderbookBulkRequest>,
+) -> Json<serde_json::Value> {
+    let mut codes: Vec<(String, String)> = Vec::with_capacity(req.codes.len());
+    for code in req.codes {
+        let tr = if state.shared.kosdaq_codes.contains(&code) {
+            "HA_"
+        } else {
+            "H1_"
+        };
+        codes.push((tr.to_string(), code));
+    }
+    let count = codes.len();
+    info!("REST orderbook bulk subscribe: {} codes", count);
+    let _ = state
+        .sub_tx
+        .read()
+        .unwrap()
+        .send(SubCommand::SubscribeOrderbook { codes });
+    Json(serde_json::json!({"status": "ok", "subscribed": count}))
 }
 
 async fn subscribe_orderbook(

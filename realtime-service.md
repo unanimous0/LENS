@@ -871,6 +871,59 @@ LENS/
 
 **장 외 가드 (`is_market_hours_kst()`)**: stale watcher는 **장중에만** 발동. 장 외(저녁/주말/휴장일)엔 무신호가 정상이고, 전일 종가를 참고용으로 계속 보여주는 게 트레이더에게 더 유용 (만기 임박 OI 추세 확인 등). 장 외 wipe 안 함 → 토요일 페이지 열어도 금요일 종가 그대로 보임. 월요일 첫 틱부터 자연스럽게 갱신.
 
+### 페이지별 구독 라이프사이클
+
+프론트가 페이지 단위로 종목을 구독/해제하는 패턴. 모든 페이지가 한 번 구독한 종목을 영원히 유지하면 백그라운드 누적 → 외부망 200/연결 한계 압박. 그래서 페이지 mount/unmount에 맞춰 토글한다.
+
+**훅 3종** — 엔드포인트별 분리 (시맨틱이 달라서):
+
+| 훅 | 엔드포인트 | SubCommand | 시맨틱 | 사용 페이지 |
+|---|---|---|---|---|
+| `usePageSubscriptions` | `/realtime/subscribe`(`/unsubscribe`) | `Subscribe` / `Unsubscribe` | **replace** (월물 전환) | 종목차익 |
+| `usePageStockSubscriptions` | `/realtime/subscribe-stocks`(`/unsubscribe-stocks`) | `SubscribeStocks` / `UnsubscribeStocks` | **add/remove 누적** (다수 페이지 공존) | ETF주선교체 |
+| `usePageInavSubscriptions` | `/realtime/subscribe-inav`(`/unsubscribe-inav`) | `SubscribeInav` / `UnsubscribeInav` | **add/remove 누적** (I5_ ETF iNAV) | ETF주선교체 |
+| `usePageOrderbookBulk` | `/realtime/orderbook/subscribe-bulk`(`/orderbook/unsubscribe`) | `SubscribeOrderbook` | **replace** (단일 active 호가셋) | 종목차익/ETF주선교체 |
+
+내부 동작 (모든 훅 공통):
+- mount 또는 codes 배열 변경 시 → 새로 추가된 코드만 subscribe, 빠진 코드만 unsubscribe
+- unmount 시 → 마지막 보유 코드 일괄 unsubscribe
+
+**왜 분리했나** — `/subscribe`는 stock-arbitrage가 월물 토글로 사용하는 replace 시맨틱. ETF주선교체 페이지가 여기에 ETF/PDF 코드를 섞어 넣으면 stock-arbitrage 선물 셋을 덮어씀. 별도 endpoint로 격리.
+
+**Rust 측 그룹 구분 (LS API 모드 conn_id 범위)**:
+- `0~99`: 고정 그룹 (현물 250 + 스프레드 D-코드, startup에 한 번 spawn)
+- `100~199`: 선물 그룹 (`Subscribe` replace로 월물 전환)
+- `200~299`: 동적 주식/ETF 그룹 (`SubscribeStocks` add/remove)
+- `300~399`: ETF iNAV 그룹 (`SubscribeInav` add/remove, TR=`I5_`)
+- `200`(공유): orderbook 단일 그룹 (`SubscribeOrderbook` replace, 위와 ID 충돌 가능하나 별개 WS 연결)
+
+**SubscribeStocks가 t1102 fetch도 트리거**: 새로 추가된 코드들에 대해 `fetch_stocks_initial` 백그라운드 spawn → REST로 마지막 종가 + 전일 종가 즉시 발행. 장 외 / realtime 재시작 후에도 가격 빠르게 채워짐.
+
+**StockTick prev_close 백필**: 라이브 S3_/K3_ 틱은 `prev_close: None`이라 cache 덮어쓰면 사라짐. main.rs bridge에서 `stock_prev_close` HashMap에 첫 t1102 응답값 저장해두고, 후속 라이브 틱 직렬화 직전에 백필. 재접속 클라이언트의 snapshot에 항상 prev_close 포함.
+
+**EtfTick 필드 merge**: S3_(price/volume)와 I5_(nav)가 같은 EtfTick 캐시 키를 덮어쓰는 문제. main.rs bridge가 `etf_state` 맵으로 코드별 마지막 값을 보존하고 0인 필드는 채워줌 → 어느 한쪽만 들어와도 다른 쪽 데이터 유지.
+
+**선택한 패턴: A (즉시 unsubscribe)**
+
+페이지 떠나는 순간 즉시 푸는 단순 패턴. 1차 구현은 코드 단순성 우선.
+
+**대안 패턴 비교** (1차에선 채택 안 함, 향후 사용성 피드백 보고 결정):
+
+| 패턴 | 갭(재진입) | API 부담 | 복잡도 | 누적 위험 |
+|---|---|---|---|---|
+| **A 즉시** (현행) | 1~2초 | 매번 sub/unsub | ★ 단순 | 0 |
+| B Idle TTL (60초 유예 후 풀기) | 0초 (TTL 내) | 줄어듦 | ★★ 중 | TTL 동안 |
+| C 영구 (ref-count) | 0초 | 누적 | ★★★ ref-count 필요 | 큼 (외부망 압박) |
+| D 핵심 핀 + 나머지 A/B | 0초 (핵심) | 핀 분량만 always | ★★ 중 | 핀 분량 고정 |
+
+**A의 한계와 향후 업그레이드 트리거**:
+- 페이지 자주 왔다갔다 하면 sub/unsub churn (LS에 부담)
+- 재진입 시 1~2초 가격 갭 → 깜빡임 사용자 경험
+- 위 두 증상이 운영에서 거슬리기 시작하면 **B(TTL 60~120초)**로 업그레이드
+- 즐겨찾기 기능 추가 시 **D(핵심 핀)** 결합
+
+**Rust 측 ref-count는 도입 안 함 (1차)**: "한 페이지만 active한다"는 가정으로 충분. 두 페이지가 같은 코드 동시 사용 → 한쪽 unmount하면 다른 쪽 데이터 끊기는 케이스가 실제 발생하면 그때 ref-count 도입.
+
 ### Phase 4+: 계산 모듈 확장
 
 화면이 추가될 때마다 `calc/` 아래 모듈 추가:

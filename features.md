@@ -164,6 +164,13 @@ WebSocket 기반 실시간 ETF/선물 데이터 스트리밍.
 
 ---
 
+## ETF주선교체 (`/etf-arbitrage`)
+
+전체 ETF(~585개) 스크리너. PDF 구성종목의 콘탱고/백워데이션 베이시스를 활용한
+선물대체 차익 모니터링 + ETF 호가 vs iNAV 괴리 종합 분석. 상세는 [etf-arbitrage.md](etf-arbitrage.md).
+
+---
+
 ## 배당 (`/dividends`)
 
 배당 데이터 조회 + 다가오는 배당 시각화 + LENS-side 추정. Finance_Data DB가 SSOT, LENS는 read-only 소비자 + 추정 레이어.

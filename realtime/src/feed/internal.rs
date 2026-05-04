@@ -86,6 +86,7 @@ impl InternalFeed {
         cancel: &CancellationToken,
         current_switchable: &mut Vec<String>,
         active_ob_codes: &mut HashSet<String>,
+        current_stocks: &mut HashSet<String>,
     ) -> Result<(), String> {
         let (ws_stream, resp) = tokio_tungstenite::connect_async(&self.ws_url)
             .await
@@ -99,8 +100,13 @@ impl InternalFeed {
 
         let (mut write, mut read) = ws_stream.split();
 
+        // 시작 시 startup 코드 + 재연결 시 누적된 동적 stocks/futures 모두 한번에 구독.
+        let mut startup_set: HashSet<String> = self.subscribe_codes.iter().cloned().collect();
+        for c in current_switchable.iter() { startup_set.insert(c.clone()); }
+        for c in current_stocks.iter() { startup_set.insert(c.clone()); }
+        let symbols: Vec<String> = startup_set.into_iter().collect();
         let sub_msg = serde_json::json!({
-            "symbols": self.subscribe_codes,
+            "symbols": &symbols,
             "real_nav": self.real_nav,
         });
         write
@@ -109,8 +115,8 @@ impl InternalFeed {
             .map_err(|e| format!("subscribe send failed: {e}"))?;
 
         info!(
-            "Internal subscribed: {:?} (real_nav={})",
-            self.subscribe_codes, self.real_nav
+            "Internal subscribed: {} codes (startup {}, switchable {}, stocks {}, real_nav={})",
+            symbols.len(), self.subscribe_codes.len(), current_switchable.len(), current_stocks.len(), self.real_nav
         );
 
         let mut isin_cache: HashMap<String, String> = HashMap::new();
@@ -178,6 +184,38 @@ impl InternalFeed {
                             info!("Runtime unsubscribe: {:?}", unsub_codes);
                             // 전환 그룹에서도 제거
                             current_switchable.retain(|c| !unsub_codes.contains(c));
+                        }
+                        Some(SubCommand::SubscribeStocks(codes)) => {
+                            // 내부망은 add 시맨틱이 자연스러움 — 새 코드만 server에 subscribe.
+                            // 전환 그룹과 별개라 서로 안 건드림.
+                            let new_codes: Vec<String> = codes.iter()
+                                .map(|c| short_to_subscribe(c))
+                                .filter(|c| !current_stocks.contains(c))
+                                .collect();
+                            if new_codes.is_empty() { continue; }
+                            let sub_msg = serde_json::json!({
+                                "symbols": &new_codes,
+                                "real_nav": self.real_nav,
+                            });
+                            let _ = write.send(tungstenite::Message::Text(sub_msg.to_string().into())).await;
+                            info!("SubscribeStocks: +{} (total {})", new_codes.len(), current_stocks.len() + new_codes.len());
+                            for c in new_codes { current_stocks.insert(c); }
+                        }
+                        Some(SubCommand::UnsubscribeStocks(codes)) => {
+                            let unsub_codes: Vec<String> = codes.iter()
+                                .map(|c| short_to_subscribe(c))
+                                .filter(|c| current_stocks.contains(c))
+                                .collect();
+                            if unsub_codes.is_empty() { continue; }
+                            let unsub_msg = serde_json::json!({
+                                "unsubscribe": &unsub_codes,
+                            });
+                            let _ = write.send(tungstenite::Message::Text(unsub_msg.to_string().into())).await;
+                            info!("UnsubscribeStocks: -{}", unsub_codes.len());
+                            for c in &unsub_codes { current_stocks.remove(c); }
+                        }
+                        Some(SubCommand::SubscribeInav(_)) | Some(SubCommand::UnsubscribeInav(_)) => {
+                            // 내부망은 nav가 trade tick과 함께 흘러옴 (rnav_trade/inav). 별도 구독 불필요.
                         }
                         Some(SubCommand::SubscribeOrderbook { codes }) => {
                             // 내부망은 호가가 자동으로 오므로 서버 구독 불필요.
@@ -486,13 +524,14 @@ impl MarketFeed for InternalFeed {
         // 재연결 시에도 유지되는 상태
         let mut current_switchable: Vec<String> = Vec::new();
         let mut active_ob_codes: HashSet<String> = HashSet::new();
+        let mut current_stocks: HashSet<String> = HashSet::new();
 
         loop {
             if cancel.is_cancelled() {
                 return;
             }
 
-            match self.connect_and_stream(&tx, &mut sub_rx, &cancel, &mut current_switchable, &mut active_ob_codes).await {
+            match self.connect_and_stream(&tx, &mut sub_rx, &cancel, &mut current_switchable, &mut active_ob_codes, &mut current_stocks).await {
                 Ok(()) => return,
                 Err(e) => {
                     attempt += 1;

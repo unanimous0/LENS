@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { lazy, Suspense, useEffect } from 'react'
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { TopNav } from './components/layout/top-nav'
 import { useWebSocket } from './hooks/useWebSocket'
@@ -8,8 +8,12 @@ import { DashboardPage } from './pages/dashboard'
 import { MarketPage } from './pages/market'
 import { LendingPage } from './pages/lending'
 import { StockArbitragePage } from './pages/stock-arbitrage'
-import { DividendsPage } from './pages/dividends'
+import { EtfArbitragePage } from './pages/etf-arbitrage'
 import type { NetworkMode } from './types/market'
+
+// dividends는 recharts/react-virtual 의존성이 무거워 lazy-load.
+// 내부망 등 일부 환경에서 패키지 없을 때 다른 페이지가 함께 transform 실패하지 않도록 격리.
+const DividendsPage = lazy(() => import('./pages/dividends').then((m) => ({ default: m.DividendsPage })))
 
 function AppLayout() {
   useWebSocket()
@@ -44,7 +48,8 @@ function AppLayout() {
             <Route path="/position" element={<StubPage label="포지션" />} />
             <Route path="/supply-demand" element={<StubPage label="수급" />} />
             <Route path="/stock-arbitrage" element={<StockArbitragePage />} />
-            <Route path="/dividends" element={<DividendsPage />} />
+            <Route path="/etf-arbitrage" element={<EtfArbitragePage />} />
+            <Route path="/dividends" element={<Suspense fallback={<div className="p-4 text-sm text-t3">로드 중…</div>}><DividendsPage /></Suspense>} />
           </Routes>
         </div>
       </main>

@@ -190,6 +190,16 @@ impl MarketFeed for LsApiFeed {
         // 호가 전용 연결 (온디맨드)
         let mut ob_cancel = CancellationToken::new();
 
+        // 동적 주식/ETF 그룹 (S3_/K3_) — 선물(replace 시맨틱)과 분리된 add/remove 시맨틱.
+        // ETF 페이지처럼 다수 페이지가 각자 필요 코드 추가/제거 가능. 셋 변경 시 connection 재생성.
+        let mut stocks_cancel = CancellationToken::new();
+        let mut current_stocks: HashSet<String> = HashSet::new();
+        let kosdaq_codes = self.kosdaq_codes.clone();
+
+        // 동적 ETF iNAV 그룹 (I5_) — 거래소 발행 NAV.
+        let mut inav_cancel = CancellationToken::new();
+        let mut current_inav: HashSet<String> = HashSet::new();
+
         // 현재 활성화된 선물 코드 셋 (정렬된 키) — 같은 셋 재구독 요청 시 skip.
         // 프론트 dedupe 1차 방어선이 뚫려도 (예: 다른 클라이언트가 보냄)
         // LS에 또 token+WS+subscribe 폭격하지 않게 백엔드도 가드.
@@ -234,6 +244,132 @@ impl MarketFeed for LsApiFeed {
                         Some(SubCommand::Unsubscribe(_)) => {
                             futures_cancel.cancel();
                         }
+                        Some(SubCommand::SubscribeStocks(codes)) => {
+                            let added: Vec<String> = codes.into_iter()
+                                .filter(|c| !current_stocks.contains(c))
+                                .collect();
+                            if added.is_empty() {
+                                info!("SubscribeStocks: no new codes");
+                                continue;
+                            }
+                            for c in &added { current_stocks.insert(c.clone()); }
+
+                            stocks_cancel.cancel();
+                            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+                            let stocks_subs: Vec<(String, String)> = current_stocks.iter()
+                                .map(|code| {
+                                    let tr = if kosdaq_codes.contains(code) { "K3_" } else { "S3_" };
+                                    (tr.to_string(), code.clone())
+                                })
+                                .collect();
+                            info!("SubscribeStocks: +{} new (total {})", added.len(), current_stocks.len());
+
+                            stocks_cancel = CancellationToken::new();
+                            spawn_stocks_connections(
+                                &stocks_subs, &app_key, &app_secret, &names, &stock_codes,
+                                &futures_to_spot, &tx, &cancel, &stocks_cancel, &stats, &last_data_us, &last_subscribe_us,
+                            );
+
+                            // 새로 추가된 코드들에 대해 t1102 초기 fetch (현재가 + 전일종가).
+                            // 장 외 시간이거나 realtime 재시작 후에도 즉시 가격 표시 가능.
+                            // TPS 10/초 제한이라 ~600 codes면 60초 정도 소요. 백그라운드로 진행.
+                            {
+                                let ak = app_key.clone();
+                                let as_ = app_secret.clone();
+                                let n = (*names).clone();
+                                let tx2 = tx.clone();
+                                let cancel2 = cancel.clone();
+                                let stats2 = stats.clone();
+                                tokio::spawn(async move {
+                                    let token = match super::ls_rest::get_or_fetch_token(&ak, &as_).await {
+                                        Ok(t) => t,
+                                        Err(e) => { warn!("SubscribeStocks t1102 token fail: {e}"); return; }
+                                    };
+                                    info!("SubscribeStocks t1102 fetch: {} codes", added.len());
+                                    super::ls_rest::fetch_stocks_initial(&token, &added, &n, &tx2, &cancel2, &stats2).await;
+                                });
+                            }
+                        }
+                        Some(SubCommand::UnsubscribeStocks(codes)) => {
+                            let mut changed = false;
+                            for c in &codes {
+                                if current_stocks.remove(c) { changed = true; }
+                            }
+                            if !changed {
+                                continue;
+                            }
+
+                            stocks_cancel.cancel();
+                            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+                            if current_stocks.is_empty() {
+                                info!("UnsubscribeStocks: -{}, set empty (no respawn)", codes.len());
+                                stocks_cancel = CancellationToken::new();
+                            } else {
+                                let stocks_subs: Vec<(String, String)> = current_stocks.iter()
+                                    .map(|code| {
+                                        let tr = if kosdaq_codes.contains(code) { "K3_" } else { "S3_" };
+                                        (tr.to_string(), code.clone())
+                                    })
+                                    .collect();
+                                info!("UnsubscribeStocks: -{} (total {})", codes.len(), current_stocks.len());
+                                stocks_cancel = CancellationToken::new();
+                                spawn_stocks_connections(
+                                    &stocks_subs, &app_key, &app_secret, &names, &stock_codes,
+                                    &futures_to_spot, &tx, &cancel, &stocks_cancel, &stats, &last_data_us, &last_subscribe_us,
+                                );
+                            }
+                        }
+                        Some(SubCommand::SubscribeInav(codes)) => {
+                            let added: Vec<String> = codes.into_iter()
+                                .filter(|c| !current_inav.contains(c))
+                                .collect();
+                            if added.is_empty() {
+                                info!("SubscribeInav: no new codes");
+                                continue;
+                            }
+                            for c in &added { current_inav.insert(c.clone()); }
+
+                            inav_cancel.cancel();
+                            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+                            let inav_subs: Vec<(String, String)> = current_inav.iter()
+                                .map(|code| ("I5_".to_string(), code.clone()))
+                                .collect();
+                            info!("SubscribeInav: +{} new (total {})", added.len(), current_inav.len());
+
+                            inav_cancel = CancellationToken::new();
+                            spawn_inav_connections(
+                                &inav_subs, &app_key, &app_secret, &names, &stock_codes,
+                                &futures_to_spot, &tx, &cancel, &inav_cancel, &stats, &last_data_us, &last_subscribe_us,
+                            );
+                        }
+                        Some(SubCommand::UnsubscribeInav(codes)) => {
+                            let mut changed = false;
+                            for c in &codes {
+                                if current_inav.remove(c) { changed = true; }
+                            }
+                            if !changed { continue; }
+
+                            inav_cancel.cancel();
+                            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+                            if current_inav.is_empty() {
+                                info!("UnsubscribeInav: -{}, set empty (no respawn)", codes.len());
+                                inav_cancel = CancellationToken::new();
+                            } else {
+                                let inav_subs: Vec<(String, String)> = current_inav.iter()
+                                    .map(|code| ("I5_".to_string(), code.clone()))
+                                    .collect();
+                                info!("UnsubscribeInav: -{} (total {})", codes.len(), current_inav.len());
+                                inav_cancel = CancellationToken::new();
+                                spawn_inav_connections(
+                                    &inav_subs, &app_key, &app_secret, &names, &stock_codes,
+                                    &futures_to_spot, &tx, &cancel, &inav_cancel, &stats, &last_data_us, &last_subscribe_us,
+                                );
+                            }
+                        }
                         Some(SubCommand::SubscribeOrderbook { codes }) => {
                             // 기존 호가 연결 종료
                             ob_cancel.cancel();
@@ -256,6 +392,8 @@ impl MarketFeed for LsApiFeed {
                 _ = cancel.cancelled() => {
                     futures_cancel.cancel();
                     ob_cancel.cancel();
+                    stocks_cancel.cancel();
+                    inav_cancel.cancel();
                     return;
                 }
             }
@@ -328,6 +466,158 @@ fn spawn_futures_connections(
                             warn!("futures[{i}] silent {silent_count} cycles — LS likely blocking, extended backoff {delay}s");
                         } else {
                             warn!("futures[{i}] disconnected: {e} — reconnecting in {delay}s");
+                        }
+                        tokio::select! {
+                            _ = tokio::time::sleep(std::time::Duration::from_secs(delay)) => {}
+                            _ = combined_cancel.cancelled() => { return; }
+                        }
+                    }
+                }
+            }
+        });
+    }
+}
+
+/// 동적 주식/ETF 그룹 연결 스폰 (S3_/K3_). 선물 그룹과 동일 패턴이지만 conn_id 200+ 범위.
+fn spawn_stocks_connections(
+    subs: &[(String, String)],
+    app_key: &str, app_secret: &str,
+    names: &Arc<HashMap<String, String>>,
+    stock_codes: &Arc<HashSet<String>>,
+    futures_to_spot: &Arc<HashMap<String, String>>,
+    tx: &mpsc::Sender<WsMessage>,
+    global_cancel: &CancellationToken,
+    stocks_cancel: &CancellationToken,
+    stats: &Arc<Stats>,
+    last_data_us: &Arc<AtomicU64>,
+    last_subscribe_us: &Arc<AtomicU64>,
+) {
+    let chunks: Vec<Vec<(String, String)>> = subs
+        .chunks(MAX_SUBS_PER_CONNECTION).map(|c| c.to_vec()).collect();
+
+    for (i, chunk) in chunks.into_iter().enumerate() {
+        let tx = tx.clone();
+        let gc = global_cancel.clone();
+        let sc_token = stocks_cancel.clone();
+        let ak = app_key.to_string();
+        let as_ = app_secret.to_string();
+        let n = names.clone();
+        let sc = stock_codes.clone();
+        let f2s = futures_to_spot.clone();
+        let stats = stats.clone();
+        let last_data_us = last_data_us.clone();
+        let last_subscribe_us = last_subscribe_us.clone();
+
+        tokio::spawn(async move {
+            let combined_cancel = CancellationToken::new();
+            let gc2 = gc.clone();
+            let sct2 = sc_token.clone();
+            let cc = combined_cancel.clone();
+            tokio::spawn(async move {
+                tokio::select! {
+                    _ = gc2.cancelled() => cc.cancel(),
+                    _ = sct2.cancelled() => cc.cancel(),
+                }
+            });
+
+            let mut attempt = 0u32;
+            let mut silent_count = 0u32;
+            loop {
+                if combined_cancel.is_cancelled() { return; }
+                let conn_id = 200 + i;
+                let ticks_before = stats.tick_count.load(Ordering::Relaxed);
+                match run_single_connection(
+                    conn_id, &ak, &as_, &chunk, &n, &sc, &f2s, &tx, &combined_cancel, &last_data_us, &last_subscribe_us,
+                ).await {
+                    Ok(()) => return,
+                    Err(e) => {
+                        if combined_cancel.is_cancelled() { return; }
+                        let ticks_after = stats.tick_count.load(Ordering::Relaxed);
+                        if ticks_after > ticks_before { silent_count = 0; } else { silent_count += 1; }
+                        attempt += 1;
+                        stats.reconnect_count.fetch_add(1, Ordering::Relaxed);
+                        let delay = if silent_count >= 5 { 300 }
+                            else { (2u64.pow(attempt.min(5))).min(MAX_RECONNECT_DELAY_SECS) };
+                        if silent_count >= 5 {
+                            warn!("stocks[{i}] silent {silent_count} cycles — LS likely blocking, extended backoff {delay}s");
+                        } else {
+                            warn!("stocks[{i}] disconnected: {e} — reconnecting in {delay}s");
+                        }
+                        tokio::select! {
+                            _ = tokio::time::sleep(std::time::Duration::from_secs(delay)) => {}
+                            _ = combined_cancel.cancelled() => { return; }
+                        }
+                    }
+                }
+            }
+        });
+    }
+}
+
+/// 동적 ETF iNAV 그룹 연결 스폰 (I5_). conn_id 300+ 범위.
+fn spawn_inav_connections(
+    subs: &[(String, String)],
+    app_key: &str, app_secret: &str,
+    names: &Arc<HashMap<String, String>>,
+    stock_codes: &Arc<HashSet<String>>,
+    futures_to_spot: &Arc<HashMap<String, String>>,
+    tx: &mpsc::Sender<WsMessage>,
+    global_cancel: &CancellationToken,
+    inav_cancel: &CancellationToken,
+    stats: &Arc<Stats>,
+    last_data_us: &Arc<AtomicU64>,
+    last_subscribe_us: &Arc<AtomicU64>,
+) {
+    let chunks: Vec<Vec<(String, String)>> = subs
+        .chunks(MAX_SUBS_PER_CONNECTION).map(|c| c.to_vec()).collect();
+
+    for (i, chunk) in chunks.into_iter().enumerate() {
+        let tx = tx.clone();
+        let gc = global_cancel.clone();
+        let ic_token = inav_cancel.clone();
+        let ak = app_key.to_string();
+        let as_ = app_secret.to_string();
+        let n = names.clone();
+        let sc = stock_codes.clone();
+        let f2s = futures_to_spot.clone();
+        let stats = stats.clone();
+        let last_data_us = last_data_us.clone();
+        let last_subscribe_us = last_subscribe_us.clone();
+
+        tokio::spawn(async move {
+            let combined_cancel = CancellationToken::new();
+            let gc2 = gc.clone();
+            let ict2 = ic_token.clone();
+            let cc = combined_cancel.clone();
+            tokio::spawn(async move {
+                tokio::select! {
+                    _ = gc2.cancelled() => cc.cancel(),
+                    _ = ict2.cancelled() => cc.cancel(),
+                }
+            });
+
+            let mut attempt = 0u32;
+            let mut silent_count = 0u32;
+            loop {
+                if combined_cancel.is_cancelled() { return; }
+                let conn_id = 300 + i;
+                let ticks_before = stats.tick_count.load(Ordering::Relaxed);
+                match run_single_connection(
+                    conn_id, &ak, &as_, &chunk, &n, &sc, &f2s, &tx, &combined_cancel, &last_data_us, &last_subscribe_us,
+                ).await {
+                    Ok(()) => return,
+                    Err(e) => {
+                        if combined_cancel.is_cancelled() { return; }
+                        let ticks_after = stats.tick_count.load(Ordering::Relaxed);
+                        if ticks_after > ticks_before { silent_count = 0; } else { silent_count += 1; }
+                        attempt += 1;
+                        stats.reconnect_count.fetch_add(1, Ordering::Relaxed);
+                        let delay = if silent_count >= 5 { 300 }
+                            else { (2u64.pow(attempt.min(5))).min(MAX_RECONNECT_DELAY_SECS) };
+                        if silent_count >= 5 {
+                            warn!("inav[{i}] silent {silent_count} cycles — LS likely blocking, extended backoff {delay}s");
+                        } else {
+                            warn!("inav[{i}] disconnected: {e} — reconnecting in {delay}s");
                         }
                         tokio::select! {
                             _ = tokio::time::sleep(std::time::Duration::from_secs(delay)) => {}
@@ -542,13 +832,10 @@ async fn handle_tick(
                     prev_close: None,
                 })).await;
             } else {
-                let offerho = pf(&body["offerho"]);
-                let bidho = pf(&body["bidho"]);
-                let nav = (offerho + bidho) / 2.0;
-                let spread_bp = if nav > 0.0 { (price - nav) / nav * 10000.0 } else { 0.0 };
+                // ETF S3_ 체결 → price/volume만. nav는 I5_ 스트림이 채움 (bridge merge로 보존).
                 let _ = tx.send(WsMessage::EtfTick(EtfTick {
                     code: tr_key.into(), name: name.into(),
-                    price, nav: r2(nav), spread_bp: r2(spread_bp),
+                    price, nav: 0.0, spread_bp: 0.0,
                     spread_bid_bp: 0.0, spread_ask_bp: 0.0, volume, timestamp: now,
                 })).await;
             }
@@ -595,6 +882,26 @@ async fn handle_tick(
                 asks, bids, total_ask_qty: total_ask, total_bid_qty: total_bid,
                 timestamp: now,
             })).await;
+        }
+        // ETF iNAV (거래소 발행). nav 필드만 사용 — 다른 EtfTick 필드는 S3_가 채움.
+        "I5_" => {
+            let nav = pf(&body["nav"]);
+            // 임시 디버깅: 처음 몇개만 raw body 찍어서 필드 검증.
+            static I5_LOG_COUNT: AtomicU64 = AtomicU64::new(0);
+            let n = I5_LOG_COUNT.fetch_add(1, Ordering::Relaxed);
+            if n < 5 {
+                tracing::info!("I5_ raw body sample[{}]: code={} body={}", n, tr_key, body);
+            }
+            if nav > 0.0 {
+                let _ = tx.send(WsMessage::EtfTick(EtfTick {
+                    code: tr_key.into(), name: name.into(),
+                    price: 0.0,  // S3_가 채울 거 — bridge에서 cache merge로 보존됨
+                    nav: r2(nav),
+                    spread_bp: 0.0, spread_bid_bp: 0.0, spread_ask_bp: 0.0,
+                    volume: 0,
+                    timestamp: now,
+                })).await;
+            }
         }
         _ => {}
     }

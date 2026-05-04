@@ -21,15 +21,15 @@
   --color-green-light: #30d158;
   --color-green-dim: rgba(52, 199, 89, 0.15);
 
-  /* Market */
-  --color-up: #34c759;
-  --color-up-bg: rgba(52, 199, 89, 0.12);
-  --color-down: #ff3b30;
-  --color-down-bg: rgba(255, 59, 48, 0.12);
+  /* Market — Apple Stocks 다크모드 톤 */
+  --color-up: #30d158;
+  --color-up-bg: rgba(48, 209, 88, 0.12);
+  --color-down: #ee382e;
+  --color-down-bg: rgba(238, 56, 46, 0.12);
 
   /* Accent */
-  --color-accent: #34c759;
-  --color-accent-hover: #30d158;
+  --color-accent: #30d158;
+  --color-accent-hover: #34d058;
 
   /* Functional */
   --color-border: #1c1c1e;

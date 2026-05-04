@@ -20,6 +20,10 @@ interface MarketState {
   batchUpdateOrderbooks: (ticks: Record<string, OrderbookTick>) => void
   clearOrderbook: (code: string) => void
   clearOrderbooks: () => void
+  /** ETF 메트릭 시계열 history. ETF 코드 → 최근 N개 포인트. 단일 signed 차익bp (PDF 매도차-매수차).
+   *  양수=매도차 우세, 음수=매수차 우세. 페이지 mount 동안 5초 간격으로 push. unmount해도 유지. */
+  etfHistory: Record<string, { t: number; diffBp: number }[]>
+  pushEtfHistoryBatch: (entries: Record<string, { diffBp: number }>, max: number) => void
   connected: boolean
   setConnected: (v: boolean) => void
   feedState: FeedState
@@ -108,6 +112,19 @@ export const useMarketStore = create<MarketState>((set) => ({
       return { orderbookTicks: next }
     }),
   clearOrderbooks: () => set({ orderbookTicks: {} }),
+  etfHistory: {},
+  pushEtfHistoryBatch: (entries, max) =>
+    set((state) => {
+      const t = Date.now()
+      const next = { ...state.etfHistory }
+      for (const [code, m] of Object.entries(entries)) {
+        const arr = next[code] ? next[code].slice() : []
+        arr.push({ t, diffBp: m.diffBp })
+        if (arr.length > max) arr.splice(0, arr.length - max)
+        next[code] = arr
+      }
+      return { etfHistory: next }
+    }),
   connected: false,
   setConnected: (v) => set({ connected: v }),
   feedState: 'unknown',
