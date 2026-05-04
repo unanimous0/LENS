@@ -468,7 +468,7 @@ export function EtfArbitragePage() {
         const effectiveName = effectiveCode ? master.find((e) => e.code === effectiveCode)?.name ?? '' : ''
         return (
           <div className="grid grid-cols-3 gap-1 h-[340px]">
-            <div className="panel p-2 overflow-hidden">
+            <div className="bg-black border border-white/[0.04] p-2 overflow-hidden">
               <TopBarChart
                 rows={rows}
                 metrics={metricsByCode}
@@ -476,7 +476,7 @@ export function EtfArbitragePage() {
                 onSelect={(code) => setSelectedEtf(code === selectedEtf ? null : code)}
               />
             </div>
-            <div className="panel p-2 overflow-hidden">
+            <div className="bg-black border border-white/[0.04] p-2 overflow-hidden">
               <TimeSeriesChart
                 code={effectiveCode}
                 etfName={effectiveName}
@@ -484,7 +484,7 @@ export function EtfArbitragePage() {
                 isAuto={!selectedEtf}
               />
             </div>
-            <div className="panel p-2 overflow-hidden">
+            <div className="bg-black border border-white/[0.04] p-2 overflow-hidden">
               <OrderbookPanel
                 code={effectiveCode}
                 etfName={effectiveName}
@@ -524,9 +524,9 @@ export function EtfArbitragePage() {
             <tbody>
               {rows.map((etf) => {
                 const m = metricsByCode[etf.code]
-                // diffBp 색: 양수=매수차 우세 빨강, 음수=매도차 우세 초록.
+                // 부호 컨벤션: 양수=초록, 음수=빨강 (페이지 전반 통일).
                 const diffColor = m && Math.abs(m.diffBp) > 5
-                  ? (m.diffBp > 0 ? 'text-down' : 'text-up')
+                  ? (m.diffBp > 0 ? 'text-[#00b26b]' : 'text-[#bb4a65]')
                   : 'text-white'
                 const isSelected = selectedEtf === etf.code
                 return (
@@ -548,14 +548,14 @@ export function EtfArbitragePage() {
                       <ArbC c="text-[#d1d1d6]">{m && m.tradeValue > 0 ? formatTradeValue(m.tradeValue) : '-'}</ArbC>
                       <ArbC>{m?.etfPrice ? m.etfPrice.toLocaleString() : '-'}</ArbC>
                       <ArbC>{m?.nav ? m.nav.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '-'}</ArbC>
-                      <ArbC c={m && m.priceNavBp > 0 ? 'text-up' : m && m.priceNavBp < 0 ? 'text-down' : 'text-[#d1d1d6]'}>{m && m.nav > 0 ? `${fmt(m.priceNavBp, 2)}bp` : '-'}</ArbC>
-                      <ArbC c={m && m.askNavBp > 0 ? 'text-up' : m && m.askNavBp < 0 ? 'text-down' : 'text-[#d1d1d6]'}>{m && m.nav > 0 && m.askNavBp !== 0 ? `${fmt(m.askNavBp, 2)}bp` : '-'}</ArbC>
-                      <ArbC c={m && m.bidNavBp > 0 ? 'text-up' : m && m.bidNavBp < 0 ? 'text-down' : 'text-[#d1d1d6]'}>{m && m.nav > 0 && m.bidNavBp !== 0 ? `${fmt(m.bidNavBp, 2)}bp` : '-'}</ArbC>
+                      <ArbC c={m && m.priceNavBp > 0 ? 'text-[#00b26b]' : m && m.priceNavBp < 0 ? 'text-[#bb4a65]' : 'text-[#d1d1d6]'}>{m && m.nav > 0 ? `${fmt(m.priceNavBp, 2)}bp` : '-'}</ArbC>
+                      <ArbC c={m && m.askNavBp > 0 ? 'text-[#00b26b]' : m && m.askNavBp < 0 ? 'text-[#bb4a65]' : 'text-[#d1d1d6]'}>{m && m.nav > 0 && m.askNavBp !== 0 ? `${fmt(m.askNavBp, 2)}bp` : '-'}</ArbC>
+                      <ArbC c={m && m.bidNavBp > 0 ? 'text-[#00b26b]' : m && m.bidNavBp < 0 ? 'text-[#bb4a65]' : 'text-[#d1d1d6]'}>{m && m.nav > 0 && m.bidNavBp !== 0 ? `${fmt(m.bidNavBp, 2)}bp` : '-'}</ArbC>
                       <ArbC c={cn('font-medium', diffColor)}>{m ? formatBp(m.diffBp) : '-'}</ArbC>
                       <ArbC>{m?.fNav ? m.fNav.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '-'}</ArbC>
-                      <ArbC c={m && m.navDiff < 0 ? 'text-up' : m && m.navDiff > 0 ? 'text-down' : 'text-[#d1d1d6]'}>{m && m.fNav > 0 ? fmt(m.navDiff, 2) : '-'}</ArbC>
-                      <ArbC c={m?.tradeProfitMaker != null && m.tradeProfitMaker < 0 ? 'text-up' : m?.tradeProfitMaker != null && m.tradeProfitMaker > 0 ? 'text-down' : 'text-[#d1d1d6]'}>{m?.tradeProfitMaker != null ? fmt(m.tradeProfitMaker, 2) : '-'}</ArbC>
-                      <ArbC c={m?.tradeProfitTaker != null && m.tradeProfitTaker < 0 ? 'text-up' : m?.tradeProfitTaker != null && m.tradeProfitTaker > 0 ? 'text-down' : 'text-[#d1d1d6]'}>{m?.tradeProfitTaker != null ? fmt(m.tradeProfitTaker, 2) : '-'}</ArbC>
+                      <ArbC c={m && m.navDiff > 0 ? 'text-[#00b26b]' : m && m.navDiff < 0 ? 'text-[#bb4a65]' : 'text-[#d1d1d6]'}>{m && m.fNav > 0 ? fmt(m.navDiff, 2) : '-'}</ArbC>
+                      <ArbC c={m?.tradeProfitMaker != null && m.tradeProfitMaker > 0 ? 'text-[#00b26b]' : m?.tradeProfitMaker != null && m.tradeProfitMaker < 0 ? 'text-[#bb4a65]' : 'text-[#d1d1d6]'}>{m?.tradeProfitMaker != null ? fmt(m.tradeProfitMaker, 2) : '-'}</ArbC>
+                      <ArbC c={m?.tradeProfitTaker != null && m.tradeProfitTaker > 0 ? 'text-[#00b26b]' : m?.tradeProfitTaker != null && m.tradeProfitTaker < 0 ? 'text-[#bb4a65]' : 'text-[#d1d1d6]'}>{m?.tradeProfitTaker != null ? fmt(m.tradeProfitTaker, 2) : '-'}</ArbC>
                       <ArbC c="text-[#d1d1d6]">{m ? m.appliedPct.toFixed(1) : '-'}</ArbC>
                       <ArbC c="text-[#d1d1d6]">{m ? m.futuresCount : '-'}</ArbC>
                       <td className="px-2 py-[7px] text-center"><Sparkline history={etfHistory[etf.code]} /></td>
@@ -697,12 +697,12 @@ type TopBarProps = {
 
 /**
  * Top N ETF 막대 차트. ETF별로 매수/매도 한쪽이 거의 항상 우세하므로 좌우 분리:
- *   왼쪽 = 매수이득 Top 10 (양수만, 내림차순, 빨강)
- *   오른쪽 = 매도이득 Top 10 (양수만, 내림차순, 초록)
- * 각 측은 서로 다른 ETF로 구성됨.
+ *   왼쪽 = 매수차 Top 10 (양수, 큰 순, 초록)
+ *   오른쪽 = 매도차 Top 10 (음수, 절대값 큰 순=가장 음수가 상단, 빨강)
+ * 각 측은 서로 다른 ETF로 구성됨. 표시 값은 signed (매도차는 음수로).
  */
 const TopBarChart = memo(function TopBarChart({ rows, metrics, selected, onSelect }: TopBarProps) {
-  // diffBp signed: 양수 큰 = 매수차 우세, 음수 큰 = 매도차 우세. 양쪽 각각 Top N.
+  // diffBp signed: 양수 큰 = 매수차 우세, 음수 큰 = 매도차 우세.
   const buyTop = useMemo(
     () => rows
       .map((etf) => ({ etf, bp: metrics[etf.code]?.diffBp ?? 0 }))
@@ -713,15 +713,14 @@ const TopBarChart = memo(function TopBarChart({ rows, metrics, selected, onSelec
   )
   const sellTop = useMemo(
     () => rows
-      .map((etf) => ({ etf, raw: metrics[etf.code]?.diffBp ?? 0 }))
-      .filter((it) => it.raw < 0)
-      .map((it) => ({ etf: it.etf, bp: -it.raw }))
-      .sort((a, b) => b.bp - a.bp)
+      .map((etf) => ({ etf, bp: metrics[etf.code]?.diffBp ?? 0 }))
+      .filter((it) => it.bp < 0)
+      .sort((a, b) => a.bp - b.bp) // 오름차순 → 가장 음수(예: -130)가 상단
       .slice(0, TOP_N_CHART),
     [rows, metrics]
   )
   const buyMax = Math.max(1, ...buyTop.map((it) => it.bp))
-  const sellMax = Math.max(1, ...sellTop.map((it) => it.bp))
+  const sellMax = Math.max(1, ...sellTop.map((it) => Math.abs(it.bp)))
 
   return (
     <div className="flex flex-col h-full">
@@ -729,8 +728,8 @@ const TopBarChart = memo(function TopBarChart({ rows, metrics, selected, onSelec
         <span>차익 Top {TOP_N_CHART} (bp)</span>
       </div>
       <div className="grid grid-cols-2 gap-3 flex-1 text-[11px] min-h-0">
-        <TopSide title="매수차" items={buyTop} maxBp={buyMax} barClass="bg-down" textClass="text-down" selected={selected} onSelect={onSelect} />
-        <TopSide title="매도차" items={sellTop} maxBp={sellMax} barClass="bg-up" textClass="text-up" selected={selected} onSelect={onSelect} />
+        <TopSide title="매수차" items={buyTop} maxBp={buyMax} barClass="bg-up/40" textClass="text-[#00b26b]" selected={selected} onSelect={onSelect} />
+        <TopSide title="매도차" items={sellTop} maxBp={sellMax} barClass="bg-down/40" textClass="text-[#bb4a65]" selected={selected} onSelect={onSelect} />
       </div>
     </div>
   )
@@ -755,7 +754,7 @@ function TopSide({ title, items, maxBp, barClass, textClass, selected, onSelect 
         {items.length === 0 ? (
           <div className="text-t4 text-[10px] text-center">—</div>
         ) : items.map(({ etf, bp }) => {
-          const w = (bp / maxBp) * 100
+          const w = (Math.abs(bp) / maxBp) * 100
           const isSelected = selected === etf.code
           return (
             <div
@@ -856,7 +855,7 @@ function ArbC({ children, c, className }: { children: React.ReactNode; c?: strin
 }
 
 /** Sparkline — diffBp 시계열. signed 한 줄 라인 차트.
- * 색은 마지막 시점 부호로 결정 (양수=매도차 초록, 음수=매수차 빨강). */
+ * 색은 마지막 시점 부호로 결정 (양수=매수차 초록, 음수=매도차 빨강). */
 const Sparkline = memo(function Sparkline({ history, width = 150, height = 34 }: {
   history: { t: number; diffBp: number }[] | undefined; width?: number; height?: number
 }) {
@@ -877,7 +876,7 @@ const Sparkline = memo(function Sparkline({ history, width = 150, height = 34 }:
       const y = height - ((p.diffBp - minV) / span) * height
       path += `${i === 0 ? 'M' : ' L'} ${(i * xStep).toFixed(1)} ${y.toFixed(1)}`
     }
-    const stroke = useSell ? 'rgb(48,209,88)' : 'rgb(238,56,46)'
+    const stroke = useSell ? 'rgb(238,56,46)' : 'rgb(48,209,88)'
     return { path, stroke }
   }, [history, width, height])
 
@@ -918,8 +917,8 @@ const OrderbookPanel = memo(function OrderbookPanel({ code, etfName, ob, price }
       <div className="mb-1 flex items-center justify-between text-[11px] text-t3">
         <span><span className="text-t1">{etfName}</span> 호가 5단</span>
         <span className="tabular-nums text-[10px] flex gap-2">
-          <span className="text-down">매도 {ob.total_ask_qty.toLocaleString()}</span>
-          <span className="text-up">매수 {ob.total_bid_qty.toLocaleString()}</span>
+          <span className="text-[#bb4a65]">매도 {ob.total_ask_qty.toLocaleString()}</span>
+          <span className="text-[#00b26b]">매수 {ob.total_bid_qty.toLocaleString()}</span>
         </span>
       </div>
       {/* 호가창 본문 — 세로 가운데 정렬. 현재가에 매칭되는 호가에 흰색 ring 하이라이트. */}
@@ -934,7 +933,7 @@ const OrderbookPanel = memo(function OrderbookPanel({ code, etfName, ob, price }
                 <div className="h-4 bg-down/40 rounded-sm shrink-0" style={{ width: `${w * 0.8}%` }} />
               </div>
               <div className={cn(
-                'text-down text-center font-medium text-[12px] py-[1px] rounded-sm',
+                'text-[#bb4a65] text-center font-medium text-[12px] py-[1px] rounded-sm',
                 hi && 'bg-white/20 ring-1 ring-white/40 font-semibold',
               )}>{l.price.toLocaleString()}</div>
               <div></div>
@@ -949,7 +948,7 @@ const OrderbookPanel = memo(function OrderbookPanel({ code, etfName, ob, price }
             <div key={`b-${i}`} className="grid grid-cols-[1fr_84px_1fr] items-center gap-1">
               <div></div>
               <div className={cn(
-                'text-up text-center font-medium text-[12px] py-[1px] rounded-sm',
+                'text-[#00b26b] text-center font-medium text-[12px] py-[1px] rounded-sm',
                 hi && 'bg-white/20 ring-1 ring-white/40 font-semibold',
               )}>{l.price.toLocaleString()}</div>
               <div className="flex items-center gap-1 min-w-0 pl-1">
@@ -964,7 +963,7 @@ const OrderbookPanel = memo(function OrderbookPanel({ code, etfName, ob, price }
   )
 })
 
-/** 시계열 라인 차트 — 선택 ETF의 차익bp(diffBp) 추이. signed: 양수=매도차, 음수=매수차. */
+/** 시계열 라인 차트 — 선택 ETF의 차익bp(diffBp) 추이. signed: 양수=매수차(초록), 음수=매도차(빨강). */
 const TimeSeriesChart = memo(function TimeSeriesChart({ code, etfName, history, isAuto }: { code: string | null; etfName: string; history: { t: number; diffBp: number }[]; isAuto: boolean }) {
   if (!code) {
     return (
@@ -1013,9 +1012,9 @@ const TimeSeriesChart = memo(function TimeSeriesChart({ code, etfName, history, 
   const area = `${path} L ${xOf(maxT).toFixed(2)} ${baseY} L ${xOf(minT).toFixed(2)} ${baseY} Z`
 
   const dur = ((maxT - minT) / 1000 / 60).toFixed(1)
-  // 양수=매도차(초록 ts-sell-*), 음수=매수차(빨강 ts-buy-*)
-  const areaId = useSell ? 'ts-sell-area' : 'ts-buy-area'
-  const lineId = useSell ? 'ts-sell-line' : 'ts-buy-line'
+  // 부호 컨벤션: 양수=매수차(초록), 음수=매도차(빨강)
+  const areaId = useSell ? 'ts-neg-area' : 'ts-pos-area'
+  const lineId = useSell ? 'ts-neg-line' : 'ts-pos-line'
 
   return (
     <div className="flex flex-col h-full">
@@ -1025,7 +1024,7 @@ const TimeSeriesChart = memo(function TimeSeriesChart({ code, etfName, history, 
           {isAuto && <span className="ml-1 text-t4">(Top 자동선택)</span>}
         </span>
         <span className="flex items-center gap-3 tabular-nums">
-          <span className={useSell ? 'text-up' : 'text-down'}>
+          <span className={useSell ? 'text-down' : 'text-up'}>
             {useSell ? '매도차' : '매수차'} {fmt(last.diffBp, 1)}bp
           </span>
         </span>
@@ -1037,23 +1036,23 @@ const TimeSeriesChart = memo(function TimeSeriesChart({ code, etfName, history, 
         <div className="absolute left-0 bottom-[3.3%] translate-y-1/2 text-[9px] text-t4 tabular-nums w-9 pr-1 text-right z-10 leading-none">{minV.toFixed(0)}</div>
         <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" className="absolute inset-0 w-full h-full">
           <defs>
-            {/* 대시보드 GradientChart 패턴 표준 — area: vertical fade, line: horizontal lighten.
-                매수=빨강(ts-buy-*), 매도=초록(ts-sell-*) */}
-            <linearGradient id="ts-buy-area" x1="0" y1="0" x2="0" y2="1">
+            {/* area: vertical fade, line: horizontal lighten.
+                ts-pos-* = 양수=매수차=초록, ts-neg-* = 음수=매도차=빨강 */}
+            <linearGradient id="ts-neg-area" x1="0" y1="0" x2="0" y2="1">
               <stop offset="0%" stopColor="#ee382e" stopOpacity="0.4" />
               <stop offset="50%" stopColor="#ee382e" stopOpacity="0.1" />
               <stop offset="100%" stopColor="#ee382e" stopOpacity="0" />
             </linearGradient>
-            <linearGradient id="ts-buy-line" x1="0" y1="0" x2="1" y2="0">
+            <linearGradient id="ts-neg-line" x1="0" y1="0" x2="1" y2="0">
               <stop offset="0%" stopColor="#ff6b60" />
               <stop offset="100%" stopColor="#ee382e" />
             </linearGradient>
-            <linearGradient id="ts-sell-area" x1="0" y1="0" x2="0" y2="1">
+            <linearGradient id="ts-pos-area" x1="0" y1="0" x2="0" y2="1">
               <stop offset="0%" stopColor="#30d158" stopOpacity="0.4" />
               <stop offset="50%" stopColor="#30d158" stopOpacity="0.1" />
               <stop offset="100%" stopColor="#30d158" stopOpacity="0" />
             </linearGradient>
-            <linearGradient id="ts-sell-line" x1="0" y1="0" x2="1" y2="0">
+            <linearGradient id="ts-pos-line" x1="0" y1="0" x2="1" y2="0">
               <stop offset="0%" stopColor="#4cd964" />
               <stop offset="100%" stopColor="#30d158" />
             </linearGradient>
@@ -1066,7 +1065,7 @@ const TimeSeriesChart = memo(function TimeSeriesChart({ code, etfName, history, 
           {minV < 0 && maxV > 0 && (
             <line x1={padLeft} y1={zeroY} x2={W} y2={zeroY} stroke="currentColor" strokeOpacity="0.25" strokeDasharray="0.5 0.5" vectorEffect="non-scaling-stroke" />
           )}
-          {/* 우세 측 한쪽만 그림 (매수=빨강 / 매도=초록) */}
+          {/* 우세 측 한쪽만 그림 (매수=초록 / 매도=빨강) */}
           <path d={area} fill={`url(#${areaId})`} />
           <path d={path} fill="none" stroke={`url(#${lineId})`} strokeWidth="1.5" vectorEffect="non-scaling-stroke" />
         </svg>
