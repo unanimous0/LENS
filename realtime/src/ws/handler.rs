@@ -5,7 +5,7 @@ use axum::extract::ws::{Message, WebSocket};
 use axum::extract::WebSocketUpgrade;
 use axum::response::IntoResponse;
 use tokio::sync::broadcast;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::ws::broadcast::Broadcaster;
 use crate::{AppState, Stats};
@@ -26,7 +26,7 @@ async fn handle_client(mut socket: WebSocket, broadcaster: Arc<Broadcaster>, sta
     // 프론트엔드가 보내는 "subscribe" 메시지 대기 (기존 Python 호환)
     if let Some(Ok(msg)) = socket.recv().await {
         if let Message::Text(text) = msg {
-            info!("Client sent: {}", text);
+            debug!("Client sent: {}", text);
         }
     }
 

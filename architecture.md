@@ -85,3 +85,31 @@ LENS/
 2. `frontend/src/App.tsx`의 Routes에 `<Route path="/새기능" element={<새기능Page />} />` 추가
 3. `frontend/src/components/layout/top-nav.tsx`의 `tabs` 배열에 항목 추가
 4. 필요시 `backend/routers/새기능.py` 라우터 생성 후 `main.py`에 등록
+
+## 실시간 데이터 화면 — 필수 패턴
+
+ETF/종목차익처럼 실시간 tick을 받는 페이지는 **반드시 다음 패턴 따라야** 화면 멈춤 회피:
+
+1. **store 직접 구독 금지** — `useMarketStore((s) => s.stockTicks)` 식으로 hot-path 필드를 직접 구독하면 매 tick(60Hz) 페이지 전체 재렌더. 대신 `setInterval(200ms)`로 snapshot 폴링:
+   ```ts
+   const [{ stockTicks, futuresTicks }, setSnap] = useState(() => {
+     const s = useMarketStore.getState()
+     return { stockTicks: s.stockTicks, futuresTicks: s.futuresTicks }
+   })
+   useEffect(() => {
+     const id = setInterval(() => {
+       const s = useMarketStore.getState()
+       setSnap({ stockTicks: s.stockTicks, futuresTicks: s.futuresTicks })
+     }, 200)
+     return () => clearInterval(id)
+   }, [])
+   ```
+   `etf-arbitrage.tsx` / `market.tsx` / `stock-arbitrage.tsx` 모두 이 패턴 사용.
+
+2. **수백 행 테이블 → 가상화 필수** — `@tanstack/react-virtual` + `<colgroup>` + spacer rows. `etf-arbitrage.tsx`가 reference (스크롤 컨테이너 = `<main>`, scrollMargin 동적 측정).
+
+3. **derived metric 안정화** — useMemo 출력에 ref-cache (shallowEqual 후 이전 ref 재사용). 변동 row만 reconcile. 자세히는 [etf-arbitrage.md](etf-arbitrage.md) 성능 최적화 표.
+
+4. **서버 쪽** — Rust realtime이 150ms batch envelope 자동 적용. 프론트는 `useWebSocket`이 `type === 'batch'` 분기 처리 (이미 됨). 새 화면이 필드 구독해도 추가 부하 없음.
+
+위 패턴 미준수 시 750종목 부하에서 페이지 멈춤. 내부망(7000+ 종목·5+ 사용자)에선 더 심함.

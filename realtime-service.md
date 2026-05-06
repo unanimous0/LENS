@@ -809,6 +809,29 @@ LENS/
 - [x] `FEED_MODE=internal` 환경변수 전환
 - [ ] 내부망 실 데이터 테스트 (사내 PC에서 실행 필요)
 
+### Bridge 150ms coalesce + Batch envelope (내부망 스케일 핵심)
+
+**문제**: 750종목 × ~2 tps = ~1500 tick/sec를 개별 broadcast 시 브라우저 onmessage 1500 hz → JSON.parse · store mutation · React 재렌더 cascade로 페이지 멈춤. 내부망(KOSPI200 + 6000 stocks + 5+ 사용자)에선 더 심해짐.
+
+**해결**: `main.rs`의 bridge task가 mpsc rx에서 받은 WsMessage를 바로 broadcast하지 않고 **`pending: HashMap<String, WsMessage>`** 에 누적. **`tokio::time::interval(150ms)`** 가 fire하면 drain → 개별 직렬화 + cache 갱신 + 모두를 하나의 envelope JSON으로 묶어 broadcast 1회.
+
+```json
+{"type":"batch","ticks":[{"type":"stock_tick","data":{...}},{"type":"etf_tick","data":{...}}, ...]}
+```
+
+- 같은 code의 중복 tick은 마지막 값만 유지 (자동 dedup, 호가창 ~50% 추가 감소)
+- envelope 조립은 직접 문자열 concat — 이미 직렬화된 item을 다시 parse/stringify 하지 않음
+- 캐시(snapshot)는 개별 JSON 단위 유지 — 신규 클라이언트 접속 시 기존 flush 그대로 작동
+- 구독자 0명: 직렬화 스킵하지만 cache는 채움 (재접속 대비)
+- 트레이드오프: 최대 150ms 표시 지연. 모니터링 화면엔 무해 (KRX 발행 cadence와 동급), 체결 경로 부적합 — 추후 별도 endpoint 분리 시 검토
+
+**효과**:
+- 1500/sec → ~6 batch/sec (250× 압축, 배치당 평균 ~237 ticks)
+- 클라이언트당 WebSocket write/sec **종목 수·사용자 수와 무관**하게 6 hz로 평탄화 → 내부망 5+ 사용자 스케일 가능
+- 프론트 측 `useWebSocket.ts onmessage`가 `type === 'batch'` 분기에서 내부 ticks 배열 순회 → 기존 dispatch 재사용
+
+검증: `/debug/stats`의 `ticks_total / serialize.calls` 비율이 배치 압축률. `ws_lag_total: 0` 유지면 클라이언트가 잘 따라옴.
+
 ### 성능 최적화 (484종목 실운영 시 적용)
 
 채널 버퍼 증가는 적용 완료 (mpsc 256→8192, broadcast 4096). 10단계 최적화 커밋(`5ef7dbf`~`13aabbb`)에서 LTO/codegen-unit, Arc 공유, 스냅샷 캐시, Nagle off, rAF 플러시, 마스터순 구독, `/debug/stats` 등 반영.

@@ -11,7 +11,7 @@ const tabs = [
   { label: "포지션", href: "/position" },
   { label: "수급", href: "/supply-demand" },
   { label: "종목차익", href: "/stock-arbitrage" },
-  { label: "ETF주선교체", href: "/etf-arbitrage" },
+  { label: "ETF", href: "/etf-arbitrage" },
   { label: "배당", href: "/dividends" },
 ]
 

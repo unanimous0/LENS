@@ -68,9 +68,9 @@ for i in $(seq 1 20); do
     sleep 0.5
 done
 
-# 프론트엔드 dev 모드 실행
+# 프론트엔드 dev 모드 실행 — clearScreen=false 로 vite가 터미널을 비워 status가 가려지지 않게 함
 echo "[프론트엔드] dev 모드 시작 (포트 3100)..."
-(cd frontend && npx vite --host 0.0.0.0 --port 3100) &
+(cd frontend && npx vite --host 0.0.0.0 --port 3100 --clearScreen false) &
 FRONTEND_PID=$!
 
 echo ""
@@ -78,8 +78,81 @@ echo "LENS 개발 서버 실행 완료"
 echo "   프론트엔드: http://localhost:3100"
 echo "   백엔드 API: http://localhost:8100"
 echo "   실시간 WS:  http://localhost:8200"
-echo ""
-echo "종료: Ctrl+C"
+
+# 초기 fetch (t1102/t8402)는 ~10초 소요. 잠시 기다린 뒤 상태 요약 출력.
+print_status() {
+    local LOG_DAY=$(date +%Y%m%d)
+    local RT_LOG="logs/realtime.log.$LOG_DAY"
+    local BE_LOG="logs/backend.log.$LOG_DAY"
+    local G="\033[32m" R="\033[31m" Y="\033[33m" B="\033[36m" D="\033[2m" N="\033[0m"
+
+    chk() { ss -tlnp 2>/dev/null | grep -q ":$1 " && echo -e "${G}UP${N}" || echo -e "${R}DOWN${N}"; }
+
+    echo
+    echo "------ LENS 상태 요약 -----------------------------"
+    printf "  %-22s %b\n" "Frontend  (3100)" "$(chk 3100)"
+    printf "  %-22s %b\n" "Backend   (8100)" "$(chk 8100)"
+    printf "  %-22s %b\n" "Realtime  (8200)" "$(chk 8200)"
+    echo
+
+    local mode="unknown"
+    [ -f "$RT_LOG" ] && mode=$(grep "Initial feed mode" "$RT_LOG" 2>/dev/null | tail -1 | grep -oE "(ls_api|mock|internal)")
+    local mode_s
+    case "$mode" in
+        ls_api)   mode_s="${B}ls_api${N} (외부망 LS증권 API)" ;;
+        internal) mode_s="${B}internal${N} (내부망 사내 서버)" ;;
+        mock)     mode_s="${Y}mock${N} (가짜 데이터, 시장 시간 무관)" ;;
+        *)        mode_s="${D}$mode${N}" ;;
+    esac
+    printf "  %-22s %b\n" "피드 모드:" "$mode_s"
+
+    if [ -f "$RT_LOG" ]; then
+        local fetch_line=$(grep "Initial price fetch done" "$RT_LOG" 2>/dev/null | tail -1)
+        if [ -n "$fetch_line" ]; then
+            local result=$(echo "$fetch_line" | grep -oE "[0-9]+ futures \+ [0-9]+ stocks")
+            printf "  %-22s %s\n" "초기 가격 fetch:" "$result 수신"
+        else
+            printf "  %-22s %b\n" "초기 가격 fetch:" "${Y}진행 중...${N}"
+        fi
+        local t1102=$(grep "t1102 failures" "$RT_LOG" 2>/dev/null | tail -1 | sed -E 's/.*t1102 failures: //')
+        [ -n "$t1102" ] && printf "  %-22s %s\n" "최근 t1102:" "$t1102"
+        local t8402=$(grep "t8402 failures" "$RT_LOG" 2>/dev/null | tail -1 | sed -E 's/.*t8402 failures: //')
+        [ -n "$t8402" ] && printf "  %-22s %s\n" "최근 t8402:" "$t8402"
+        local conn_n=$(grep -c "WebSocket client connected" "$RT_LOG" 2>/dev/null)
+        local disc_n=$(grep -c "WebSocket client disconnected" "$RT_LOG" 2>/dev/null)
+        local active=$((conn_n - disc_n)); [ $active -lt 0 ] && active=0
+        printf "  %-22s %s\n" "WS 클라이언트:" "$active 활성 (누적 접속 $conn_n)"
+    fi
+
+    [ -f "$BE_LOG" ] && printf "  %-22s %s\n" "Backend API 호출:" "$(grep -cE 'GET /api/' "$BE_LOG" 2>/dev/null)"
+
+    local hour=$(date +%H | sed 's/^0//'); [ -z "$hour" ] && hour=0
+    local mins=$(date +%M | sed 's/^0//'); [ -z "$mins" ] && mins=0
+    local total_min=$((hour * 60 + mins))
+    local dow=$(date +%u)
+    local market
+    if [ "$dow" -ge 6 ]; then
+        market="${D}주말 (시장 휴무)${N}"
+    elif [ $total_min -lt 540 ]; then
+        market="${Y}개장 전 ($((540 - total_min))분 후 09:00 개장)${N}"
+    elif [ $total_min -gt 930 ]; then
+        market="${D}장 마감 (15:30 종료)${N}"
+    else
+        market="${G}개장 중${N}"
+    fi
+    printf "  %-22s %b\n" "KRX 시장:" "$market"
+
+    if [ "$mode" = "ls_api" ] && [ "$dow" -lt 6 ] && [ $total_min -lt 540 ]; then
+        echo
+        echo -e "  ${D}* 장 외엔 LS API가 종목 대다수에 no_data — FEED_MODE=mock 으로 재기동시 미리 보기 가능.${N}"
+    fi
+    echo "---------------------------------------------------"
+    echo "  종료: Ctrl+C"
+    echo
+}
+
+# 12초 후 요약 출력. 화면 + /tmp/lens-status.log 둘 다 기록 (vite 출력에 가려도 cat으로 재확인 가능).
+( sleep 12; print_status | tee /tmp/lens-status.log ) &
 
 cleanup() {
     echo ""

@@ -47,13 +47,27 @@ export function useWebSocket() {
         socket.send('subscribe')
       }
 
+      // 단일 tick 디스패치. batch envelope에서도 재사용.
+      const dispatchOne = (m: any) => {
+        if (m.type === 'etf_tick') etfBuf[m.data.code] = m.data
+        else if (m.type === 'stock_tick') stockBuf[m.data.code] = m.data
+        else if (m.type === 'futures_tick') futuresBuf[m.data.code] = m.data
+        else if (m.type === 'orderbook_tick') obBuf[m.data.code] = m.data
+      }
+
       socket.onmessage = (event) => {
         try {
           const msg = JSON.parse(event.data)
-          if (msg.type === 'etf_tick') etfBuf[msg.data.code] = msg.data
-          else if (msg.type === 'stock_tick') stockBuf[msg.data.code] = msg.data
-          else if (msg.type === 'futures_tick') futuresBuf[msg.data.code] = msg.data
-          else if (msg.type === 'orderbook_tick') obBuf[msg.data.code] = msg.data
+          // 서버가 150ms마다 보내는 batch envelope: {type:'batch', ticks:[...]}.
+          // 스냅샷 flush는 개별 tick으로 와서 둘 다 처리.
+          if (msg.type === 'batch') {
+            const ticks = msg.ticks
+            if (Array.isArray(ticks)) {
+              for (let i = 0; i < ticks.length; i++) dispatchOne(ticks[i])
+            }
+          } else {
+            dispatchOne(msg)
+          }
           dirty = true
         } catch {}
       }

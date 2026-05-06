@@ -1,8 +1,20 @@
+import { useEffect, useState } from 'react'
 import { useMarketStore } from '../stores/marketStore'
 
 export function MarketPage() {
-  const etfTicks = useMarketStore((s) => s.etfTicks)
-  const futuresTicks = useMarketStore((s) => s.futuresTicks)
+  // 200ms throttled snapshot — store 직접 구독 시 매 tick(60Hz)마다 전체 테이블 재렌더되어
+  // 페이지 멈춤 발생. 5Hz로 낮춰도 사람 눈에 충분히 부드러움. ETF 페이지와 같은 패턴.
+  const [{ etfTicks, futuresTicks }, setSnap] = useState(() => {
+    const s = useMarketStore.getState()
+    return { etfTicks: s.etfTicks, futuresTicks: s.futuresTicks }
+  })
+  useEffect(() => {
+    const id = setInterval(() => {
+      const s = useMarketStore.getState()
+      setSnap({ etfTicks: s.etfTicks, futuresTicks: s.futuresTicks })
+    }, 200)
+    return () => clearInterval(id)
+  }, [])
   const etfList = Object.values(etfTicks)
   const futuresList = Object.values(futuresTicks)
 

@@ -134,16 +134,21 @@ LP가 호가에 fill됐을 때의 fNav 대비 이익 (원). 통일 공식 `fNav 
 
 ## 성능 최적화
 
-585행 × 14컬럼 + 매 tick마다 derived 컬럼 재계산 부담 → 다층 방어:
+585행 × 15컬럼 + 매 tick마다 derived 컬럼 재계산. 1500/sec WS 메시지 + 13K DOM 노드 + 필터·체크박스 시 cascade로 화면 멈춤 발생 → 5단계 다층 방어:
 
-| 단계 | 적용 | 효과 |
+| 레이어 | 적용 | 효과 |
 |---|---|---|
-| WS ingestion 배치 | `useWebSocket` requestAnimationFrame 배치 (기존 인프라) | 60Hz cap |
-| 200ms tick throttle | `setInterval` 200ms로 store snapshot → metricsByCode/charts 5Hz 갱신 | 매 tick 17K iter → 5Hz cap (CPU 80%↓) |
-| Sparkline `React.memo` + path `useMemo` | 같은 history reference면 SVG path 재계산/렌더 skip | 585 SVG × 매 렌더 → push마다만 (5초) |
-| 차트 `React.memo` (TopBar/TimeSeries/Orderbook) | 부모 렌더 무관 props 비교만 | 불필요 재렌더 차단 |
-| ETF row freeze (펼침 중) | sortKey 변경 또는 펼침 닫힘 전까지 행 순서 캡처 | 사용 토글이 정렬 흔들지 않음 |
-| 가상화 | 미적용 (1+2+3+4로 충분) | 필요 시 `@tanstack/react-virtual` 도입 가능 |
+| **서버 batch envelope** | Rust bridge가 150ms마다 pending 버퍼 drain → `{type:'batch',ticks:[...]}` 한 번 broadcast (자세한 내용은 [realtime-service.md](realtime-service.md)) | 1500/sec → 6/sec WS 프레임. 같은 code dedup |
+| **200ms tick throttle** | `setInterval` 200ms로 store snapshot → metricsByCode/charts 5Hz 갱신 | 60Hz tick → 5Hz cap. 페이지 외 다른 페이지(market/stock-arbitrage)도 동일 패턴 |
+| **`metricsByCode` ref-stable cache** | 17필드 shallow-equal 비교, 데이터 동일 시 이전 m ref 재사용 | ArbRow memo 효과 발현 — 변동 행만 reconcile |
+| **base + excluded overlay 분리** | baseMetricsByCode (전체) + metricsByCode (excluded ETF만 override). 사용 토글 시 baseMetricsByCode 변경 안 됨 | 사용 체크박스 응답 ~50ms → ~5ms |
+| **ArbRow / ArbC / PdfRow `memo`** | 행/셀 추출 + useCallback onSelect/toggleExclude로 ref 안정화 | 필터 클릭 시 변동 ETF 행만 reconcile |
+| **`<tr>` `transition-colors` 제거** | hover/select 시 150ms paint cascade 차단 | sticky 좌측 컬럼 paint 줄임 |
+| **차트 패널 `contain: paint`** | TopBar/TimeSeries/Orderbook 업데이트가 메인 테이블 paint 트리거 안 함 | 패널 간 격리 |
+| **테이블 가상화 (`@tanstack/react-virtual`)** | vRows = 메인 + 펼침 평탄화 리스트, 보이는 ~30행만 DOM. `<colgroup>` + spacer rows로 table-fixed 유지. `<main>` 스크롤에 `scrollMargin`/resize 리스너로 동기 | **13K → ~700 DOM 노드**. 정렬/펼침/스크롤 즉시 응답 |
+| **Sparkline `React.memo`** | history ref 동일 시 SVG path 재계산 skip | 가상화로 ~30개만 렌더되므로 추가 효과 |
+| **ExpandedPanel: store 직접 구독 제거** | `stockTicks`/`futuresTicks`를 prop으로 부모(throttled snapshot)에서 받음 | 펼침 시 50Hz 흔들림 → 5Hz 동기 |
+| **`mergeStockTick` alloc 제거** | 배열 spread/filter/Math.max → 명시 비교 6줄 | 배치당 ~3000회 호출, GC 압박 ↓ |
 
 ---
 

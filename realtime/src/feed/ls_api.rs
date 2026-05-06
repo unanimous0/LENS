@@ -2,11 +2,12 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use dashmap::DashMap;
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::{self, client::IntoClientRequest, http::HeaderValue};
 use tokio_util::sync::CancellationToken;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -27,6 +28,31 @@ const IDLE_TIMEOUT_SECS: u64 = 30;
 
 fn now_us() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_micros() as u64).unwrap_or(0)
+}
+
+/// 다음 일일 새로고침 시각까지 sleep 시간 계산.
+/// 트리거: 매일 08:30 KST (장 시작 전 prev_close 갱신) + 15:50 KST (당일 종가 캡처).
+/// 두 시각 중 가장 가까운 미래까지의 duration 반환.
+fn next_daily_refresh_delay() -> std::time::Duration {
+    use chrono::{Local, Duration, TimeZone};
+    let now = Local::now();
+    let today = now.date_naive();
+    let now_naive = now.naive_local();
+
+    let candidates = [
+        today.and_hms_opt(8, 30, 0).unwrap(),
+        today.and_hms_opt(15, 50, 0).unwrap(),
+        (today + Duration::days(1)).and_hms_opt(8, 30, 0).unwrap(),
+    ];
+    let next = *candidates.iter().find(|t| **t > now_naive).unwrap();
+    let next_dt = Local
+        .from_local_datetime(&next)
+        .single()
+        .unwrap_or_else(|| now + Duration::seconds(60));
+    next_dt
+        .signed_duration_since(now)
+        .to_std()
+        .unwrap_or(std::time::Duration::from_secs(60))
 }
 
 /// KST 평일 09:00~15:45만 true. 토/일 + 야간 시간대 + KRX 휴장일엔 idle timeout 비활성.
@@ -62,6 +88,10 @@ pub struct LsApiFeed {
     /// 마지막 subscribe 완료 시각 (UNIX micros). idle timeout grace 윈도우 anchor.
     /// 재연결 직후 30초 동안은 데이터 없어도 idle 안 발동 (LS가 stream 시작 대기 시간).
     pub last_subscribe_us: Arc<AtomicU64>,
+    /// t1102 fetch 성공한 코드 캐시 — 페이지 재진입 시 풀 재fetch 회피.
+    /// SubscribeStocks 핸들러가 fetched 안 보내고 처음부터 다시 도는 11분 백로그 방지.
+    /// 프로세스 수명 동안 유지 (재시작 시만 비움).
+    pub fetched_stocks: Arc<DashMap<String, ()>>,
 }
 
 impl LsApiFeed {
@@ -85,6 +115,7 @@ impl LsApiFeed {
             stats,
             last_data_us,
             last_subscribe_us: Arc::new(AtomicU64::new(now_us())),
+            fetched_stocks: Arc::new(DashMap::new()),
         }
     }
 }
@@ -115,10 +146,46 @@ impl MarketFeed for LsApiFeed {
             let sc = self.stock_codes.clone();
             let f2s = self.futures_to_spot.clone();
             let stats = self.stats.clone();
+            let fetched = self.fetched_stocks.clone();
             tokio::spawn(async move {
                 super::ls_rest::fetch_initial_prices(
-                    &ak, &as_, &all_subs, &n, &sc, &f2s, &tx2, &cancel2, &stats,
+                    &ak, &as_, &all_subs, &n, &sc, &f2s, &tx2, &cancel2, &stats, Some(&fetched),
                 ).await;
+            });
+        }
+
+        // 일일 자동 새로고침 — 영업일 08:30 KST(장 시작 전 prev_close 갱신) +
+        // 15:50 KST(당일 종가 캡처). start_dev이 며칠 돌아도 prev_close가 항상
+        // 직전 영업일 종가 유지. 휴장일/주말은 skip → 마지막 fetch 데이터 그대로 유효.
+        // 캐시 clear 후 재fetch — 어제 데이터는 stale이라 강제 갱신.
+        {
+            let all_subs = self.subscriptions.clone();
+            let tx2 = tx.clone();
+            let cancel2 = cancel.clone();
+            let ak = self.app_key.clone();
+            let as_ = self.app_secret.clone();
+            let n = self.names.clone();
+            let sc = self.stock_codes.clone();
+            let f2s = self.futures_to_spot.clone();
+            let stats = self.stats.clone();
+            let fetched = self.fetched_stocks.clone();
+            tokio::spawn(async move {
+                loop {
+                    let delay = next_daily_refresh_delay();
+                    tokio::select! {
+                        _ = cancel2.cancelled() => return,
+                        _ = tokio::time::sleep(delay) => {}
+                    }
+                    use chrono::{Datelike, Local, Weekday};
+                    let now = Local::now();
+                    if matches!(now.weekday(), Weekday::Sat | Weekday::Sun) { continue; }
+                    if crate::holidays::is_krx_holiday(now.date_naive()) { continue; }
+                    info!("Daily refresh trigger ({}): fetch_initial_prices 재호출", now.format("%H:%M"));
+                    fetched.clear();  // 어제 캐시 stale → 비우고 처음부터
+                    super::ls_rest::fetch_initial_prices(
+                        &ak, &as_, &all_subs, &n, &sc, &f2s, &tx2, &cancel2, &stats, Some(&fetched),
+                    ).await;
+                }
             });
         }
 
@@ -198,6 +265,9 @@ impl MarketFeed for LsApiFeed {
 
         // 동적 ETF iNAV 그룹 (I5_) — 거래소 발행 NAV.
         let mut inav_cancel = CancellationToken::new();
+
+        // SubscribeStocks 핸들러용 fetched 캐시 (페이지 재진입 시 풀 재fetch 회피).
+        let fetched_stocks = self.fetched_stocks.clone();
         let mut current_inav: HashSet<String> = HashSet::new();
 
         // 현재 활성화된 선물 코드 셋 (정렬된 키) — 같은 셋 재구독 요청 시 skip.
@@ -273,7 +343,7 @@ impl MarketFeed for LsApiFeed {
 
                             // 새로 추가된 코드들에 대해 t1102 초기 fetch (현재가 + 전일종가).
                             // 장 외 시간이거나 realtime 재시작 후에도 즉시 가격 표시 가능.
-                            // TPS 10/초 제한이라 ~600 codes면 60초 정도 소요. 백그라운드로 진행.
+                            // fetched_stocks 캐시로 이미 받은 코드는 스킵 → 페이지 재진입 시 즉시 완료.
                             {
                                 let ak = app_key.clone();
                                 let as_ = app_secret.clone();
@@ -281,13 +351,14 @@ impl MarketFeed for LsApiFeed {
                                 let tx2 = tx.clone();
                                 let cancel2 = cancel.clone();
                                 let stats2 = stats.clone();
+                                let fetched = fetched_stocks.clone();
                                 tokio::spawn(async move {
                                     let token = match super::ls_rest::get_or_fetch_token(&ak, &as_).await {
                                         Ok(t) => t,
                                         Err(e) => { warn!("SubscribeStocks t1102 token fail: {e}"); return; }
                                     };
-                                    info!("SubscribeStocks t1102 fetch: {} codes", added.len());
-                                    super::ls_rest::fetch_stocks_initial(&token, &added, &n, &tx2, &cancel2, &stats2).await;
+                                    info!("SubscribeStocks t1102 fetch: {} codes (캐시 스킵 적용)", added.len());
+                                    super::ls_rest::fetch_stocks_initial(&token, &added, &n, &tx2, &cancel2, &stats2, Some(&fetched)).await;
                                 });
                             }
                         }
@@ -375,7 +446,8 @@ impl MarketFeed for LsApiFeed {
                             ob_cancel.cancel();
                             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
-                            info!("Orderbook subscribe: {:?}", codes);
+                            let n_chunks = codes.len().div_ceil(MAX_SUBS_PER_CONNECTION);
+                            info!("Orderbook subscribe: {} codes ({} conns)", codes.len(), n_chunks);
                             ob_cancel = CancellationToken::new();
                             spawn_orderbook_connection(
                                 &codes, &app_key, &app_secret, &names,
@@ -631,6 +703,8 @@ fn spawn_inav_connections(
 }
 
 /// 호가 전용 연결 스폰 (온디맨드, 최대 2-3 종목)
+/// 호가창 그룹 연결 스폰 (H1_/HA_/JH0/JC0 modal). conn_id 400+ 범위.
+/// 585개 ETF 호가처럼 LS 연결당 한도(~200)를 넘는 경우 자동으로 청크 분할 → 다중 연결.
 fn spawn_orderbook_connection(
     codes: &[(String, String)],
     app_key: &str, app_secret: &str,
@@ -644,61 +718,70 @@ fn spawn_orderbook_connection(
     last_data_us: &Arc<AtomicU64>,
     last_subscribe_us: &Arc<AtomicU64>,
 ) {
-    let codes = codes.to_vec();
-    let tx = tx.clone();
-    let gc = global_cancel.clone();
-    let fc = ob_cancel.clone();
-    let ak = app_key.to_string();
-    let as_ = app_secret.to_string();
-    let n = names.clone();
-    let sc = stock_codes.clone();
-    let f2s = futures_to_spot.clone();
-    let stats = stats.clone();
-    let last_data_us = last_data_us.clone();
-    let last_subscribe_us = last_subscribe_us.clone();
+    // 청크 분할 — 연결당 LS 한도(~200) 우회.
+    let chunks: Vec<Vec<(String, String)>> = codes
+        .chunks(MAX_SUBS_PER_CONNECTION)
+        .map(|c| c.to_vec())
+        .collect();
 
-    tokio::spawn(async move {
-        let combined = CancellationToken::new();
-        let gc2 = gc.clone();
-        let fc2 = fc.clone();
-        let cc = combined.clone();
+    for (i, chunk) in chunks.into_iter().enumerate() {
+        let conn_id = 400 + i; // fixed=0+, futures=100+, stocks=200+, inav=300+, orderbook=400+
+        let chunk_codes = chunk;
+        let tx = tx.clone();
+        let gc = global_cancel.clone();
+        let fc = ob_cancel.clone();
+        let ak = app_key.to_string();
+        let as_ = app_secret.to_string();
+        let n = names.clone();
+        let sc = stock_codes.clone();
+        let f2s = futures_to_spot.clone();
+        let stats = stats.clone();
+        let last_data_us = last_data_us.clone();
+        let last_subscribe_us = last_subscribe_us.clone();
+
         tokio::spawn(async move {
-            tokio::select! {
-                _ = gc2.cancelled() => cc.cancel(),
-                _ = fc2.cancelled() => cc.cancel(),
-            }
-        });
+            let combined = CancellationToken::new();
+            let gc2 = gc.clone();
+            let fc2 = fc.clone();
+            let cc = combined.clone();
+            tokio::spawn(async move {
+                tokio::select! {
+                    _ = gc2.cancelled() => cc.cancel(),
+                    _ = fc2.cancelled() => cc.cancel(),
+                }
+            });
 
-        let mut attempt = 0u32;
-        let mut silent_count = 0u32;
-        loop {
-            if combined.is_cancelled() { return; }
-            let ticks_before = stats.tick_count.load(Ordering::Relaxed);
-            match run_single_connection(
-                200, &ak, &as_, &codes, &n, &sc, &f2s, &tx, &combined, &last_data_us, &last_subscribe_us,
-            ).await {
-                Ok(()) => return,
-                Err(e) => {
-                    if combined.is_cancelled() { return; }
-                    let ticks_after = stats.tick_count.load(Ordering::Relaxed);
-                    if ticks_after > ticks_before { silent_count = 0; } else { silent_count += 1; }
-                    attempt += 1;
-                    stats.reconnect_count.fetch_add(1, Ordering::Relaxed);
-                    let delay = if silent_count >= 5 { 300 }
-                        else { (2u64.pow(attempt.min(5))).min(MAX_RECONNECT_DELAY_SECS) };
-                    if silent_count >= 5 {
-                        warn!("orderbook silent {silent_count} cycles — LS likely blocking, extended backoff {delay}s");
-                    } else {
-                        warn!("orderbook disconnected: {e} — reconnecting in {delay}s");
-                    }
-                    tokio::select! {
-                        _ = tokio::time::sleep(std::time::Duration::from_secs(delay)) => {}
-                        _ = combined.cancelled() => { return; }
+            let mut attempt = 0u32;
+            let mut silent_count = 0u32;
+            loop {
+                if combined.is_cancelled() { return; }
+                let ticks_before = stats.tick_count.load(Ordering::Relaxed);
+                match run_single_connection(
+                    conn_id, &ak, &as_, &chunk_codes, &n, &sc, &f2s, &tx, &combined, &last_data_us, &last_subscribe_us,
+                ).await {
+                    Ok(()) => return,
+                    Err(e) => {
+                        if combined.is_cancelled() { return; }
+                        let ticks_after = stats.tick_count.load(Ordering::Relaxed);
+                        if ticks_after > ticks_before { silent_count = 0; } else { silent_count += 1; }
+                        attempt += 1;
+                        stats.reconnect_count.fetch_add(1, Ordering::Relaxed);
+                        let delay = if silent_count >= 5 { 300 }
+                            else { (2u64.pow(attempt.min(5))).min(MAX_RECONNECT_DELAY_SECS) };
+                        if silent_count >= 5 {
+                            warn!("orderbook conn[{conn_id}] silent {silent_count} cycles — LS likely blocking, extended backoff {delay}s");
+                        } else {
+                            warn!("orderbook conn[{conn_id}] disconnected: {e} — reconnecting in {delay}s");
+                        }
+                        tokio::select! {
+                            _ = tokio::time::sleep(std::time::Duration::from_secs(delay)) => {}
+                            _ = combined.cancelled() => { return; }
+                        }
                     }
                 }
             }
-        }
-    });
+        });
+    }
 }
 
 /// 단일 WebSocket 연결: 토큰 발급 → 연결 → 구독 → 수신 루프
@@ -718,7 +801,7 @@ async fn run_single_connection(
     // 토큰 발급 — 프로세스 캐시 사용 (23h TTL). 매 재연결마다 LS에 새 토큰
     // 요청 보내면 abuse heuristic 트리거 가능성 있어 캐시로 회피.
     let token = super::ls_rest::get_or_fetch_token(app_key, app_secret).await?;
-    info!("conn[{conn_id}] token ok");
+    debug!("conn[{conn_id}] token ok");
 
     // WebSocket 연결
     let mut request = WS_URL.into_client_request().expect("bad URL");
@@ -730,14 +813,14 @@ async fn run_single_connection(
         .await.map_err(|e| format!("ws connect: {e}"))?;
 
     let (mut write, mut read) = ws.split();
-    info!("conn[{conn_id}] connected, subscribing {} codes", subscriptions.len());
+    debug!("conn[{conn_id}] connected, subscribing {} codes", subscriptions.len());
 
     // 구독
     for (tr_cd, tr_key) in subscriptions {
         let msg = serde_json::json!({"header": {"token": &token, "tr_type": "3"}, "body": {"tr_cd": tr_cd, "tr_key": tr_key}});
         write.send(tungstenite::Message::Text(msg.to_string().into())).await.map_err(|e| format!("sub: {e}"))?;
     }
-    info!("conn[{conn_id}] all subscribed");
+    debug!("conn[{conn_id}] all subscribed");
 
     // subscribe 완료 시각만 갱신 — last_data_us는 건들지 않음.
     // last_data_us는 "실제 Text/Binary 받은 시각" 의미를 유지해야 뱃지가 정직.

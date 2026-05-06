@@ -152,8 +152,19 @@ export function StockArbitragePage() {
   const closeOb = useCallback(() => setObTarget(null), [])
   const closeSpread = useCallback(() => setSpreadTarget(null), [])
 
-  const stockTicks = useMarketStore((s) => s.stockTicks)
-  const futuresTicks = useMarketStore((s) => s.futuresTicks)
+  // 200ms throttled snapshot — store 직접 구독 시 매 tick(~60Hz)마다 페이지 전체 재렌더.
+  // 5Hz로 낮춰도 트레이딩 모니터링엔 충분히 부드러움. ETF 페이지와 같은 패턴.
+  const [{ stockTicks, futuresTicks }, setSnap] = useState(() => {
+    const s = useMarketStore.getState()
+    return { stockTicks: s.stockTicks, futuresTicks: s.futuresTicks }
+  })
+  useEffect(() => {
+    const id = setInterval(() => {
+      const s = useMarketStore.getState()
+      setSnap({ stockTicks: s.stockTicks, futuresTicks: s.futuresTicks })
+    }, 200)
+    return () => clearInterval(id)
+  }, [])
 
   useEffect(() => {
     fetch('/api/arbitrage/master')
@@ -481,7 +492,7 @@ export function StockArbitragePage() {
                 {/* 일중 위치 */}
                 <IntradayCell row={r} />
                 {/* 가격 */}
-                <PriceCell value={r.spotPrice} formatted={fP(r.spotPrice)} />
+                <PriceCell value={r.spotPrice || r.spotPrevClose} formatted={fP(r.spotPrice || r.spotPrevClose)} />
                 <PriceCell value={r.futuresPrice} formatted={fP(r.futuresPrice)} />
                 <C sub>{r.theoreticalPrice ? Math.round(r.theoreticalPrice).toLocaleString() : '-'}</C>
                 {/* 베이시스 */}

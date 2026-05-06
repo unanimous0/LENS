@@ -32,6 +32,12 @@ impl Broadcaster {
         let _ = self.tx.send(json);
     }
 
+    /// 캐시만 저장 (브로드캐스트 안 함). batch envelope로 묶어 보낼 때 스냅샷용으로
+    /// 개별 JSON은 캐시에 보존하고, 실제 송출은 envelope 한 번만 하기 위함.
+    pub fn cache_only(&self, key: String, json: Arc<str>) {
+        self.cache.insert(key, json);
+    }
+
     /// 캐시 없이 브로드캐스트만. Orderbook 등 재현 의미 적은 스트림용.
     pub fn send(&self, json: Arc<str>) {
         let _ = self.tx.send(json);

@@ -6,6 +6,8 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
+use dashmap::DashMap;
+
 use tokio::sync::{mpsc, Mutex as TokioMutex};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
@@ -98,6 +100,7 @@ pub async fn fetch_initial_prices(
     tx: &mpsc::Sender<WsMessage>,
     cancel: &CancellationToken,
     stats: &Arc<Stats>,
+    fetched_stocks: Option<&Arc<DashMap<String, ()>>>,
 ) {
     let token = match get_or_fetch_token(app_key, app_secret).await {
         Ok(t) => t,
@@ -136,8 +139,9 @@ pub async fn fetch_initial_prices(
     let token2 = token.clone();
     let names2 = names.clone();
     let stats2 = stats.clone();
+    let fetched2 = fetched_stocks.cloned();
     let h2 = tokio::spawn(async move {
-        fetch_stocks_initial(&token2, &spot_codes, &names2, &tx2, &cancel2, &stats2).await
+        fetch_stocks_initial(&token2, &spot_codes, &names2, &tx2, &cancel2, &stats2, fetched2.as_ref()).await
     });
 
     let (r1, r2) = tokio::join!(h1, h2);
@@ -146,8 +150,8 @@ pub async fn fetch_initial_prices(
     info!("Initial price fetch done: {f_count} futures + {s_count} stocks");
 }
 
-/// 요청 간 균등 간격 (초당 5건, TPS 10 한도 대비 여유). 버스트 방지.
-const REQ_INTERVAL: std::time::Duration = std::time::Duration::from_millis(200);
+/// 요청 간 균등 간격. TPS 10 한도에 맞춰 100ms (10/초). 한도 도달 시 fetch_t1102 내부 retry가 처리.
+const REQ_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
 /// HTTP 에러 시 재시도 횟수 (최초 1회 + 재시도 2회 = 총 3회)
 const MAX_RETRIES: usize = 2;
 
@@ -224,7 +228,9 @@ async fn fetch_futures_initial(
     count
 }
 
-/// t1102로 현물 초기 가격 + 거래대금 조회
+/// t1102로 현물 초기 가격 + 거래대금 조회.
+/// `fetched`가 Some이면 이미 fetch 성공한 코드는 건너뜀 (페이지 재진입 시 11분 풀 fetch 회피).
+/// 성공 시 fetched에 등록되어 다음 호출에선 같은 코드 스킵.
 pub async fn fetch_stocks_initial(
     token: &str,
     codes: &[String],
@@ -232,9 +238,11 @@ pub async fn fetch_stocks_initial(
     tx: &mpsc::Sender<WsMessage>,
     cancel: &CancellationToken,
     stats: &Arc<Stats>,
+    fetched: Option<&Arc<DashMap<String, ()>>>,
 ) -> usize {
     let client = reqwest::Client::new();
     let mut count = 0;
+    let mut skipped = 0;
     let mut fail_no_data = 0;
     let mut fail_http_5xx = 0;
     let mut fail_tps = 0;
@@ -243,20 +251,29 @@ pub async fn fetch_stocks_initial(
     for code in codes {
         if cancel.is_cancelled() { return count; }
 
+        // 이미 fetch 성공한 코드는 건너뜀.
+        if let Some(set) = fetched {
+            if set.contains_key(code) {
+                skipped += 1;
+                continue;
+            }
+        }
+
         match fetch_t1102(&client, token, code).await {
             Ok(detail) => {
                 let price = pf(detail.get("price"));
                 let value = pu(detail.get("value")); // 백만원 단위 거래대금
-                // "체결 없으면 공란" 원칙: 당일 거래대금 0이면 price도 전일 종가 stale 값.
-                // S3_/K3_ 실시간 체결이 들어오면 그때 갱신됨.
-                if value > 0 {
-                    let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.6f").to_string();
-                    let name = names.get(code.as_str()).cloned().unwrap_or_default();
-                    // t1102 응답 필드 (확인됨): high(고가), low(저가), recprice(전일종가)
-                    let h = pf(detail.get("high"));
-                    let l = pf(detail.get("low"));
-                    let pc = pf(detail.get("recprice"));
+                let h = pf(detail.get("high"));
+                let l = pf(detail.get("low"));
+                let pc = pf(detail.get("recprice"));
+                let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.6f").to_string();
+                let name = names.get(code.as_str()).cloned().unwrap_or_default();
 
+                // "체결 없으면 공란" 원칙: 당일 거래대금 0이면 price 필드는 전일 종가 stale 값.
+                // 그러나 prev_close(recprice)는 거래 유무와 무관하게 항상 정확 → 별도 emit.
+                // 이렇게 해야 동시호가/장 시작 전에도 prev_close가 store에 미리 들어가서
+                // 장 시작 첫 S3_/K3_ tick 도착 즉시 변화율 계산 가능.
+                if value > 0 {
                     let _ = tx.send(WsMessage::StockTick(StockTick {
                         code: code.clone(), name,
                         price,
@@ -267,9 +284,24 @@ pub async fn fetch_stocks_initial(
                         low: if l > 0.0 { Some(l) } else { None },
                         prev_close: if pc > 0.0 { Some(pc) } else { None },
                     })).await;
+                    if let Some(set) = fetched { set.insert(code.clone(), ()); }
+                    count += 1;
+                } else if pc > 0.0 {
+                    // value==0: 오늘 거래 없음. price는 stale이라 0으로 두고 prev_close만 emit.
+                    // 프론트는 price==0일 때 가격/변화율 모두 빈칸 처리하므로 stale 노출 위험 없음.
+                    let _ = tx.send(WsMessage::StockTick(StockTick {
+                        code: code.clone(), name,
+                        price: 0.0,
+                        volume: 0,
+                        cum_volume: 0,
+                        timestamp: now, is_initial: true,
+                        high: None, low: None,
+                        prev_close: Some(pc),
+                    })).await;
+                    if let Some(set) = fetched { set.insert(code.clone(), ()); }
                     count += 1;
                 } else {
-                    // value==0: 오늘 거래 없음 → stale 회피 위해 skip.
+                    // value==0 + recprice 없음 (신규상장 등 정말 데이터 없는 케이스).
                     fail_no_data += 1;
                     bump_fail(stats, "no_data");
                 }
@@ -290,6 +322,9 @@ pub async fn fetch_stocks_initial(
     let failed = fail_no_data + fail_http_5xx + fail_tps + fail_other;
     if failed > 0 {
         warn!("t1102 failures: no_data={fail_no_data} http_5xx={fail_http_5xx} tps={fail_tps} other={fail_other}");
+    }
+    if skipped > 0 {
+        info!("t1102 skipped (already fetched): {skipped}");
     }
     count
 }

@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import type { ETFTick, StockTick, FuturesTick, OrderbookTick, NetworkMode } from '../types/market'
 
-export type FeedState = 'fresh' | 'quiet' | 'stale' | 'closed' | 'mock' | 'internal' | 'unknown'
+export type FeedState = 'fresh' | 'quiet' | 'stale' | 'pre_open' | 'post_close' | 'closed' | 'mock' | 'internal' | 'unknown'
 
 interface MarketState {
   networkMode: NetworkMode
@@ -44,10 +44,18 @@ function shouldSkip(tick: any, prev: any): boolean {
  */
 function mergeStockTick(tick: StockTick, prev: StockTick | undefined): StockTick {
   const cumVolume = tick.cum_volume === 0 ? (prev?.cum_volume ?? 0) : tick.cum_volume
-  const candHigh = [tick.high, prev?.high, tick.price].filter((v): v is number => typeof v === 'number' && v > 0)
-  const candLow = [tick.low, prev?.low, tick.price].filter((v): v is number => typeof v === 'number' && v > 0)
-  const high = candHigh.length ? Math.max(...candHigh) : undefined
-  const low = candLow.length ? Math.min(...candLow) : undefined
+  // high/low — 배열 alloc + spread 비용 회피. 명시적 비교로 같은 결과.
+  const tHigh = tick.high, pHigh = prev?.high
+  const tLow = tick.low, pLow = prev?.low
+  const price = tick.price
+  let high: number | undefined
+  if (tHigh != null && tHigh > 0) high = tHigh
+  if (pHigh != null && pHigh > 0 && (high === undefined || pHigh > high)) high = pHigh
+  if (price > 0 && (high === undefined || price > high)) high = price
+  let low: number | undefined
+  if (tLow != null && tLow > 0) low = tLow
+  if (pLow != null && pLow > 0 && (low === undefined || pLow < low)) low = pLow
+  if (price > 0 && (low === undefined || price < low)) low = price
   const prev_close = tick.prev_close ?? prev?.prev_close
   return { ...tick, cum_volume: cumVolume, high, low, prev_close }
 }

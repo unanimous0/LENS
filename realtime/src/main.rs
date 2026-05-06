@@ -110,16 +110,44 @@ fn now_us() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_micros() as u64).unwrap_or(0)
 }
 
-/// KST 평일 09:00~15:45, KRX 휴장일 제외 — debug_stats에서 feed_state 산출용.
-/// ls_api.rs의 is_market_hours()와 중복이지만 거기 모듈 함수는 private이라 복제 OK.
-fn is_market_hours_kst() -> bool {
+/// pending 버퍼용 key — 모든 타입에 대해 dedup 가능하도록 unique key 생성.
+/// OrderbookTick도 batch에 포함되므로 cache 안 하더라도 buffer key는 필요.
+fn msg_pending_key(msg: &WsMessage) -> String {
+    match msg {
+        WsMessage::StockTick(t) => format!("stock_tick:{}", t.code),
+        WsMessage::FuturesTick(t) => format!("futures_tick:{}", t.code),
+        WsMessage::EtfTick(t) => format!("etf_tick:{}", t.code),
+        WsMessage::OrderbookTick(t) => format!("orderbook_tick:{}", t.code),
+    }
+}
+
+/// 캐시(snapshot 복원용) key. OrderbookTick은 캐시 안 함 (재현 의미 적음).
+fn msg_cache_key(msg: &WsMessage) -> Option<String> {
+    match msg {
+        WsMessage::StockTick(t) => Some(format!("stock_tick:{}", t.code)),
+        WsMessage::FuturesTick(t) => Some(format!("futures_tick:{}", t.code)),
+        WsMessage::EtfTick(t) => Some(format!("etf_tick:{}", t.code)),
+        WsMessage::OrderbookTick(_) => None,
+    }
+}
+
+/// KRX 세션 상태 (KST 기준).
+///   "closed"     — 주말 / KRX 공휴일
+///   "pre_open"   — 영업일 09:00 이전
+///   "open"       — 영업일 09:00 ~ 15:45
+///   "post_close" — 영업일 15:45 이후
+fn session_state_kst() -> &'static str {
     use chrono::{Datelike, Local, Timelike, Weekday};
     let now = Local::now();
-    if matches!(now.weekday(), Weekday::Sat | Weekday::Sun) { return false; }
-    if holidays::is_krx_holiday(now.date_naive()) { return false; }
+    if matches!(now.weekday(), Weekday::Sat | Weekday::Sun) { return "closed"; }
+    if holidays::is_krx_holiday(now.date_naive()) { return "closed"; }
     let mins = now.hour() * 60 + now.minute();
-    (9 * 60..15 * 60 + 45).contains(&mins)
+    if mins < 9 * 60 { "pre_open" }
+    else if mins < 15 * 60 + 45 { "open" }
+    else { "post_close" }
 }
+
+fn is_market_hours_kst() -> bool { session_state_kst() == "open" }
 
 #[tokio::main]
 async fn main() {
@@ -185,58 +213,99 @@ async fn main() {
     let stats_bridge = stats.clone();
     let prev_close_map = stock_prev_close.clone();
     let etf_state_map = etf_state.clone();
+    // Bridge: rx에서 WsMessage 받아 backfill → pending 버퍼에 (code별 dedup) → 150ms마다
+    // 일괄 직렬화 + 캐시 갱신 + batch envelope 한 번 broadcast.
+    //
+    // 효과:
+    //   - 1500/sec 이벤트가 ~7/sec 배치로 압축 → 브라우저 onmessage 60Hz → 7Hz
+    //   - 같은 code 중복 tick은 마지막 값만 (dedup) → 호가 50% 감소 추정
+    //   - 클라이언트당 WebSocket write 빈도 7Hz로 평탄화 → 내부망 5+ 사용자 스케일 가능
+    //
+    // 트레이드오프: 최대 150ms 표시 지연. 트레이딩 모니터링 화면엔 무해 (KRX 발행 cadence와 동급).
+    //   체결 경로엔 부적합 — 추후 별도 endpoint 분리 시 검토.
     tokio::spawn(async move {
-        while let Some(mut msg) = rx.recv().await {
-            // StockTick prev_close 백필
-            if let WsMessage::StockTick(ref mut t) = msg {
-                match t.prev_close {
-                    Some(pc) => { prev_close_map.insert(t.code.clone(), pc); }
-                    None => {
-                        if let Some(pc) = prev_close_map.get(&t.code) {
-                            t.prev_close = Some(*pc);
+        use std::collections::HashMap as StdHashMap;
+        use tokio::time::{interval, Duration, MissedTickBehavior};
+
+        let mut pending: StdHashMap<String, WsMessage> = StdHashMap::new();
+        let mut tick_interval = interval(Duration::from_millis(150));
+        tick_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+
+        loop {
+            tokio::select! {
+                maybe_msg = rx.recv() => {
+                    let Some(mut msg) = maybe_msg else { break };
+                    // StockTick prev_close 백필
+                    if let WsMessage::StockTick(ref mut t) = msg {
+                        match t.prev_close {
+                            Some(pc) => { prev_close_map.insert(t.code.clone(), pc); }
+                            None => {
+                                if let Some(pc) = prev_close_map.get(&t.code) {
+                                    t.prev_close = Some(*pc);
+                                }
+                            }
                         }
                     }
-                }
-            }
-            // EtfTick price/nav/volume 백필 — 0인 필드는 이전 캐시에서 가져오고, 0 아닌 값은 저장.
-            if let WsMessage::EtfTick(ref mut t) = msg {
-                let mut prev = etf_state_map.entry(t.code.clone()).or_default();
-                if t.price > 0.0 { prev.price = t.price; } else { t.price = prev.price; }
-                if t.nav > 0.0 { prev.nav = t.nav; } else { t.nav = prev.nav; }
-                if t.volume > 0 { prev.volume = t.volume; } else { t.volume = prev.volume; }
-            }
-            let key = match &msg {
-                WsMessage::StockTick(t) => Some(format!("stock_tick:{}", t.code)),
-                WsMessage::FuturesTick(t) => Some(format!("futures_tick:{}", t.code)),
-                WsMessage::EtfTick(t) => Some(format!("etf_tick:{}", t.code)),
-                WsMessage::OrderbookTick(_) => None,
-            };
-            // 캐시 안 하는 스트림(OrderbookTick) + 연결된 WS 클라이언트 0명 → 직렬화 스킵.
-            // 캐시 대상 틱은 새 클라이언트 스냅샷 복원에 필요해서 항상 직렬화해야 함.
-            if key.is_none() && bc.receiver_count() == 0 {
-                stats_bridge.tick_skipped_no_subscribers.fetch_add(1, Ordering::Relaxed);
-                continue;
-            }
-            let t_ser_start = Instant::now();
-            let ser = serde_json::to_string(&msg);
-            let ser_elapsed = t_ser_start.elapsed().as_nanos() as u64;
-            stats_bridge.serialize_ns.fetch_add(ser_elapsed, Ordering::Relaxed);
-            stats_bridge.serialize_calls.fetch_add(1, Ordering::Relaxed);
-            match ser {
-                Ok(json) => {
-                    let arc: Arc<str> = Arc::from(json);
-                    let t_send_start = Instant::now();
-                    if let Some(k) = key {
-                        bc.send_cached(k, arc);
-                    } else {
-                        bc.send(arc);
+                    // EtfTick 필드 백필
+                    if let WsMessage::EtfTick(ref mut t) = msg {
+                        let mut prev = etf_state_map.entry(t.code.clone()).or_default();
+                        if t.price > 0.0 { prev.price = t.price; } else { t.price = prev.price; }
+                        if t.nav > 0.0 { prev.nav = t.nav; } else { t.nav = prev.nav; }
+                        if t.volume > 0 { prev.volume = t.volume; } else { t.volume = prev.volume; }
                     }
+                    let key = msg_pending_key(&msg);
+                    pending.insert(key, msg);
+                    stats_bridge.tick_count.fetch_add(1, Ordering::Relaxed);
+                }
+                _ = tick_interval.tick() => {
+                    if pending.is_empty() { continue; }
+                    if bc.receiver_count() == 0 {
+                        // 구독자 없으면 직렬화 스킵. 다음 클라이언트 접속 시 캐시 스냅샷에서
+                        // 복원되도록 cacheable 만큼만 직렬화해서 캐시에 넣어둠.
+                        for (_, msg) in pending.drain() {
+                            if let Some(cache_key) = msg_cache_key(&msg) {
+                                if let Ok(j) = serde_json::to_string(&msg) {
+                                    bc.cache_only(cache_key, Arc::from(j));
+                                }
+                            }
+                            stats_bridge.tick_skipped_no_subscribers.fetch_add(1, Ordering::Relaxed);
+                        }
+                        continue;
+                    }
+
+                    // batch envelope: 개별 직렬화 + 캐시 갱신 + ticks 배열에 누적
+                    let t_ser_start = Instant::now();
+                    let mut items_json: Vec<String> = Vec::with_capacity(pending.len());
+                    for (_, msg) in pending.drain() {
+                        let Ok(item) = serde_json::to_string(&msg) else { continue };
+                        if let Some(cache_key) = msg_cache_key(&msg) {
+                            bc.cache_only(cache_key, Arc::from(item.clone()));
+                        }
+                        items_json.push(item);
+                    }
+                    if items_json.is_empty() { continue; }
+
+                    // {"type":"batch","ticks":[<item1>,<item2>,...]} — items는 이미 JSON 문자열이라
+                    // 한 번 더 to_string하지 말고 직접 조립해 직렬화 비용 절약.
+                    let mut envelope = String::with_capacity(items_json.iter().map(|s| s.len()).sum::<usize>() + 32);
+                    envelope.push_str("{\"type\":\"batch\",\"ticks\":[");
+                    let mut first = true;
+                    for item in items_json {
+                        if !first { envelope.push(','); }
+                        first = false;
+                        envelope.push_str(&item);
+                    }
+                    envelope.push_str("]}");
+                    let ser_elapsed = t_ser_start.elapsed().as_nanos() as u64;
+                    stats_bridge.serialize_ns.fetch_add(ser_elapsed, Ordering::Relaxed);
+                    stats_bridge.serialize_calls.fetch_add(1, Ordering::Relaxed);
+
+                    let t_send_start = Instant::now();
+                    bc.send(Arc::from(envelope));
                     let send_elapsed = t_send_start.elapsed().as_nanos() as u64;
                     stats_bridge.send_ns.fetch_add(send_elapsed, Ordering::Relaxed);
                     stats_bridge.send_calls.fetch_add(1, Ordering::Relaxed);
-                    stats_bridge.tick_count.fetch_add(1, Ordering::Relaxed);
                 }
-                Err(e) => tracing::error!("JSON serialization error: {}", e),
             }
         }
     });
@@ -771,8 +840,8 @@ async fn subscribe_orderbook(
         codes.push(("JC0".to_string(), spr.clone()));
     }
 
-    info!("REST orderbook subscribe: {:?}", codes);
     let count = codes.len();
+    info!("REST orderbook subscribe: {} codes", count);
     let _ = state
         .sub_tx
         .read()
@@ -805,22 +874,25 @@ async fn debug_stats(State(state): State<AppState>) -> Json<serde_json::Value> {
 
     // Feed health 산출.
     // mock/internal 모드는 별도 상태로 분리 (LS API와 무관).
-    // ls_api 모드는 장 시간 + 마지막 데이터 시각 기반:
-    //   장 시간 외 → "closed"
-    //   <30s → "fresh", <300s → "quiet", >=300s → "stale"
+    // ls_api 모드는 세션 상태 + 마지막 데이터 시각 기반:
+    //   장 외 4단계: closed(주말·공휴일) / pre_open(09:00 전) / post_close(15:45 후)
+    //   장 중: <30s → "fresh", <300s → "quiet", >=300s → "stale"
     let mode = state.feed_mode.read().unwrap().clone();
+    let session = session_state_kst();
     let last_us = state.feed_last_data_us.load(Ordering::Relaxed);
     let age_us = now_us().saturating_sub(last_us);
     let age_sec = age_us as f64 / 1_000_000.0;
     let feed_state = match mode.as_str() {
         "mock" => "mock",
         "internal" => "internal",
-        "ls_api" => {
-            if !is_market_hours_kst() { "closed" }
-            else if age_us < 30_000_000 { "fresh" }
-            else if age_us < 300_000_000 { "quiet" }
-            else { "stale" }
-        }
+        "ls_api" => match session {
+            "open" => {
+                if age_us < 30_000_000 { "fresh" }
+                else if age_us < 300_000_000 { "quiet" }
+                else { "stale" }
+            }
+            other => other, // pre_open / post_close / closed 그대로 전달
+        },
         _ => "unknown",
     };
 
@@ -835,7 +907,8 @@ async fn debug_stats(State(state): State<AppState>) -> Json<serde_json::Value> {
         "feed_mode": mode,
         "feed_state": feed_state,
         "feed_age_sec": age_sec,
-        "is_market_hours": is_market_hours_kst(),
+        "session": session,
+        "is_market_hours": session == "open",
         "serialize": {
             "calls": ser_calls,
             "total_ns": ser_ns,

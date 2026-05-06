@@ -68,11 +68,13 @@ function FeedHealthBadge({ state, ageSec }: { state: FeedState; ageSec: number }
     `데이터 수신 상태: ${meta.short}\n` +
     (state === 'fresh' || state === 'quiet' || state === 'stale' ? `마지막 수신: ${ageLabel} 전\n` : '') +
     `\n색 가이드:\n` +
-    `🟢 정상   — 30초 이내 데이터 들어옴\n` +
-    `🟡 잠잠   — 30초~5분 침묵 (점심·종목 한산할 수도)\n` +
-    `🔴 멈춤   — 5분+ 침묵 / LS 차단 의심\n` +
-    `⚪ 휴장   — 장 시간 외 (KST 09:00~15:45 외)\n` +
-    `⚫ Mock/Internal — LS 미사용 모드`
+    `정상      — 30초 이내 데이터 들어옴\n` +
+    `잠잠      — 30초~5분 침묵 (점심·종목 한산할 수도)\n` +
+    `멈춤      — 5분+ 침묵 / LS 차단 의심\n` +
+    `장 시작 전 — 영업일 09:00 이전\n` +
+    `장 마감   — 영업일 15:45 이후\n` +
+    `휴장      — 주말/공휴일\n` +
+    `Mock/Internal — LS 미사용 모드`
 
   return (
     <div
@@ -86,13 +88,15 @@ function FeedHealthBadge({ state, ageSec }: { state: FeedState; ageSec: number }
 }
 
 const FEED_META: Record<FeedState, { dot: string; text: string; short: string }> = {
-  fresh:    { dot: 'bg-up',         text: 'text-t3', short: '정상' },
-  quiet:    { dot: 'bg-warning',    text: 'text-warning', short: '잠잠' },
-  stale:    { dot: 'bg-down',       text: 'text-down', short: '멈춤' },
-  closed:   { dot: 'bg-t4',         text: 'text-t3', short: '휴장' },
-  mock:     { dot: 'bg-t4',         text: 'text-t3', short: 'Mock' },
-  internal: { dot: 'bg-blue',       text: 'text-t3', short: 'Internal' },
-  unknown:  { dot: 'bg-t4',         text: 'text-t4', short: '...' },
+  fresh:      { dot: 'bg-up',         text: 'text-t3', short: '정상' },
+  quiet:      { dot: 'bg-warning',    text: 'text-warning', short: '잠잠' },
+  stale:      { dot: 'bg-down',       text: 'text-down', short: '멈춤' },
+  pre_open:   { dot: 'bg-blue',       text: 'text-t3', short: '장 시작 전' },
+  post_close: { dot: 'bg-t4',         text: 'text-t3', short: '장 마감' },
+  closed:     { dot: 'bg-t4',         text: 'text-t4', short: '휴장' },
+  mock:       { dot: 'bg-t4',         text: 'text-t3', short: 'Mock' },
+  internal:   { dot: 'bg-blue',       text: 'text-t3', short: 'Internal' },
+  unknown:    { dot: 'bg-t4',         text: 'text-t4', short: '...' },
 }
 
 function formatAge(sec: number): string {
