@@ -1,3 +1,9 @@
+// REALTIME REFERENCE IMPLEMENTATION
+// 새 실시간 페이지는 이 파일을 템플릿으로 복사·변형. 패턴: 200ms throttled snapshot,
+// `@tanstack/react-virtual` 테이블 가상화, `metricsRefCache` ref-stable derived metrics,
+// 행/셀 React.memo, page-level subscription hooks. 자세한 룰은 CLAUDE.md "실시간 페이지
+// 작성/수정 규칙" 및 architecture.md "실시간 데이터 화면 — 필수 패턴" 참조.
+// 패턴 우회 시 페이지가 멈추고 브라우저가 hang됨 (실측됨, 750종목 부하).
 import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { cn } from '@/lib/utils'

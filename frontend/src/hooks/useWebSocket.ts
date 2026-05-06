@@ -48,11 +48,18 @@ export function useWebSocket() {
       }
 
       // 단일 tick 디스패치. batch envelope에서도 재사용.
+      // 새 tick 타입 추가 시 marketStore.ts shape + types/market.ts + 여기 분기 세 곳 동시 등록 필요.
+      // 미등록 타입은 warn 1회 노출 후 드롭 — 침묵 드롭 회피 (CLAUDE.md "실시간 페이지" 룰 참조).
+      const warnedTypes = new Set<string>()
       const dispatchOne = (m: any) => {
         if (m.type === 'etf_tick') etfBuf[m.data.code] = m.data
         else if (m.type === 'stock_tick') stockBuf[m.data.code] = m.data
         else if (m.type === 'futures_tick') futuresBuf[m.data.code] = m.data
         else if (m.type === 'orderbook_tick') obBuf[m.data.code] = m.data
+        else if (!warnedTypes.has(m.type)) {
+          warnedTypes.add(m.type)
+          console.warn('[useWebSocket] unhandled tick type:', m.type, '— register in marketStore + dispatchOne')
+        }
       }
 
       socket.onmessage = (event) => {

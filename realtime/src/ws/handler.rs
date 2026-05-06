@@ -40,11 +40,8 @@ async fn handle_client(mut socket: WebSocket, broadcaster: Arc<Broadcaster>, sta
     let snapshot = broadcaster.snapshot();
     info!("Flushing snapshot to new client: {} messages", snapshot.len());
     for json in snapshot {
-        if socket
-            .send(Message::Text(String::from(&*json).into()))
-            .await
-            .is_err()
-        {
+        // Utf8Bytes는 refcount 기반 — Message::Text가 직접 받음, 복제 없음.
+        if socket.send(Message::Text(json)).await.is_err() {
             info!("WebSocket client disconnected during snapshot flush");
             return;
         }
@@ -54,11 +51,7 @@ async fn handle_client(mut socket: WebSocket, broadcaster: Arc<Broadcaster>, sta
     loop {
         match rx.recv().await {
             Ok(json) => {
-                if socket
-                    .send(Message::Text(String::from(&*json).into()))
-                    .await
-                    .is_err()
-                {
+                if socket.send(Message::Text(json)).await.is_err() {
                     break;
                 }
             }

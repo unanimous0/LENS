@@ -86,7 +86,8 @@ impl InternalFeed {
         cancel: &CancellationToken,
         current_switchable: &mut Vec<String>,
         active_ob_codes: &mut HashSet<String>,
-        current_stocks: &mut HashSet<String>,
+        // ref-count: 다중 페이지·다중 클라이언트가 같은 코드 공유. 0 도달 시만 server unsubscribe.
+        current_stocks: &mut HashMap<String, u32>,
     ) -> Result<(), String> {
         let (ws_stream, resp) = tokio_tungstenite::connect_async(&self.ws_url)
             .await
@@ -103,7 +104,7 @@ impl InternalFeed {
         // 시작 시 startup 코드 + 재연결 시 누적된 동적 stocks/futures 모두 한번에 구독.
         let mut startup_set: HashSet<String> = self.subscribe_codes.iter().cloned().collect();
         for c in current_switchable.iter() { startup_set.insert(c.clone()); }
-        for c in current_stocks.iter() { startup_set.insert(c.clone()); }
+        for c in current_stocks.keys() { startup_set.insert(c.clone()); }
         let symbols: Vec<String> = startup_set.into_iter().collect();
         let sub_msg = serde_json::json!({
             "symbols": &symbols,
@@ -186,33 +187,41 @@ impl InternalFeed {
                             current_switchable.retain(|c| !unsub_codes.contains(c));
                         }
                         Some(SubCommand::SubscribeStocks(codes)) => {
-                            // 내부망은 add 시맨틱이 자연스러움 — 새 코드만 server에 subscribe.
-                            // 전환 그룹과 별개라 서로 안 건드림.
-                            let new_codes: Vec<String> = codes.iter()
-                                .map(|c| short_to_subscribe(c))
-                                .filter(|c| !current_stocks.contains(c))
-                                .collect();
-                            if new_codes.is_empty() { continue; }
+                            // ref-count: 처음 보는 코드만 server subscribe.
+                            let mut newly_added: Vec<String> = Vec::new();
+                            for c in &codes {
+                                let key = short_to_subscribe(c);
+                                let count = current_stocks.entry(key.clone()).or_insert(0);
+                                *count += 1;
+                                if *count == 1 { newly_added.push(key); }
+                            }
+                            if newly_added.is_empty() {
+                                info!("SubscribeStocks: +{} (refcount only)", codes.len());
+                                continue;
+                            }
                             let sub_msg = serde_json::json!({
-                                "symbols": &new_codes,
+                                "symbols": &newly_added,
                                 "real_nav": self.real_nav,
                             });
                             let _ = write.send(tungstenite::Message::Text(sub_msg.to_string().into())).await;
-                            info!("SubscribeStocks: +{} (total {})", new_codes.len(), current_stocks.len() + new_codes.len());
-                            for c in new_codes { current_stocks.insert(c); }
+                            info!("SubscribeStocks: +{} new ({} unique)", newly_added.len(), current_stocks.len());
                         }
                         Some(SubCommand::UnsubscribeStocks(codes)) => {
-                            let unsub_codes: Vec<String> = codes.iter()
-                                .map(|c| short_to_subscribe(c))
-                                .filter(|c| current_stocks.contains(c))
-                                .collect();
-                            if unsub_codes.is_empty() { continue; }
+                            let mut actually_dropped: Vec<String> = Vec::new();
+                            for c in &codes {
+                                let key = short_to_subscribe(c);
+                                if let Some(count) = current_stocks.get_mut(&key) {
+                                    *count = count.saturating_sub(1);
+                                    if *count == 0 { actually_dropped.push(key); }
+                                }
+                            }
+                            for c in &actually_dropped { current_stocks.remove(c); }
+                            if actually_dropped.is_empty() { continue; }
                             let unsub_msg = serde_json::json!({
-                                "unsubscribe": &unsub_codes,
+                                "unsubscribe": &actually_dropped,
                             });
                             let _ = write.send(tungstenite::Message::Text(unsub_msg.to_string().into())).await;
-                            info!("UnsubscribeStocks: -{}", unsub_codes.len());
-                            for c in &unsub_codes { current_stocks.remove(c); }
+                            info!("UnsubscribeStocks: -{} actually dropped (out of {} requests)", actually_dropped.len(), codes.len());
                         }
                         Some(SubCommand::SubscribeInav(_)) | Some(SubCommand::UnsubscribeInav(_)) => {
                             // 내부망은 nav가 trade tick과 함께 흘러옴 (rnav_trade/inav). 별도 구독 불필요.
@@ -524,7 +533,7 @@ impl MarketFeed for InternalFeed {
         // 재연결 시에도 유지되는 상태
         let mut current_switchable: Vec<String> = Vec::new();
         let mut active_ob_codes: HashSet<String> = HashSet::new();
-        let mut current_stocks: HashSet<String> = HashSet::new();
+        let mut current_stocks: HashMap<String, u32> = HashMap::new();
 
         loop {
             if cancel.is_cancelled() {

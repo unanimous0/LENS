@@ -28,10 +28,10 @@ use ws::broadcast::Broadcaster;
 use ws::handler::ws_market;
 
 const PORT: u16 = 8200;
-/// 브로드캐스트 링버퍼 크기. 500종목 × ~2 tps ≈ 1000 msg/s 기준,
-/// 4096이면 슬로우 클라이언트에 약 4초 여유. 그 이상 밀리면 Lagged → skip.
-/// 16384는 22초 버퍼로 과했음.
-const BROADCAST_CAPACITY: usize = 4096;
+/// 브로드캐스트 링버퍼 크기. batch envelope 도입 후 송출 빈도 ~5/sec로 평탄화 →
+/// 8192면 슬로우 클라이언트에 27분 여유 (batch 단위라 단위 시간당 송출 수가 작음).
+/// 내부망 7000 코드·5+ 클라이언트 환경에서 한 클라이언트가 잠시 늦어져도 여유.
+const BROADCAST_CAPACITY: usize = 8192;
 
 /// 틱 처리 파이프라인 성능 카운터. `/debug/stats`로 노출.
 /// hotspot이 JSON 직렬화인지 / send_cached(cache+broadcast) 쪽인지 구분 목적.
@@ -103,7 +103,17 @@ pub struct AppState {
     /// 마지막 모드 전환 시각. 빠른 토글(mock↔ls_api) 시 매번 fresh 토큰 + 5 WS +
     /// 750 REST 돌아서 LS abuse 위험 → 쿨다운으로 차단.
     last_mode_change: Arc<StdRwLock<Instant>>,
+    /// Bridge backfill 상태. 모드 전환 시 stale 데이터 leak 방지를 위해 set_mode에서 비워야 함.
+    /// (LS API와 internal이 같은 code 키를 쓰지만 의미·범위가 달라 prev_close/etf_state가 섞이면
+    /// 변화율·NAV가 잘못 계산됨)
+    stock_prev_close: Arc<DashMap<String, f64>>,
+    etf_state: Arc<DashMap<String, EtfStateBridge>>,
 }
+
+/// Bridge에서 EtfTick의 0인 필드를 이전 캐시값으로 메우기 위한 stash.
+/// 모듈 레벨로 노출 — AppState에서 공유.
+#[derive(Default, Clone, Copy)]
+pub struct EtfStateBridge { pub price: f64, pub nav: f64, pub volume: u64 }
 
 fn now_us() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -164,7 +174,9 @@ async fn main() {
     let broadcaster = Arc::new(Broadcaster::new(BROADCAST_CAPACITY));
 
     // 피드 → 브로드캐스터 파이프라인 (고정)
-    let (tx, mut rx) = mpsc::channel::<WsMessage>(8192);
+    // 8192 → 32768. 내부망 LpBookSnapshot burst (수천/sec)이 200ms drain 윈도우보다 빨라
+    // 일시 backpressure 가능. 4배 여유 두면 burst 흡수 + 정상 부하에선 의미 0.
+    let (tx, mut rx) = mpsc::channel::<WsMessage>(32768);
 
     // 마스터 데이터 로드 (모든 모드에서 공유)
     let lm = load_futures_master();
@@ -206,9 +218,7 @@ async fn main() {
     // EtfTick 필드 백필 — S3_(체결: price, volume)와 I5_(거래소 NAV) 두 스트림이 같은 EtfTick
     // 캐시 키를 덮어쓰므로, 한쪽만 들어오면 다른 쪽 필드가 사라짐. code별로 각 필드 마지막 값을
     // 보존하다 직렬화 직전에 0인 필드 채워줌.
-    #[derive(Default, Clone, Copy)]
-    struct EtfState { price: f64, nav: f64, volume: u64 }
-    let etf_state: Arc<DashMap<String, EtfState>> = Arc::new(DashMap::new());
+    let etf_state: Arc<DashMap<String, EtfStateBridge>> = Arc::new(DashMap::new());
     let bc = broadcaster.clone();
     let stats_bridge = stats.clone();
     let prev_close_map = stock_prev_close.clone();
@@ -227,8 +237,10 @@ async fn main() {
         use std::collections::HashMap as StdHashMap;
         use tokio::time::{interval, Duration, MissedTickBehavior};
 
-        let mut pending: StdHashMap<String, WsMessage> = StdHashMap::new();
-        let mut tick_interval = interval(Duration::from_millis(150));
+        let mut pending: StdHashMap<String, WsMessage> = StdHashMap::with_capacity(8192);
+        // 200ms 윈도우 — KRX 발행 cadence와 동급. 7000 코드 부하 시 cache_only 쓰기율 절반.
+        // 사람 눈엔 6.7Hz와 5Hz 차이 거의 무감각.
+        let mut tick_interval = interval(Duration::from_millis(200));
         tick_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
         loop {
@@ -265,7 +277,7 @@ async fn main() {
                         for (_, msg) in pending.drain() {
                             if let Some(cache_key) = msg_cache_key(&msg) {
                                 if let Ok(j) = serde_json::to_string(&msg) {
-                                    bc.cache_only(cache_key, Arc::from(j));
+                                    bc.cache_if_changed(cache_key, axum::extract::ws::Utf8Bytes::from(j));
                                 }
                             }
                             stats_bridge.tick_skipped_no_subscribers.fetch_add(1, Ordering::Relaxed);
@@ -279,7 +291,7 @@ async fn main() {
                     for (_, msg) in pending.drain() {
                         let Ok(item) = serde_json::to_string(&msg) else { continue };
                         if let Some(cache_key) = msg_cache_key(&msg) {
-                            bc.cache_only(cache_key, Arc::from(item.clone()));
+                            bc.cache_if_changed(cache_key, axum::extract::ws::Utf8Bytes::from(item.clone()));
                         }
                         items_json.push(item);
                     }
@@ -301,7 +313,9 @@ async fn main() {
                     stats_bridge.serialize_calls.fetch_add(1, Ordering::Relaxed);
 
                     let t_send_start = Instant::now();
-                    bc.send(Arc::from(envelope));
+                    // Utf8Bytes::from(String): String의 heap을 통째 인수, refcount Bytes로 래핑 — 복사 0.
+                    // 클라이언트별 broadcast.recv()는 refcount inc만, 1.7MB envelope 통째 복제 회피.
+                    bc.send(axum::extract::ws::Utf8Bytes::from(envelope));
                     let send_elapsed = t_send_start.elapsed().as_nanos() as u64;
                     stats_bridge.send_ns.fetch_add(send_elapsed, Ordering::Relaxed);
                     stats_bridge.send_calls.fetch_add(1, Ordering::Relaxed);
@@ -320,6 +334,8 @@ async fn main() {
         stats,
         feed_last_data_us,
         last_mode_change: Arc::new(StdRwLock::new(Instant::now())),
+        stock_prev_close: stock_prev_close.clone(),
+        etf_state: etf_state.clone(),
     };
 
     // 스냅샷 캐시 stale watcher.
@@ -569,6 +585,10 @@ async fn set_mode(
     // 이전 모드 cache 전부 비움 (mock → ls_api 전환 시 mock 종목이 snapshot으로 섞이는 것 방지).
     // 새 feed가 초기값 fetch하면 다시 채워짐.
     state.broadcaster.clear_cache();
+    // Bridge backfill 상태도 비움 — LS API의 prev_close가 internal 모드로 leak되거나
+    // 그 반대로 stale EtfState (price/nav/volume)가 다음 모드에 남는 것 방지.
+    state.stock_prev_close.clear();
+    state.etf_state.clear();
     *handle_guard = Some(new_handle);
     *state.sub_tx.write().unwrap() = new_sub_tx;
     *state.feed_mode.write().unwrap() = mode.clone();

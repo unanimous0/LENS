@@ -1,3 +1,8 @@
+// HOT FIELDS WARNING
+// `etfTicks` / `stockTicks` / `futuresTicks` / `orderbookTicks`는 batch당 갱신되는 hot path.
+// 페이지에서 `useMarketStore((s) => s.stockTicks)` 식으로 직접 구독 금지 — 전체 페이지 매 batch
+// 재렌더 발생. 200ms `setInterval` snapshot 패턴 사용 (참고: pages/etf-arbitrage.tsx).
+// 자세한 룰은 CLAUDE.md "실시간 페이지 작성/수정 규칙" 참조.
 import { create } from 'zustand'
 import type { ETFTick, StockTick, FuturesTick, OrderbookTick, NetworkMode } from '../types/market'
 

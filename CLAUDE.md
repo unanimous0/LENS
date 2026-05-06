@@ -26,6 +26,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **[internal-deploy.md](internal-deploy.md)** — 내부망 배포 가이드 (오프라인 Windows 설치)
 - **[realtime-service.md](realtime-service.md)** — Rust 실시간 데이터 서비스 아키텍처 (모든 실시간 화면의 공통 인프라)
 - **[stock-arbitrage.md](stock-arbitrage.md)** — 종목차익 기능 설계 (베이시스 모니터링 + ETF 차익 계산)
+- **[etf-arbitrage.md](etf-arbitrage.md)** — ETF 차익 기능 설계 + **실시간 페이지 reference 구현**의 성능 최적화 다층 방어 표
 
 ## 디자인 가이드
 
@@ -73,6 +74,24 @@ CSS 변수는 `globals.css`의 `@theme inline`에 정의. Tailwind 클래스로 
 - 코드의 로직, 타입, 인터페이스, 변수, 함수 시그니처 등 동작에 영향을 주는 변경을 한 후에는 반드시 별도 에이전트를 생성하여 변경의 영향 범위를 검증할 것. 그리고 단순 문자열 검색뿐 아니라, 호출 체인·데이터 흐름·의존 관계를 따라가며 정합성이 깨지는 곳이 없는지 확인할 것. 단, 단순 문자열/라벨/주석 수정은 제외.
 - 프로젝트 전반에 걸쳐 **최적화와 속도를 중시**할 것. 불필요한 반복 순회, DataFrame concat 반복, 중복 연산 등을 피하고 효율적인 자료구조와 알고리즘을 선택한다.
 - 대량 데이터 처리 시 pandas 외에 더 적합한 도구(polars, numpy, 순수 Python 등)가 있다면 적극 검토한다. 단, 소규모 데이터에서 체감 차이 없이 의존성만 늘리는 도입은 지양.
+
+### 실시간 페이지 작성/수정 규칙 (필수)
+
+실시간 tick을 받는 페이지는 패턴 미준수 시 **페이지 멈춤·브라우저 hang**이 즉시 발생한다 (750종목 LS API 부하에서 이미 발생, 내부망 7000+ 종목·5+ 사용자 환경에선 더 심함).
+
+**먼저 [architecture.md](architecture.md)의 "실시간 데이터 화면 — 필수 패턴" 섹션을 읽을 것.** reference 구현은 `frontend/src/pages/etf-arbitrage.tsx` — 새 실시간 페이지는 이 파일 패턴을 복사·변형. 이미 적용된 다층 방어 11종은 [etf-arbitrage.md](etf-arbitrage.md)의 "성능 최적화" 표 참조.
+
+**신규 실시간 페이지 체크리스트**:
+- [ ] hot-path store 필드 (`stockTicks` / `etfTicks` / `futuresTicks` / `orderbookTicks`) 를 `useMarketStore((s) => s.X)` 로 직접 구독하지 않는다 — 200ms `setInterval` snapshot 폴링 패턴 사용
+- [ ] 100행 이상 테이블은 `@tanstack/react-virtual` + `<colgroup>` + spacer rows 가상화 (참고: `etf-arbitrage.tsx`, `dividends.tsx`)
+- [ ] derived metric은 ref-stable 캐시 패턴 (shallow-equal로 이전 ref 재사용 → 행 단위 reconcile 비용 0)
+- [ ] 행/셀 컴포넌트 `React.memo` + 콜백 `useCallback`
+- [ ] 페이지 mount/unmount 시 `usePageStockSubscriptions` 등 page subscription 훅으로 구독 라이프사이클 관리 — Rust 측 ref-count로 다중 페이지 공유 안전
+- [ ] 새 tick 타입 추가 시: `marketStore.ts` shape + `useWebSocket.ts` dispatch + `types/market.ts` 세 곳 동시 등록 (한 곳 누락 시 침묵 드롭)
+
+서버 측 batch envelope (150~200ms coalesce)는 `useWebSocket`이 자동 unpack — 새 페이지에서 추가 작업 불필요.
+
+**비-실시간 페이지** (대차/상환/배당 등 정적 데이터): 위 규칙 비적용. 일반 React 패턴.
 
 ## 코드 컨벤션
 

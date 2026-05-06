@@ -260,7 +260,10 @@ impl MarketFeed for LsApiFeed {
         // 동적 주식/ETF 그룹 (S3_/K3_) — 선물(replace 시맨틱)과 분리된 add/remove 시맨틱.
         // ETF 페이지처럼 다수 페이지가 각자 필요 코드 추가/제거 가능. 셋 변경 시 connection 재생성.
         let mut stocks_cancel = CancellationToken::new();
-        let mut current_stocks: HashSet<String> = HashSet::new();
+        // 코드별 ref-count. 여러 페이지·여러 클라이언트가 같은 코드를 동시 구독 가능.
+        // SubscribeStocks마다 +1, UnsubscribeStocks마다 -1. 0 도달 시만 실제 LS WS unsub.
+        // (전: 단순 HashSet → 한 페이지가 unsubscribe하면 다른 페이지의 데이터까지 끊김)
+        let mut current_stocks: HashMap<String, u32> = HashMap::new();
         let kosdaq_codes = self.kosdaq_codes.clone();
 
         // 동적 ETF iNAV 그룹 (I5_) — 거래소 발행 NAV.
@@ -268,7 +271,7 @@ impl MarketFeed for LsApiFeed {
 
         // SubscribeStocks 핸들러용 fetched 캐시 (페이지 재진입 시 풀 재fetch 회피).
         let fetched_stocks = self.fetched_stocks.clone();
-        let mut current_inav: HashSet<String> = HashSet::new();
+        let mut current_inav: HashMap<String, u32> = HashMap::new();
 
         // 현재 활성화된 선물 코드 셋 (정렬된 키) — 같은 셋 재구독 요청 시 skip.
         // 프론트 dedupe 1차 방어선이 뚫려도 (예: 다른 클라이언트가 보냄)
@@ -315,25 +318,28 @@ impl MarketFeed for LsApiFeed {
                             futures_cancel.cancel();
                         }
                         Some(SubCommand::SubscribeStocks(codes)) => {
-                            let added: Vec<String> = codes.into_iter()
-                                .filter(|c| !current_stocks.contains(c))
-                                .collect();
-                            if added.is_empty() {
-                                info!("SubscribeStocks: no new codes");
+                            // ref-count: 처음 보는 코드만 LS WS subscribe 신규 spawn 트리거.
+                            let mut newly_added: Vec<String> = Vec::new();
+                            for c in &codes {
+                                let count = current_stocks.entry(c.clone()).or_insert(0);
+                                *count += 1;
+                                if *count == 1 { newly_added.push(c.clone()); }
+                            }
+                            if newly_added.is_empty() {
+                                info!("SubscribeStocks: +{} (refcount only, no new code)", codes.len());
                                 continue;
                             }
-                            for c in &added { current_stocks.insert(c.clone()); }
 
                             stocks_cancel.cancel();
                             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
-                            let stocks_subs: Vec<(String, String)> = current_stocks.iter()
+                            let stocks_subs: Vec<(String, String)> = current_stocks.keys()
                                 .map(|code| {
                                     let tr = if kosdaq_codes.contains(code) { "K3_" } else { "S3_" };
                                     (tr.to_string(), code.clone())
                                 })
                                 .collect();
-                            info!("SubscribeStocks: +{} new (total {})", added.len(), current_stocks.len());
+                            info!("SubscribeStocks: +{} new ({} total unique, {} active subs)", newly_added.len(), current_stocks.len(), codes.len());
 
                             stocks_cancel = CancellationToken::new();
                             spawn_stocks_connections(
@@ -341,9 +347,7 @@ impl MarketFeed for LsApiFeed {
                                 &futures_to_spot, &tx, &cancel, &stocks_cancel, &stats, &last_data_us, &last_subscribe_us,
                             );
 
-                            // 새로 추가된 코드들에 대해 t1102 초기 fetch (현재가 + 전일종가).
-                            // 장 외 시간이거나 realtime 재시작 후에도 즉시 가격 표시 가능.
-                            // fetched_stocks 캐시로 이미 받은 코드는 스킵 → 페이지 재진입 시 즉시 완료.
+                            // 신규 코드만 t1102 초기 fetch.
                             {
                                 let ak = app_key.clone();
                                 let as_ = app_secret.clone();
@@ -352,22 +356,32 @@ impl MarketFeed for LsApiFeed {
                                 let cancel2 = cancel.clone();
                                 let stats2 = stats.clone();
                                 let fetched = fetched_stocks.clone();
+                                let added_for_fetch = newly_added.clone();
                                 tokio::spawn(async move {
                                     let token = match super::ls_rest::get_or_fetch_token(&ak, &as_).await {
                                         Ok(t) => t,
                                         Err(e) => { warn!("SubscribeStocks t1102 token fail: {e}"); return; }
                                     };
-                                    info!("SubscribeStocks t1102 fetch: {} codes (캐시 스킵 적용)", added.len());
-                                    super::ls_rest::fetch_stocks_initial(&token, &added, &n, &tx2, &cancel2, &stats2, Some(&fetched)).await;
+                                    info!("SubscribeStocks t1102 fetch: {} codes (캐시 스킵 적용)", added_for_fetch.len());
+                                    super::ls_rest::fetch_stocks_initial(&token, &added_for_fetch, &n, &tx2, &cancel2, &stats2, Some(&fetched)).await;
                                 });
                             }
                         }
                         Some(SubCommand::UnsubscribeStocks(codes)) => {
-                            let mut changed = false;
+                            // ref-count: 0 도달 시만 실제로 LS WS unsubscribe (코드를 keys()에서 제거).
+                            // 다른 페이지가 같은 코드 보고 있으면 그대로 유지.
+                            let mut actually_dropped: Vec<String> = Vec::new();
                             for c in &codes {
-                                if current_stocks.remove(c) { changed = true; }
+                                if let Some(count) = current_stocks.get_mut(c) {
+                                    *count = count.saturating_sub(1);
+                                    if *count == 0 {
+                                        actually_dropped.push(c.clone());
+                                    }
+                                }
                             }
-                            if !changed {
+                            for c in &actually_dropped { current_stocks.remove(c); }
+                            if actually_dropped.is_empty() {
+                                // 다른 구독자가 남아있어 실제 코드는 안 빠짐.
                                 continue;
                             }
 
@@ -375,16 +389,16 @@ impl MarketFeed for LsApiFeed {
                             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
                             if current_stocks.is_empty() {
-                                info!("UnsubscribeStocks: -{}, set empty (no respawn)", codes.len());
+                                info!("UnsubscribeStocks: -{} (refcount→0 for {}), set empty", codes.len(), actually_dropped.len());
                                 stocks_cancel = CancellationToken::new();
                             } else {
-                                let stocks_subs: Vec<(String, String)> = current_stocks.iter()
+                                let stocks_subs: Vec<(String, String)> = current_stocks.keys()
                                     .map(|code| {
                                         let tr = if kosdaq_codes.contains(code) { "K3_" } else { "S3_" };
                                         (tr.to_string(), code.clone())
                                     })
                                     .collect();
-                                info!("UnsubscribeStocks: -{} (total {})", codes.len(), current_stocks.len());
+                                info!("UnsubscribeStocks: -{} (refcount→0 for {}, {} unique remain)", codes.len(), actually_dropped.len(), current_stocks.len());
                                 stocks_cancel = CancellationToken::new();
                                 spawn_stocks_connections(
                                     &stocks_subs, &app_key, &app_secret, &names, &stock_codes,
@@ -393,22 +407,24 @@ impl MarketFeed for LsApiFeed {
                             }
                         }
                         Some(SubCommand::SubscribeInav(codes)) => {
-                            let added: Vec<String> = codes.into_iter()
-                                .filter(|c| !current_inav.contains(c))
-                                .collect();
-                            if added.is_empty() {
-                                info!("SubscribeInav: no new codes");
+                            let mut newly_added: Vec<String> = Vec::new();
+                            for c in &codes {
+                                let count = current_inav.entry(c.clone()).or_insert(0);
+                                *count += 1;
+                                if *count == 1 { newly_added.push(c.clone()); }
+                            }
+                            if newly_added.is_empty() {
+                                info!("SubscribeInav: +{} (refcount only)", codes.len());
                                 continue;
                             }
-                            for c in &added { current_inav.insert(c.clone()); }
 
                             inav_cancel.cancel();
                             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
-                            let inav_subs: Vec<(String, String)> = current_inav.iter()
+                            let inav_subs: Vec<(String, String)> = current_inav.keys()
                                 .map(|code| ("I5_".to_string(), code.clone()))
                                 .collect();
-                            info!("SubscribeInav: +{} new (total {})", added.len(), current_inav.len());
+                            info!("SubscribeInav: +{} new ({} total unique)", newly_added.len(), current_inav.len());
 
                             inav_cancel = CancellationToken::new();
                             spawn_inav_connections(
@@ -417,23 +433,27 @@ impl MarketFeed for LsApiFeed {
                             );
                         }
                         Some(SubCommand::UnsubscribeInav(codes)) => {
-                            let mut changed = false;
+                            let mut actually_dropped: Vec<String> = Vec::new();
                             for c in &codes {
-                                if current_inav.remove(c) { changed = true; }
+                                if let Some(count) = current_inav.get_mut(c) {
+                                    *count = count.saturating_sub(1);
+                                    if *count == 0 { actually_dropped.push(c.clone()); }
+                                }
                             }
-                            if !changed { continue; }
+                            for c in &actually_dropped { current_inav.remove(c); }
+                            if actually_dropped.is_empty() { continue; }
 
                             inav_cancel.cancel();
                             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
                             if current_inav.is_empty() {
-                                info!("UnsubscribeInav: -{}, set empty (no respawn)", codes.len());
+                                info!("UnsubscribeInav: -{} (refcount→0 for {}), set empty", codes.len(), actually_dropped.len());
                                 inav_cancel = CancellationToken::new();
                             } else {
-                                let inav_subs: Vec<(String, String)> = current_inav.iter()
+                                let inav_subs: Vec<(String, String)> = current_inav.keys()
                                     .map(|code| ("I5_".to_string(), code.clone()))
                                     .collect();
-                                info!("UnsubscribeInav: -{} (total {})", codes.len(), current_inav.len());
+                                info!("UnsubscribeInav: -{} (refcount→0 for {}, {} remain)", codes.len(), actually_dropped.len(), current_inav.len());
                                 inav_cancel = CancellationToken::new();
                                 spawn_inav_connections(
                                     &inav_subs, &app_key, &app_secret, &names, &stock_codes,
