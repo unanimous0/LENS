@@ -1,4 +1,4 @@
-import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { cn } from '@/lib/utils'
 import { useMarketStore } from '@/stores/marketStore'
@@ -40,8 +40,58 @@ type FuturesMaster = { items: FuturesItem[] }
 
 type ArbMode = 'buy' | 'sell' | 'mixed'
 
+/** ETF 호가 기준 — 매도차 거래의 ETF 매도가 / 매수차 거래의 ETF 매수가 산출.
+ *   self : 자기호가 매도=ask, 매수=bid (호가 걸고 fill)
+ *   opp  : 상대호가 매도=bid, 매수=ask (cross spread)
+ *   last : 현재가 (last)
+ *   mid  : 중간가 ((bid+ask)/2)
+ */
+type QuoteMode = 'self' | 'opp' | 'last' | 'mid'
+
+/** 종목별 배당 정보 — 만기 이전 배당락이면 이론베이시스 차감용.
+ *  confirmed=false면 추정 배당 (LENS estimator 산출), true면 확정 (DART 공시). */
+type DividendInfo = { amount: number; ex_date: string; confirmed: boolean }
+
+/** YYYYMMDD → YYYY-MM-DD. 빈 문자열이거나 길이가 안 맞으면 ''. */
+function expiryToIso(expiry: string | undefined): string {
+  if (!expiry || expiry.length !== 8) return ''
+  return `${expiry.slice(0, 4)}-${expiry.slice(4, 6)}-${expiry.slice(6, 8)}`
+}
+
+/** 종목 i의 만기 이전 배당락 — total + confirmed/estimated 분해 + 항목 list.
+ *  (today, futExpiryIso] 구간에 ex_date가 있는 것만. */
+function pickDividendsInWindow(divs: DividendInfo[] | undefined, todayIso: string, futExpiryIso: string): {
+  total: number; confirmed: number; estimated: number; items: DividendInfo[]
+} {
+  if (!divs || divs.length === 0) return { total: 0, confirmed: 0, estimated: 0, items: [] }
+  let total = 0, conf = 0, est = 0
+  const items: DividendInfo[] = []
+  for (const d of divs) {
+    if (!d.ex_date) continue
+    if (d.ex_date <= todayIso) continue
+    if (futExpiryIso && d.ex_date > futExpiryIso) continue
+    total += d.amount
+    if (d.confirmed) conf += d.amount
+    else est += d.amount
+    items.push(d)
+  }
+  return { total, confirmed: conf, estimated: est, items }
+}
+
 /** 한 ETF의 metric을 계산. excluded 토글이 한 ETF만 영향이라 per-ETF 함수로 분리 →
- * base(공통) + overlay(excluded 적용) 두 useMemo가 같은 로직 공유. */
+ * base(공통) + overlay(excluded 적용) 두 useMemo가 같은 로직 공유.
+ *
+ * 부호 컨벤션: 매수차 = +, 매도차 = -.
+ * 변수명: S=현물(spot), F=선물(futures market), N=이론가, M=배당, Q=시장베이시스(F-S),
+ *   P=이론베이시스((N-S)-M), R=베이시스 갭(Q-P = F-N+M), T=갭BP(R/N·1만).
+ *   R > 0: 선물이 이론보다 비쌈 → 매수차 우호 (선물 매도 이득)
+ *   R < 0: 선물이 이론보다 쌈   → 매도차 우호 (선물 매수 이득)
+ * V=O 가능 종목: arbMode 매칭 + excluded 아님 + 선물 가용.
+ *   buy   : R>0 종목만
+ *   sell  : R<0 종목만
+ *   mixed : 양방향
+ * 비용: 매수차 V=O = slip+tax 차감, 매도차 V=O = slip만 차감 (ETF 거래세 0, 매도차는 종목 매수라 매도세 없음).
+ */
 function computeMetric(
   code: string,
   pdf: EtfPdf,
@@ -53,100 +103,170 @@ function computeMetric(
   futuresByBase: Map<string, FuturesItem>,
   minFuturesVolume: number,
   arbMode: ArbMode,
+  ratePct: number,
+  slippageBp: number,
+  taxBp: number,
+  quoteMode: QuoteMode,
+  dividends: Map<string, DividendInfo[]>,
+  todayIso: string,
 ): EtfMetrics {
   const cuUnit = pdf.cu_unit ?? 0
-  const nav = etfTicks[code]?.nav ?? 0
-  const cuValue = nav > 0 && cuUnit > 0 ? nav * cuUnit : 0
+  const cash = pdf.cash || 0
+  const r = ratePct / 100
 
-  let appliedFutValue = 0
-  let buyFutSum = 0
-  let sellFutSum = 0
-  let futuresCount = 0
+  // === Pass 1: 종목별 G(현재금액) + 차익 정보 누적 ===
+  type StockArb = {
+    qty: number; S: number; F: number; G: number; M: number
+    N: number; R: number; T: number
+    favBuy: boolean; favSell: boolean
+    canUse: boolean // 선물 가용 + 거래량 + 미배제
+  }
+  const arr: StockArb[] = new Array(pdf.stocks.length)
+  let G_sum = 0
+  let dividendN = 0
+  let i = 0
 
   for (const s of pdf.stocks) {
-    if (s.qty <= 0) continue
-    if (exSet?.has(s.code)) continue
-    const spot = stockTicks[s.code]?.price ?? 0
-    if (spot <= 0) continue
+    if (s.qty <= 0) { i++; continue }
+    const S = stockTicks[s.code]?.price ?? 0
     const fm = futuresByBase.get(s.code)
-    if (!fm?.front?.code) continue
-    const futTick = futuresTicks[fm.front.code]
-    const fut = futTick?.price ?? 0
-    if (fut <= 0) continue
-    if (futTick && minFuturesVolume > 0 && (futTick.volume ?? 0) < minFuturesVolume) continue
+    const futCode = fm?.front?.code
+    const futTick = futCode ? futuresTicks[futCode] : undefined
+    const F = futTick?.price ?? 0
+    const futVol = futTick?.volume ?? 0
+    const futExpiryIso = expiryToIso(fm?.front?.expiry)
+    const daysLeft = fm?.front?.days_left ?? 0
 
-    const isContango = fut > spot
-    const isBackward = fut < spot
-    if (arbMode === 'buy' && !isContango) continue
-    if (arbMode === 'sell' && !isBackward) continue
+    const div = pickDividendsInWindow(dividends.get(s.code), todayIso, futExpiryIso)
+    const M = div.total
+    if (M > 0) dividendN += 1
 
-    futuresCount += 1
-    appliedFutValue += s.qty * spot
-    if (isContango) buyFutSum += s.qty * (fut - spot)
-    if (isBackward) sellFutSum += s.qty * (spot - fut)
+    let N = 0, R = 0, T = 0
+    let favBuy = false, favSell = false
+    if (S > 0 && F > 0 && daysLeft >= 0) {
+      N = S * (1 + r * (daysLeft / 365))
+      // R = F - (N - M). 배당이 R을 +M만큼 키움 (선물이 배당 반영해서 낮으므로).
+      R = F - N + M
+      T = N > 0 ? (R / N) * 10000 : 0
+      favBuy = R > 0
+      favSell = R < 0
+    }
+
+    const G = S * s.qty
+    G_sum += G
+
+    const canUse =
+      S > 0 && F > 0 && !!futCode &&
+      (minFuturesVolume === 0 || futVol >= minFuturesVolume) &&
+      !exSet?.has(s.code)
+
+    arr[i++] = { qty: s.qty, S, F, G, M, N, R, T, favBuy, favSell, canUse }
   }
 
-  const futuresBuyBp = cuValue > 0 ? (buyFutSum / cuValue) * 10000 : 0
-  const futuresSellBp = cuValue > 0 ? (sellFutSum / cuValue) * 10000 : 0
-  const diffBp =
-    arbMode === 'buy' ? futuresBuyBp :
-    arbMode === 'sell' ? -futuresSellBp :
-    futuresBuyBp - futuresSellBp
+  const rNAV_total = G_sum + cash
+  const rNav = cuUnit > 0 ? rNAV_total / cuUnit : 0
 
-  const lastPrice = etfTicks[code]?.price ?? stockTicks[code]?.price ?? 0
+  // === Pass 2: H, V=O 결정, fNAV, 매수차/매도차BP 합산 ===
+  // 매수차BP_net: SUM_{R>0, V=O} (T - slip - tax)·H. ≥ 0
+  // 매도차BP_net: SUM_{R<0, V=O} (T + slip)·H.       ≤ 0
+  let buyArbBp = 0
+  let sellArbBp = 0
+  let fSum = 0
+  let appliedFutValue = 0
+  let futuresCount = 0
+
+  for (let j = 0; j < arr.length; j++) {
+    const it = arr[j]
+    if (!it) continue
+    if (it.qty <= 0 || it.S <= 0) continue
+    const H = rNAV_total > 0 ? it.G / rNAV_total : 0
+
+    let isUsed = false
+    if (it.canUse) {
+      if (arbMode === 'buy' && it.favBuy) isUsed = true
+      else if (arbMode === 'sell' && it.favSell) isUsed = true
+      else if (arbMode === 'mixed' && (it.favBuy || it.favSell)) isUsed = true
+    }
+
+    if (isUsed) {
+      futuresCount += 1
+      appliedFutValue += it.G
+      fSum += it.F * it.qty   // V=O: 선물가로 평가
+      if (it.favBuy) {
+        buyArbBp += (it.T - slippageBp - taxBp) * H
+      } else { // favSell
+        sellArbBp += (it.T + slippageBp) * H
+      }
+    } else {
+      fSum += it.S * it.qty   // V=X: 현물가로 평가
+    }
+  }
+
+  const fNav = cuUnit > 0 ? (fSum + cash) / cuUnit : 0
+  const navDiff = fNav - rNav
+  const diffBp = buyArbBp + sellArbBp
+
+  // === ETF 호가 + 실집행차익 ===
+  const etfTick = etfTicks[code]
+  const lastPrice = etfTick?.price ?? stockTicks[code]?.price ?? 0
+  const navLive = etfTick?.nav ?? 0
   const ob = orderbookTicks[code]
   const ask1 = ob?.asks[0]?.price ?? 0
   const bid1 = ob?.bids[0]?.price ?? 0
+  const mid = ask1 > 0 && bid1 > 0 ? (ask1 + bid1) / 2 : 0
 
-  let fNavValue = pdf.cash || 0
-  const sellSide = arbMode === 'sell' || (arbMode === 'mixed' && diffBp < 0)
-  const buySide = arbMode === 'buy' || (arbMode === 'mixed' && diffBp > 0)
-  for (const s of pdf.stocks) {
-    if (s.qty <= 0) continue
-    const spotTick = stockTicks[s.code]
-    const live = spotTick?.price ?? 0
-    if (live <= 0) continue
-    const fm = futuresByBase.get(s.code)
-    const futTick = fm?.front?.code ? futuresTicks[fm.front.code] : undefined
-    const fut = futTick?.price ?? 0
-    let useFut = false
-    if (fut > 0) {
-      if (sellSide && fut < live) useFut = true
-      else if (buySide && fut > live) useFut = true
-    }
-    fNavValue += s.qty * (useFut ? fut : live)
+  // 우세 방향 (실집행 식 분기): 모드 강제 또는 mixed에선 절댓값 큰 쪽
+  const dominant: 'buy' | 'sell' | null =
+    arbMode === 'buy' ? (buyArbBp > 0 ? 'buy' : null) :
+    arbMode === 'sell' ? (sellArbBp < 0 ? 'sell' : null) :
+    Math.abs(buyArbBp) >= Math.abs(sellArbBp)
+      ? (buyArbBp > 0 ? 'buy' : null)
+      : (sellArbBp < 0 ? 'sell' : null)
+
+  // ETF 매도/매수 가격 (호가 기준 모드별).
+  let etfSellPrice = 0, etfBuyPrice = 0
+  if (quoteMode === 'last') { etfSellPrice = lastPrice; etfBuyPrice = lastPrice }
+  else if (quoteMode === 'mid') { etfSellPrice = mid; etfBuyPrice = mid }
+  else if (quoteMode === 'self') { etfSellPrice = ask1; etfBuyPrice = bid1 }
+  else { etfSellPrice = bid1; etfBuyPrice = ask1 } // opp
+
+  // 실집행차익 (1 CU 단위, 원). 부호: 매수+ / 매도-.
+  // 매수차: (fNAV·(1-tax) - ETF_buy)·CU, 양수=이익
+  // 매도차: -(ETF_sell - fNAV)·CU,        음수=이익
+  const tax = taxBp / 10000 // 0.002 for 20bp
+  let realProfitWon = 0
+  if (dominant === 'buy' && etfBuyPrice > 0 && fNav > 0 && cuUnit > 0) {
+    realProfitWon = (fNav * (1 - tax) - etfBuyPrice) * cuUnit
+  } else if (dominant === 'sell' && etfSellPrice > 0 && fNav > 0 && cuUnit > 0) {
+    realProfitWon = -(etfSellPrice - fNav) * cuUnit
   }
-  const fNav = cuUnit > 0 && fNavValue > 1000 ? fNavValue / cuUnit : 0
-  const navDiff = fNav > 0 && nav > 0 ? fNav - nav : 0
+  const realProfitBp = rNAV_total > 0 ? (realProfitWon / rNAV_total) * 10000 : 0
 
-  let tradeProfitMaker: number | null = null
-  let tradeProfitTaker: number | null = null
-  if (fNav > 0) {
-    if (sellSide) {
-      if (ask1 > 0) tradeProfitMaker = fNav - ask1
-      if (bid1 > 0) tradeProfitTaker = fNav - bid1
-    } else if (buySide) {
-      if (bid1 > 0) tradeProfitMaker = fNav - bid1
-      if (ask1 > 0) tradeProfitTaker = fNav - ask1
-    }
-  }
-
-  const priceNavBp = nav > 0 && lastPrice > 0 ? ((lastPrice - nav) / nav) * 10000 : 0
-  const askNavBp = nav > 0 && ask1 > 0 ? ((ask1 - nav) / nav) * 10000 : 0
-  const bidNavBp = nav > 0 && bid1 > 0 ? ((bid1 - nav) / nav) * 10000 : 0
+  // ETF 호가/가격 vs NAV 괴리 (기존 컬럼 유지). NAV는 라이브 nav 사용 (rNav가 PDF 기준 fair NAV라면 차이날 수 있어).
+  const navRef = navLive > 0 ? navLive : rNav
+  const priceNavBp = navRef > 0 && lastPrice > 0 ? ((lastPrice - navRef) / navRef) * 10000 : 0
+  const askNavBp = navRef > 0 && ask1 > 0 ? ((ask1 - navRef) / navRef) * 10000 : 0
+  const bidNavBp = navRef > 0 && bid1 > 0 ? ((bid1 - navRef) / navRef) * 10000 : 0
 
   const tradeValue = stockTicks[code]?.cum_volume ?? 0
 
   return {
-    diffBp, fNav, navDiff,
-    tradeProfitMaker, tradeProfitTaker,
-    futuresBuyBp, futuresSellBp,
-    pdfValue: cuValue,
-    appliedPct: cuValue > 0 ? (appliedFutValue / cuValue) * 100 : 0,
+    diffBp,
+    buyArbBp,
+    sellArbBp,
+    realProfitWon,
+    realProfitBp,
+    fNav,
+    rNav,
+    nav: navLive > 0 ? navLive : rNav,
+    navDiff,
+    dividendN,
+    pdfValue: rNAV_total,
+    appliedPct: rNAV_total > 0 ? (appliedFutValue / rNAV_total) * 100 : 0,
     futuresCount,
     etfPrice: lastPrice,
     etfPrevClose: stockTicks[code]?.prev_close ?? 0,
-    nav, tradeValue,
+    tradeValue,
     priceNavBp: Math.abs(priceNavBp) > 1000 ? 0 : priceNavBp,
     askNavBp: Math.abs(askNavBp) > 1000 ? 0 : askNavBp,
     bidNavBp: Math.abs(bidNavBp) > 1000 ? 0 : bidNavBp,
@@ -154,22 +274,24 @@ function computeMetric(
 }
 
 /** 두 메트릭이 모든 number 필드에서 동일한지. ref-cache용 — 같으면 이전 ref 재사용해서
- * ArbRow memo 효과 활성화. 17개 필드 비교 < 1µs/code, 585개여도 무시 가능. */
+ * ArbRow memo 효과 활성화. */
 function metricsEqual(a: EtfMetrics, b: EtfMetrics): boolean {
   return (
     a.diffBp === b.diffBp &&
+    a.buyArbBp === b.buyArbBp &&
+    a.sellArbBp === b.sellArbBp &&
+    a.realProfitWon === b.realProfitWon &&
+    a.realProfitBp === b.realProfitBp &&
     a.fNav === b.fNav &&
+    a.rNav === b.rNav &&
+    a.nav === b.nav &&
     a.navDiff === b.navDiff &&
-    a.tradeProfitMaker === b.tradeProfitMaker &&
-    a.tradeProfitTaker === b.tradeProfitTaker &&
-    a.futuresBuyBp === b.futuresBuyBp &&
-    a.futuresSellBp === b.futuresSellBp &&
+    a.dividendN === b.dividendN &&
     a.pdfValue === b.pdfValue &&
     a.appliedPct === b.appliedPct &&
     a.futuresCount === b.futuresCount &&
     a.etfPrice === b.etfPrice &&
     a.etfPrevClose === b.etfPrevClose &&
-    a.nav === b.nav &&
     a.tradeValue === b.tradeValue &&
     a.priceNavBp === b.priceNavBp &&
     a.askNavBp === b.askNavBp &&
@@ -178,30 +300,27 @@ function metricsEqual(a: EtfMetrics, b: EtfMetrics): boolean {
 }
 
 type EtfMetrics = {
-  // diffBp: PDF 차익. (콘탱고 합 - 백워데이션 합) / cuValue × 10000.
-  //   양수 클수록 매수차 우세 (콘탱고 종목 매수+선물매도 차익 큼) → 빨강
-  //   음수 클수록 매도차 우세 (백워데이션 종목 매도+선물매수 차익 큼) → 초록
-  // ETF/NAV 괴리는 별도 priceNavBp/askNavBp/bidNavBp 컬럼에 표시.
+  // 부호 컨벤션: 매수차 = +, 매도차 = -.
+  // diffBp = buyArbBp + sellArbBp. 혼합 모드에서 부호로 우세 방향이 보임.
   diffBp: number
-  // f_nav: 차익 우세 방향에 따라 유리한 선물 베이시스로 종목 가격을 대체해서 재계산한 NAV.
-  // 매도차 우세(diffBp<0): 백워데이션 종목들(fut<spot) → fut로 평가 → NAV 낮아짐
-  // 매수차 우세(diffBp>0): 콘탱고 종목들(fut>spot) → fut로 평가 → NAV 높아짐
-  fNav: number
-  navDiff: number              // f_nav - nav. 음수=매도 유리, 양수=매수 유리
-  tradeProfitMaker: number | null  // 자기호가 fill 매매이익 (fNav-ask1 또는 fNav-bid1). 음수=매도이익, 양수=매수이익
-  tradeProfitTaker: number | null  // 상대호가 fill 매매이익 (반대편 호가 hit). 비교용.
-  futuresBuyBp: number   // ExpandedPanel용. 콘탱고 차익 absolute.
-  futuresSellBp: number  // ExpandedPanel용. 백워데이션 차익 absolute.
-  pdfValue: number
-  appliedPct: number
-  futuresCount: number
-  etfPrice: number       // 라이브 ETF 가격 (0이면 장 외)
-  etfPrevClose: number   // 직전 영업일 종가 — 장 외 표시 폴백용
-  nav: number
-  tradeValue: number     // 거래대금 (원). t1102 cum_volume(원) 우선, EtfTick.volume * price 보조
-  priceNavBp: number     // 현재가 vs NAV 괴리 (bp)
-  askNavBp: number       // 매도1호가 vs NAV 괴리 (bp)
-  bidNavBp: number       // 매수1호가 vs NAV 괴리 (bp)
+  buyArbBp: number       // 매수차BP_net (≥0). R>0 종목 V=O들의 (T - slip - tax)·H 합.
+  sellArbBp: number      // 매도차BP_net (≤0). R<0 종목 V=O들의 (T + slip)·H 합.
+  realProfitWon: number  // 실집행차익(원, 1 CU). 우세 방향 따라 ETF 호가 vs fNAV 차익. 매수+/매도-.
+  realProfitBp: number   // realProfitWon / (rNav·CU) · 1만.
+  fNav: number           // V=O 종목 K, V=X 종목 F로 평가한 fair NAV.
+  rNav: number           // (SUM(F·D) + 현금) / CU. PDF 기준 NAV.
+  nav: number            // 라이브 NAV (etfTick.nav). 없으면 rNav.
+  navDiff: number        // fNav - rNav.
+  dividendN: number      // 만기 이전 배당락 종목 수.
+  pdfValue: number       // rNAV·CU 총합 (= G_sum + cash).
+  appliedPct: number     // V=O 종목 G 합 / rNAV_total · 100.
+  futuresCount: number   // V=O 종목 수.
+  etfPrice: number       // 라이브 ETF 가격 (0이면 장 외).
+  etfPrevClose: number   // 직전 영업일 종가 — 장 외 표시 폴백용.
+  tradeValue: number     // 거래대금 (원). t1102 cum_volume(원) 우선.
+  priceNavBp: number     // 현재가 vs NAV 괴리 (bp).
+  askNavBp: number       // 매도1호가 vs NAV 괴리 (bp).
+  bidNavBp: number       // 매수1호가 vs NAV 괴리 (bp).
 }
 
 export function EtfArbitragePage() {
@@ -215,10 +334,11 @@ export function EtfArbitragePage() {
   const [minTradeProfit, setMinTradeProfit] = useState(0)   // |매매이익(자기)| ≥ N (원)
   const [expanded, setExpanded] = useState<string | null>(null)
   type SortKey =
-    | 'code' | 'name' | 'tradeValue' | 'etfPrice' | 'nav' | 'fNav' | 'navDiff' | 'tradeProfitMaker' | 'tradeProfitTaker'
+    | 'code' | 'name' | 'tradeValue' | 'etfPrice' | 'nav' | 'rNav' | 'fNav'
     | 'priceNavBp' | 'askNavBp' | 'bidNavBp'
-    | 'diffBp'
-    | 'appliedPct' | 'futuresCount'
+    | 'diffBp' | 'buyArbBp' | 'sellArbBp'
+    | 'realProfitWon' | 'realProfitBp'
+    | 'dividendN' | 'appliedPct' | 'futuresCount'
   const [sortKey, setSortKey] = useState<SortKey>('diffBp')
   const [sortAsc, setSortAsc] = useState<boolean>(false)
   // 같은 컬럼 클릭 시 방향 토글, 다른 컬럼이면 default 방향(텍스트=asc, 수치=desc).
@@ -253,15 +373,72 @@ export function EtfArbitragePage() {
     setSelectedEtf(code)
   }, [])
 
+  // PDF 테이블 정렬 — 페이지 레벨에 두어 펼침/접힘 사이 유지.
+  // v2: 변수명 변경(F→S, K→F)으로 구 키 무효화.
+  const [pdfSortKey, setPdfSortKey] = useState<PdfSortKey>(() => {
+    const saved = localStorage.getItem('etf.pdfSortKey.v2')
+    const valid: PdfSortKey[] = ['code', 'name', 'qty', 'H', 'M', 'S', 'F', 'N', 'Q', 'P', 'T', 'futVol', 'contribBp']
+    return valid.includes(saved as PdfSortKey) ? (saved as PdfSortKey) : 'H'
+  })
+  const [pdfSortAsc, setPdfSortAsc] = useState<boolean>(() => localStorage.getItem('etf.pdfSortAsc') === '1')
+  useEffect(() => { localStorage.setItem('etf.pdfSortKey.v2', pdfSortKey) }, [pdfSortKey])
+  useEffect(() => { localStorage.setItem('etf.pdfSortAsc', pdfSortAsc ? '1' : '0') }, [pdfSortAsc])
+  const handlePdfSort = useCallback((key: PdfSortKey) => {
+    setPdfSortKey((prev) => {
+      if (prev === key) {
+        setPdfSortAsc((v) => !v)
+        return prev
+      }
+      // 텍스트는 asc 디폴트, 수치는 desc.
+      setPdfSortAsc(key === 'code' || key === 'name')
+      return key
+    })
+  }, [])
+
   // 차익 모드 — PDF 종목 중 어느 방향만 합산할지.
-  //   buy: 콘탱고(fut>spot) 종목만 → diffBp 양수 only, fNav 상승, ETF 매수 시나리오
-  //   sell: 백워(fut<spot) 종목만 → diffBp 음수 only, fNav 하락, ETF 매도 시나리오
-  //   mixed: 양쪽 합산 (콘탱고 - 백워, signed) — 한 방향이 우세하면 그쪽 표시
+  //   buy: R>0 종목만 V=O 가능 (선물 매도 이득). 매수차BP 양수. ETF 매수 거래.
+  //   sell: R<0 종목만 V=O 가능 (선물 매수 이득). 매도차BP 음수. ETF 매도 거래.
+  //   mixed: 양방향 모두 V=O 가능. 차익BP 부호로 우세 방향 표시.
   const [arbMode, setArbMode] = useState<ArbMode>(() => {
     const saved = localStorage.getItem('etf.arbMode')
     return saved === 'buy' || saved === 'sell' || saved === 'mixed' ? saved : 'mixed'
   })
   useEffect(() => { localStorage.setItem('etf.arbMode', arbMode) }, [arbMode])
+
+  // 호가 기준 — ETF 매수/매도 시 어느 호가를 사용할지.
+  const [quoteMode, setQuoteMode] = useState<QuoteMode>(() => {
+    const saved = localStorage.getItem('etf.quoteMode')
+    return saved === 'self' || saved === 'opp' || saved === 'last' || saved === 'mid' ? saved : 'opp'
+  })
+  useEffect(() => { localStorage.setItem('etf.quoteMode', quoteMode) }, [quoteMode])
+
+  // 슬리피지 (bp) — 모든 V=O 종목에 균등 비용 차감.
+  const [slippageBp, setSlippageBp] = useState<number>(() => {
+    const saved = localStorage.getItem('etf.slippageBp')
+    const n = saved ? parseFloat(saved) : NaN
+    return Number.isFinite(n) && n >= 0 ? n : 0
+  })
+  useEffect(() => { localStorage.setItem('etf.slippageBp', String(slippageBp)) }, [slippageBp])
+
+  // 금리 (%) — 이론가 N = F·(1 + r·d/365) 산출용. 종목차익과 동일 디폴트 2.8%.
+  const [ratePct, setRatePct] = useState<number>(() => {
+    const saved = localStorage.getItem('etf.ratePct')
+    const n = saved ? parseFloat(saved) : NaN
+    return Number.isFinite(n) && n >= 0 ? n : 2.8
+  })
+  const [rateDraft, setRateDraft] = useState<string>(() => String(ratePct))
+  useEffect(() => { localStorage.setItem('etf.ratePct', String(ratePct)) }, [ratePct])
+  const commitRate = () => {
+    const n = parseFloat(rateDraft)
+    if (Number.isFinite(n) && n >= 0) setRatePct(n)
+    else setRateDraft(String(ratePct))
+  }
+
+  // 거래세 (%) — 종목 매도세. 한국 거래세 0.20% (제도 변경 시 수정 가능). 표시 + 매수차 계산.
+  const TAX_PCT = 0.20
+
+  // 배당 정보 — code → 가장 가까운 미래 배당. 만기 이전 배당락이면 이론베이시스 차감.
+  const [dividends, setDividends] = useState<Map<string, DividendInfo[]>>(new Map())
 
   // Tick 데이터 200ms throttled snapshot. 라이브로 store 구독하면 매 tick마다 페이지 전체 재계산
   // (metricsByCode loop 17K iter × 매초 수십 회). 5Hz면 사람이 보기에 충분히 부드러움.
@@ -291,16 +468,27 @@ export function EtfArbitragePage() {
   const pushEtfHistoryBatch = useMarketStore((s) => s.pushEtfHistoryBatch)
 
   useEffect(() => {
+    // 오늘 이후 배당만 fetch — 과거 배당은 이론베이시스 산출에 무관.
+    const today = new Date().toISOString().slice(0, 10)
     Promise.all([
       fetch('/api/etfs').then((r) => r.json()),
       fetch('/api/etfs/pdf-all').then((r) => r.json()),
       fetch('/api/arbitrage/master').then((r) => r.json()),
+      fetch(`/api/dividends?from_date=${today}&include_estimates=true`).then((r) => r.json()),
     ])
-      .then(([mEtf, mPdf, mFut]) => {
+      .then(([mEtf, mPdf, mFut, mDiv]) => {
         setMaster(mEtf.items)
         setLoadedAt(mEtf.loaded_at)
         setPdfs(mPdf.items)
         setFuturesMaster(mFut)
+        const dmap = new Map<string, DividendInfo[]>()
+        for (const it of mDiv.items ?? []) {
+          if (!it.code || !it.ex_date || !(it.amount > 0)) continue
+          const arr = dmap.get(it.code) ?? []
+          arr.push({ amount: it.amount, ex_date: it.ex_date, confirmed: it.confirmed !== false })
+          dmap.set(it.code, arr)
+        }
+        setDividends(dmap)
       })
       .catch((e) => setError(e.message))
   }, [])
@@ -343,19 +531,23 @@ export function EtfArbitragePage() {
   //   baseMetricsByCode: 모든 ETF, exSet=undefined로 계산. 무거움 (~50ms). 200ms tick에만 재실행.
   //   metricsByCode: base를 spread + 사용자가 exclude한 ETF만 재계산해서 덮어씀. 가벼움 (<5ms).
   // → 사용 체크박스 토글 시 baseMetricsByCode는 그대로, overlay만 영향 받는 ETF 1개 재계산.
+  // 오늘 ISO 날짜 — 배당 만기-이전 필터용. 세션 동안 동일.
+  const todayIso = useMemo(() => new Date().toISOString().slice(0, 10), [])
+  const taxBp = TAX_PCT * 100 // 0.20% = 20bp
+
   const baseMetricsRefCache = useRef<Record<string, EtfMetrics>>({})
   const baseMetricsByCode = useMemo(() => {
     const out: Record<string, EtfMetrics> = {}
     const cache = baseMetricsRefCache.current
     if (!pdfs) { baseMetricsRefCache.current = out; return out }
     for (const [code, pdf] of Object.entries(pdfs)) {
-      const newM = computeMetric(code, pdf, undefined, stockTicks, futuresTicks, etfTicks, orderbookTicks, futuresByBase, minFuturesVolume, arbMode)
+      const newM = computeMetric(code, pdf, undefined, stockTicks, futuresTicks, etfTicks, orderbookTicks, futuresByBase, minFuturesVolume, arbMode, ratePct, slippageBp, taxBp, quoteMode, dividends, todayIso)
       const cached = cache[code]
       out[code] = cached && metricsEqual(cached, newM) ? cached : newM
     }
     baseMetricsRefCache.current = out
     return out
-  }, [pdfs, stockTicks, futuresTicks, etfTicks, orderbookTicks, futuresByBase, minFuturesVolume, arbMode])
+  }, [pdfs, stockTicks, futuresTicks, etfTicks, orderbookTicks, futuresByBase, minFuturesVolume, arbMode, ratePct, slippageBp, taxBp, quoteMode, dividends, todayIso])
 
   const metricsRefCache = useRef<Record<string, EtfMetrics>>({})
   const metricsByCode = useMemo(() => {
@@ -371,13 +563,13 @@ export function EtfArbitragePage() {
     for (const code of excludedCodes) {
       const pdf = pdfs[code]
       if (!pdf) continue
-      const newM = computeMetric(code, pdf, excluded[code], stockTicks, futuresTicks, etfTicks, orderbookTicks, futuresByBase, minFuturesVolume, arbMode)
+      const newM = computeMetric(code, pdf, excluded[code], stockTicks, futuresTicks, etfTicks, orderbookTicks, futuresByBase, minFuturesVolume, arbMode, ratePct, slippageBp, taxBp, quoteMode, dividends, todayIso)
       const cached = cache[code]
       out[code] = cached && metricsEqual(cached, newM) ? cached : newM
     }
     metricsRefCache.current = out
     return out
-  }, [baseMetricsByCode, excluded, pdfs, stockTicks, futuresTicks, etfTicks, orderbookTicks, futuresByBase, minFuturesVolume, arbMode])
+  }, [baseMetricsByCode, excluded, pdfs, stockTicks, futuresTicks, etfTicks, orderbookTicks, futuresByBase, minFuturesVolume, arbMode, ratePct, slippageBp, taxBp, quoteMode, dividends, todayIso])
 
 
   const naturalRows = useMemo(() => {
@@ -393,14 +585,17 @@ export function EtfArbitragePage() {
         case 'tradeValue': return m.tradeValue
         case 'etfPrice': return m.etfPrice
         case 'nav': return m.nav
+        case 'rNav': return m.rNav
         case 'fNav': return m.fNav
-        case 'navDiff': return m.navDiff   // signed: 양수 위 (매수 우세), 음수 아래 (매도 우세)
-        case 'tradeProfitMaker': return m.tradeProfitMaker ?? 0
-        case 'tradeProfitTaker': return m.tradeProfitTaker ?? 0
         case 'priceNavBp': return m.priceNavBp
         case 'askNavBp': return m.askNavBp
         case 'bidNavBp': return m.bidNavBp
-        case 'diffBp': return m.diffBp   // signed: 양수(매수)↑, 0 중간, 음수(매도)↓
+        case 'diffBp': return m.diffBp           // signed: 매수+, 매도-
+        case 'buyArbBp': return m.buyArbBp       // ≥0
+        case 'sellArbBp': return m.sellArbBp     // ≤0. desc 정렬 시 매도차 강한 ETF가 위로
+        case 'realProfitWon': return m.realProfitWon
+        case 'realProfitBp': return m.realProfitBp
+        case 'dividendN': return m.dividendN
         case 'appliedPct': return m.appliedPct
         case 'futuresCount': return m.futuresCount
         default: return 0
@@ -411,7 +606,7 @@ export function EtfArbitragePage() {
       const m = metricsByCode[etf.code]
       if (!m) return true   // metric 아직 미계산 → 표시
       if (minDiffBp > 0 && Math.abs(m.diffBp) < minDiffBp) return false
-      if (minTradeProfit > 0 && (m.tradeProfitMaker == null || Math.abs(m.tradeProfitMaker) < minTradeProfit)) return false
+      if (minTradeProfit > 0 && Math.abs(m.realProfitWon) < minTradeProfit) return false
       return true
     })
     const sorted = [...filtered]
@@ -576,33 +771,66 @@ export function EtfArbitragePage() {
               </button>
             </div>
             {filterOpen && (
-              <div className="flex flex-wrap items-center gap-x-3 gap-y-2 text-[11px]">
-                <FilterField label="차익 방향">
-                  <div className="flex items-center gap-0.5">
-                    <Quick on={arbMode === 'buy'} onClick={() => setArbMode('buy')}>매수차만</Quick>
-                    <Quick on={arbMode === 'sell'} onClick={() => setArbMode('sell')}>매도차만</Quick>
-                    <Quick on={arbMode === 'mixed'} onClick={() => setArbMode('mixed')}>혼합</Quick>
+              <>
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-2 text-[11px]">
+                  <FilterField label="차익 방향">
+                    <div className="flex items-center gap-0.5">
+                      <Quick on={arbMode === 'buy'} onClick={() => setArbMode('buy')}>매수차만</Quick>
+                      <Quick on={arbMode === 'sell'} onClick={() => setArbMode('sell')}>매도차만</Quick>
+                      <Quick on={arbMode === 'mixed'} onClick={() => setArbMode('mixed')}>혼합</Quick>
+                    </div>
+                  </FilterField>
+                  <FilterField label="호가 기준">
+                    <div className="flex items-center gap-0.5">
+                      <Quick on={quoteMode === 'last'} onClick={() => setQuoteMode('last')}>현재가</Quick>
+                      <Quick on={quoteMode === 'self'} onClick={() => setQuoteMode('self')}>자기호가</Quick>
+                      <Quick on={quoteMode === 'opp'} onClick={() => setQuoteMode('opp')}>상대호가</Quick>
+                      <Quick on={quoteMode === 'mid'} onClick={() => setQuoteMode('mid')}>중간가</Quick>
+                    </div>
+                  </FilterField>
+                  <FilterField label="슬리피지">
+                    <NumInput value={slippageBp} step={0.1} onChange={setSlippageBp} width={48} suffix="bp" />
+                  </FilterField>
+                  <div className="flex items-center gap-1.5 rounded-md bg-[#1e1e22] px-2 py-1">
+                    <span className="text-[10px] text-[#8b8b8e]">금리</span>
+                    <input
+                      type="number"
+                      step="0.1"
+                      value={rateDraft}
+                      onChange={(e) => setRateDraft(e.target.value)}
+                      onBlur={commitRate}
+                      onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }}
+                      className="w-10 bg-transparent text-[11px] text-white tabular-nums outline-none text-right [appearance:textfield] [&::-webkit-inner-spin-button]:hidden [&::-webkit-outer-spin-button]:hidden"
+                    />
+                    <span className="text-[10px] text-[#8b8b8e]">%</span>
                   </div>
-                </FilterField>
-                <FilterField label="선물거래량 ≥">
-                  <NumInput value={minFuturesVolume} onChange={setMinFuturesVolume} width={64} />
-                  <Quick on={minFuturesVolume === 100} onClick={() => setMinFuturesVolume(100)}>100+</Quick>
-                  <Quick on={minFuturesVolume === 1000} onClick={() => setMinFuturesVolume(1000)}>1,000+</Quick>
-                  <Quick on={minFuturesVolume === 0} onClick={() => setMinFuturesVolume(0)}>전체</Quick>
-                </FilterField>
-                <FilterField label="|차익bp| ≥">
-                  <NumInput value={minDiffBp} step={0.1} onChange={setMinDiffBp} width={48} suffix="bp" />
-                  <Quick on={minDiffBp === 10} onClick={() => setMinDiffBp(10)}>10+</Quick>
-                  <Quick on={minDiffBp === 30} onClick={() => setMinDiffBp(30)}>30+</Quick>
-                  <Quick on={minDiffBp === 0} onClick={() => setMinDiffBp(0)}>전체</Quick>
-                </FilterField>
-                <FilterField label="|매매이익(자기)| ≥">
-                  <NumInput value={minTradeProfit} step={1} onChange={setMinTradeProfit} width={48} suffix="원" />
-                  <Quick on={minTradeProfit === 10} onClick={() => setMinTradeProfit(10)}>10+</Quick>
-                  <Quick on={minTradeProfit === 30} onClick={() => setMinTradeProfit(30)}>30+</Quick>
-                  <Quick on={minTradeProfit === 0} onClick={() => setMinTradeProfit(0)}>전체</Quick>
-                </FilterField>
-              </div>
+                  <div className="flex items-center gap-1.5 rounded-md bg-[#1e1e22] px-2 py-1">
+                    <span className="text-[10px] text-[#8b8b8e]">거래세</span>
+                    <span className="text-[11px] text-white tabular-nums">{TAX_PCT.toFixed(2)}</span>
+                    <span className="text-[10px] text-[#8b8b8e]">%</span>
+                  </div>
+                </div>
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-2 text-[11px]">
+                  <FilterField label="선물거래량 ≥">
+                    <NumInput value={minFuturesVolume} onChange={setMinFuturesVolume} width={64} />
+                    <Quick on={minFuturesVolume === 100} onClick={() => setMinFuturesVolume(100)}>100+</Quick>
+                    <Quick on={minFuturesVolume === 1000} onClick={() => setMinFuturesVolume(1000)}>1,000+</Quick>
+                    <Quick on={minFuturesVolume === 0} onClick={() => setMinFuturesVolume(0)}>전체</Quick>
+                  </FilterField>
+                  <FilterField label="|차익bp| ≥">
+                    <NumInput value={minDiffBp} step={0.1} onChange={setMinDiffBp} width={48} suffix="bp" />
+                    <Quick on={minDiffBp === 10} onClick={() => setMinDiffBp(10)}>10+</Quick>
+                    <Quick on={minDiffBp === 30} onClick={() => setMinDiffBp(30)}>30+</Quick>
+                    <Quick on={minDiffBp === 0} onClick={() => setMinDiffBp(0)}>전체</Quick>
+                  </FilterField>
+                  <FilterField label="|실집행차익| ≥">
+                    <NumInput value={minTradeProfit} step={1000} onChange={setMinTradeProfit} width={64} suffix="원" />
+                    <Quick on={minTradeProfit === 10000} onClick={() => setMinTradeProfit(10000)}>1만+</Quick>
+                    <Quick on={minTradeProfit === 100000} onClick={() => setMinTradeProfit(100000)}>10만+</Quick>
+                    <Quick on={minTradeProfit === 0} onClick={() => setMinTradeProfit(0)}>전체</Quick>
+                  </FilterField>
+                </div>
+              </>
             )}
           </div>
         )
@@ -650,36 +878,40 @@ export function EtfArbitragePage() {
         {master && pdfs && (
           <table className="w-max min-w-full border-collapse" style={{ tableLayout: 'fixed' }}>
             <colgroup>
-              <col style={{ width: 180 }} />
-              <col style={{ width: 100 }} />
-              <col style={{ width: 78 }} />
-              <col style={{ width: 78 }} />
-              <col style={{ width: 80 }} />
-              <col style={{ width: 80 }} />
-              <col style={{ width: 80 }} />
-              <col style={{ width: 88 }} />
-              <col style={{ width: 78 }} />
-              <col style={{ width: 78 }} />
-              <col style={{ width: 88 }} />
-              <col style={{ width: 88 }} />
-              <col style={{ width: 60 }} />
-              <col style={{ width: 60 }} />
-              <col style={{ width: 170 }} />
+              <col style={{ width: 180 }} />{/* 종목 */}
+              <col style={{ width: 96 }} />{/* 거래대금 */}
+              <col style={{ width: 78 }} />{/* 현재가 */}
+              <col style={{ width: 78 }} />{/* rNAV */}
+              <col style={{ width: 78 }} />{/* fNAV */}
+              <col style={{ width: 76 }} />{/* 현재괴리 */}
+              <col style={{ width: 76 }} />{/* 매도괴리 */}
+              <col style={{ width: 76 }} />{/* 매수괴리 */}
+              <col style={{ width: 80 }} />{/* 매수차BP */}
+              <col style={{ width: 80 }} />{/* 매도차BP */}
+              <col style={{ width: 76 }} />{/* 차익bp */}
+              <col style={{ width: 100 }} />{/* 실집행차익(원) */}
+              <col style={{ width: 80 }} />{/* 실집행BP */}
+              <col style={{ width: 56 }} />{/* 배당N */}
+              <col style={{ width: 60 }} />{/* 선물비중 */}
+              <col style={{ width: 56 }} />{/* 선물수 */}
+              <col style={{ width: 160 }} />{/* 추이 */}
             </colgroup>
             <thead className="sticky top-0 z-20">
               <tr className="text-[12px] text-[#8b8b8e] bg-black">
                 <ArbTh sort={() => handleSort('name')} active={sortKey === 'name'} asc={sortAsc} left sticky className="pl-4">종목</ArbTh>
                 <ArbTh sort={() => handleSort('tradeValue')} active={sortKey === 'tradeValue'} asc={sortAsc}>거래대금</ArbTh>
                 <ArbTh sort={() => handleSort('etfPrice')} active={sortKey === 'etfPrice'} asc={sortAsc}>현재가</ArbTh>
-                <ArbTh sort={() => handleSort('nav')} active={sortKey === 'nav'} asc={sortAsc}>NAV</ArbTh>
+                <ArbTh sort={() => handleSort('rNav')} active={sortKey === 'rNav'} asc={sortAsc} title="현물 NAV. (SUM(F·D)+현금)/CU">rNAV</ArbTh>
+                <ArbTh sort={() => handleSort('fNav')} active={sortKey === 'fNav'} asc={sortAsc} title="선물대체 NAV. V=O 종목은 K로 평가">fNAV</ArbTh>
                 <ArbTh sort={() => handleSort('priceNavBp')} active={sortKey === 'priceNavBp'} asc={sortAsc}>현재 괴리</ArbTh>
                 <ArbTh sort={() => handleSort('askNavBp')} active={sortKey === 'askNavBp'} asc={sortAsc}>매도 괴리</ArbTh>
                 <ArbTh sort={() => handleSort('bidNavBp')} active={sortKey === 'bidNavBp'} asc={sortAsc}>매수 괴리</ArbTh>
-                <ArbTh sort={() => handleSort('diffBp')} active={sortKey === 'diffBp'} asc={sortAsc}>차익bp</ArbTh>
-                <ArbTh sort={() => handleSort('fNav')} active={sortKey === 'fNav'} asc={sortAsc}>f_nav</ArbTh>
-                <ArbTh sort={() => handleSort('navDiff')} active={sortKey === 'navDiff'} asc={sortAsc}>nav 차이</ArbTh>
-                <ArbTh sort={() => handleSort('tradeProfitMaker')} active={sortKey === 'tradeProfitMaker'} asc={sortAsc}>매매이익(자기)</ArbTh>
-                <ArbTh sort={() => handleSort('tradeProfitTaker')} active={sortKey === 'tradeProfitTaker'} asc={sortAsc}>매매이익(상대)</ArbTh>
+                <ArbTh sort={() => handleSort('buyArbBp')} active={sortKey === 'buyArbBp'} asc={sortAsc} title="매수차BP_net. R>0 종목 V=O들의 (T-slip-tax)·H 합">매수차BP</ArbTh>
+                <ArbTh sort={() => handleSort('sellArbBp')} active={sortKey === 'sellArbBp'} asc={sortAsc} title="매도차BP_net. R<0 종목 V=O들의 (T+slip)·H 합. 음수=이익">매도차BP</ArbTh>
+                <ArbTh sort={() => handleSort('diffBp')} active={sortKey === 'diffBp'} asc={sortAsc} title="매수차BP + 매도차BP. 부호로 우세 방향">차익bp</ArbTh>
+                <ArbTh sort={() => handleSort('realProfitWon')} active={sortKey === 'realProfitWon'} asc={sortAsc} title="실집행차익(1 CU 기준 원). ETF 호가 vs fNAV 차익 (매수차는 매도세 차감)">실집행차익</ArbTh>
+                <ArbTh sort={() => handleSort('realProfitBp')} active={sortKey === 'realProfitBp'} asc={sortAsc}>실집행BP</ArbTh>
+                <ArbTh sort={() => handleSort('dividendN')} active={sortKey === 'dividendN'} asc={sortAsc} title="만기 이전 배당락 종목 수">배당N</ArbTh>
                 <ArbTh sort={() => handleSort('appliedPct')} active={sortKey === 'appliedPct'} asc={sortAsc}>선물비중</ArbTh>
                 <ArbTh sort={() => handleSort('futuresCount')} active={sortKey === 'futuresCount'} asc={sortAsc}>선물수</ArbTh>
                 <ArbTh className="text-center">추이</ArbTh>
@@ -712,7 +944,7 @@ export function EtfArbitragePage() {
                     data-index={vr.index}
                     ref={rowVirtualizer.measureElement}
                   >
-                    <td colSpan={15} className="p-0">
+                    <td colSpan={17} className="p-0">
                       <ExpandedPanel
                         pdf={entry.pdf}
                         etfCode={entry.etfCode}
@@ -722,6 +954,16 @@ export function EtfArbitragePage() {
                         onToggle={toggleExclude}
                         stockTicks={stockTicks}
                         futuresTicks={futuresTicks}
+                        arbMode={arbMode}
+                        ratePct={ratePct}
+                        slippageBp={slippageBp}
+                        taxBp={taxBp}
+                        minFuturesVolume={minFuturesVolume}
+                        dividends={dividends}
+                        todayIso={todayIso}
+                        pdfSortKey={pdfSortKey}
+                        pdfSortAsc={pdfSortAsc}
+                        onPdfSort={handlePdfSort}
                       />
                     </td>
                   </tr>
@@ -767,100 +1009,329 @@ type ExpandedPanelProps = {
   // (etfCode, stockCode) 시그니처. useCallback으로 안정화된 ref 받음.
   onToggle: (etfCode: string, stockCode: string) => void
   // 200ms throttled snapshot — 부모에서 prop으로 전달.
-  // 이전엔 store에서 직접 구독해 매 tick(50Hz) 재렌더 → 페이지 클릭 처리 starve. fix.
   stockTicks: Record<string, import('@/types/market').StockTick>
   futuresTicks: Record<string, import('@/types/market').FuturesTick>
+  // 차익 계산 입력
+  arbMode: ArbMode
+  ratePct: number
+  slippageBp: number
+  taxBp: number
+  minFuturesVolume: number
+  dividends: Map<string, DividendInfo[]>
+  todayIso: string
+  pdfSortKey: PdfSortKey
+  pdfSortAsc: boolean
+  onPdfSort: (key: PdfSortKey) => void
 }
 
-/** PDF 행 — 해당 종목의 spot/fut/futVol/isExcluded만 변할 때 렌더.
- * 부모 ExpandedPanel이 매 200ms 재렌더돼도 가격 변동 없는 행은 memo skip. */
+/** PDF 테이블 정렬 키 — 모든 컬럼 정렬 가능. */
+type PdfSortKey =
+  | 'code' | 'name' | 'qty' | 'H' | 'M'
+  | 'S' | 'F' | 'N' | 'Q' | 'P' | 'T'
+  | 'futVol' | 'contribBp'
+
+/** 종목 단위 차익 정보 — ExpandedPanel에서 각 PDF 행마다 계산해 PdfRow에 전달.
+ *  변수명: S=현물(spot), F=선물 시장가(futures), N=이론가(theoretical forward),
+ *   Q=시장베이시스(F-S), P=이론베이시스(N-S-M), R=베이시스 갭(Q-P), T=갭BP, M=배당. */
+type StockArbInfo = {
+  S: number; F: number; futVol: number
+  N: number; Q: number; P: number; R: number; T: number; M: number
+  M_confirmed: number  // 확정 배당 합 (DART)
+  M_estimated: number  // 추정 배당 합 (LENS estimator)
+  H: number          // 비중 (0~1)
+  hasFut: boolean
+  favBuy: boolean    // R > 0
+  favSell: boolean   // R < 0
+  modeMatch: boolean // arbMode와 우호 방향 일치
+  canToggle: boolean // 사용자가 V=O 토글할 수 있는지 (선물 가용 + 모드 매칭)
+  isUsed: boolean    // 실제 V=O 적용 (canToggle && !excluded)
+  contribBp: number  // 사용 시 ETF 차익 BP에 더해지는 값. 부호: 매수+/매도-.
+}
+
+/** PDF 행 — 14컬럼. 가격/contribBp/V=O만 변할 때 렌더. */
 const PdfRow = memo(function PdfRow({
-  code, name, qty, futCode, spot, fut, futVol, isExcluded, etfCode, onToggle,
+  code, name, qty, info, isExcluded, etfCode, onToggle,
 }: {
-  code: string; name: string; qty: number; futCode: string | undefined
-  spot: number; fut: number; futVol: number; isExcluded: boolean
+  code: string; name: string; qty: number
+  info: StockArbInfo
+  isExcluded: boolean
   etfCode: string; onToggle: (etfCode: string, stockCode: string) => void
 }) {
-  const hasFuture = !!futCode
-  const basis = spot > 0 && fut > 0 ? fut - spot : 0
+  const { S, F, futVol, N, Q, P, T, M, M_confirmed, M_estimated, H, hasFut, favBuy, favSell, modeMatch, canToggle, isUsed, contribBp } = info
+
+  // 행 배경 — V=O 적용 시 우호 방향 색조 약하게.
+  const rowBg = isUsed
+    ? (favBuy ? 'bg-[#00b26b]/[0.06]' : 'bg-[#bb4a65]/[0.06]')
+    : ''
+  const dimmed = !modeMatch || !hasFut
+
+  // 갭BP / 기여BP 색상 (부호: 매수+ 초록, 매도- 빨강).
+  const tColor = !hasFut ? 'text-[#5a5a5e]' : T > 0.001 ? 'text-[#00b26b]' : T < -0.001 ? 'text-[#bb4a65]' : 'text-[#8b8b8e]'
+  const contribColor = !isUsed ? 'text-[#5a5a5e]' : contribBp > 0 ? 'text-[#00b26b]' : contribBp < 0 ? 'text-[#bb4a65]' : 'text-[#8b8b8e]'
+
   return (
-    <tr className={cn('border-t border-border/30', isExcluded && 'opacity-50')}>
-      <td className="py-0.5 text-t2 font-mono text-[11px]">{code}</td>
-      <td className={cn('py-0.5', hasFuture ? 'text-t1' : 'text-t4')}>
-        {name}{!hasFuture && <span className="ml-1 text-[10px]">(선물無)</span>}
+    <tr className={cn(
+      'border-b border-white/[0.03] hover:bg-[#1a1a1c] transition-colors',
+      rowBg,
+      dimmed && 'opacity-40',
+    )}>
+      <td className="py-1 pl-4 pr-2 font-mono text-[10.5px] text-[#8b8b8e]">{code}</td>
+      <td className={cn('py-1 px-2 text-[11px] truncate', hasFut ? 'text-white' : 'text-[#5a5a5e]')}>
+        {name}{!hasFut && <span className="ml-1 text-[9px] text-[#5a5a5e]">·선물無</span>}
       </td>
-      <td className="py-0.5 text-right text-t2">{qty.toLocaleString()}</td>
-      <td className="py-0.5 text-right text-t2">{spot ? spot.toLocaleString() : '—'}</td>
-      <td className="py-0.5 text-right text-t2">{fut ? fut.toLocaleString() : '—'}</td>
-      <td className={cn('py-0.5 text-right', basis > 0 ? 'text-down' : basis < 0 ? 'text-up' : 'text-t4')}>{basis ? basis.toLocaleString() : '—'}</td>
-      <td className="py-0.5 text-right text-t2">{futVol ? futVol.toLocaleString() : '—'}</td>
-      <td className="py-0.5 text-center">
+      <td className="py-1 px-2 text-right text-[11px] tabular-nums text-[#d1d1d6]">{qty.toLocaleString()}</td>
+      <td className="py-1 px-2 text-right text-[11px] tabular-nums">
+        {/* 비중 mini bar */}
+        <div className="flex items-center justify-end gap-1.5">
+          <div className="w-8 h-1 bg-[#2a2a2e] rounded-sm overflow-hidden">
+            <div className="h-full bg-[#4a4a4e]" style={{ width: `${Math.min(100, H * 100)}%` }} />
+          </div>
+          <span className="text-[#d1d1d6] w-9">{(H * 100).toFixed(2)}%</span>
+        </div>
+      </td>
+      <td className="py-1 px-2 text-right text-[11px] tabular-nums">
+        {M > 0 ? (() => {
+          // 색: 모두 확정 → 초록, 모두 예상 → 오렌지, 혼합 → 흰색.
+          // 배지: 예상 포함 시 "예상" 또는 혼합 시 "혼"
+          const allConfirmed = M_estimated === 0
+          const allEstimated = M_confirmed === 0
+          const color = allConfirmed ? 'text-[#00b26b]' : allEstimated ? 'text-[#ff9f0a]' : 'text-white'
+          const badge = allConfirmed ? null : allEstimated ? '예상' : '혼'
+          return (
+            <span className="inline-flex items-center justify-end gap-1">
+              <span className={color}>{M.toLocaleString()}</span>
+              {badge && <span className={cn('text-[8.5px] font-medium uppercase', allEstimated ? 'text-[#ff9f0a]' : 'text-[#8b8b8e]')}>{badge}</span>}
+            </span>
+          )
+        })() : <span className="text-[#5a5a5e]">—</span>}
+      </td>
+      <td className="py-1 px-2 text-right text-[11px] tabular-nums text-[#d1d1d6]">{S > 0 ? S.toLocaleString() : '—'}</td>
+      <td className={cn('py-1 px-2 text-right text-[11px] tabular-nums', F > 0 ? 'text-[#d1d1d6]' : 'text-[#5a5a5e]')}>{F > 0 ? F.toLocaleString() : '—'}</td>
+      <td className={cn('py-1 px-2 text-right text-[11px] tabular-nums', N > 0 ? 'text-[#d1d1d6]' : 'text-[#5a5a5e]')}>{N > 0 ? Math.round(N).toLocaleString() : '—'}</td>
+      <td className={cn('py-1 px-2 text-right text-[11px] tabular-nums', hasFut ? (Q > 0 ? 'text-[#00b26b]' : Q < 0 ? 'text-[#bb4a65]' : 'text-[#8b8b8e]') : 'text-[#5a5a5e]')}>{hasFut ? Math.round(Q).toLocaleString() : '—'}</td>
+      <td className={cn('py-1 px-2 text-right text-[11px] tabular-nums', N > 0 ? 'text-[#8b8b8e]' : 'text-[#5a5a5e]')}>{N > 0 ? Math.round(P).toLocaleString() : '—'}</td>
+      <td className={cn('py-1 px-2 text-right text-[11px] tabular-nums font-medium', tColor)}>{hasFut && Math.abs(T) > 0.001 ? formatBp(T) : '—'}</td>
+      <td className={cn('py-1 px-2 text-right text-[11px] tabular-nums', futVol > 0 ? 'text-[#8b8b8e]' : 'text-[#5a5a5e]')}>{futVol > 0 ? futVol.toLocaleString() : '—'}</td>
+      <td className={cn('py-1 px-2 text-right text-[11px] tabular-nums font-medium', contribColor)}>{isUsed && Math.abs(contribBp) > 0.001 ? formatBp(contribBp) : '—'}</td>
+      <td className="py-1 px-2 text-center">
         <input
           type="checkbox"
-          checked={!isExcluded}
-          disabled={!hasFuture}
+          checked={!isExcluded && canToggle}
+          disabled={!canToggle}
           onChange={() => onToggle(etfCode, code)}
-          className="accent-accent"
+          className={cn('accent-accent w-3 h-3', !canToggle && 'cursor-not-allowed opacity-30')}
+          title={!hasFut ? '선물 없음' : !modeMatch ? `현재 모드(${arbModeLabel(favBuy, favSell)})와 불일치` : ''}
         />
       </td>
     </tr>
   )
 })
 
-function ExpandedPanel({ pdf, etfCode, metrics, futuresByBase, excluded, onToggle, stockTicks, futuresTicks }: ExpandedPanelProps) {
+/** 우호 방향 한글 — disabled 툴팁용. */
+function arbModeLabel(favBuy: boolean, favSell: boolean): string {
+  if (favBuy) return '매수차 우호'
+  if (favSell) return '매도차 우호'
+  return '중립'
+}
+
+function ExpandedPanel({
+  pdf, etfCode, metrics, futuresByBase, excluded, onToggle,
+  stockTicks, futuresTicks, arbMode, ratePct, slippageBp, taxBp, minFuturesVolume,
+  dividends, todayIso, pdfSortKey, pdfSortAsc, onPdfSort,
+}: ExpandedPanelProps) {
+  const cash = pdf.cash || 0
+  const cuUnit = pdf.cu_unit ?? 0
+  const r = ratePct / 100
+
+  // 종목별 arb info 계산 — 펼친 ETF만 영향, 200ms tick에 재계산.
+  const stockInfos = useMemo<Map<string, StockArbInfo>>(() => {
+    type Pre = StockArbInfo & { code: string; G: number }
+    const arr: Pre[] = []
+    let G_sum = 0
+    for (const s of pdf.stocks) {
+      const S = stockTicks[s.code]?.price ?? 0
+      const fm = futuresByBase.get(s.code)
+      const futCode = fm?.front?.code
+      const futTick = futCode ? futuresTicks[futCode] : undefined
+      const F = futTick?.price ?? 0
+      const futVol = futTick?.volume ?? 0
+      const futExpiryIso = expiryToIso(fm?.front?.expiry)
+      const daysLeft = fm?.front?.days_left ?? 0
+      const div = pickDividendsInWindow(dividends.get(s.code), todayIso, futExpiryIso)
+      const M = div.total
+      let N = 0, Q = 0, R = 0, T = 0, P = 0
+      let favBuy = false, favSell = false
+      if (S > 0 && F > 0 && daysLeft >= 0) {
+        N = S * (1 + r * (daysLeft / 365))
+        Q = F - S
+        P = (N - S) - M
+        R = F - N + M
+        T = N > 0 ? (R / N) * 10000 : 0
+        favBuy = R > 0
+        favSell = R < 0
+      }
+      const G = S * s.qty
+      G_sum += G
+      const hasFut = !!futCode && F > 0 && (minFuturesVolume === 0 || futVol >= minFuturesVolume)
+      const modeMatch =
+        arbMode === 'mixed' ? (favBuy || favSell) :
+        arbMode === 'buy' ? favBuy :
+        arbMode === 'sell' ? favSell : false
+      const canToggle = hasFut && modeMatch
+      const isUsed = canToggle && !excluded.has(s.code)
+      arr.push({
+        code: s.code, S, F, futVol, N, Q, P, R, T, M,
+        M_confirmed: div.confirmed, M_estimated: div.estimated,
+        G, H: 0, hasFut, favBuy, favSell, modeMatch, canToggle, isUsed,
+        contribBp: 0,
+      })
+    }
+    const total = G_sum + cash
+    const map = new Map<string, StockArbInfo>()
+    for (const it of arr) {
+      const H = total > 0 ? it.G / total : 0
+      let contribBp = 0
+      if (it.isUsed) {
+        if (it.favBuy) contribBp = (it.T - slippageBp - taxBp) * H
+        else if (it.favSell) contribBp = (it.T + slippageBp) * H
+      }
+      const { code: _c, G: _G, ...rest } = it
+      map.set(it.code, { ...rest, H, contribBp })
+    }
+    return map
+  }, [pdf, stockTicks, futuresTicks, futuresByBase, dividends, todayIso, ratePct, slippageBp, taxBp, minFuturesVolume, arbMode, excluded, cash, r])
+
+  // 정렬된 종목 목록.
+  const sortedStocks = useMemo(() => {
+    const dir = pdfSortAsc ? 1 : -1
+    const list = [...pdf.stocks]
+    if (pdfSortKey === 'code') return list.sort((a, b) => a.code.localeCompare(b.code) * dir)
+    if (pdfSortKey === 'name') return list.sort((a, b) => a.name.localeCompare(b.name) * dir)
+    if (pdfSortKey === 'qty') return list.sort((a, b) => (b.qty - a.qty) * (pdfSortAsc ? -1 : 1))
+    return list.sort((a, b) => {
+      const ia = stockInfos.get(a.code)
+      const ib = stockInfos.get(b.code)
+      const va = ia ? (ia[pdfSortKey] as number) ?? 0 : 0
+      const vb = ib ? (ib[pdfSortKey] as number) ?? 0 : 0
+      return (vb - va) * (pdfSortAsc ? -1 : 1)
+    })
+  }, [pdf, stockInfos, pdfSortKey, pdfSortAsc])
+
+  // 만기 d일 — 첫 번째 선물에서 추출 (대부분 KRX 주식선물은 동일 만기)
+  const firstFutDays = useMemo(() => {
+    for (const s of pdf.stocks) {
+      const fm = futuresByBase.get(s.code)
+      if (fm?.front?.days_left != null) return fm.front.days_left
+    }
+    return null
+  }, [pdf, futuresByBase])
 
   return (
-    <div className="px-4 py-2">
-      <div className="mb-2 flex items-center gap-3 text-[11px] text-t3 flex-wrap">
-        <span>기준일: {pdf.as_of}</span>
-        <span>CU: {pdf.cu_unit?.toLocaleString()}주</span>
-        <span>현금: {pdf.cash.toLocaleString()}원</span>
-        <span>종목수: {pdf.stocks.length}</span>
-        {metrics && (
+    <div className="px-4 py-3 bg-[#0a0a0a] border-y border-white/[0.04]">
+      {/* PDF 메타 */}
+      <div className="mb-3 inline-flex items-center gap-3 px-3 py-2 rounded bg-[#141417] text-[11px] text-[#8b8b8e]">
+        <span>기준일 <span className="text-[#d1d1d6]">{pdf.as_of}</span></span>
+        <span className="text-[#3a3a3e]">|</span>
+        <span>CU <span className="text-[#d1d1d6] tabular-nums">{cuUnit.toLocaleString()}</span></span>
+        <span className="text-[#3a3a3e]">|</span>
+        <span>현금 <span className="text-[#d1d1d6] tabular-nums">{cash.toLocaleString()}</span></span>
+        <span className="text-[#3a3a3e]">|</span>
+        <span>종목 <span className="text-[#d1d1d6] tabular-nums">{pdf.stocks.length}</span></span>
+        {firstFutDays != null && (
           <>
-            <span className="text-t4">|</span>
-            <span>선물대체 매수차: {formatBp(metrics.futuresBuyBp)}bp</span>
-            <span>선물대체 매도차: {formatBp(metrics.futuresSellBp)}bp</span>
-            <span>차익bp: {formatBp(metrics.diffBp)}</span>
+            <span className="text-[#3a3a3e]">|</span>
+            <span>만기 <span className="text-[#d1d1d6] tabular-nums">{firstFutDays}</span>일</span>
+          </>
+        )}
+        {metrics && metrics.dividendN > 0 && (
+          <>
+            <span className="text-[#3a3a3e]">|</span>
+            <span>배당 <span className="text-[#ff9f0a] tabular-nums">{metrics.dividendN}</span>종</span>
           </>
         )}
       </div>
-      <table className="w-full text-[12px] tabular-nums">
-        <thead className="text-t3 text-[10px] uppercase">
-          <tr>
-            <th className="py-1 text-left font-medium">코드</th>
-            <th className="py-1 text-left font-medium">종목명</th>
-            <th className="py-1 text-right font-medium">주식수</th>
-            <th className="py-1 text-right font-medium">현물가</th>
-            <th className="py-1 text-right font-medium">선물가</th>
-            <th className="py-1 text-right font-medium">베이시스</th>
-            <th className="py-1 text-right font-medium">선물거래량</th>
-            <th className="py-1 text-center font-medium">사용</th>
-          </tr>
-        </thead>
-        <tbody>
-          {pdf.stocks.map((s) => {
-            const fm = futuresByBase.get(s.code)
-            const futCode = fm?.front?.code
-            return (
-              <PdfRow
-                key={s.code}
-                code={s.code}
-                name={s.name}
-                qty={s.qty}
-                futCode={futCode}
-                spot={stockTicks[s.code]?.price ?? 0}
-                fut={futCode ? futuresTicks[futCode]?.price ?? 0 : 0}
-                futVol={futCode ? futuresTicks[futCode]?.volume ?? 0 : 0}
-                isExcluded={excluded.has(s.code)}
-                etfCode={etfCode}
-                onToggle={onToggle}
-              />
-            )
-          })}
-        </tbody>
-      </table>
+
+      {/* PDF 테이블 */}
+      <div className="rounded bg-[#0d0d0f] border border-white/[0.03] overflow-hidden">
+        <table className="w-full tabular-nums" style={{ tableLayout: 'fixed' }}>
+          <colgroup>
+            <col style={{ width: '5.5%' }} />{/* 코드 */}
+            <col style={{ width: '11%' }} />{/* 종목명 */}
+            <col style={{ width: '7%' }} />{/* 1CU */}
+            <col style={{ width: '9%' }} />{/* 비중 */}
+            <col style={{ width: '5.5%' }} />{/* 배당 */}
+            <col style={{ width: '7%' }} />{/* 현물가 */}
+            <col style={{ width: '7%' }} />{/* 선물가 */}
+            <col style={{ width: '7%' }} />{/* 이론가 */}
+            <col style={{ width: '8%' }} />{/* 시장베이시스 */}
+            <col style={{ width: '8%' }} />{/* 이론베이시스 */}
+            <col style={{ width: '6.5%' }} />{/* 갭BP */}
+            <col style={{ width: '7.5%' }} />{/* 거래량 */}
+            <col style={{ width: '7%' }} />{/* 기여BP */}
+            <col style={{ width: '4%' }} />{/* 사용 */}
+          </colgroup>
+          <thead className="text-[#5a5a5e] text-[9.5px] uppercase tracking-wide bg-[#0a0a0c] border-b border-white/[0.04]">
+            <tr>
+              <PdfTh sk="code" cur={pdfSortKey} asc={pdfSortAsc} onSort={onPdfSort} className="pl-4 text-left">코드</PdfTh>
+              <PdfTh sk="name" cur={pdfSortKey} asc={pdfSortAsc} onSort={onPdfSort} className="text-left">종목명</PdfTh>
+              <PdfTh sk="qty" cur={pdfSortKey} asc={pdfSortAsc} onSort={onPdfSort}>1CU 수량</PdfTh>
+              <PdfTh sk="H" cur={pdfSortKey} asc={pdfSortAsc} onSort={onPdfSort}>비중</PdfTh>
+              <PdfTh sk="M" cur={pdfSortKey} asc={pdfSortAsc} onSort={onPdfSort}>배당</PdfTh>
+              <PdfTh sk="S" cur={pdfSortKey} asc={pdfSortAsc} onSort={onPdfSort}>현물가</PdfTh>
+              <PdfTh sk="F" cur={pdfSortKey} asc={pdfSortAsc} onSort={onPdfSort}>선물가</PdfTh>
+              <PdfTh sk="N" cur={pdfSortKey} asc={pdfSortAsc} onSort={onPdfSort} title="현물·(1+r·d/365)">이론가</PdfTh>
+              <PdfTh sk="Q" cur={pdfSortKey} asc={pdfSortAsc} onSort={onPdfSort} title="F - S">시장베이시스</PdfTh>
+              <PdfTh sk="P" cur={pdfSortKey} asc={pdfSortAsc} onSort={onPdfSort} title="(N-S)-M, 배당 차감">이론베이시스</PdfTh>
+              <PdfTh sk="T" cur={pdfSortKey} asc={pdfSortAsc} onSort={onPdfSort} title="R/N·1만, 매수+/매도-">갭BP</PdfTh>
+              <PdfTh sk="futVol" cur={pdfSortKey} asc={pdfSortAsc} onSort={onPdfSort}>거래량</PdfTh>
+              <PdfTh sk="contribBp" cur={pdfSortKey} asc={pdfSortAsc} onSort={onPdfSort} title="(갭BP±slip-tax)·H, V=O일 때">기여BP</PdfTh>
+              <th className="py-1.5 px-2 text-center font-medium">사용</th>
+            </tr>
+          </thead>
+          <tbody>
+            {sortedStocks.map((s) => {
+              const info = stockInfos.get(s.code)
+              if (!info) return null
+              return (
+                <PdfRow
+                  key={s.code}
+                  code={s.code}
+                  name={s.name}
+                  qty={s.qty}
+                  info={info}
+                  isExcluded={excluded.has(s.code)}
+                  etfCode={etfCode}
+                  onToggle={onToggle}
+                />
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
     </div>
+  )
+}
+
+/** PDF 테이블 정렬 헤더 — sk(자기 키)와 cur(현재 sortKey)이 일치하면 active 표시. */
+function PdfTh({ children, sk, cur, asc, onSort, className, title }: {
+  children: React.ReactNode; sk: PdfSortKey; cur: PdfSortKey; asc: boolean
+  onSort: (k: PdfSortKey) => void; className?: string; title?: string
+}) {
+  const active = sk === cur
+  return (
+    <th
+      title={title}
+      onClick={() => onSort(sk)}
+      className={cn(
+        'py-1.5 px-1 font-medium cursor-pointer select-none hover:text-[#d1d1d6] transition-colors whitespace-nowrap',
+        active && 'text-[#d1d1d6]',
+        className?.includes('text-left') ? '' : 'text-right',
+        className,
+      )}
+    >
+      {children}
+      {active && <span className="ml-0.5 opacity-60 text-[8px]">{asc ? '▲' : '▼'}</span>}
+    </th>
   )
 }
 
@@ -876,23 +1347,24 @@ type TopBarProps = {
 
 /**
  * Top N ETF 막대 차트. arbMode별:
- *   buy: 매수차 Top만 풀폭 (양수, 초록)
- *   sell: 매도차 Top만 풀폭 (음수, 빨강)
- *   mixed: 좌(매수차) + 우(매도차) 분할
+ *   buy: 매수차BP Top만 풀폭 (양수, 초록)
+ *   sell: 매도차BP Top만 풀폭 (음수, 빨강)
+ *   mixed: 좌(매수차) + 우(매도차) — 양방향 혼재 ETF는 양쪽에 모두 등장 가능
+ * buyArbBp/sellArbBp 직접 사용 (diffBp 부호 분류 X — 혼합 ETF의 양면 모두 노출).
  */
 const TopBarChart = memo(function TopBarChart({ rows, metrics, selected, onSelect, arbMode }: TopBarProps) {
   const buyTop = useMemo(
     () => rows
-      .map((etf) => ({ etf, bp: metrics[etf.code]?.diffBp ?? 0 }))
-      .filter((it) => it.bp > 0)
+      .map((etf) => ({ etf, bp: metrics[etf.code]?.buyArbBp ?? 0 }))
+      .filter((it) => it.bp > 0.001)
       .sort((a, b) => b.bp - a.bp)
       .slice(0, TOP_N_CHART),
     [rows, metrics]
   )
   const sellTop = useMemo(
     () => rows
-      .map((etf) => ({ etf, bp: metrics[etf.code]?.diffBp ?? 0 }))
-      .filter((it) => it.bp < 0)
+      .map((etf) => ({ etf, bp: metrics[etf.code]?.sellArbBp ?? 0 }))
+      .filter((it) => it.bp < -0.001)
       .sort((a, b) => a.bp - b.bp)
       .slice(0, TOP_N_CHART),
     [rows, metrics]
@@ -1069,15 +1541,17 @@ const ArbRow = memo(function ArbRow({ etf, m, history, isSelected, onSelect }: {
           ? m.etfPrice.toLocaleString()
           : (m?.etfPrevClose ? m.etfPrevClose.toLocaleString() : '-')
       }</ArbC>
-      <ArbC>{m?.nav ? m.nav.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '-'}</ArbC>
+      <ArbC>{m?.rNav ? m.rNav.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '-'}</ArbC>
+      <ArbC c={m && m.fNav > 0 && m.rNav > 0 ? (m.fNav > m.rNav ? 'text-[#00b26b]' : m.fNav < m.rNav ? 'text-[#bb4a65]' : 'text-white') : 'text-white'}>{m?.fNav ? m.fNav.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '-'}</ArbC>
       <ArbC c={m && m.priceNavBp > 0 ? 'text-[#00b26b]' : m && m.priceNavBp < 0 ? 'text-[#bb4a65]' : 'text-[#d1d1d6]'}>{m && m.nav > 0 ? `${fmt(m.priceNavBp, 2)}bp` : '-'}</ArbC>
       <ArbC c={m && m.askNavBp > 0 ? 'text-[#00b26b]' : m && m.askNavBp < 0 ? 'text-[#bb4a65]' : 'text-[#d1d1d6]'}>{m && m.nav > 0 && m.askNavBp !== 0 ? `${fmt(m.askNavBp, 2)}bp` : '-'}</ArbC>
       <ArbC c={m && m.bidNavBp > 0 ? 'text-[#00b26b]' : m && m.bidNavBp < 0 ? 'text-[#bb4a65]' : 'text-[#d1d1d6]'}>{m && m.nav > 0 && m.bidNavBp !== 0 ? `${fmt(m.bidNavBp, 2)}bp` : '-'}</ArbC>
+      <ArbC c={m && m.buyArbBp > 0 ? 'text-[#00b26b]' : 'text-[#5a5a5e]'}>{m && m.buyArbBp > 0.001 ? formatBp(m.buyArbBp) : '-'}</ArbC>
+      <ArbC c={m && m.sellArbBp < 0 ? 'text-[#bb4a65]' : 'text-[#5a5a5e]'}>{m && m.sellArbBp < -0.001 ? formatBp(m.sellArbBp) : '-'}</ArbC>
       <ArbC c={cn('font-medium', diffColor)}>{m ? formatBp(m.diffBp) : '-'}</ArbC>
-      <ArbC>{m?.fNav ? m.fNav.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '-'}</ArbC>
-      <ArbC c={m && m.navDiff > 0 ? 'text-[#00b26b]' : m && m.navDiff < 0 ? 'text-[#bb4a65]' : 'text-[#d1d1d6]'}>{m && m.fNav > 0 ? fmt(m.navDiff, 2) : '-'}</ArbC>
-      <ArbC c={m?.tradeProfitMaker != null && m.tradeProfitMaker > 0 ? 'text-[#00b26b]' : m?.tradeProfitMaker != null && m.tradeProfitMaker < 0 ? 'text-[#bb4a65]' : 'text-[#d1d1d6]'}>{m?.tradeProfitMaker != null ? fmt(m.tradeProfitMaker, 2) : '-'}</ArbC>
-      <ArbC c={m?.tradeProfitTaker != null && m.tradeProfitTaker > 0 ? 'text-[#00b26b]' : m?.tradeProfitTaker != null && m.tradeProfitTaker < 0 ? 'text-[#bb4a65]' : 'text-[#d1d1d6]'}>{m?.tradeProfitTaker != null ? fmt(m.tradeProfitTaker, 2) : '-'}</ArbC>
+      <ArbC c={m && m.realProfitWon > 0 ? 'text-[#00b26b]' : m && m.realProfitWon < 0 ? 'text-[#bb4a65]' : 'text-[#5a5a5e]'}>{m && Math.abs(m.realProfitWon) > 1 ? Math.round(m.realProfitWon).toLocaleString() : '-'}</ArbC>
+      <ArbC c={m && m.realProfitBp > 0 ? 'text-[#00b26b]' : m && m.realProfitBp < 0 ? 'text-[#bb4a65]' : 'text-[#5a5a5e]'}>{m && Math.abs(m.realProfitBp) > 0.01 ? formatBp(m.realProfitBp) : '-'}</ArbC>
+      <ArbC c={m && m.dividendN > 0 ? 'text-[#ff9f0a]' : 'text-[#5a5a5e]'}>{m && m.dividendN > 0 ? m.dividendN : '-'}</ArbC>
       <ArbC c="text-[#d1d1d6]">{m ? m.appliedPct.toFixed(1) : '-'}</ArbC>
       <ArbC c="text-[#d1d1d6]">{m ? m.futuresCount : '-'}</ArbC>
       <td className="px-2 py-[7px] text-center"><Sparkline history={history} /></td>
