@@ -20,7 +20,7 @@
 | | 현물종목명 | 마스터 | |
 | **가격** | 현재가격 (현물) | stock_tick | 실시간 |
 | | 선물가격 | futures_tick | 실시간 |
-| | 선물이론가격 | 계산 | 금리+배당 필요 (추후) |
+| | 선물이론가격 | 계산 | `S × (1 + r·d/365) − M` |
 | **베이시스** | 이론베이시스 | 계산 | 이론선물가 - 현물가 (추후) |
 | | 시장베이시스 | futures_tick.basis | 선물가 - 현물가 |
 | | 베이시스갭 | 계산 | 시장B - 이론B (추후) |
@@ -30,9 +30,9 @@
 | | 거래승수 | 마스터 | 보통 10 |
 | **스프레드** | 스프레드 현재가 | 계산 | 원월물 - 근월물 |
 | | 스프레드 거래량 | 실시간 | |
-| **배당** | 배당금 | 별도 관리 | 추후 구현 |
-| | 배당기준일 | 별도 관리 | 추후 구현 |
-| | 현재월물 배당적용여부 | 계산 | 추후 구현 |
+| **배당** | 배당금 (M) | `/api/dividends` | DART 공시 + LENS estimator (추정) |
+| | 배당기준일 / 배당락일 | `/api/dividends` | record_date / ex_date (휴장일 보정 포함) |
+| | 현재월물 배당적용여부 | 계산 | `today ≤ ex_date ≤ futures.expiry` 윈도우 (오늘 포함) |
 | **보유** | 031계정 보유수량 | KBM TCP | 내부망, 추후 구현 |
 | | 052계정 보유수량 | KBM TCP | 내부망, 추후 구현 |
 | | 보유펀드조회 버튼 | KBM TCP | 내부망, 추후 구현 |
@@ -98,15 +98,21 @@
   - **이론가** (기본): `갭 = 시장B − 이론B`. 시장이 이론으로 수렴한다 가정 → 단기 차익(엔트리/언와인드) 시점에 수익 추정.
   - **이론0원**: `갭 = 시장B − 0`. 만기까지 holding 가정 — 만기엔 이론B도 0으로 수렴하므로 시장베이시스 자체가 만기 수익. 이 모드에선 표시상 이론B 컬럼도 `0`으로 표시(이론가 컬럼은 실제 계산값 유지). 갭bp 분모는 두 모드 모두 현물가.
 - **금리(r)**: 프론트엔드 상단 입력칸 (`stock-arbitrage.tsx`), localStorage에 저장 (`arbitrage.rate`), 디폴트 2.8%. commit-on-blur/Enter 패턴 — 타이핑 중엔 재계산 안 되고, 포커스 이동/엔터 시 한 번만 전체 행 재계산. 입력 취소 시 이전 값 복구. 실시간 체결과 독립이라 Rust 왕복 불필요.
-- **배당**: 현재 `0`으로 고정. 배당 화면(추후)에서 배당금 + 배당기준일(또는 배당락일)을 조회해서 해당 월물에만 적용 예정. 공시 전 예상치는 과거 패턴으로 추정.
+- **배당**: `/api/dividends?from_date=today` (KST) fetch → code별 `[today, expiry]` 윈도우 안 ex_date 합산. 오늘 ex_date 포함 (장 시작 전 spot이 어제 종가 = 배당 권리 보유). `confirmed=true`(DART 공시)는 초록, `confirmed=false`(LENS estimator 추정)는 오렌지 마커. 데이터 소스는 [Finance_Data 프로젝트](file:///home/una0/projects/Finance_Data) DART 크롤러 + 추정기 → `data/dividends.json`으로 export → 배당 페이지 `/dividends` API.
 - **만기(T)**: `master.items[].front.days_left` (= LS API `jandatecnt`). 잔존일 = 만기일 − 오늘 (만기 당일 0). 선택 월물에 따라 front/back 전환.
 - 내부망 사내 서버의 이론가(Index fl=12)는 금리/배당이 부정확하므로 직접 계산 필요
 
-### 배당 데이터 (추후)
+### KST 날짜 (UTC 자정 버그)
 
-- DART / 한국거래소 API로 최근 배당 공시 확인
-- 공시 미발표 시: 과거 분기/반기/연 배당 패턴으로 예상 배당 적용
-- 시장이 배당을 미리 반영하므로, 공시 전이라도 예상치를 넣어야 이론가가 정확
+`new Date().toISOString().slice(0,10)`는 **UTC 기준** → KST 자정 직후 9시간 동안 어제 날짜 반환. ex_date 비교 시 누락/중복 발생.
+
+→ `lib/utils.ts::todayKst()` 사용 (`Intl.DateTimeFormat('en-CA', {timeZone:'Asia/Seoul'})`). 이 페이지뿐 아니라 dividends / etf-arbitrage / repayment-check 모두 동일.
+
+### 배당락일 산출 룰 (Finance_Data 측 fix)
+
+KRX 룰: 배당기준일이 휴장일이면 직전 영업일이 실질 권리 확정일이 되고, **그 직전 영업일이 배당락일**. 즉 휴장 record_date면 ex_date가 두 단계 backstep.
+
+기존 backfill 로직은 `business_day_before(record_date)` 한 번만 호출 → 휴장일 record일 때 ex_date가 1 영업일씩 늦게 잡힘 (실질 record_date와 동일하게). 2026-05-07 fix 적용 (`Finance_Data/KOREA/scripts/backfill_dividends.py::compute_ex_date`). 4,352건 UPDATE.
 
 ### 보유 현황 (추후, 내부망 전용)
 

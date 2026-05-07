@@ -848,6 +848,38 @@ LENS/
 
 `ls_api.rs`의 3개 연결 그룹(고정 / 선물 / 호가) 모두 `run_single_connection` 리턴값이 `Err`일 때 exponential backoff (최대 60s)로 재시도. 성공 시 재구독. 스냅샷 캐시는 재연결 구간에도 보존되어 프런트가 데이터 공백 없이 이어감. 재접속 횟수는 `/debug/stats.reconnect_count`에 누적. 실제 TCP 끊김 시나리오는 `sudo iptables -I OUTPUT -d openapi.ls-sec.co.kr -j DROP`로 5초 차단 → 로그/카운터 확인으로 스모크 테스트 가능 (SIGSTOP은 연결 유지된 채 프로세스만 멈춰서 재연결 트리거 X).
 
+### Phase-aware 시간대 게이트 (2026-05-07 인시던트 대응)
+
+당일 사건: 자정(00:02 KST) LS API가 일일 토큰 갱신/유지보수로 모든 WS 연결 disconnect → realtime이 즉시 폭주 재연결 → "silent 5 cycles" 트리거 → 300s extended backoff. 이후 9시간 동안 재시도 정상 동작 안 됨 → 09:00 장 시작에도 LS 연결 0개. 원인은 **시간대 무관 24/7 재연결 시도**.
+
+해결: `phase.rs` 모듈 + 5개 reconnect loop 게이트.
+
+**Phase enum** (KST 기준):
+| Phase | 시간 | 동작 |
+|---|---|---|
+| Sleep | 16:00~다음 영업일 08:30, 주말, KRX 공휴일 | LS 연결 시도 금지, 다음 attach 시각까지 sleep |
+| WarmUp | 평일 08:30~09:00 | attach (장 시작 전 준비) |
+| Live | 평일 09:00~15:30 | 정상 운영 |
+| WindDown | 평일 15:30~16:00 | 잔여 틱 수신 |
+
+**구현**:
+- `phase::current()` — KST 시각 + `holidays.rs::is_krx_holiday()` 결합 판정
+- `phase::next_attach_time()` — 다음 영업일 08:30 (주말/공휴일 skip)
+- `phase::wait_until_active(cancel, label)` — Sleep phase면 5분 단위 chunk로 next attach까지 대기
+- `phase::spawn_watchdog(cancel)` — 30초마다 phase polling, 변화 시 INFO `[PHASE]` 로그
+
+**5개 LS reconnect loop 게이트** (`ls_api.rs`):
+- fixed / futures / stocks / inav / orderbook 각 loop 상단에 `wait_until_active(...)` 1줄
+- Sleep 진입 시 모든 task 동시 idle, LS 점검 시간과 충돌 안 함
+- WarmUp 진입 시 동시 attach
+
+**효과**:
+- LS 점검 시간 (00:00~01:00 추정) 폭주 재연결 차단 → abuse heuristic 회피
+- 새벽 무의미한 토큰/세션 낭비 X
+- 09:00 장 시작 정확히 30분 전부터 attach 보장
+
+**가시성**: `[PHASE] startup phase: live` / `[PHASE] sleep → warm-up` / `[PHASE] warm-up → live` 등 INFO 로그 → start_dev.sh 터미널 + `logs/realtime.log` 양쪽에서 시간대 전환 보임.
+
 ### LS API abuse 보호 (2026-04-27 인시던트 대응)
 
 당일 사건: 빠른 frontend re-subscribe (HMR/멀티탭) + 내부 idle timeout 버그(`last_data_us` reset 누락 → 무한 재연결) 결합으로 LS-측 abuse heuristic 발동, 데이터 송신 중단. 5겹 방어 도입 (`commit 2d4b331` + 후속 race fix):
