@@ -36,7 +36,7 @@ function AppLayout() {
   return (
     <div className="flex h-screen flex-col bg-bg-base">
       <TopNav />
-      <main className="flex-1 overflow-y-auto">
+      <main className="flex-1 overflow-y-scroll [scrollbar-gutter:stable]">
         <div className="animate-in">
           <Routes>
             <Route path="/" element={<Navigate to="/dashboard" replace />} />

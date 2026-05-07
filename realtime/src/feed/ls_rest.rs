@@ -43,6 +43,14 @@ fn bump_fail(stats: &Stats, kind: &str) {
     };
 }
 
+/// t1102 실패 코드 1건의 상태. 백그라운드 retry worker가 사용.
+#[derive(Clone)]
+pub struct FailedT1102 {
+    pub last_error: String,
+    pub error_kind: &'static str,
+    pub attempt_count: u32,
+}
+
 const TOKEN_URL: &str = "https://openapi.ls-sec.co.kr:8080/oauth2/token";
 const T8402_URL: &str = "https://openapi.ls-sec.co.kr:8080/futureoption/market-data";
 const T1102_URL: &str = "https://openapi.ls-sec.co.kr:8080/stock/market-data";
@@ -101,6 +109,7 @@ pub async fn fetch_initial_prices(
     cancel: &CancellationToken,
     stats: &Arc<Stats>,
     fetched_stocks: Option<&Arc<DashMap<String, ()>>>,
+    failed_stocks: Option<&Arc<DashMap<String, FailedT1102>>>,
 ) {
     let token = match get_or_fetch_token(app_key, app_secret).await {
         Ok(t) => t,
@@ -140,8 +149,9 @@ pub async fn fetch_initial_prices(
     let names2 = names.clone();
     let stats2 = stats.clone();
     let fetched2 = fetched_stocks.cloned();
+    let failed2 = failed_stocks.cloned();
     let h2 = tokio::spawn(async move {
-        fetch_stocks_initial(&token2, &spot_codes, &names2, &tx2, &cancel2, &stats2, fetched2.as_ref()).await
+        fetch_stocks_initial(&token2, &spot_codes, &names2, &tx2, &cancel2, &stats2, fetched2.as_ref(), failed2.as_ref()).await
     });
 
     let (r1, r2) = tokio::join!(h1, h2);
@@ -231,6 +241,7 @@ async fn fetch_futures_initial(
 /// t1102로 현물 초기 가격 + 거래대금 조회.
 /// `fetched`가 Some이면 이미 fetch 성공한 코드는 건너뜀 (페이지 재진입 시 11분 풀 fetch 회피).
 /// 성공 시 fetched에 등록되어 다음 호출에선 같은 코드 스킵.
+/// `failed`가 Some이면 실패 코드를 기록 (백그라운드 retry worker가 처리). 성공 시 제거.
 pub async fn fetch_stocks_initial(
     token: &str,
     codes: &[String],
@@ -239,6 +250,7 @@ pub async fn fetch_stocks_initial(
     cancel: &CancellationToken,
     stats: &Arc<Stats>,
     fetched: Option<&Arc<DashMap<String, ()>>>,
+    failed: Option<&Arc<DashMap<String, FailedT1102>>>,
 ) -> usize {
     let client = reqwest::Client::new();
     let mut count = 0;
@@ -247,6 +259,8 @@ pub async fn fetch_stocks_initial(
     let mut fail_http_5xx = 0;
     let mut fail_tps = 0;
     let mut fail_other = 0;
+    // 에러 종류별 샘플 — 첫 5개 코드/메시지 로그용.
+    let mut error_samples: HashMap<&'static str, Vec<(String, String)>> = HashMap::new();
 
     for code in codes {
         if cancel.is_cancelled() { return count; }
@@ -269,26 +283,22 @@ pub async fn fetch_stocks_initial(
                 let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.6f").to_string();
                 let name = names.get(code.as_str()).cloned().unwrap_or_default();
 
-                // "체결 없으면 공란" 원칙: 당일 거래대금 0이면 price 필드는 전일 종가 stale 값.
-                // 그러나 prev_close(recprice)는 거래 유무와 무관하게 항상 정확 → 별도 emit.
-                // 이렇게 해야 동시호가/장 시작 전에도 prev_close가 store에 미리 들어가서
-                // 장 시작 첫 S3_/K3_ tick 도착 즉시 변화율 계산 가능.
+                let mut emitted = false;
                 if value > 0 {
+                    // 거래대금 캐시에 기록 — 다음 launch 시 정렬 키.
+                    crate::volume_cache::record(code, value);
                     let _ = tx.send(WsMessage::StockTick(StockTick {
                         code: code.clone(), name,
                         price,
                         volume: 0,
-                        cum_volume: value * 1_000_000, // 백만원 → 원
+                        cum_volume: value * 1_000_000,
                         timestamp: now, is_initial: true,
                         high: if h > 0.0 { Some(h) } else { None },
                         low: if l > 0.0 { Some(l) } else { None },
                         prev_close: if pc > 0.0 { Some(pc) } else { None },
                     })).await;
-                    if let Some(set) = fetched { set.insert(code.clone(), ()); }
-                    count += 1;
+                    emitted = true;
                 } else if pc > 0.0 {
-                    // value==0: 오늘 거래 없음. price는 stale이라 0으로 두고 prev_close만 emit.
-                    // 프론트는 price==0일 때 가격/변화율 모두 빈칸 처리하므로 stale 노출 위험 없음.
                     let _ = tx.send(WsMessage::StockTick(StockTick {
                         code: code.clone(), name,
                         price: 0.0,
@@ -298,12 +308,29 @@ pub async fn fetch_stocks_initial(
                         high: None, low: None,
                         prev_close: Some(pc),
                     })).await;
+                    emitted = true;
+                }
+
+                if emitted {
                     if let Some(set) = fetched { set.insert(code.clone(), ()); }
+                    if let Some(fmap) = failed { fmap.remove(code); }
                     count += 1;
                 } else {
                     // value==0 + recprice 없음 (신규상장 등 정말 데이터 없는 케이스).
                     fail_no_data += 1;
                     bump_fail(stats, "no_data");
+                    if error_samples.get("no_data").map(|v| v.len()).unwrap_or(0) < 5 {
+                        error_samples.entry("no_data").or_default()
+                            .push((code.clone(), "value=0, recprice=0".to_string()));
+                    }
+                    if let Some(fmap) = failed {
+                        let prev = fmap.get(code).map(|e| e.attempt_count).unwrap_or(0);
+                        fmap.insert(code.clone(), FailedT1102 {
+                            last_error: "value=0, recprice=0".to_string(),
+                            error_kind: "no_data",
+                            attempt_count: prev + 1,
+                        });
+                    }
                 }
             }
             Err(e) => {
@@ -315,17 +342,37 @@ pub async fn fetch_stocks_initial(
                     _ => fail_other += 1,
                 }
                 bump_fail(stats, kind);
+                if error_samples.get(kind).map(|v| v.len()).unwrap_or(0) < 5 {
+                    error_samples.entry(kind).or_default().push((code.clone(), e.clone()));
+                }
+                if let Some(fmap) = failed {
+                    let prev = fmap.get(code).map(|en| en.attempt_count).unwrap_or(0);
+                    fmap.insert(code.clone(), FailedT1102 {
+                        last_error: e,
+                        error_kind: kind,
+                        attempt_count: prev + 1,
+                    });
+                }
             }
         }
         tokio::time::sleep(REQ_INTERVAL).await;
     }
-    let failed = fail_no_data + fail_http_5xx + fail_tps + fail_other;
-    if failed > 0 {
+    let failed_total = fail_no_data + fail_http_5xx + fail_tps + fail_other;
+    if failed_total > 0 {
         warn!("t1102 failures: no_data={fail_no_data} http_5xx={fail_http_5xx} tps={fail_tps} other={fail_other}");
+        // 종류별 첫 5개 코드+에러 샘플 — 디버그용.
+        for (kind, samples) in &error_samples {
+            let head: Vec<String> = samples.iter()
+                .map(|(c, e)| format!("{}={}", c, e.chars().take(60).collect::<String>()))
+                .collect();
+            warn!("t1102 {} samples: [{}]", kind, head.join(", "));
+        }
     }
     if skipped > 0 {
         info!("t1102 skipped (already fetched): {skipped}");
     }
+    // sweep 끝 — 거래대금 캐시 강제 flush (incremental save가 못 따라잡은 잔여 보장).
+    crate::volume_cache::flush();
     count
 }
 

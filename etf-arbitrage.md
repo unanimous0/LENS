@@ -157,8 +157,84 @@ T_i = R_i / N_i · 10000                    # 갭 BP
 | 슬리피지 | bp 단위, V=O 종목 균일 차감 | 0 |
 | 금리 | %, 이론가 cost-of-carry용 | 2.8 (종목차익과 동일) |
 | 거래세 | 표시 전용 (제도 변경 시 코드 상수 변경) | 0.20 |
+| 누락한도 | %, 누락 비중 초과 시 fNAV/실집행 컬럼 흐림 | 1 |
 
 모두 localStorage 영속.
+
+상단 필터 quick 버튼 (100+, 1,000+, 10+, 30+, 1+, 10+) 은 토글식 — 활성 상태에서 다시 누르면 조건 해제.
+
+---
+
+## 데이터 누락 처리
+
+외부망(LS API)에서 t1102 5xx 오류로 일부 종목(특히 잡주)이 빠지는 케이스 → 그 ETF의 fNAV/실집행 의심값 발생. 자동 흐림 처리.
+
+### 누락 비중 산출
+
+```
+missingWeight = Σ(prev_close × qty for S=0 종목) / 전체 추정
+  전체 추정 = rNAV_total + missingValueEstimate
+  prev_close는 NAV 표시값 X, 누락 비중 추정에만 사용 (장중에 어제값 NAV로 쓰지 않는 정책)
+```
+
+### 처리
+
+- `missingWeight > 누락한도(%)` → ETF 행에 다음 적용:
+  - fNAV / 실집행차익 / 실집행BP 컬럼 "—" 표시 (의심값 가림)
+  - 행 opacity 60%
+  - hover tooltip: 누락 비중 %
+- 매수차BP / 매도차BP는 그대로 (V=O 종목들 데이터는 살아있어 합산 정확)
+
+### Mode-aware 자동 동작
+
+- 외부망: 잡주 누락 발생 → trigger
+- 내부망: 데이터 완전 → missingWeight ≈ 0 → 자동 비활성, 모든 ETF 정상 표시
+- 명시적 모드 분기 X — 누락 0%면 어떤 임계값이든 안 걸림
+
+---
+
+## Fetch 우선순위 (외부망 t1102)
+
+LS API TPS 10 한도라 7000 PDF 종목 초기 fetch에 ~12분. 활발한 종목 빨리 도착하도록 다층 우선순위.
+
+### 1. ETF 거래량 정렬 (Frontend)
+
+- localStorage `etf.volumeCache.v1` — ETF별 cum_volume 30초마다 누적 저장
+- mount 시 `stockSubscriptionCodes` useMemo가 캐시 기반 ETF 거래량 desc 정렬
+- 정렬된 ETF 순으로 PDF 종목 + 선물 front 추가 (Set dedup)
+- 첫 mount 후 30초~1분 누적 → 다음 mount부터 효과
+- 효과: KODEX 200 같은 활발한 ETF의 PDF가 큐 앞으로 → 체감 빠른 도착
+
+### 2. 종목 거래대금 정렬 (Backend, `volume_cache.rs`)
+
+- t1102 응답의 `value`(당일 거래대금) 자체 piggyback 저장
+- `data/stock_volumes.json`에 1000건 단위 incremental save
+- 다음 launch 시 master 로더가 `ordered_stock_codes`를 거래대금 desc 정렬
+- LS API 추가 호출 0, 디스크 IO 무시 수준
+- Backend의 초기 sweep 자체 우선순위 — Frontend 정렬과 협력 (동일 코드 cache hit 무중복)
+
+### 3. ETF 클릭 즉시 우선화
+
+- 사용자가 ETF 행 클릭(펼침) → 프론트가 `POST /realtime/prioritize-stocks` { codes: [ETF, PDF종목들...] }
+- 백엔드 `SubCommand::PrioritizeStocks` 핸들러:
+  - fetched_stocks에 있는 코드 skip
+  - 나머지 코드로 즉시 별도 task spawn → `fetch_stocks_initial`
+  - 기존 sweep과 잠시 TPS 경합하지만 클릭당 ~50종목/5초 burst라 abuse 신호 미달
+- 효과: 클릭 후 5초 안에 그 ETF의 PDF 종목 가격 도착
+
+### 4. 실패 코드 재시도 worker (Backend)
+
+- 5xx/no_data 등으로 fetch 실패한 코드는 `failed_stocks` map에 저장
+- 60초 cycle worker가 phase-active 시점에 재시도 (Sleep phase면 idle)
+- 신규 launch (data/stock_volumes.json + 첫 sweep) 후 잔여 누락 종목 점진 보충
+- 로그: `t1102 retry: K/N recovered (남음 M)`
+
+### 종합 도착 시점 예측
+
+- 메이저 ETF 종목 (KOSPI200 등): 첫 mount 후 30초~1분
+- 중대형주 (코스피 50): 1~3분
+- 잡주 (체결 거의 없음): 12분 이내 + 5xx 실패면 60초마다 retry로 보충
+- 사용자가 클릭한 ETF: 5초 burst 내
 
 ---
 

@@ -92,6 +92,9 @@ pub struct LsApiFeed {
     /// SubscribeStocks 핸들러가 fetched 안 보내고 처음부터 다시 도는 11분 백로그 방지.
     /// 프로세스 수명 동안 유지 (재시작 시만 비움).
     pub fetched_stocks: Arc<DashMap<String, ()>>,
+    /// t1102 실패 코드 + 마지막 에러. 백그라운드 worker가 60초마다 재시도해서
+    /// LS 측 일시 장애로 빠뜨린 잡주들을 점진적으로 보충.
+    pub failed_stocks: Arc<DashMap<String, super::ls_rest::FailedT1102>>,
 }
 
 impl LsApiFeed {
@@ -116,6 +119,7 @@ impl LsApiFeed {
             last_data_us,
             last_subscribe_us: Arc::new(AtomicU64::new(now_us())),
             fetched_stocks: Arc::new(DashMap::new()),
+            failed_stocks: Arc::new(DashMap::new()),
         }
     }
 }
@@ -147,10 +151,59 @@ impl MarketFeed for LsApiFeed {
             let f2s = self.futures_to_spot.clone();
             let stats = self.stats.clone();
             let fetched = self.fetched_stocks.clone();
+            let failed = self.failed_stocks.clone();
             tokio::spawn(async move {
                 super::ls_rest::fetch_initial_prices(
-                    &ak, &as_, &all_subs, &n, &sc, &f2s, &tx2, &cancel2, &stats, Some(&fetched),
+                    &ak, &as_, &all_subs, &n, &sc, &f2s, &tx2, &cancel2, &stats, Some(&fetched), Some(&failed),
                 ).await;
+            });
+        }
+
+        // t1102 실패 코드 백그라운드 재시도 worker.
+        // 초기 fetch 시 LS 5xx로 빠뜨린 코드들이 failed map에 쌓여있음 → 60초마다
+        // 재시도해 점진적으로 보충. Sleep phase (장 외)엔 자동 idle.
+        {
+            let ak = self.app_key.clone();
+            let as_ = self.app_secret.clone();
+            let n = self.names.clone();
+            let tx_w = tx.clone();
+            let cancel_w = cancel.clone();
+            let stats_w = self.stats.clone();
+            let fetched = self.fetched_stocks.clone();
+            let failed = self.failed_stocks.clone();
+            tokio::spawn(async move {
+                use std::time::Duration;
+                // 초기 fetch가 어느 정도 끝날 때까지 대기 (12분 내외).
+                tokio::select! {
+                    _ = tokio::time::sleep(Duration::from_secs(120)) => {}
+                    _ = cancel_w.cancelled() => return,
+                }
+                loop {
+                    if cancel_w.is_cancelled() { return; }
+                    if !crate::phase::wait_until_active(&cancel_w, "t1102-retry").await { return; }
+                    tokio::select! {
+                        _ = tokio::time::sleep(Duration::from_secs(60)) => {}
+                        _ = cancel_w.cancelled() => return,
+                    }
+                    let codes: Vec<String> = failed.iter().map(|e| e.key().clone()).collect();
+                    if codes.is_empty() { continue; }
+                    let token = match super::ls_rest::get_or_fetch_token(&ak, &as_).await {
+                        Ok(t) => t,
+                        Err(e) => { warn!("t1102 retry: token fail: {e}"); continue; }
+                    };
+                    let before = failed.len();
+                    info!("t1102 retry: {before} failed codes 재시도");
+                    let names_h: HashMap<String, String> = (*n).clone();
+                    super::ls_rest::fetch_stocks_initial(
+                        &token, &codes, &names_h, &tx_w, &cancel_w, &stats_w,
+                        Some(&fetched), Some(&failed),
+                    ).await;
+                    let after = failed.len();
+                    let recovered = before.saturating_sub(after);
+                    if recovered > 0 {
+                        info!("t1102 retry: {recovered}/{before} recovered (남음 {after})");
+                    }
+                }
             });
         }
 
@@ -169,6 +222,7 @@ impl MarketFeed for LsApiFeed {
             let f2s = self.futures_to_spot.clone();
             let stats = self.stats.clone();
             let fetched = self.fetched_stocks.clone();
+            let failed = self.failed_stocks.clone();
             tokio::spawn(async move {
                 loop {
                     let delay = next_daily_refresh_delay();
@@ -182,8 +236,9 @@ impl MarketFeed for LsApiFeed {
                     if crate::holidays::is_krx_holiday(now.date_naive()) { continue; }
                     info!("Daily refresh trigger ({}): fetch_initial_prices 재호출", now.format("%H:%M"));
                     fetched.clear();  // 어제 캐시 stale → 비우고 처음부터
+                    failed.clear();   // 새 일자 시작이라 이전 실패 list도 무효
                     super::ls_rest::fetch_initial_prices(
-                        &ak, &as_, &all_subs, &n, &sc, &f2s, &tx2, &cancel2, &stats, Some(&fetched),
+                        &ak, &as_, &all_subs, &n, &sc, &f2s, &tx2, &cancel2, &stats, Some(&fetched), Some(&failed),
                     ).await;
                 }
             });
@@ -273,6 +328,7 @@ impl MarketFeed for LsApiFeed {
 
         // SubscribeStocks 핸들러용 fetched 캐시 (페이지 재진입 시 풀 재fetch 회피).
         let fetched_stocks = self.fetched_stocks.clone();
+        let failed_stocks = self.failed_stocks.clone();
         let mut current_inav: HashMap<String, u32> = HashMap::new();
 
         // 현재 활성화된 선물 코드 셋 (정렬된 키) — 같은 셋 재구독 요청 시 skip.
@@ -358,6 +414,7 @@ impl MarketFeed for LsApiFeed {
                                 let cancel2 = cancel.clone();
                                 let stats2 = stats.clone();
                                 let fetched = fetched_stocks.clone();
+                                let failed = failed_stocks.clone();
                                 let added_for_fetch = newly_added.clone();
                                 tokio::spawn(async move {
                                     let token = match super::ls_rest::get_or_fetch_token(&ak, &as_).await {
@@ -365,7 +422,7 @@ impl MarketFeed for LsApiFeed {
                                         Err(e) => { warn!("SubscribeStocks t1102 token fail: {e}"); return; }
                                     };
                                     info!("SubscribeStocks t1102 fetch: {} codes (캐시 스킵 적용)", added_for_fetch.len());
-                                    super::ls_rest::fetch_stocks_initial(&token, &added_for_fetch, &n, &tx2, &cancel2, &stats2, Some(&fetched)).await;
+                                    super::ls_rest::fetch_stocks_initial(&token, &added_for_fetch, &n, &tx2, &cancel2, &stats2, Some(&fetched), Some(&failed)).await;
                                 });
                             }
                         }
@@ -407,6 +464,38 @@ impl MarketFeed for LsApiFeed {
                                     &futures_to_spot, &tx, &cancel, &stocks_cancel, &stats, &last_data_us, &last_subscribe_us,
                                 );
                             }
+                        }
+                        Some(SubCommand::PrioritizeStocks(codes)) => {
+                            // ETF 클릭 우선화 — fetched 안 된 코드를 즉시 별도 task로 fetch.
+                            // retry worker 60초 cycle 안 기다림. 초기 sweep과 잠시 TPS 경합 있지만
+                            // 클릭당 ~50종목 = ~5초 burst라 LS abuse 신호 트리거 안 함.
+                            let to_fetch: Vec<String> = codes.iter()
+                                .filter(|c| !fetched_stocks.contains_key(*c))
+                                .cloned()
+                                .collect();
+                            if to_fetch.is_empty() {
+                                info!("PrioritizeStocks: all {} codes already fetched", codes.len());
+                                continue;
+                            }
+                            info!("PrioritizeStocks: spawning fetch for {}/{} codes", to_fetch.len(), codes.len());
+                            let ak = app_key.clone();
+                            let as_ = app_secret.clone();
+                            let n = (*names).clone();
+                            let tx2 = tx.clone();
+                            let cancel2 = cancel.clone();
+                            let stats2 = stats.clone();
+                            let fetched = fetched_stocks.clone();
+                            let failed = failed_stocks.clone();
+                            tokio::spawn(async move {
+                                let token = match super::ls_rest::get_or_fetch_token(&ak, &as_).await {
+                                    Ok(t) => t,
+                                    Err(e) => { warn!("PrioritizeStocks: token fail: {e}"); return; }
+                                };
+                                super::ls_rest::fetch_stocks_initial(
+                                    &token, &to_fetch, &n, &tx2, &cancel2, &stats2,
+                                    Some(&fetched), Some(&failed),
+                                ).await;
+                            });
                         }
                         Some(SubCommand::SubscribeInav(codes)) => {
                             let mut newly_added: Vec<String> = Vec::new();

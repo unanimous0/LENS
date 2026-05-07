@@ -926,6 +926,46 @@ LENS/
 
 **장 외 가드 (`is_market_hours_kst()`)**: stale watcher는 **장중에만** 발동. 장 외(저녁/주말/휴장일)엔 무신호가 정상이고, 전일 종가를 참고용으로 계속 보여주는 게 트레이더에게 더 유용 (만기 임박 OI 추세 확인 등). 장 외 wipe 안 함 → 토요일 페이지 열어도 금요일 종가 그대로 보임. 월요일 첫 틱부터 자연스럽게 갱신.
 
+### t1102 우선순위 + 재시도 (외부망 한정)
+
+LS API TPS 10/초로 PDF 종목(~7000) 초기 fetch에 ~12분. 5xx 산발 발생. 다층 처리:
+
+#### `volume_cache.rs` — 거래대금 기반 sweep 순서
+
+- t1102 응답에 이미 들어오는 `value`(당일 거래대금) piggyback 저장
+- `data/stock_volumes.json`에 1000건 단위 incremental save (12분 sweep 도중 재시작해도 부분 누적)
+- 다음 launch 시 master 로더가 `ordered_stock_codes`를 거래대금 desc 정렬 → 다음 sweep부터 활발한 종목 먼저
+- 추가 LS API 호출 0
+- 첫 launch는 master 코드순 (캐시 없음)
+
+#### `failed_stocks` 재시도 worker
+
+- `LsApiFeed.failed_stocks: DashMap<code, FailedT1102>`
+- t1102 실패 (5xx / no_data / tps / other) 시 코드 + 에러 종류 + 시도 횟수 기록
+- 백그라운드 worker (60초 cycle, phase-gated):
+  - failed_stocks snapshot → `fetch_stocks_initial` 호출
+  - 성공 → fetched로 이동, failed에서 제거 + tick emit
+  - 실패 → attempt_count 증가
+- 초기 fetch 후 120초 대기 후 시작 (sweep과 TPS 경합 회피)
+- 일일 자동 새로고침 시 fetched + failed 둘 다 clear
+
+#### `PrioritizeStocks` SubCommand
+
+- 사용자 ETF 클릭 시 `POST /realtime/prioritize-stocks { codes: [...] }`
+- `LsApiFeed::run` 핸들러: fetched 안 된 코드만 추출, 즉시 별도 fetch task spawn
+- 5초 burst (50 종목 × 100ms) → LS abuse 신호 미달
+- 모드 분기:
+  - LS API: 정상 처리
+  - Internal: no-op (즉시 도착하므로 의미 없음)
+  - Mock: no-op
+
+#### 디버그 로깅
+
+- 종류별 첫 5개 코드+에러 메시지 샘플 — `t1102 http_5xx samples: [001340=http 503, 002310=http 502, ...]`
+- `/debug/stats`의 `fetch_failures` 카운터로 누적 추적
+
+---
+
 ### 페이지별 구독 라이프사이클
 
 프론트가 페이지 단위로 종목을 구독/해제하는 패턴. 모든 페이지가 한 번 구독한 종목을 영원히 유지하면 백그라운드 누적 → 외부망 200/연결 한계 압박. 그래서 페이지 mount/unmount에 맞춰 토글한다.

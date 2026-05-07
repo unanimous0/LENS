@@ -226,6 +226,9 @@ impl InternalFeed {
                         Some(SubCommand::SubscribeInav(_)) | Some(SubCommand::UnsubscribeInav(_)) => {
                             // 내부망은 nav가 trade tick과 함께 흘러옴 (rnav_trade/inav). 별도 구독 불필요.
                         }
+                        Some(SubCommand::PrioritizeStocks(_)) => {
+                            // 내부망은 데이터 즉시 도착 — 우선화 의미 없음. no-op.
+                        }
                         Some(SubCommand::SubscribeOrderbook { codes }) => {
                             // 내부망은 호가가 자동으로 오므로 서버 구독 불필요.
                             // 활성 코드만 추적하여 발행 필터링.

@@ -20,6 +20,10 @@ pub enum SubCommand {
     SubscribeStocks(Vec<String>),
     /// 주식/ETF 코드 누적 구독 해제 — 셋에서만 빠짐.
     UnsubscribeStocks(Vec<String>),
+    /// t1102 우선 fetch — 사용자가 클릭한 ETF의 PDF 종목 등 즉시 받고 싶은 코드.
+    /// 이미 fetched면 skip, 아니면 retry worker의 failed map에 추가하여 다음 cycle(60초 내)에 처리.
+    /// LS API 모드 전용 (internal feed에선 무관 — 즉시 도착함).
+    PrioritizeStocks(Vec<String>),
     /// ETF iNAV 구독 (I5_) — 거래소 발행 실시간 NAV. ETF 코드만 의미 있음.
     SubscribeInav(Vec<String>),
     /// ETF iNAV 구독 해제.

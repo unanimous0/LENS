@@ -2,6 +2,7 @@ mod feed;
 mod holidays;
 mod model;
 mod phase;
+mod volume_cache;
 mod ws;
 
 use std::collections::{HashMap, HashSet};
@@ -387,6 +388,7 @@ async fn main() {
         .route("/unsubscribe", post(unsubscribe))
         .route("/subscribe-stocks", post(subscribe_stocks))
         .route("/unsubscribe-stocks", post(unsubscribe_stocks))
+        .route("/prioritize-stocks", post(prioritize_stocks))
         .route("/subscribe-inav", post(subscribe_inav))
         .route("/unsubscribe-inav", post(unsubscribe_inav))
         .route("/orderbook/subscribe", post(subscribe_orderbook))
@@ -714,6 +716,20 @@ fn load_futures_master() -> LoadedMaster {
         m.futures_to_spot.len(),
         m.kosdaq_codes.len()
     );
+
+    // 거래대금 캐시 (전 sweep 누적) 기준 desc 정렬 — 활발한 종목부터 t1102 fetch.
+    // 캐시 없으면 마스터 원본 순서 유지 (sort_by stable).
+    let volumes = volume_cache::snapshot();
+    if !volumes.is_empty() {
+        m.ordered_stocks.sort_by(|a, b| {
+            let va = volumes.get(a).copied().unwrap_or(0);
+            let vb = volumes.get(b).copied().unwrap_or(0);
+            vb.cmp(&va)
+        });
+        let covered = m.ordered_stocks.iter().filter(|c| volumes.contains_key(*c)).count();
+        info!("ordered_stocks resorted by 거래대금 ({covered}/{} 종목에 캐시값 있음)", m.ordered_stocks.len());
+    }
+
     m
 }
 
@@ -777,6 +793,22 @@ async fn unsubscribe_stocks(
         .unwrap()
         .send(SubCommand::UnsubscribeStocks(req.codes));
     Json(serde_json::json!({"status": "ok", "unsubscribed": count}))
+}
+
+/// 우선 fetch — 사용자 ETF 클릭 시 그 PDF 종목들 즉시 보충.
+/// 이미 fetched면 자동 skip, 아니면 retry worker가 다음 cycle에 처리.
+async fn prioritize_stocks(
+    State(state): State<AppState>,
+    Json(req): Json<SubRequest>,
+) -> Json<serde_json::Value> {
+    let count = req.codes.len();
+    info!("REST prioritize-stocks: {} codes", count);
+    let _ = state
+        .sub_tx
+        .read()
+        .unwrap()
+        .send(SubCommand::PrioritizeStocks(req.codes));
+    Json(serde_json::json!({"status": "ok", "prioritized": count}))
 }
 
 /// ETF iNAV 누적 구독 (I5_) — 거래소 발행 NAV stream.

@@ -451,6 +451,9 @@ impl MarketFeed for MockFeed {
                                 subscribed_futures.clear();
                                 futures_prices.clear();
                             }
+                            SubCommand::PrioritizeStocks(_) => {
+                                // mock은 즉시 데이터 생성 — 우선화 의미 없음.
+                            }
                         }
                     }
                 }
