@@ -1,6 +1,7 @@
 mod feed;
 mod holidays;
 mod model;
+mod phase;
 mod ws;
 
 use std::collections::{HashMap, HashSet};
@@ -170,6 +171,10 @@ async fn main() {
                 .unwrap_or_else(|_| "lens_realtime=info".into()),
         )
         .init();
+
+    // Phase watchdog — KST 시간대 전환 INFO 로그 (Sleep/WarmUp/Live/WindDown).
+    // start_dev.sh 터미널과 logs/realtime.log 양쪽에서 시간대 변화 보임.
+    phase::spawn_watchdog(CancellationToken::new());
 
     let broadcaster = Arc::new(Broadcaster::new(BROADCAST_CAPACITY));
 

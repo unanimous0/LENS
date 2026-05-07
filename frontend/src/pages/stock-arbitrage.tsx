@@ -1,6 +1,6 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useMarketStore } from '@/stores/marketStore'
-import { cn } from '@/lib/utils'
+import { cn, todayKst } from '@/lib/utils'
 import { OrderbookModal, SpreadOrderbookModal } from '@/components/OrderbookModal'
 import { usePageSubscriptions } from '@/hooks/usePageSubscriptions'
 
@@ -199,7 +199,7 @@ export function StockArbitragePage() {
 
   const rows = useMemo(() => {
     if (!master) return [] as Row[]
-    const today = new Date().toISOString().slice(0, 10)
+    const today = todayKst()
     return master.items.map((item, idx): Row => {
       const spot = stockTicks[item.base_code]
       // 선택된 월물에 따라 선물 데이터 참조
@@ -309,7 +309,7 @@ export function StockArbitragePage() {
   const selInfo = master?.items[0]?.[month]
   const selExpiry = selInfo?.expiry ?? ''
   const selDaysLeft = selInfo?.days_left ?? 0
-  const todayStr = new Date().toISOString().slice(0, 10)
+  const todayStr = todayKst()
 
   return (
     <div className="flex flex-col bg-black">

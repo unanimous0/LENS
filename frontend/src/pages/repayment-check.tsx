@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useMemo, useCallback } from "react"
 import * as XLSX from "xlsx"
 import { formatSheet } from "@/lib/excel"
+import { todayKst } from "@/lib/utils"
 import { CopyButton } from "@/components/copy-button"
 
 interface RepaymentMatch {
@@ -118,7 +119,7 @@ export function RepaymentCheckPage() {
   const lenderRef = useRef<HTMLDivElement>(null)
   const [excludeFeeRates, setExcludeFeeRates] = useState<string[]>(["0.05"])
   const [feeRateInput, setFeeRateInput] = useState("")
-  const today = new Date().toISOString().slice(0, 10).replace(/-/g, "")
+  const today = todayKst().replace(/-/g, "")
   const [excludeDates, setExcludeDates] = useState<string[]>([today])
   const [dateInput, setDateInput] = useState("")
   const [esafeStockCodes, setEsafeStockCodes] = useState<string[]>([])

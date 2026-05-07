@@ -210,6 +210,8 @@ impl MarketFeed for LsApiFeed {
                 let mut silent_count = 0u32;
                 loop {
                     if cancel.is_cancelled() { return; }
+                    // Sleep phase면 다음 attach 시각까지 대기 — LS 점검 시간 충돌 방지.
+                    if !crate::phase::wait_until_active(&cancel, &format!("fixed[{i}]")).await { return; }
                     let ticks_before = stats.tick_count.load(Ordering::Relaxed);
                     match run_single_connection(
                         i, &app_key, &app_secret, &chunk, &names, &stock_codes, &futures_to_spot, &tx, &cancel, &last_data_us, &last_subscribe_us,
@@ -540,6 +542,7 @@ fn spawn_futures_connections(
             let mut silent_count = 0u32;
             loop {
                 if combined_cancel.is_cancelled() { return; }
+                if !crate::phase::wait_until_active(&combined_cancel, &format!("futures[{i}]")).await { return; }
                 let conn_id = 100 + i; // 고정 그룹과 구분
                 let ticks_before = stats.tick_count.load(Ordering::Relaxed);
                 match run_single_connection(
@@ -616,6 +619,7 @@ fn spawn_stocks_connections(
             let mut silent_count = 0u32;
             loop {
                 if combined_cancel.is_cancelled() { return; }
+                if !crate::phase::wait_until_active(&combined_cancel, &format!("stocks[{i}]")).await { return; }
                 let conn_id = 200 + i;
                 let ticks_before = stats.tick_count.load(Ordering::Relaxed);
                 match run_single_connection(
@@ -692,6 +696,7 @@ fn spawn_inav_connections(
             let mut silent_count = 0u32;
             loop {
                 if combined_cancel.is_cancelled() { return; }
+                if !crate::phase::wait_until_active(&combined_cancel, &format!("inav[{i}]")).await { return; }
                 let conn_id = 300 + i;
                 let ticks_before = stats.tick_count.load(Ordering::Relaxed);
                 match run_single_connection(
@@ -775,6 +780,7 @@ fn spawn_orderbook_connection(
             let mut silent_count = 0u32;
             loop {
                 if combined.is_cancelled() { return; }
+                if !crate::phase::wait_until_active(&combined, &format!("orderbook[{conn_id}]")).await { return; }
                 let ticks_before = stats.tick_count.load(Ordering::Relaxed);
                 match run_single_connection(
                     conn_id, &ak, &as_, &chunk_codes, &n, &sc, &f2s, &tx, &combined, &last_data_us, &last_subscribe_us,

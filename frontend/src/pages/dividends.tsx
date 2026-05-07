@@ -1,6 +1,6 @@
 import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { cn } from '@/lib/utils'
+import { cn, todayKst, kstDateOffset } from '@/lib/utils'
 import {
   Bar, BarChart, CartesianGrid, LabelList, ResponsiveContainer, Scatter, ScatterChart,
   Tooltip, XAxis, YAxis, ZAxis, Cell,
@@ -82,7 +82,7 @@ export function DividendsPage() {
       .catch((e) => { setError(String(e.message ?? e)); setLoading(false) })
   }, [])
 
-  const today = new Date().toISOString().slice(0, 10)
+  const today = todayKst()
 
   // 종목별 집계 — 1,246 events → ~250 stocks
   const stockRows = useMemo<StockRow[]>(() => {
@@ -130,8 +130,8 @@ export function DividendsPage() {
   // 다가오는 30/90일 — 종목 단위로 합산
   const { upcoming30, upcoming90, avgYield } = useMemo(() => {
     if (!stockRows.length) return { upcoming30: 0, upcoming90: 0, avgYield: 0 }
-    const t30 = new Date(); t30.setDate(t30.getDate() + 30); const e30 = t30.toISOString().slice(0, 10)
-    const t90 = new Date(); t90.setDate(t90.getDate() + 90); const e90 = t90.toISOString().slice(0, 10)
+    const e30 = kstDateOffset(30)
+    const e90 = kstDateOffset(90)
     const u30 = stockRows.filter((s) => s.upcoming && s.upcoming.ex_date! <= e30).length
     const u90 = stockRows.filter((s) => s.upcoming && s.upcoming.ex_date! <= e90).length
     const yields = stockRows
@@ -143,7 +143,7 @@ export function DividendsPage() {
 
   // Scatter: 다가오는 90일 (종목별 한 점). 모든 점 표시 (데이터 이슈 가시화 위해 필터 없음).
   const scatterData = useMemo(() => {
-    const t90 = new Date(); t90.setDate(t90.getDate() + 90); const e90 = t90.toISOString().slice(0, 10)
+    const e90 = kstDateOffset(90)
     return stockRows
       .filter((s) => s.upcoming && s.upcoming.ex_date! <= e90)
       .map((s) => {
