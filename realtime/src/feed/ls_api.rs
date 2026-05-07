@@ -995,12 +995,12 @@ async fn handle_tick(
         // ETF iNAV (거래소 발행). nav 필드만 사용 — 다른 EtfTick 필드는 S3_가 채움.
         "I5_" => {
             let nav = pf(&body["nav"]);
-            // 임시 디버깅: 처음 몇개만 raw body 찍어서 필드 검증.
-            static I5_LOG_COUNT: AtomicU64 = AtomicU64::new(0);
-            let n = I5_LOG_COUNT.fetch_add(1, Ordering::Relaxed);
-            if n < 5 {
-                tracing::info!("I5_ raw body sample[{}]: code={} body={}", n, tr_key, body);
+            // 첫 I5_ 1회만 1줄 확인 로그. 필드 풀 dump가 필요하면 RUST_LOG=lens_realtime=debug.
+            static I5_FIRST_SEEN: AtomicU64 = AtomicU64::new(0);
+            if I5_FIRST_SEEN.fetch_add(1, Ordering::Relaxed) == 0 {
+                tracing::info!("I5_ feed alive: code={} nav={}", tr_key, nav);
             }
+            tracing::debug!("I5_ raw: code={} body={}", tr_key, body);
             if nav > 0.0 {
                 let _ = tx.send(WsMessage::EtfTick(EtfTick {
                     code: tr_key.into(), name: name.into(),
