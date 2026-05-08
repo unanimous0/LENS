@@ -1029,26 +1029,26 @@ export function EtfArbitragePage() {
         {/* col width는 헤더 + typical 콘텐츠 길이 기반 비율. tableLayout fixed + width 100%이면
             컨테이너 폭에 맞춰 모든 컬럼이 명시 비율대로 비례 확장. 합 1844px. */}
         {master && pdfs && (
-          <table className="border-collapse" style={{ tableLayout: 'fixed', width: '100%', minWidth: '1844px' }}>
+          <table className="border-collapse" style={{ tableLayout: 'fixed', width: '100%', minWidth: '1846px' }}>
             <colgroup>
-              <col style={{ width: 220 }} />{/* 종목 — 긴 ETF명 (예: 코리아배당다우존스위클리커버드콜) */}
-              <col style={{ width: 130 }} />{/* 거래대금 — '1,234,567,890원' 14자 */}
+              <col style={{ width: 200 }} />{/* 종목 */}
+              <col style={{ width: 130 }} />{/* 거래대금 */}
               <col style={{ width: 86 }} />{/* 현재가 */}
-              <col style={{ width: 88 }} />{/* iNAV — 소수점 둘째자리 */}
-              <col style={{ width: 88 }} />{/* rNAV */}
-              <col style={{ width: 88 }} />{/* fNAV */}
-              <col style={{ width: 80 }} />{/* 현재괴리 '-12.34bp' */}
+              <col style={{ width: 100 }} />{/* iNAV — NAV 3종 폭 늘려 숫자 답답함 해소 */}
+              <col style={{ width: 100 }} />{/* rNAV */}
+              <col style={{ width: 100 }} />{/* fNAV */}
+              <col style={{ width: 80 }} />{/* 현재괴리 */}
               <col style={{ width: 80 }} />{/* 매도괴리 */}
               <col style={{ width: 80 }} />{/* 매수괴리 */}
               <col style={{ width: 88 }} />{/* 매수차BP */}
               <col style={{ width: 88 }} />{/* 매도차BP */}
-              <col style={{ width: 80 }} />{/* 차익bp */}
-              <col style={{ width: 140 }} />{/* 실집행차익(원) — 큰 원금액 */}
+              <col style={{ width: 76 }} />{/* 차익bp */}
+              <col style={{ width: 130 }} />{/* 실집행차익(원) */}
               <col style={{ width: 88 }} />{/* 실집행BP */}
               <col style={{ width: 64 }} />{/* 배당수 */}
               <col style={{ width: 72 }} />{/* 선물비중 */}
               <col style={{ width: 64 }} />{/* 선물수 */}
-              <col style={{ width: 220 }} />{/* 추이 — sparkline 150px + 좌우 여유 */}
+              <col style={{ width: 220 }} />{/* 추이 — sparkline 150 + 여유 */}
             </colgroup>
             <thead className="sticky top-0 z-20">
               <tr className="text-[12px] text-[#8b8b8e] bg-black">
