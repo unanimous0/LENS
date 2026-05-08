@@ -1028,11 +1028,12 @@ export function EtfArbitragePage() {
         {error && <div className="p-3 text-down text-sm">로드 실패: {error}</div>}
         {!error && (!master || !pdfs) && <div className="p-3 text-t3 text-sm">로드 중…</div>}
         {master && pdfs && (
-          <table className="border-collapse" style={{ tableLayout: 'fixed', width: '1486px' }}>
+          <table className="border-collapse" style={{ tableLayout: 'fixed', width: '1564px' }}>
             <colgroup>
               <col style={{ width: 180 }} />{/* 종목 */}
               <col style={{ width: 96 }} />{/* 거래대금 */}
               <col style={{ width: 78 }} />{/* 현재가 */}
+              <col style={{ width: 78 }} />{/* iNAV */}
               <col style={{ width: 78 }} />{/* rNAV */}
               <col style={{ width: 78 }} />{/* fNAV */}
               <col style={{ width: 76 }} />{/* 현재괴리 */}
@@ -1053,6 +1054,7 @@ export function EtfArbitragePage() {
                 <ArbTh sort={() => handleSort('name')} active={sortKey === 'name'} asc={sortAsc} left sticky className="pl-4">종목</ArbTh>
                 <ArbTh sort={() => handleSort('tradeValue')} active={sortKey === 'tradeValue'} asc={sortAsc}>거래대금</ArbTh>
                 <ArbTh sort={() => handleSort('etfPrice')} active={sortKey === 'etfPrice'} asc={sortAsc}>현재가</ArbTh>
+                <ArbTh sort={() => handleSort('nav')} active={sortKey === 'nav'} asc={sortAsc} title="iNAV — 거래소 발행 실시간 NAV (LS API I5_ feed). 모든 ETF 공통.">iNAV</ArbTh>
                 <ArbTh sort={() => handleSort('rNav')} active={sortKey === 'rNav'} asc={sortAsc} title="현물 NAV — 차익 ETF: (SUM(S·D)+현금)/CU 자체 산출. 비차익(레버리지/인버스/채권 등): 라이브 NAV(I5_) 사용.">rNAV</ArbTh>
                 <ArbTh sort={() => handleSort('fNav')} active={sortKey === 'fNav'} asc={sortAsc} title="선물대체 NAV. V=O 종목은 K로 평가">fNAV</ArbTh>
                 <ArbTh sort={() => handleSort('priceNavBp')} active={sortKey === 'priceNavBp'} asc={sortAsc}>현재 괴리</ArbTh>
@@ -1097,7 +1099,7 @@ export function EtfArbitragePage() {
                     data-index={vr.index}
                     ref={rowVirtualizer.measureElement}
                   >
-                    <td colSpan={17} className="p-0">
+                    <td colSpan={18} className="p-0">
                       <ExpandedPanel
                         pdf={entry.pdf}
                         etfCode={entry.etfCode}
@@ -1782,7 +1784,9 @@ const ArbRow = memo(function ArbRow({ etf, m, history, isSelected, onSelect, max
           ? m.etfPrice.toLocaleString()
           : (m?.etfPrevClose ? m.etfPrevClose.toLocaleString() : '-')
       }</ArbC>
-      {/* rNAV 컬럼: 차익 ETF는 자체 산출 rNav, 비차익은 라이브 nav (PDF 부정확).
+      {/* iNAV: 거래소 발행 실시간 NAV (I5_). 모든 ETF 공통. rNAV/자체 산출과 비교용 진실값. */}
+      <ArbC>{m && m.nav > 0 ? m.nav.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '-'}</ArbC>
+      {/* rNAV: 차익 ETF는 자체 산출 rNav, 비차익은 라이브 nav (PDF 부정확).
        *  누락 초과 케이스만 흐림 (rNav가 의심값). 비차익은 라이브 nav를 정상 색조로. */}
       <ArbC c={tooMissing ? 'text-[#5a5a5e]' : undefined}>
         {tooMissing
