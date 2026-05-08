@@ -26,7 +26,7 @@ CASH_CODE = "000000"  # A000000 = 원화현금 (PDF 시트 특수 행)
 # 자체 NAV/fNAV 산출 불가 ETF 키워드 (종목명 기준).
 # 레버리지/인버스: PDF에 지수선물·스왑이 들어가 일중 평가 불가 (전일정산가 필요 또는 PDF 자체가 빈 껍데기).
 # 채권/혼합/통화/원자재/부동산 그룹은 별도로 그룹 prefix로 차단.
-_NON_ARBITRABLE_NAME_KEYWORDS = ("레버리지", "인버스", "2X", "2x", "3X", "3x", "선물")
+_NON_ARBITRABLE_NAME_KEYWORDS = ("레버리지", "인버스", "2X", "2x", "3X", "3x", "선물", "커버드콜")
 
 
 def _is_arbitrable(group: Optional[str], name: Optional[str]) -> bool:
