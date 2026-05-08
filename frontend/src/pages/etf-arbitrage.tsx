@@ -709,10 +709,10 @@ export function EtfArbitragePage() {
     // 모든 sort는 "강도(strength) 내림차순". 매수는 음수 클수록 강하므로 -buyBp.
     // 괴리 컬럼들도 매수가 강한 ETF가 위에 오게 하려면 별도 처리하나, 여기선 기본 signed 값 그대로
     // 내림차순 (양수 큰 = 매도 premium 큰 ETF 위로). 매수 신호 보고 싶으면 다시 클릭해서 toggle 가능.
-    // 비차익 ETF가 끝으로 가야 하는 컬럼: fNAV/차익/실집행/적용%/배당/선물수.
-    // 차익과 무관한 컬럼(거래대금/가격/nav/rNav/괴리bp)은 비차익도 정상 정렬.
+    // 비차익 ETF가 끝으로 가야 하는 컬럼: rNAV/fNAV/차익/실집행/적용%/배당/선물수.
+    // 차익과 무관한 컬럼(거래대금/가격/iNAV/괴리bp)은 비차익도 정상 정렬.
     const ARBITRAGE_SORT_KEYS = new Set<SortKey>([
-      'fNav', 'diffBp', 'buyArbBp', 'sellArbBp',
+      'rNav', 'fNav', 'diffBp', 'buyArbBp', 'sellArbBp',
       'realProfitWon', 'realProfitBp',
       'dividendN', 'appliedPct', 'futuresCount',
     ])
@@ -723,8 +723,7 @@ export function EtfArbitragePage() {
         case 'tradeValue': return m.tradeValue
         case 'etfPrice': return m.etfPrice
         case 'nav': return m.nav
-        // rNav 컬럼 정렬: 비차익은 라이브 nav를, 차익은 자체 rNav를. UI와 일관.
-        case 'rNav': return m.arbitrable === false ? m.nav : m.rNav
+        case 'rNav': return m.rNav
         case 'fNav': return m.fNav
         case 'priceNavBp': return m.priceNavBp
         case 'askNavBp': return m.askNavBp
@@ -1055,7 +1054,7 @@ export function EtfArbitragePage() {
                 <ArbTh sort={() => handleSort('tradeValue')} active={sortKey === 'tradeValue'} asc={sortAsc}>거래대금</ArbTh>
                 <ArbTh sort={() => handleSort('etfPrice')} active={sortKey === 'etfPrice'} asc={sortAsc}>현재가</ArbTh>
                 <ArbTh sort={() => handleSort('nav')} active={sortKey === 'nav'} asc={sortAsc} title="iNAV — 거래소 발행 실시간 NAV (LS API I5_ feed). 모든 ETF 공통.">iNAV</ArbTh>
-                <ArbTh sort={() => handleSort('rNav')} active={sortKey === 'rNav'} asc={sortAsc} title="현물 NAV — 차익 ETF: (SUM(S·D)+현금)/CU 자체 산출. 비차익(레버리지/인버스/채권 등): 라이브 NAV(I5_) 사용.">rNAV</ArbTh>
+                <ArbTh sort={() => handleSort('rNav')} active={sortKey === 'rNav'} asc={sortAsc} title="현물 NAV — (SUM(S·D)+현금)/CU 자체 산출. 비차익 ETF는 PDF 처리가 깨져 흐림.">rNAV</ArbTh>
                 <ArbTh sort={() => handleSort('fNav')} active={sortKey === 'fNav'} asc={sortAsc} title="선물대체 NAV. V=O 종목은 K로 평가">fNAV</ArbTh>
                 <ArbTh sort={() => handleSort('priceNavBp')} active={sortKey === 'priceNavBp'} asc={sortAsc}>현재 괴리</ArbTh>
                 <ArbTh sort={() => handleSort('askNavBp')} active={sortKey === 'askNavBp'} asc={sortAsc}>매도 괴리</ArbTh>
@@ -1786,14 +1785,10 @@ const ArbRow = memo(function ArbRow({ etf, m, history, isSelected, onSelect, max
       }</ArbC>
       {/* iNAV: 거래소 발행 실시간 NAV (I5_). 모든 ETF 공통. rNAV/자체 산출과 비교용 진실값. */}
       <ArbC>{m && m.nav > 0 ? m.nav.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '-'}</ArbC>
-      {/* rNAV: 차익 ETF는 자체 산출 rNav, 비차익은 라이브 nav (PDF 부정확).
-       *  누락 초과 케이스만 흐림 (rNav가 의심값). 비차익은 라이브 nav를 정상 색조로. */}
-      <ArbC c={tooMissing ? 'text-[#5a5a5e]' : undefined}>
-        {tooMissing
-          ? '—'
-          : nonArb
-            ? (m && m.nav > 0 ? m.nav.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '-')
-            : (m?.rNav ? m.rNav.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '-')}
+      {/* rNAV: 자체 산출 (SUM(S·D)+현금)/CU. 비차익 ETF는 PDF 처리가 깨져 (지수선물 미평가, 채권 시세 없음 등)
+       *  의미 없으므로 흐림. 라이브 NAV는 iNAV 컬럼에 별도 표시. */}
+      <ArbC c={dim ? 'text-[#5a5a5e]' : undefined}>
+        {dim ? '—' : (m?.rNav ? m.rNav.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '-')}
       </ArbC>
       <ArbC c={dim ? 'text-[#5a5a5e]' : (m && m.fNav > 0 && m.rNav > 0 ? (m.fNav > m.rNav ? 'text-[#00b26b]' : m.fNav < m.rNav ? 'text-[#bb4a65]' : 'text-white') : 'text-white')}>{dim ? '—' : (m?.fNav ? m.fNav.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '-')}</ArbC>
       <ArbC c={m && m.priceNavBp > 0 ? 'text-[#00b26b]' : m && m.priceNavBp < 0 ? 'text-[#bb4a65]' : 'text-[#d1d1d6]'}>{m && m.nav > 0 ? `${fmt(m.priceNavBp, 2)}bp` : '-'}</ArbC>
