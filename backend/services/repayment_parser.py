@@ -2,6 +2,7 @@
 import pandas as pd
 
 from services.excel_reader import read_excel
+from services.stock_code import normalize_series
 
 
 def parse_repayment_files(office_bytes: bytes, esafe_bytes: bytes) -> dict:
@@ -40,8 +41,7 @@ def _parse_office(df: pd.DataFrame) -> pd.DataFrame:
         df["담보"] = 0
     df = df[(df["담보가능수량"] > 0) | (df["담보"] > 0)].copy()
 
-    # 종목번호 정규화: A005930 → 005930
-    df["종목번호"] = df["종목번호"].astype(str).str.replace(r"^A", "", regex=True).str.zfill(6)
+    df["종목번호"] = normalize_series(df["종목번호"])
     df["펀드코드"] = df["펀드코드"].astype(str).str.zfill(6)
 
     return df.reset_index(drop=True)
@@ -59,7 +59,7 @@ def _parse_esafe(df: pd.DataFrame) -> pd.DataFrame:
     df["대차수량"] = pd.to_numeric(df["대차수량"], errors="coerce").fillna(0).astype(int)
     df = df[df["대차수량"] > 0].copy()
 
-    df["단축코드"] = df["단축코드"].astype(str).str.zfill(6)
+    df["단축코드"] = normalize_series(df["단축코드"])
     df["수수료율(%)"] = pd.to_numeric(df["수수료율(%)"], errors="coerce").fillna(0)
     df["기준가액"] = pd.to_numeric(df["기준가액"], errors="coerce").fillna(0).astype(int)
     df["대차가액"] = pd.to_numeric(df["대차가액"], errors="coerce").fillna(0).astype(int)
@@ -90,8 +90,8 @@ def parse_repay_schedule(file_bytes: bytes) -> pd.DataFrame:
     df = df.dropna(subset=[df.columns[3]])  # D열 종목코드 기준
 
     result = pd.DataFrame()
-    # D열(index 3): ISIN KR7005930003 → [3:9] = 005930
-    result["종목번호"] = df.iloc[:, 3].astype(str).str[3:9]
+    # D열(index 3): ISIN KR7005930003 또는 6자리/A접두 — 정규화로 통일
+    result["종목번호"] = normalize_series(df.iloc[:, 3])
     # J열(index 9): 대차수량
     result["상환예정수량"] = pd.to_numeric(df.iloc[:, 9], errors="coerce").fillna(0).astype(int)
 

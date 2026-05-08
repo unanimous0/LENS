@@ -928,26 +928,50 @@ LENS/
 
 ### t1102 우선순위 + 재시도 (외부망 한정)
 
-LS API TPS 10/초로 PDF 종목(~7000) 초기 fetch에 ~12분. 5xx 산발 발생. 다층 처리:
+LS API TPS 10/초로 PDF 종목(~2000) 초기 fetch에 ~3.5분. 5xx 산발 발생. 다층 처리:
+
+#### ETF PDF 마스터 확장 (`load_etf_pdf_extra_codes`)
+
+`futures_master.json`은 주식선물 발행된 250개만 등록 → ETF PDF 잡주 1700개가 백그라운드 sweep 대상에서 빠지는 문제. 사용자 입장에선 "ETF 페이지 켜둬도 잡주 가격 못 받음, 클릭하면 그제야 받음" 현상.
+
+**해결**:
+- realtime 시작 시 backend `/api/etfs/pdf-all` HTTP GET (5초 타임아웃, `BACKEND_URL` env 지원)
+- ETF 코드 + PDF stocks union 추출 → `is_six_alnum`(6자리 영숫자)만 통과 — 'CASH'/9자리 선물코드(KA*, KAM*) 배제
+- 마스터 미포함 종목만 `MasterShared.etf_pdf_extra_codes`로 보관
+- backend 미가동 / JSON 파싱 실패 / 비-200 → 빈 Vec 폴백 (graceful degradation, 250개 fixed로 동작)
+- LsApiFeed 시작 5초 후 별도 task로 백그라운드 t1102 sweep (fixed sweep과 토큰 경합 회피, phase-gated)
+- 같은 `fetched_stocks`/`failed_stocks` Arc 공유 → SubscribeStocks 핸들러가 사용자 진입 시 이미 fetched된 종목 skip → 즉시 가격 표시
+- WS subscribe는 안 함 (KOSDAQ 분류 정보 없어 S3_/K3_ 잘못 보낼 위험). 실시간 tick은 사용자 진입 시 SubscribeStocks가 처리
+- 측정 결과 (2026-05-08): 589 ETFs / 32096 PDF rows / 1727 extra codes / 시작 후 6.8분에 1932/1977 (97.7%) 도달, http_5xx 0건
+
+#### emit 분류 — `value_pos` / `pc_only` / `no_data`
+
+`fetch_stocks_initial`의 emit 분기를 명확히 분리해서 `pc_only` 케이스가 fetched에 갇혀 영구 0원 표시되는 문제 회피:
+
+- `value > 0` (거래대금 있음) → 정상 emit, **fetched 등록**, count++
+- `value == 0 && pc > 0` (거래 없는 잡주) → `prev_close` 폴백으로 price=0 emit, **fetched 등록 X**, failed에 `pc_only` kind로 등록 → retry worker가 60초마다 재시도, 거래 발생 즉시 정상 가격 갱신
+- 둘 다 0 → `no_data`, failed 등록
+
+`Stats`에 누적 카운터: `emit_value_pos`, `emit_pc_only`, `fetch_attempts`.
 
 #### `volume_cache.rs` — 거래대금 기반 sweep 순서
 
 - t1102 응답에 이미 들어오는 `value`(당일 거래대금) piggyback 저장
-- `data/stock_volumes.json`에 1000건 단위 incremental save (12분 sweep 도중 재시작해도 부분 누적)
+- `data/stock_volumes.json`에 1000건 단위 incremental save (sweep 도중 재시작해도 부분 누적)
 - 다음 launch 시 master 로더가 `ordered_stock_codes`를 거래대금 desc 정렬 → 다음 sweep부터 활발한 종목 먼저
 - 추가 LS API 호출 0
 - 첫 launch는 master 코드순 (캐시 없음)
 
 #### `failed_stocks` 재시도 worker
 
-- `LsApiFeed.failed_stocks: DashMap<code, FailedT1102>`
-- t1102 실패 (5xx / no_data / tps / other) 시 코드 + 에러 종류 + 시도 횟수 기록
+- `Arc<DashMap<code, FailedT1102>>` — `AppState`와 `LsApiFeed`가 같은 Arc 공유 (`/debug/stats`에서 사이즈 노출)
+- t1102 실패 (5xx / no_data / tps / other / **pc_only**) 시 코드 + 에러 종류 + 시도 횟수 기록
 - 백그라운드 worker (60초 cycle, phase-gated):
   - failed_stocks snapshot → `fetch_stocks_initial` 호출
-  - 성공 → fetched로 이동, failed에서 제거 + tick emit
-  - 실패 → attempt_count 증가
+  - 성공 (value>0) → fetched로 이동, failed에서 제거 + tick emit
+  - 여전히 pc_only → failed 잔류, attempt_count 증가
 - 초기 fetch 후 120초 대기 후 시작 (sweep과 TPS 경합 회피)
-- 일일 자동 새로고침 시 fetched + failed 둘 다 clear
+- 모드 전환 / 일일 자동 새로고침 시 fetched + failed 둘 다 clear
 
 #### `PrioritizeStocks` SubCommand
 
@@ -959,10 +983,19 @@ LS API TPS 10/초로 PDF 종목(~7000) 초기 fetch에 ~12분. 5xx 산발 발생
   - Internal: no-op (즉시 도착하므로 의미 없음)
   - Mock: no-op
 
-#### 디버그 로깅
+#### 진단 — `/debug/stats::t1102_progress`
 
-- 종류별 첫 5개 코드+에러 메시지 샘플 — `t1102 http_5xx samples: [001340=http 503, 002310=http 502, ...]`
-- `/debug/stats`의 `fetch_failures` 카운터로 누적 추적
+```
+ordered_total      : 250          // futures_master 사이즈 (extra 미포함)
+fetched_size       : 1932         // value>0로 emit + fetched 등록
+failed_size        : 45           // 재시도 대상 (대부분 pc_only)
+failed_by_kind     : {pc_only:45} // 종류별 분포
+fetch_attempts     : 2080         // 누적 시도 (= fetched + failed + retry attempts)
+emit_value_pos     : 1931         // 정상 거래 emit 누적
+emit_pc_only       : 147          // pc-only emit 누적 (이 중 retry로 회복된 건 value_pos로 옮겨감)
+```
+
+종류별 첫 5개 코드+에러 샘플도 로그로 노출 — `t1102 http_5xx samples: [001340=http 503, ...]`. `fetch_failures` 카운터(`http_5xx`/`no_data`/`tps`/`other`)는 별도 누적.
 
 ---
 

@@ -265,13 +265,15 @@ pub async fn fetch_stocks_initial(
     for code in codes {
         if cancel.is_cancelled() { return count; }
 
-        // 이미 fetch 성공한 코드는 건너뜀.
+        // 이미 fetch 성공(value>0)한 코드는 건너뜀.
+        // pc-only로만 emit된 코드는 fetched에 안 들어가므로 자동 재시도 대상 — 거래 발생 시 가격 채움.
         if let Some(set) = fetched {
             if set.contains_key(code) {
                 skipped += 1;
                 continue;
             }
         }
+        stats.fetch_attempts.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
         match fetch_t1102(&client, token, code).await {
             Ok(detail) => {
@@ -283,9 +285,9 @@ pub async fn fetch_stocks_initial(
                 let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.6f").to_string();
                 let name = names.get(code.as_str()).cloned().unwrap_or_default();
 
-                let mut emitted = false;
                 if value > 0 {
-                    // 거래대금 캐시에 기록 — 다음 launch 시 정렬 키.
+                    // 거래대금 있음 = 정상 emit. fetched 등록해서 다음 sweep skip.
+                    stats.emit_value_pos.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     crate::volume_cache::record(code, value);
                     let _ = tx.send(WsMessage::StockTick(StockTick {
                         code: code.clone(), name,
@@ -297,8 +299,14 @@ pub async fn fetch_stocks_initial(
                         low: if l > 0.0 { Some(l) } else { None },
                         prev_close: if pc > 0.0 { Some(pc) } else { None },
                     })).await;
-                    emitted = true;
+                    if let Some(set) = fetched { set.insert(code.clone(), ()); }
+                    if let Some(fmap) = failed { fmap.remove(code); }
+                    count += 1;
                 } else if pc > 0.0 {
+                    // 거래대금 0이지만 전일종가 있음 — prev_close만 보내 화면 폴백 표시 (price=0).
+                    // 핵심: fetched에 등록하지 않음 → retry worker가 거래 발생할 때까지 60초 cycle로 재시도,
+                    // 거래 발생 즉시 정상 가격(value>0)으로 갱신됨. 사용자가 "한참 0이다가 거래되면 갱신" 원하는 동작.
+                    stats.emit_pc_only.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     let _ = tx.send(WsMessage::StockTick(StockTick {
                         code: code.clone(), name,
                         price: 0.0,
@@ -308,13 +316,14 @@ pub async fn fetch_stocks_initial(
                         high: None, low: None,
                         prev_close: Some(pc),
                     })).await;
-                    emitted = true;
-                }
-
-                if emitted {
-                    if let Some(set) = fetched { set.insert(code.clone(), ()); }
-                    if let Some(fmap) = failed { fmap.remove(code); }
-                    count += 1;
+                    if let Some(fmap) = failed {
+                        let prev = fmap.get(code).map(|e| e.attempt_count).unwrap_or(0);
+                        fmap.insert(code.clone(), FailedT1102 {
+                            last_error: "pc_only (value=0, awaiting trade)".to_string(),
+                            error_kind: "pc_only",
+                            attempt_count: prev + 1,
+                        });
+                    }
                 } else {
                     // value==0 + recprice 없음 (신규상장 등 정말 데이터 없는 케이스).
                     fail_no_data += 1;

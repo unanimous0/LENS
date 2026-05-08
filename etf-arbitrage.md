@@ -193,11 +193,49 @@ missingWeight = Σ(prev_close × qty for S=0 종목) / 전체 추정
 
 ---
 
+## 비차익 ETF 분류 (레버리지/인버스/채권/혼합 등)
+
+PDF 현물 바스켓을 개별주식선물로 대체하는 차익은 **현물 1× ETF에서만 의미**. 다른 유형은 자체 NAV 산출 자체가 깨짐 (PDF에 지수선물 라인이 들어가는데 일중 평가는 전일정산가 필요, 인버스는 PDF가 빈 껍데기, 채권형은 채권 시세 피드 별개 등).
+
+**Backend 분류** — `backend/routers/etfs.py::_is_arbitrable(group, name)`:
+- 그룹이 `주식-`로 시작하지 않으면 false (채권-/혼합-/통화-/원자재-/부동산/기타)
+- 종목명에 `레버리지`/`인버스`/`2X`/`3X`/`선물` 포함 시 false
+- `/etfs`, `/etfs/pdf-all`, `/etfs/{code}/pdf` 응답에 `arbitrable: bool` 포함
+
+총 589개 중 **차익 379 / 비차익 210**. 비차익 예: KODEX 레버리지(122630), KODEX 인버스(114800), KODEX 200선물인버스2X(252670), KODEX 200롱코스닥150숏선물(360140), TIGER 미국나스닥100ETF선물(483240), 채권/혼합/통화/원자재/부동산 ETF 전부.
+
+**Frontend UI** — `etf-arbitrage.tsx`:
+- `EtfMaster.arbitrable` 누락 시 true 폴백 (구버전 백엔드 호환)
+- ArbRow `dim = nonArb || tooMissing` 통합:
+  - **차익 컬럼만 흐림 + `—`**: fNAV/매수차BP/매도차BP/차익bp/실집행차익/실집행BP/배당수/적용%/선물수/추이
+  - **정상 표시**: 거래대금/현재가/현재괴리/매도괴리/매수괴리 (라이브 NAV 기준 bp)
+- **rNAV 컬럼 듀얼 표시**:
+  - 차익 ETF → `m.rNav` 자체 산출 (`(SUM(S·D)+현금)/CU`)
+  - **비차익 ETF → `m.nav` 라이브 NAV (I5_ feed)**
+  - 누락 임계 초과 시만 `—` 흐림. 정렬도 동일 분기 (같은 가격 단위라 비교 자연)
+- 정렬 시 차익 컬럼(`fNav`/`diffBp`/`buyArbBp`/`sellArbBp`/`realProfit*`/`dividendN`/`appliedPct`/`futuresCount`)에선 비차익 ETF 무조건 끝으로
+
+---
+
 ## Fetch 우선순위 (외부망 t1102)
 
-LS API TPS 10 한도라 7000 PDF 종목 초기 fetch에 ~12분. 활발한 종목 빨리 도착하도록 다층 우선순위.
+LS API TPS 10 한도라 1700+ PDF 종목 초기 fetch에 ~3.5분. 활발한 종목 빨리 도착하도록 다층 우선순위.
 
-### 1. ETF 거래량 정렬 (Frontend)
+### 1. ETF PDF 마스터 확장 (Backend startup)
+
+`futures_master.json`은 **주식선물 발행된 250개**만 등록 → ETF PDF 잡주 1700개가 백그라운드 sweep 대상에서 빠짐 → 사용자가 페이지 켜둬도 못 받음, 클릭하면 그제야 PrioritizeStocks로 받는 현상 발생.
+
+**해결** (`realtime/src/main.rs::load_etf_pdf_extra_codes`):
+- realtime 시작 시 backend `/api/etfs/pdf-all` HTTP GET (5초 타임아웃)
+- ETF + PDF stocks union 추출 → 6자리 영숫자만 필터 (`is_six_alnum` — 'CASH'/9자리 선물코드 배제)
+- 마스터 미포함 종목만 `MasterShared.etf_pdf_extra_codes`로 보관 (~1727개)
+- backend 미가동/실패 시 빈 Vec 폴백 (graceful degradation)
+- LsApiFeed 시작 5초 후 별도 task로 백그라운드 t1102 sweep 실행 (fixed sweep과 토큰 경합 회피)
+- 같은 `fetched_stocks`/`failed_stocks` Arc 공유 → SubscribeStocks 핸들러가 사용자 진입 시 skip
+- WS subscribe는 안 함 (KOSDAQ 분류 없어 S3_/K3_ 잘못 보낼 위험) — 실시간 tick은 사용자 진입 시 SubscribeStocks가 추가
+- 효과: 시작 후 ~7분 만에 1977개 중 97.7% (1932) 가격 보유, 사용자 ETF 페이지 진입 시 즉시 표시
+
+### 2. ETF 거래량 정렬 (Frontend)
 
 - localStorage `etf.volumeCache.v1` — ETF별 cum_volume 30초마다 누적 저장
 - mount 시 `stockSubscriptionCodes` useMemo가 캐시 기반 ETF 거래량 desc 정렬
@@ -205,7 +243,7 @@ LS API TPS 10 한도라 7000 PDF 종목 초기 fetch에 ~12분. 활발한 종목
 - 첫 mount 후 30초~1분 누적 → 다음 mount부터 효과
 - 효과: KODEX 200 같은 활발한 ETF의 PDF가 큐 앞으로 → 체감 빠른 도착
 
-### 2. 종목 거래대금 정렬 (Backend, `volume_cache.rs`)
+### 3. 종목 거래대금 정렬 (Backend, `volume_cache.rs`)
 
 - t1102 응답의 `value`(당일 거래대금) 자체 piggyback 저장
 - `data/stock_volumes.json`에 1000건 단위 incremental save
@@ -213,7 +251,7 @@ LS API TPS 10 한도라 7000 PDF 종목 초기 fetch에 ~12분. 활발한 종목
 - LS API 추가 호출 0, 디스크 IO 무시 수준
 - Backend의 초기 sweep 자체 우선순위 — Frontend 정렬과 협력 (동일 코드 cache hit 무중복)
 
-### 3. ETF 클릭 즉시 우선화
+### 4. ETF 클릭 즉시 우선화
 
 - 사용자가 ETF 행 클릭(펼침) → 프론트가 `POST /realtime/prioritize-stocks` { codes: [ETF, PDF종목들...] }
 - 백엔드 `SubCommand::PrioritizeStocks` 핸들러:
@@ -222,18 +260,18 @@ LS API TPS 10 한도라 7000 PDF 종목 초기 fetch에 ~12분. 활발한 종목
   - 기존 sweep과 잠시 TPS 경합하지만 클릭당 ~50종목/5초 burst라 abuse 신호 미달
 - 효과: 클릭 후 5초 안에 그 ETF의 PDF 종목 가격 도착
 
-### 4. 실패 코드 재시도 worker (Backend)
+### 5. 실패/pc-only 재시도 worker (Backend)
 
-- 5xx/no_data 등으로 fetch 실패한 코드는 `failed_stocks` map에 저장
-- 60초 cycle worker가 phase-active 시점에 재시도 (Sleep phase면 idle)
-- 신규 launch (data/stock_volumes.json + 첫 sweep) 후 잔여 누락 종목 점진 보충
+- **5xx/no_data**: 일시 장애 — `failed_stocks`에 등록, 60초 cycle worker가 재시도
+- **pc_only**: 거래대금 0이지만 전일종가 있는 잡주 — `prev_close` 폴백으로 emit (price=0)하되 **fetched 등록 X, failed에 등록**. 거래 발생 즉시 retry로 정상 가격 갱신.
+- worker는 phase-active 시점에만 동작 (Sleep phase 자정 LS 점검 충돌 회피)
 - 로그: `t1102 retry: K/N recovered (남음 M)`
 
 ### 종합 도착 시점 예측
 
 - 메이저 ETF 종목 (KOSPI200 등): 첫 mount 후 30초~1분
 - 중대형주 (코스피 50): 1~3분
-- 잡주 (체결 거의 없음): 12분 이내 + 5xx 실패면 60초마다 retry로 보충
+- ETF PDF 잡주: 시작 후 ~7분 (마스터 확장 효과). 이후 페이지 진입 시 즉시
 - 사용자가 클릭한 ETF: 5초 burst 내
 
 ---

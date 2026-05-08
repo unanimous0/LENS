@@ -16,6 +16,9 @@ type EtfMaster = {
   cu_unit: number
   group: string | null
   lp: string | null
+  // 차익 거래 대상 여부. false면 fNAV/실집행/차익BP 컬럼 무의미 (레버리지/인버스/채권/혼합 등).
+  // 백엔드 _is_arbitrable() 분류. 누락 시 true 폴백 (구 응답 호환).
+  arbitrable: boolean
 }
 
 type PdfStock = { code: string; name: string; qty: number }
@@ -23,6 +26,7 @@ type EtfPdf = {
   code: string
   name: string
   cu_unit: number
+  arbitrable: boolean
   as_of: string
   cash: number
   stocks: PdfStock[]
@@ -310,6 +314,7 @@ function computeMetric(
     askNavBp: Math.abs(askNavBp) > 1000 ? 0 : askNavBp,
     bidNavBp: Math.abs(bidNavBp) > 1000 ? 0 : bidNavBp,
     missingWeight,
+    arbitrable: pdf.arbitrable !== false,
   }
 }
 
@@ -336,7 +341,8 @@ function metricsEqual(a: EtfMetrics, b: EtfMetrics): boolean {
     a.priceNavBp === b.priceNavBp &&
     a.askNavBp === b.askNavBp &&
     a.bidNavBp === b.bidNavBp &&
-    a.missingWeight === b.missingWeight
+    a.missingWeight === b.missingWeight &&
+    a.arbitrable === b.arbitrable
   )
 }
 
@@ -363,6 +369,7 @@ type EtfMetrics = {
   askNavBp: number       // 매도1호가 vs NAV 괴리 (bp).
   bidNavBp: number       // 매수1호가 vs NAV 괴리 (bp).
   missingWeight: number  // 누락 종목 추정 비중 (0~1). prev_close 기반 추정. 임계값 초과 시 fNav/실집행 흐림.
+  arbitrable: boolean    // false면 fNAV/실집행/차익BP 흐림. 레버리지/인버스/채권/혼합 등.
 }
 
 export function EtfArbitragePage() {
@@ -541,9 +548,18 @@ export function EtfArbitragePage() {
       fetch(`/api/dividends?from_date=${today}&include_estimates=true`).then((r) => r.json()),
     ])
       .then(([mEtf, mPdf, mFut, mDiv]) => {
-        setMaster(mEtf.items)
+        // 구 응답 호환: arbitrable 누락 시 true 폴백 (기존 동작 유지).
+        const masterItems: EtfMaster[] = (mEtf.items ?? []).map((e: EtfMaster) => ({
+          ...e,
+          arbitrable: e.arbitrable ?? true,
+        }))
+        setMaster(masterItems)
         setLoadedAt(mEtf.loaded_at)
-        setPdfs(mPdf.items)
+        const pdfItems: Record<string, EtfPdf> = {}
+        for (const [k, v] of Object.entries(mPdf.items ?? {} as Record<string, EtfPdf>)) {
+          pdfItems[k] = { ...v, arbitrable: v.arbitrable ?? true }
+        }
+        setPdfs(pdfItems)
         setFuturesMaster(mFut)
         const dmap = new Map<string, DividendInfo[]>()
         for (const it of mDiv.items ?? []) {
@@ -693,6 +709,13 @@ export function EtfArbitragePage() {
     // 모든 sort는 "강도(strength) 내림차순". 매수는 음수 클수록 강하므로 -buyBp.
     // 괴리 컬럼들도 매수가 강한 ETF가 위에 오게 하려면 별도 처리하나, 여기선 기본 signed 값 그대로
     // 내림차순 (양수 큰 = 매도 premium 큰 ETF 위로). 매수 신호 보고 싶으면 다시 클릭해서 toggle 가능.
+    // 비차익 ETF가 끝으로 가야 하는 컬럼: fNAV/차익/실집행/적용%/배당/선물수.
+    // 차익과 무관한 컬럼(거래대금/가격/nav/rNav/괴리bp)은 비차익도 정상 정렬.
+    const ARBITRAGE_SORT_KEYS = new Set<SortKey>([
+      'fNav', 'diffBp', 'buyArbBp', 'sellArbBp',
+      'realProfitWon', 'realProfitBp',
+      'dividendN', 'appliedPct', 'futuresCount',
+    ])
     const valueOf = (etf: EtfMaster): number => {
       const m = metricsByCode[etf.code]
       if (!m) return 0
@@ -700,7 +723,8 @@ export function EtfArbitragePage() {
         case 'tradeValue': return m.tradeValue
         case 'etfPrice': return m.etfPrice
         case 'nav': return m.nav
-        case 'rNav': return m.rNav
+        // rNav 컬럼 정렬: 비차익은 라이브 nav를, 차익은 자체 rNav를. UI와 일관.
+        case 'rNav': return m.arbitrable === false ? m.nav : m.rNav
         case 'fNav': return m.fNav
         case 'priceNavBp': return m.priceNavBp
         case 'askNavBp': return m.askNavBp
@@ -716,6 +740,13 @@ export function EtfArbitragePage() {
         default: return 0
       }
     }
+    const isArbSort = ARBITRAGE_SORT_KEYS.has(sortKey)
+    // tier: 차익 컬럼 정렬 시 비차익은 1(끝), 차익은 0(앞). 그 외 컬럼은 모두 0.
+    const tierOf = (etf: EtfMaster): number => {
+      if (!isArbSort) return 0
+      const m = metricsByCode[etf.code]
+      return m && m.arbitrable === false ? 1 : 0
+    }
     // ETF row 필터 (절댓값 기반 임계 통과만)
     const filtered = master.filter((etf) => {
       const m = metricsByCode[etf.code]
@@ -727,6 +758,9 @@ export function EtfArbitragePage() {
     const sorted = [...filtered]
     const dir = sortAsc ? 1 : -1
     sorted.sort((a, b) => {
+      // 차익 컬럼 정렬: 비차익 ETF 무조건 끝 (asc/desc 무관)
+      const ta = tierOf(a), tb = tierOf(b)
+      if (ta !== tb) return ta - tb
       if (sortKey === 'code') return a.code.localeCompare(b.code) * dir
       if (sortKey === 'name') return a.name.localeCompare(b.name) * dir
       return (valueOf(b) - valueOf(a)) * (sortAsc ? -1 : 1)
@@ -1019,7 +1053,7 @@ export function EtfArbitragePage() {
                 <ArbTh sort={() => handleSort('name')} active={sortKey === 'name'} asc={sortAsc} left sticky className="pl-4">종목</ArbTh>
                 <ArbTh sort={() => handleSort('tradeValue')} active={sortKey === 'tradeValue'} asc={sortAsc}>거래대금</ArbTh>
                 <ArbTh sort={() => handleSort('etfPrice')} active={sortKey === 'etfPrice'} asc={sortAsc}>현재가</ArbTh>
-                <ArbTh sort={() => handleSort('rNav')} active={sortKey === 'rNav'} asc={sortAsc} title="현물 NAV. (SUM(F·D)+현금)/CU">rNAV</ArbTh>
+                <ArbTh sort={() => handleSort('rNav')} active={sortKey === 'rNav'} asc={sortAsc} title="현물 NAV — 차익 ETF: (SUM(S·D)+현금)/CU 자체 산출. 비차익(레버리지/인버스/채권 등): 라이브 NAV(I5_) 사용.">rNAV</ArbTh>
                 <ArbTh sort={() => handleSort('fNav')} active={sortKey === 'fNav'} asc={sortAsc} title="선물대체 NAV. V=O 종목은 K로 평가">fNAV</ArbTh>
                 <ArbTh sort={() => handleSort('priceNavBp')} active={sortKey === 'priceNavBp'} asc={sortAsc}>현재 괴리</ArbTh>
                 <ArbTh sort={() => handleSort('askNavBp')} active={sortKey === 'askNavBp'} asc={sortAsc}>매도 괴리</ArbTh>
@@ -1718,17 +1752,25 @@ const ArbRow = memo(function ArbRow({ etf, m, history, isSelected, onSelect, max
   const diffColor = m && Math.abs(m.diffBp) > 5
     ? (m.diffBp > 0 ? 'text-[#00b26b]' : 'text-[#bb4a65]')
     : 'text-white'
-  // 누락 임계값 초과 → fNAV / 실집행차익 / 실집행BP 의심값. 흐림 처리.
-  const incomplete = !!m && m.missingWeight > maxMissingFrac
+  // 비차익(레버리지/인버스/채권 등): PDF로 fNAV·차익 산출 자체가 불가 → 차익 관련 컬럼 일괄 흐림.
+  // 누락(라이브 가격 못 받은 종목 비중 초과): fNAV·실집행만 의심값 → 동일하게 흐림.
+  // 두 케이스 모두 `dim`으로 통합 처리 (행 opacity 60 + 차익 컬럼 '—').
+  const nonArb = !!m && m.arbitrable === false
+  const tooMissing = !!m && m.missingWeight > maxMissingFrac
+  const dim = nonArb || tooMissing
+  const dimReason = nonArb
+    ? '레버리지/인버스/채권 등 — 자체 차익 산출 불가, 라이브 NAV만 신뢰'
+    : tooMissing
+      ? `누락 비중 ${(m!.missingWeight * 100).toFixed(1)}% — fNAV/실집행 의심값`
+      : undefined
   return (
     <tr
       className={cn(
         'border-b border-white/[0.04] hover:bg-[#1d1d1d] cursor-pointer',
         isSelected ? 'bg-[#1d1d1d]' : 'bg-black',
-        incomplete && 'opacity-60',
       )}
       onClick={() => onSelect(etf.code)}
-      title={incomplete ? `누락 비중 ${(m!.missingWeight * 100).toFixed(1)}% — fNAV/실집행 의심값` : undefined}
+      title={dimReason}
     >
       <td className="pl-4 pr-3 py-[7px] sticky left-0 z-10" style={STICKY_INHERIT_BG}>
         <div className="text-[11px] text-white leading-none whitespace-nowrap">{etf.name}</div>
@@ -1740,20 +1782,28 @@ const ArbRow = memo(function ArbRow({ etf, m, history, isSelected, onSelect, max
           ? m.etfPrice.toLocaleString()
           : (m?.etfPrevClose ? m.etfPrevClose.toLocaleString() : '-')
       }</ArbC>
-      <ArbC>{m?.rNav ? m.rNav.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '-'}</ArbC>
-      <ArbC c={incomplete ? 'text-[#5a5a5e]' : (m && m.fNav > 0 && m.rNav > 0 ? (m.fNav > m.rNav ? 'text-[#00b26b]' : m.fNav < m.rNav ? 'text-[#bb4a65]' : 'text-white') : 'text-white')}>{incomplete ? '—' : (m?.fNav ? m.fNav.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '-')}</ArbC>
+      {/* rNAV 컬럼: 차익 ETF는 자체 산출 rNav, 비차익은 라이브 nav (PDF 부정확).
+       *  누락 초과 케이스만 흐림 (rNav가 의심값). 비차익은 라이브 nav를 정상 색조로. */}
+      <ArbC c={tooMissing ? 'text-[#5a5a5e]' : undefined}>
+        {tooMissing
+          ? '—'
+          : nonArb
+            ? (m && m.nav > 0 ? m.nav.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '-')
+            : (m?.rNav ? m.rNav.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '-')}
+      </ArbC>
+      <ArbC c={dim ? 'text-[#5a5a5e]' : (m && m.fNav > 0 && m.rNav > 0 ? (m.fNav > m.rNav ? 'text-[#00b26b]' : m.fNav < m.rNav ? 'text-[#bb4a65]' : 'text-white') : 'text-white')}>{dim ? '—' : (m?.fNav ? m.fNav.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '-')}</ArbC>
       <ArbC c={m && m.priceNavBp > 0 ? 'text-[#00b26b]' : m && m.priceNavBp < 0 ? 'text-[#bb4a65]' : 'text-[#d1d1d6]'}>{m && m.nav > 0 ? `${fmt(m.priceNavBp, 2)}bp` : '-'}</ArbC>
       <ArbC c={m && m.askNavBp > 0 ? 'text-[#00b26b]' : m && m.askNavBp < 0 ? 'text-[#bb4a65]' : 'text-[#d1d1d6]'}>{m && m.nav > 0 && m.askNavBp !== 0 ? `${fmt(m.askNavBp, 2)}bp` : '-'}</ArbC>
       <ArbC c={m && m.bidNavBp > 0 ? 'text-[#00b26b]' : m && m.bidNavBp < 0 ? 'text-[#bb4a65]' : 'text-[#d1d1d6]'}>{m && m.nav > 0 && m.bidNavBp !== 0 ? `${fmt(m.bidNavBp, 2)}bp` : '-'}</ArbC>
-      <ArbC c={m && m.buyArbBp > 0 ? 'text-[#00b26b]' : 'text-[#5a5a5e]'}>{m && m.buyArbBp > 0.001 ? formatBp(m.buyArbBp) : '-'}</ArbC>
-      <ArbC c={m && m.sellArbBp < 0 ? 'text-[#bb4a65]' : 'text-[#5a5a5e]'}>{m && m.sellArbBp < -0.001 ? formatBp(m.sellArbBp) : '-'}</ArbC>
-      <ArbC c={cn('font-medium', diffColor)}>{m ? formatBp(m.diffBp) : '-'}</ArbC>
-      <ArbC c={incomplete ? 'text-[#5a5a5e]' : (m && m.realProfitWon > 0 ? 'text-[#00b26b]' : m && m.realProfitWon < 0 ? 'text-[#bb4a65]' : 'text-[#5a5a5e]')}>{incomplete ? '—' : (m && Math.abs(m.realProfitWon) > 1 ? `${Math.round(m.realProfitWon).toLocaleString()}원` : '-')}</ArbC>
-      <ArbC c={incomplete ? 'text-[#5a5a5e]' : (m && m.realProfitBp > 0 ? 'text-[#00b26b]' : m && m.realProfitBp < 0 ? 'text-[#bb4a65]' : 'text-[#5a5a5e]')}>{incomplete ? '—' : (m && Math.abs(m.realProfitBp) > 0.01 ? `${formatBp(m.realProfitBp)}bp` : '-')}</ArbC>
-      <ArbC c={m && m.dividendN > 0 ? 'text-[#ff9f0a]' : 'text-[#5a5a5e]'}>{m && m.dividendN > 0 ? m.dividendN : '-'}</ArbC>
-      <ArbC c="text-[#d1d1d6]">{m ? m.appliedPct.toFixed(1) : '-'}</ArbC>
-      <ArbC c="text-[#d1d1d6]">{m ? m.futuresCount : '-'}</ArbC>
-      <td className="px-2 py-[7px] text-center"><Sparkline history={history} /></td>
+      <ArbC c={dim ? 'text-[#5a5a5e]' : (m && m.buyArbBp > 0 ? 'text-[#00b26b]' : 'text-[#5a5a5e]')}>{dim ? '—' : (m && m.buyArbBp > 0.001 ? formatBp(m.buyArbBp) : '-')}</ArbC>
+      <ArbC c={dim ? 'text-[#5a5a5e]' : (m && m.sellArbBp < 0 ? 'text-[#bb4a65]' : 'text-[#5a5a5e]')}>{dim ? '—' : (m && m.sellArbBp < -0.001 ? formatBp(m.sellArbBp) : '-')}</ArbC>
+      <ArbC c={dim ? 'text-[#5a5a5e]' : cn('font-medium', diffColor)}>{dim ? '—' : (m ? formatBp(m.diffBp) : '-')}</ArbC>
+      <ArbC c={dim ? 'text-[#5a5a5e]' : (m && m.realProfitWon > 0 ? 'text-[#00b26b]' : m && m.realProfitWon < 0 ? 'text-[#bb4a65]' : 'text-[#5a5a5e]')}>{dim ? '—' : (m && Math.abs(m.realProfitWon) > 1 ? `${Math.round(m.realProfitWon).toLocaleString()}원` : '-')}</ArbC>
+      <ArbC c={dim ? 'text-[#5a5a5e]' : (m && m.realProfitBp > 0 ? 'text-[#00b26b]' : m && m.realProfitBp < 0 ? 'text-[#bb4a65]' : 'text-[#5a5a5e]')}>{dim ? '—' : (m && Math.abs(m.realProfitBp) > 0.01 ? `${formatBp(m.realProfitBp)}bp` : '-')}</ArbC>
+      <ArbC c={dim ? 'text-[#5a5a5e]' : (m && m.dividendN > 0 ? 'text-[#ff9f0a]' : 'text-[#5a5a5e]')}>{dim ? '—' : (m && m.dividendN > 0 ? m.dividendN : '-')}</ArbC>
+      <ArbC c={dim ? 'text-[#5a5a5e]' : 'text-[#d1d1d6]'}>{dim ? '—' : (m ? m.appliedPct.toFixed(1) : '-')}</ArbC>
+      <ArbC c={dim ? 'text-[#5a5a5e]' : 'text-[#d1d1d6]'}>{dim ? '—' : (m ? m.futuresCount : '-')}</ArbC>
+      <td className="px-2 py-[7px] text-center">{dim ? <span className="text-[9px] text-[#5a5a5e]">—</span> : <Sparkline history={history} />}</td>
     </tr>
   )
 })

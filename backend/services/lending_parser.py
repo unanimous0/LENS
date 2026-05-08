@@ -1,14 +1,17 @@
 import pandas as pd
 
 from services.excel_reader import read_excel
+from services.stock_code import normalize_series
 
 
 def parse_inquiry(file_bytes: bytes) -> pd.DataFrame:
-    """대여문의종목 파일: 종목코드, 종목명, 최대수량, 요율."""
+    """대여문의종목 파일: 종목코드, 종목명, 최대수량, 요율.
+    종목코드는 사용자가 6자리/'A'접두/ISIN 어느 형식으로든 입력 가능 — 정규화로 통일.
+    """
     df = read_excel(file_bytes)
     df = df.dropna(subset=[df.columns[0]])
     df.columns = ["stock_code", "stock_name", "max_qty", "rate"]
-    df["stock_code"] = df["stock_code"].astype(str).str.zfill(6)
+    df["stock_code"] = normalize_series(df["stock_code"])
     df["max_qty"] = pd.to_numeric(df["max_qty"], errors="coerce").fillna(0).astype(int)
     df["rate"] = pd.to_numeric(df["rate"], errors="coerce").fillna(0)
     return df
@@ -27,13 +30,7 @@ def parse_holdings(file_bytes: bytes) -> pd.DataFrame:
         "collateral_amount", "prev_close",
     ]
 
-    # 종목코드 정규화: A005930 → 005930
-    df["stock_code"] = (
-        df["stock_code_raw"]
-        .astype(str)
-        .str.replace(r"^A", "", regex=True)
-        .str.zfill(6)
-    )
+    df["stock_code"] = normalize_series(df["stock_code_raw"])
     df["fund_code"] = df["fund_code"].astype(str).str.zfill(6)
     df["account_code"] = df["account_code"].astype(str).str.strip().str.zfill(3)
 
@@ -58,17 +55,14 @@ def parse_restricted_funds(file_bytes: bytes) -> list[str]:
 
 
 def parse_repayments(file_bytes: bytes) -> pd.DataFrame:
-    """상환예정내역 파일: 종목코드(6자리), 대차수량."""
+    """상환예정내역 파일: 종목코드(6자리), 대차수량.
+    D열은 ISIN(KR7XXXXXX_C) 또는 6자리/'A'접두 — 정규화로 통일.
+    """
     df = read_excel(file_bytes)
     df = df.dropna(subset=[df.columns[3]])  # D열 종목코드 기준
 
     result = pd.DataFrame()
-    # D열(index 3): ISIN KR7005930003 → [3:9] = 005930
-    result["stock_code"] = (
-        df.iloc[:, 3]
-        .astype(str)
-        .str[3:9]
-    )
+    result["stock_code"] = normalize_series(df.iloc[:, 3])
     # J열(index 9): 대차수량
     result["repay_qty"] = pd.to_numeric(df.iloc[:, 9], errors="coerce").fillna(0).astype(int)
 

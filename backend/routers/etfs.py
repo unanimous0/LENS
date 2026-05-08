@@ -23,10 +23,30 @@ ETF_FILE = DATA_DIR / "etf_info.xlsx"
 
 CASH_CODE = "000000"  # A000000 = 원화현금 (PDF 시트 특수 행)
 
+# 자체 NAV/fNAV 산출 불가 ETF 키워드 (종목명 기준).
+# 레버리지/인버스: PDF에 지수선물·스왑이 들어가 일중 평가 불가 (전일정산가 필요 또는 PDF 자체가 빈 껍데기).
+# 채권/혼합/통화/원자재/부동산 그룹은 별도로 그룹 prefix로 차단.
+_NON_ARBITRABLE_NAME_KEYWORDS = ("레버리지", "인버스", "2X", "2x", "3X", "3x", "선물")
+
+
+def _is_arbitrable(group: Optional[str], name: Optional[str]) -> bool:
+    """ETF가 'PDF 현물 바스켓 vs 개별주식선물' 차익 거래 대상인지.
+    False면 fNAV/실집행/차익BP 컬럼 의미 없음 → 프론트에서 흐림 처리.
+    """
+    g = (group or "").strip()
+    n = (name or "")
+    # 그룹이 비어있거나 주식 계열이 아니면 차익 불가 (채권/혼합/통화/원자재/부동산/기타).
+    if not g.startswith("주식-"):
+        return False
+    # 주식 그룹 안에 섞여 있는 레버리지/인버스/2X.
+    if any(k in n for k in _NON_ARBITRABLE_NAME_KEYWORDS):
+        return False
+    return True
+
 
 class _Cache:
     src_mtime: float = 0.0
-    etfs: dict[str, dict] = {}        # code → {name, cu_unit, group, lp}
+    etfs: dict[str, dict] = {}        # code → {name, cu_unit, group, lp, arbitrable}
     pdfs: dict[str, dict] = {}        # code → {as_of, stocks: [...], cash}
     loaded_at: Optional[str] = None
 
@@ -85,12 +105,15 @@ def _parse_master(ws) -> dict[str, dict]:
         code = _norm_code(col(row, "코드"))
         if not code:
             continue
+        name = str(col(row, "종목명") or "").strip()
+        group = str(col(row, "그룹") or "").strip() or None
         out[code] = {
             "code": code,
-            "name": str(col(row, "종목명") or "").strip(),
+            "name": name,
             "cu_unit": col(row, "CU단위"),
-            "group": str(col(row, "그룹") or "").strip() or None,
+            "group": group,
             "lp": str(col(row, "LP1") or "").strip() or None,
+            "arbitrable": _is_arbitrable(group, name),
         }
     return out
 
@@ -170,6 +193,7 @@ async def get_all_pdfs():
             "code": code,
             "name": meta.get("name"),
             "cu_unit": meta.get("cu_unit"),
+            "arbitrable": meta.get("arbitrable", True),
             "as_of": pdf["as_of"],
             "cash": pdf["cash"],
             "stocks": pdf["stocks"],
@@ -194,6 +218,7 @@ async def get_etf_pdf(code: str):
         "code": norm,
         "name": meta.get("name"),
         "cu_unit": meta.get("cu_unit"),
+        "arbitrable": meta.get("arbitrable", True),
         "as_of": pdf["as_of"],
         "cash": pdf["cash"],
         "stocks": pdf["stocks"],

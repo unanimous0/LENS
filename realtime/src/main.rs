@@ -58,6 +58,14 @@ pub struct Stats {
     pub fetch_http_5xx: AtomicU64,
     pub fetch_tps: AtomicU64,
     pub fetch_other: AtomicU64,
+    /// t1102 응답 분류별 emit 카운터 — sweep/retry/prioritize 합산.
+    /// value>0: 거래대금 있음 = 정상 (현재가 + cum_volume).
+    /// pc_only: 거래대금 0이지만 전일종가 있음 = 미거래 종목 (price=0 emit).
+    /// 둘 다 0인 케이스는 fetch_no_data에 잡힘.
+    pub emit_value_pos: AtomicU64,
+    pub emit_pc_only: AtomicU64,
+    /// t1102 시도 총 횟수 (성공+실패+pc-only). REQ_INTERVAL 사용량 직관적 추정용.
+    pub fetch_attempts: AtomicU64,
     /// 프로세스 시작 시각.
     started: std::sync::OnceLock<Instant>,
 }
@@ -82,6 +90,12 @@ struct MasterShared {
     ordered_stock_codes: Vec<String>,
     /// 원본 순서의 근월 선물 코드.
     ordered_front_futures: Vec<String>,
+    /// ETF PDF에 등장하는 추가 현물 종목 (주식선물 없는 잡주 포함).
+    /// 시작 시 backend `/api/etfs/pdf-all`로 받아옴. WS subscribe는 안 하고
+    /// (KOSDAQ 분류 정보가 없어 S3_/K3_ 잘못 보낼 위험), t1102 백그라운드 sweep만 실행 →
+    /// 사용자가 ETF 페이지 진입 시 가격이 이미 fetched에 채워져 있어 즉시 표시.
+    /// (ordered_stock_codes와 중복 코드는 자동 제외)
+    etf_pdf_extra_codes: Vec<String>,
 }
 
 /// 앱 공유 상태. 내부 변이 필드는 전부 Arc로 감싸 Clone 비용 최소화.
@@ -110,6 +124,10 @@ pub struct AppState {
     /// 변화율·NAV가 잘못 계산됨)
     stock_prev_close: Arc<DashMap<String, f64>>,
     etf_state: Arc<DashMap<String, EtfStateBridge>>,
+    /// t1102 fetch 진행 상태 — LsApiFeed가 같은 Arc를 공유. /debug/stats에서 사이즈 노출.
+    /// 모드 전환 시 lifecycle: ls_api 진입 시 그대로 사용, mock/internal에선 비어있음.
+    pub fetched_stocks: Arc<DashMap<String, ()>>,
+    pub failed_stocks: Arc<DashMap<String, feed::ls_rest::FailedT1102>>,
 }
 
 /// Bridge에서 EtfTick의 0인 필드를 이전 캐시값으로 메우기 위한 stash.
@@ -193,6 +211,12 @@ async fn main() {
     let auto_spread_codes = load_auto_spread_codes(spread_days);
     info!("Auto-spread: {} codes (days_left <= {})", auto_spread_codes.len(),
         if spread_days == i64::MAX { "∞".to_string() } else { spread_days.to_string() });
+
+    // ETF PDF extra 종목 — backend가 미가동이면 빈 Vec, 그 외엔 ETF + PDF stocks union의
+    // master 미포함 코드만 추출해서 백그라운드 t1102 sweep 대상에 추가.
+    let already_in_master: HashSet<String> = lm.stock_codes.clone();
+    let etf_pdf_extra_codes = load_etf_pdf_extra_codes(&already_in_master).await;
+
     let shared = Arc::new(MasterShared {
         master_names: lm.names,
         master_stock_codes: lm.stock_codes,
@@ -201,17 +225,22 @@ async fn main() {
         auto_spread_codes,
         ordered_stock_codes: lm.ordered_stocks,
         ordered_front_futures: lm.ordered_front_futures,
+        etf_pdf_extra_codes,
     });
 
     let stats = Arc::new(Stats::default());
     let _ = stats.started.set(Instant::now());
     let feed_last_data_us = Arc::new(AtomicU64::new(now_us()));
 
+    // t1102 진행 상태 — AppState와 LsApiFeed가 같은 Arc 공유 → /debug/stats에서 사이즈 노출.
+    let fetched_stocks: Arc<DashMap<String, ()>> = Arc::new(DashMap::new());
+    let failed_stocks: Arc<DashMap<String, feed::ls_rest::FailedT1102>> = Arc::new(DashMap::new());
+
     // 초기 모드
     let initial_mode = std::env::var("FEED_MODE").unwrap_or_else(|_| "mock".to_string());
     info!("Initial feed mode: {initial_mode}");
     let (initial_handle, initial_sub_tx) =
-        spawn_feed(&initial_mode, tx.clone(), &shared, &stats, &feed_last_data_us).expect("Failed to spawn initial feed");
+        spawn_feed(&initial_mode, tx.clone(), &shared, &stats, &feed_last_data_us, &fetched_stocks, &failed_stocks).expect("Failed to spawn initial feed");
 
     // mpsc → broadcast 브릿지.
     // 타입별로 cache key를 만들어 send_cached로 저장하면 재접속 클라이언트가 snapshot 복원.
@@ -342,6 +371,8 @@ async fn main() {
         last_mode_change: Arc::new(StdRwLock::new(Instant::now())),
         stock_prev_close: stock_prev_close.clone(),
         etf_state: etf_state.clone(),
+        fetched_stocks: fetched_stocks.clone(),
+        failed_stocks: failed_stocks.clone(),
     };
 
     // 스냅샷 캐시 stale watcher.
@@ -429,12 +460,15 @@ async fn main() {
 
 /// 지정된 모드로 feed를 spawn. 공유 tx는 broadcaster 경로 유지용.
 /// 새 (sub_tx, sub_rx) 페어를 생성해서 feed에 넘기고 sub_tx를 반환.
+/// fetched/failed는 AppState 소유 — ls_api 모드일 때만 채워지고 mock/internal에선 unused.
 fn spawn_feed(
     mode: &str,
     tx: mpsc::Sender<WsMessage>,
     shared: &Arc<MasterShared>,
     stats: &Arc<Stats>,
     feed_last_data_us: &Arc<AtomicU64>,
+    fetched_stocks: &Arc<DashMap<String, ()>>,
+    failed_stocks: &Arc<DashMap<String, feed::ls_rest::FailedT1102>>,
 ) -> Result<(FeedHandle, mpsc::UnboundedSender<SubCommand>), String> {
     let cancel = CancellationToken::new();
     let (sub_tx, sub_rx) = mpsc::unbounded_channel::<SubCommand>();
@@ -486,6 +520,9 @@ fn spawn_feed(
                 shared.kosdaq_codes.clone(),
                 stats.clone(),
                 feed_last_data_us.clone(),
+                fetched_stocks.clone(),
+                failed_stocks.clone(),
+                shared.etf_pdf_extra_codes.clone(),
             );
             tokio::spawn(async move { feed.run(tx, sub_rx, cancel_c).await })
         }
@@ -579,9 +616,14 @@ async fn set_mode(
         state.feed_last_data_us.store(now_us(), Ordering::Relaxed);
     }
 
-    // 새 feed 먼저 spawn 시도 (실패 시 기존 feed 유지)
-    let (new_handle, new_sub_tx) = spawn_feed(&mode, state.tx.clone(), &state.shared, &state.stats, &state.feed_last_data_us)
-        .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    // 새 feed 먼저 spawn 시도 (실패 시 기존 feed 유지).
+    // 모드 전환 시 fetched/failed는 비움 — 데이터 의미가 모드별로 다름 (mock 종목 등이 섞이지 않게).
+    state.fetched_stocks.clear();
+    state.failed_stocks.clear();
+    let (new_handle, new_sub_tx) = spawn_feed(
+        &mode, state.tx.clone(), &state.shared, &state.stats, &state.feed_last_data_us,
+        &state.fetched_stocks, &state.failed_stocks,
+    ).map_err(|e| (StatusCode::BAD_REQUEST, e))?;
 
     // 성공했으니 기존 feed 교체
     let mut handle_guard = state.feed_handle.lock().await;
@@ -731,6 +773,81 @@ fn load_futures_master() -> LoadedMaster {
     }
 
     m
+}
+
+/// 백엔드 `/api/etfs/pdf-all`에서 ETF + PDF stocks 코드 union 추출 → 주식선물 마스터 외의
+/// 종목만 반환 (= 잡주). 시작 시 LsApiFeed가 백그라운드 t1102 sweep 대상에 추가하면
+/// 사용자가 ETF 페이지 진입 시 가격이 이미 채워져 있어 즉시 표시.
+///
+/// backend 미가동 / 응답 실패 시 빈 Vec 반환 (graceful degradation — fixed 마스터 250개로 폴백).
+/// 코드 형식 정규화: 'CASH' / 9자리 선물코드(KA*, KAM*) 제외, 6자리 영숫자만.
+async fn load_etf_pdf_extra_codes(already_in_master: &HashSet<String>) -> Vec<String> {
+    let url = std::env::var("BACKEND_URL")
+        .unwrap_or_else(|_| "http://localhost:8100".to_string());
+    let endpoint = format!("{url}/api/etfs/pdf-all");
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .expect("build reqwest client");
+
+    let resp = match client.get(&endpoint).send().await {
+        Ok(r) => r,
+        Err(e) => {
+            warn!("ETF PDF master fetch skipped — backend unreachable ({e}). 마스터 fallback.");
+            return Vec::new();
+        }
+    };
+    if !resp.status().is_success() {
+        warn!("ETF PDF master fetch failed: status={} → fallback", resp.status());
+        return Vec::new();
+    }
+    let body: serde_json::Value = match resp.json().await {
+        Ok(v) => v,
+        Err(e) => {
+            warn!("ETF PDF master JSON parse failed: {e} → fallback");
+            return Vec::new();
+        }
+    };
+
+    let mut union: HashSet<String> = HashSet::new();
+    let mut etf_count = 0usize;
+    let mut stock_count = 0usize;
+    if let Some(items) = body.get("items").and_then(|v| v.as_object()) {
+        for (etf_code, etf_obj) in items {
+            // ETF 자체 코드 (6자리 영숫자만 통과)
+            if is_six_alnum(etf_code) {
+                union.insert(etf_code.clone());
+                etf_count += 1;
+            }
+            if let Some(stocks) = etf_obj.get("stocks").and_then(|v| v.as_array()) {
+                for s in stocks {
+                    if let Some(c) = s.get("code").and_then(|v| v.as_str()) {
+                        if is_six_alnum(c) {
+                            union.insert(c.to_string());
+                            stock_count += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 마스터에 이미 있는 종목 제외 — t1102 sweep 중복 회피.
+    let extra: Vec<String> = union.into_iter()
+        .filter(|c| !already_in_master.contains(c))
+        .collect();
+
+    info!(
+        "ETF PDF master loaded: {etf_count} ETFs, {stock_count} PDF rows → {} extra codes (마스터 미포함)",
+        extra.len()
+    );
+    extra
+}
+
+/// 6자리 ASCII 영숫자 코드인지 (KRX 종목 표준 형식). 'CASH'/9자리 선물코드 등 배제.
+fn is_six_alnum(s: &str) -> bool {
+    s.len() == 6 && s.chars().all(|c| c.is_ascii_alphanumeric())
 }
 
 #[derive(Deserialize)]
@@ -953,6 +1070,20 @@ async fn debug_stats(State(state): State<AppState>) -> Json<serde_json::Value> {
         _ => "unknown",
     };
 
+    // t1102 진행 상태 + emit 분류 — "왜 클릭 전엔 못 받지?" 디버깅용.
+    // ordered_total: 마스터 현물 코드 수.
+    // fetched_size: value>0로 emit되어 sweep skip 대상 (= 정상 가격 보유).
+    // failed_size: 실패/pc_only 등 retry worker 처리 대상 (= 가격 0 또는 미수신).
+    // emit_value_pos vs emit_pc_only: pc_only 비율이 높으면 거래량 적은 잡주가 많은 상태 (정상).
+    let ordered_total = state.shared.ordered_stock_codes.len();
+    let fetched_size = state.fetched_stocks.len();
+    let failed_size = state.failed_stocks.len();
+    // failed 분류별 카운트 — pc_only / no_data / http_5xx / tps / other.
+    let mut failed_by_kind: std::collections::HashMap<&'static str, usize> = std::collections::HashMap::new();
+    for entry in state.failed_stocks.iter() {
+        *failed_by_kind.entry(entry.error_kind).or_insert(0) += 1;
+    }
+
     Json(serde_json::json!({
         "uptime_sec": uptime_s,
         "ticks_total": ticks,
@@ -981,6 +1112,15 @@ async fn debug_stats(State(state): State<AppState>) -> Json<serde_json::Value> {
             "http_5xx": s.fetch_http_5xx.load(Ordering::Relaxed),
             "tps": s.fetch_tps.load(Ordering::Relaxed),
             "other": s.fetch_other.load(Ordering::Relaxed),
+        },
+        "t1102_progress": {
+            "ordered_total": ordered_total,
+            "fetched_size": fetched_size,
+            "failed_size": failed_size,
+            "failed_by_kind": failed_by_kind,
+            "fetch_attempts": s.fetch_attempts.load(Ordering::Relaxed),
+            "emit_value_pos": s.emit_value_pos.load(Ordering::Relaxed),
+            "emit_pc_only": s.emit_pc_only.load(Ordering::Relaxed),
         },
     }))
 }

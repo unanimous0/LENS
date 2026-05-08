@@ -2,6 +2,7 @@
 import pandas as pd
 
 from services.excel_reader import read_excel
+from services.stock_code import normalize_series
 
 
 def parse_esafe_for_borrowing(file_bytes: bytes, counterparty: str = "대여자") -> pd.DataFrame:
@@ -34,7 +35,7 @@ def parse_esafe_for_borrowing(file_bytes: bytes, counterparty: str = "대여자"
     df["대차수량"] = pd.to_numeric(df["대차수량"], errors="coerce").fillna(0).astype(int)
     df = df[df["대차수량"] > 0].copy()
 
-    df["단축코드"] = df["단축코드"].astype(str).str.zfill(6)
+    df["단축코드"] = normalize_series(df["단축코드"])
     df["수수료율(%)"] = pd.to_numeric(df["수수료율(%)"], errors="coerce").fillna(0)
     df["대차가액"] = pd.to_numeric(df["대차가액"], errors="coerce").fillna(0).astype(int)
     df["체결번호"] = pd.to_numeric(df["체결번호"], errors="coerce").fillna(0).astype(int)

@@ -95,6 +95,10 @@ pub struct LsApiFeed {
     /// t1102 실패 코드 + 마지막 에러. 백그라운드 worker가 60초마다 재시도해서
     /// LS 측 일시 장애로 빠뜨린 잡주들을 점진적으로 보충.
     pub failed_stocks: Arc<DashMap<String, super::ls_rest::FailedT1102>>,
+    /// ETF PDF에서 발견된 master 미포함 종목 — 시작 시 백그라운드 t1102 sweep만 실행.
+    /// WS subscribe는 안 함 (KOSDAQ 분류 없어 S3_/K3_ 잘못 보낼 위험). 사용자가 ETF
+    /// 페이지 진입 시 이미 fetched에 가격이 있어 SubscribeStocks 핸들러가 skip.
+    pub etf_pdf_extra_codes: Vec<String>,
 }
 
 impl LsApiFeed {
@@ -108,6 +112,10 @@ impl LsApiFeed {
         kosdaq_codes: HashSet<String>,
         stats: Arc<Stats>,
         last_data_us: Arc<AtomicU64>,
+        // AppState와 동일 Arc 공유 — /debug/stats가 fetched/failed 사이즈를 노출.
+        fetched_stocks: Arc<DashMap<String, ()>>,
+        failed_stocks: Arc<DashMap<String, super::ls_rest::FailedT1102>>,
+        etf_pdf_extra_codes: Vec<String>,
     ) -> Self {
         Self {
             app_key, app_secret, subscriptions,
@@ -118,8 +126,9 @@ impl LsApiFeed {
             stats,
             last_data_us,
             last_subscribe_us: Arc::new(AtomicU64::new(now_us())),
-            fetched_stocks: Arc::new(DashMap::new()),
-            failed_stocks: Arc::new(DashMap::new()),
+            fetched_stocks,
+            failed_stocks,
+            etf_pdf_extra_codes,
         }
     }
 }
@@ -156,6 +165,41 @@ impl MarketFeed for LsApiFeed {
                 super::ls_rest::fetch_initial_prices(
                     &ak, &as_, &all_subs, &n, &sc, &f2s, &tx2, &cancel2, &stats, Some(&fetched), Some(&failed),
                 ).await;
+            });
+        }
+
+        // ETF PDF 잡주 백그라운드 t1102 sweep — fixed 마스터(주식선물 발행 종목)에 없는
+        // ETF PDF 종목들을 추가로 fetch. 시작 시 1회. 실패는 failed_stocks 통해 retry worker가 보완.
+        // 같은 fetched/failed Arc 사용 → SubscribeStocks 핸들러가 사용자 진입 시 skip(이미 캐시됨).
+        // fixed sweep과 약간 시간차 두고 시작 — 토큰 경합 + LS abuse 신호 회피.
+        if !self.etf_pdf_extra_codes.is_empty() {
+            let extra = self.etf_pdf_extra_codes.clone();
+            let ak = self.app_key.clone();
+            let as_ = self.app_secret.clone();
+            let n = self.names.clone();
+            let tx2 = tx.clone();
+            let cancel2 = cancel.clone();
+            let stats = self.stats.clone();
+            let fetched = self.fetched_stocks.clone();
+            let failed = self.failed_stocks.clone();
+            tokio::spawn(async move {
+                // fixed sweep이 어느 정도 진행될 때까지 대기 (5초). 시작 시 토큰 fetch 경합 회피.
+                tokio::select! {
+                    _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {}
+                    _ = cancel2.cancelled() => return,
+                }
+                if !crate::phase::wait_until_active(&cancel2, "etf-pdf-sweep").await { return; }
+                let token = match super::ls_rest::get_or_fetch_token(&ak, &as_).await {
+                    Ok(t) => t,
+                    Err(e) => { tracing::warn!("ETF PDF sweep: token fail: {e}"); return; }
+                };
+                tracing::info!("ETF PDF sweep starting: {} extra codes", extra.len());
+                let names_h: HashMap<String, String> = (*n).clone();
+                super::ls_rest::fetch_stocks_initial(
+                    &token, &extra, &names_h, &tx2, &cancel2, &stats,
+                    Some(&fetched), Some(&failed),
+                ).await;
+                tracing::info!("ETF PDF sweep done");
             });
         }
 

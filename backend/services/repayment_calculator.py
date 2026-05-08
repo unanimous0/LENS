@@ -1,6 +1,8 @@
 """상환가능확인 계산 로직 — 오피스 담보가능수량과 예탁원 대차내역 매칭"""
 import pandas as pd
 
+from services.stock_code import normalize_stock_code
+
 
 def deduct_repay_schedule(office: pd.DataFrame, repay: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
     """상환예정 수량을 오피스 담보가능수량에서 차감. 052 우선 → 담보가능수량 큰 순.
@@ -77,7 +79,9 @@ def apply_filters(office: pd.DataFrame, esafe: pd.DataFrame, filters: dict) -> t
             mask = mask | o["펀드코드"].str[-3:].isin(suffixes)
         o = o[~mask]
     if filters["exclude_office_stock_code"]:
-        codes = [c.strip() for c in filters["exclude_office_stock_code"].split(",") if c.strip()]
+        # 사용자가 6자리/'A'접두 어느 형식으로 입력해도 정규화해서 매칭.
+        codes = [normalize_stock_code(c) for c in filters["exclude_office_stock_code"].split(",")]
+        codes = [c for c in codes if c]
         if codes:
             o = o[~o["종목번호"].isin(codes)]
     if filters["exclude_office_stock_name"]:
@@ -100,7 +104,8 @@ def apply_filters(office: pd.DataFrame, esafe: pd.DataFrame, filters: dict) -> t
         date_strs = set(filters["exclude_dates"])
         e = e[~e["체결일"].astype(str).str.replace(".0", "", regex=False).isin(date_strs)]
     if filters["exclude_esafe_stock_code"]:
-        codes = [c.strip() for c in filters["exclude_esafe_stock_code"].split(",") if c.strip()]
+        codes = [normalize_stock_code(c) for c in filters["exclude_esafe_stock_code"].split(",")]
+        codes = [c for c in codes if c]
         if codes:
             e = e[~e["단축코드"].isin(codes)]
     if filters["exclude_esafe_stock_name"]:
