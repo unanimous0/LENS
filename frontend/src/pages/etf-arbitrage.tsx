@@ -1026,9 +1026,9 @@ export function EtfArbitragePage() {
       <div ref={tableContainerRef} className="mt-5 px-2 bg-black">
         {error && <div className="p-3 text-down text-sm">로드 실패: {error}</div>}
         {!error && (!master || !pdfs) && <div className="p-3 text-t3 text-sm">로드 중…</div>}
+        {/* width 100% + minWidth 1564 → 컨테이너 좁으면 가로 스크롤, 넓으면 추이 컬럼이 남는 공간 흡수.
+            추이 col만 width 미지정 (tableLayout: fixed에서 명시 안 한 col은 남는 공간 차지). */}
         {master && pdfs && (
-          {/* width 100% + minWidth 1404 → 컨테이너 좁으면 가로 스크롤, 넓으면 추이 컬럼이 남는 공간 흡수.
-              추이 col만 width 미지정 (tableLayout: fixed에서 명시 안 한 col은 남는 공간 차지). */}
           <table className="border-collapse" style={{ tableLayout: 'fixed', width: '100%', minWidth: '1564px' }}>
             <colgroup>
               <col style={{ width: 180 }} />{/* 종목 */}
