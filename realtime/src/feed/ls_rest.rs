@@ -242,6 +242,13 @@ async fn fetch_futures_initial(
 /// `fetched`가 Some이면 이미 fetch 성공한 코드는 건너뜀 (페이지 재진입 시 11분 풀 fetch 회피).
 /// 성공 시 fetched에 등록되어 다음 호출에선 같은 코드 스킵.
 /// `failed`가 Some이면 실패 코드를 기록 (백그라운드 retry worker가 처리). 성공 시 제거.
+/// 코드가 t1102 호출 대상으로 유효한지 — KRX 종목 표준 6자리 영숫자.
+/// 'CASH'(4자리), 'KA0166000'(9자리 지수선물), 'KRZF14599WG4'(12자리 워런트 ISIN),
+/// 8자리 주식선물(A...) 등은 t1102 대상이 아니므로 호출 단계에서 제외.
+fn is_t1102_target(code: &str) -> bool {
+    code.len() == 6 && code.chars().all(|c| c.is_ascii_alphanumeric())
+}
+
 pub async fn fetch_stocks_initial(
     token: &str,
     codes: &[String],
@@ -255,6 +262,7 @@ pub async fn fetch_stocks_initial(
     let client = reqwest::Client::new();
     let mut count = 0;
     let mut skipped = 0;
+    let mut invalid = 0;
     let mut fail_no_data = 0;
     let mut fail_http_5xx = 0;
     let mut fail_tps = 0;
@@ -264,6 +272,14 @@ pub async fn fetch_stocks_initial(
 
     for code in codes {
         if cancel.is_cancelled() { return count; }
+
+        // 잡코드 가드 — frontend SubscribeStocks가 PDF의 'CASH'/지수선물/ISIN 등을 무차별 보내도
+        // 여기서 차단해 LS 5xx + retry 무한루프 방지. failed에 들어 있으면 청소.
+        if !is_t1102_target(code) {
+            invalid += 1;
+            if let Some(fmap) = failed { fmap.remove(code); }
+            continue;
+        }
 
         // 이미 fetch 성공(value>0)한 코드는 건너뜀.
         // pc-only로만 emit된 코드는 fetched에 안 들어가므로 자동 재시도 대상 — 거래 발생 시 가격 채움.
@@ -365,6 +381,9 @@ pub async fn fetch_stocks_initial(
             }
         }
         tokio::time::sleep(REQ_INTERVAL).await;
+    }
+    if invalid > 0 {
+        warn!("t1102 invalid codes skipped: {invalid} (CASH/지수선물/ISIN 등 — 호출 대상 아님)");
     }
     let failed_total = fail_no_data + fail_http_5xx + fail_tps + fail_other;
     if failed_total > 0 {
