@@ -1026,29 +1026,29 @@ export function EtfArbitragePage() {
       <div ref={tableContainerRef} className="mt-5 px-2 bg-black">
         {error && <div className="p-3 text-down text-sm">로드 실패: {error}</div>}
         {!error && (!master || !pdfs) && <div className="p-3 text-t3 text-sm">로드 중…</div>}
-        {/* width 100% + minWidth 1564 → 컨테이너 좁으면 가로 스크롤, 넓으면 추이 컬럼이 남는 공간 흡수.
-            추이 col만 width 미지정 (tableLayout: fixed에서 명시 안 한 col은 남는 공간 차지). */}
+        {/* col width는 헤더 + typical 콘텐츠 길이 기반 비율. tableLayout fixed + width 100%이면
+            컨테이너 폭에 맞춰 모든 컬럼이 명시 비율대로 비례 확장. 합 1844px. */}
         {master && pdfs && (
-          <table className="border-collapse" style={{ tableLayout: 'fixed', width: '100%', minWidth: '1564px' }}>
+          <table className="border-collapse" style={{ tableLayout: 'fixed', width: '100%', minWidth: '1844px' }}>
             <colgroup>
-              <col style={{ width: 180 }} />{/* 종목 */}
-              <col style={{ width: 96 }} />{/* 거래대금 */}
-              <col style={{ width: 78 }} />{/* 현재가 */}
-              <col style={{ width: 78 }} />{/* iNAV */}
-              <col style={{ width: 78 }} />{/* rNAV */}
-              <col style={{ width: 78 }} />{/* fNAV */}
-              <col style={{ width: 76 }} />{/* 현재괴리 */}
-              <col style={{ width: 76 }} />{/* 매도괴리 */}
-              <col style={{ width: 76 }} />{/* 매수괴리 */}
-              <col style={{ width: 80 }} />{/* 매수차BP */}
-              <col style={{ width: 80 }} />{/* 매도차BP */}
-              <col style={{ width: 76 }} />{/* 차익bp */}
-              <col style={{ width: 100 }} />{/* 실집행차익(원) */}
-              <col style={{ width: 80 }} />{/* 실집행BP */}
-              <col style={{ width: 56 }} />{/* 배당수 */}
-              <col style={{ width: 60 }} />{/* 선물비중 */}
-              <col style={{ width: 56 }} />{/* 선물수 */}
-              <col />{/* 추이 — 남는 공간 흡수 (min 160px guarantee는 minWidth로) */}
+              <col style={{ width: 220 }} />{/* 종목 — 긴 ETF명 (예: 코리아배당다우존스위클리커버드콜) */}
+              <col style={{ width: 130 }} />{/* 거래대금 — '1,234,567,890원' 14자 */}
+              <col style={{ width: 86 }} />{/* 현재가 */}
+              <col style={{ width: 88 }} />{/* iNAV — 소수점 둘째자리 */}
+              <col style={{ width: 88 }} />{/* rNAV */}
+              <col style={{ width: 88 }} />{/* fNAV */}
+              <col style={{ width: 80 }} />{/* 현재괴리 '-12.34bp' */}
+              <col style={{ width: 80 }} />{/* 매도괴리 */}
+              <col style={{ width: 80 }} />{/* 매수괴리 */}
+              <col style={{ width: 88 }} />{/* 매수차BP */}
+              <col style={{ width: 88 }} />{/* 매도차BP */}
+              <col style={{ width: 80 }} />{/* 차익bp */}
+              <col style={{ width: 140 }} />{/* 실집행차익(원) — 큰 원금액 */}
+              <col style={{ width: 88 }} />{/* 실집행BP */}
+              <col style={{ width: 64 }} />{/* 배당수 */}
+              <col style={{ width: 72 }} />{/* 선물비중 */}
+              <col style={{ width: 64 }} />{/* 선물수 */}
+              <col style={{ width: 220 }} />{/* 추이 — sparkline 150px + 좌우 여유 */}
             </colgroup>
             <thead className="sticky top-0 z-20">
               <tr className="text-[12px] text-[#8b8b8e] bg-black">
