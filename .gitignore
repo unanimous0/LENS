@@ -43,3 +43,4 @@ internal_sending/
 .venv-scraper/
 docs/ls_api_guide/_raw/
 docs/ls_api_guide/_recon_full.html
+.claude/
