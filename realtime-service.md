@@ -234,8 +234,8 @@ WebSocket 실시간 구독 (전체 레퍼런스: [ls-api.md](ls-api.md)):
 | 주식 체결 (KOSDAQ) | K3_ | `wss://.../websocket/stock` |
 | 주식선물 체결 | JC0 | `wss://.../websocket/futureoption` |
 | 주식선물 호가 | JH0 | `wss://.../websocket/futureoption` |
-| KOSPI200 선물 체결 | FC0 | `wss://.../websocket/futureoption` |
-| KOSPI200 선물 호가 | FH0 | `wss://.../websocket/futureoption` |
+| KOSPI200 선물 체결 | **FC9** (구 FC0, 5/28 deprecate) | `wss://.../websocket/futureoption` |
+| KOSPI200 선물 호가 | **FH9** (구 FH0, 5/28 deprecate) | `wss://.../websocket/futureoption` |
 | ETF NAV | I5_ | `wss://.../websocket/stock` |
 | 지수 | IJ_ | `wss://.../websocket/indtp` |
 
@@ -675,7 +675,7 @@ i2 = 기초자산의 매도호가로 계산된 이론가
 | **호가 레벨** | N레벨 (가변) + LP잔량 | 5~10호가, LP잔량 없음 |
 | **iNAV** | Index 메시지 (fl=1) | I5_ TR |
 | **rNAV** | Index 메시지 (fl=10,18) — 서버 제공 | 없음 (직접 계산 필요) |
-| **선물이론가** | Index 메시지 (fl=12,20) — 서버 제공 | FC0의 `theoryprice` (지수선물만) |
+| **선물이론가** | Index 메시지 (fl=12,20) — 서버 제공 | FC9의 `theoryprice` (구 FC0, 지수선물만) |
 | **누적체결량** | Trade의 `cs` 필드 | 별도 필드 |
 | **매수/매도 구분** | Trade의 `fl` 비트마스크 | `cgubun` 필드 등 |
 | **인증** | 없음 (사내망) | OAuth2 토큰 (매일 07:00 만료) |
