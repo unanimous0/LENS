@@ -314,6 +314,8 @@ pub async fn fetch_stocks_initial(
                         high: if h > 0.0 { Some(h) } else { None },
                         low: if l > 0.0 { Some(l) } else { None },
                         prev_close: if pc > 0.0 { Some(pc) } else { None },
+                        last_trade_volume: None,  // t1102 스냅샷 — 체결 단위 정보 X
+                        trade_side: None,
                     })).await;
                     if let Some(set) = fetched { set.insert(code.clone(), ()); }
                     if let Some(fmap) = failed { fmap.remove(code); }
@@ -331,6 +333,8 @@ pub async fn fetch_stocks_initial(
                         timestamp: now, is_initial: true,
                         high: None, low: None,
                         prev_close: Some(pc),
+                        last_trade_volume: None,
+                        trade_side: None,
                     })).await;
                     if let Some(fmap) = failed {
                         let prev = fmap.get(code).map(|e| e.attempt_count).unwrap_or(0);

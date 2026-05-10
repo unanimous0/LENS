@@ -15,6 +15,13 @@ pub struct EtfTick {
     pub spread_ask_bp: f64,
     pub volume: u64,
     pub timestamp: String,
+    /// 그 체결의 단일 수량 (LS S3_/K3_의 `cvolume`). 누적 volume과 별개.
+    /// 실시간 체결 stream에서만 채워짐. 초기 fetch / nav-only(I5_) 메시지는 None.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_trade_volume: Option<u64>,
+    /// 그 체결의 매수/매도 구분 (+1 매수 / -1 매도). LS S3_/K3_의 `cgubun`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trade_side: Option<i8>,
 }
 
 /// 주식 틱 (일반 주식 체결)
@@ -39,6 +46,14 @@ pub struct StockTick {
     /// 전일 종가 (변화율 계산용). 초기값에서만 발행하면 충분.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prev_close: Option<f64>,
+    /// 그 체결의 단일 수량 (LS S3_/K3_의 `cvolume`). 누적 cum_volume과 별개.
+    /// 실시간 체결 stream에서만 채워짐. t1102/초기 fetch는 None.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_trade_volume: Option<u64>,
+    /// 그 체결의 매수/매도 구분 (+1 매수 / -1 매도). LS S3_/K3_의 `cgubun`.
+    /// t1102/초기 fetch / 모르는 케이스는 None.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trade_side: Option<i8>,
 }
 
 /// 선물 틱

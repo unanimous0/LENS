@@ -52,7 +52,19 @@ export function useWebSocket() {
       // 미등록 타입은 warn 1회 노출 후 드롭 — 침묵 드롭 회피 (CLAUDE.md "실시간 페이지" 룰 참조).
       const warnedTypes = new Set<string>()
       const dispatchOne = (m: any) => {
-        if (m.type === 'etf_tick') etfBuf[m.data.code] = m.data
+        if (m.type === 'etf_tick') {
+          etfBuf[m.data.code] = m.data
+          // 체결 단위 정보(cgubun + cvolume)가 있으면 즉시 trades에 push.
+          // batch buf는 같은 code가 overwrite라 체결 시퀀스 보존이 안 됨 — 별도 store 직접 호출.
+          if (m.data.trade_side != null && m.data.last_trade_volume != null && m.data.price > 0) {
+            useMarketStore.getState().pushEtfTrade(m.data.code, {
+              t: Date.now(),
+              price: m.data.price,
+              volume: m.data.last_trade_volume,
+              side: m.data.trade_side,
+            })
+          }
+        }
         else if (m.type === 'stock_tick') stockBuf[m.data.code] = m.data
         else if (m.type === 'futures_tick') futuresBuf[m.data.code] = m.data
         else if (m.type === 'orderbook_tick') obBuf[m.data.code] = m.data

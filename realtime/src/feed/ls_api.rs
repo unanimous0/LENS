@@ -1060,6 +1060,13 @@ async fn handle_tick(
             let price = pf(&body["price"]);
             let volume = pu(&body["volume"]);
             let value = pu(&body["value"]);
+            // cvolume = 그 체결의 단일 수량, cgubun = 매수('+') / 매도('-') 구분
+            let cvolume = pu(&body["cvolume"]);
+            let trade_side = match body["cgubun"].as_str() {
+                Some("+") => Some(1i8),
+                Some("-") => Some(-1i8),
+                _ => None,
+            };
 
             if stock_codes.contains(tr_key) {
                 // S3_/K3_는 body에 high/low 포함 (당일 고가/저가). 누락 시 None.
@@ -1072,13 +1079,17 @@ async fn handle_tick(
                     high: if h > 0.0 { Some(h) } else { None },
                     low: if l > 0.0 { Some(l) } else { None },
                     prev_close: None,
+                    last_trade_volume: if cvolume > 0 { Some(cvolume) } else { None },
+                    trade_side,
                 })).await;
             } else {
-                // ETF S3_ 체결 → price/volume만. nav는 I5_ 스트림이 채움 (bridge merge로 보존).
+                // ETF S3_ 체결 → price/volume + cvolume/trade_side. nav는 I5_ 스트림이 채움 (bridge merge로 보존).
                 let _ = tx.send(WsMessage::EtfTick(EtfTick {
                     code: tr_key.into(), name: name.into(),
                     price, nav: 0.0, spread_bp: 0.0,
                     spread_bid_bp: 0.0, spread_ask_bp: 0.0, volume, timestamp: now,
+                    last_trade_volume: if cvolume > 0 { Some(cvolume) } else { None },
+                    trade_side,
                 })).await;
             }
         }
@@ -1142,6 +1153,8 @@ async fn handle_tick(
                     spread_bp: 0.0, spread_bid_bp: 0.0, spread_ask_bp: 0.0,
                     volume: 0,
                     timestamp: now,
+                    last_trade_volume: None,  // I5_는 NAV-only stream
+                    trade_side: None,
                 })).await;
             }
         }

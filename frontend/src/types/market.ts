@@ -8,6 +8,10 @@ export interface ETFTick {
   spread_ask_bp: number
   volume: number
   timestamp: string
+  /** 그 체결의 단일 수량 (LS S3_/K3_의 cvolume). 누적 volume과 별개. 초기 fetch / I5_(NAV-only)는 미발행. */
+  last_trade_volume?: number
+  /** 매수/매도 구분 (+1 매수, -1 매도). LS cgubun. 모르는 케이스 미발행. */
+  trade_side?: 1 | -1
 }
 
 export interface StockTick {
@@ -23,6 +27,10 @@ export interface StockTick {
   low?: number
   /** 전일 종가 — 변화율 계산용. 초기값에서 한 번 발행되고 store에서 sticky로 보존. */
   prev_close?: number
+  /** 그 체결의 단일 수량 (LS S3_/K3_의 cvolume). t1102/초기 fetch는 미발행. */
+  last_trade_volume?: number
+  /** 매수/매도 구분 (+1 매수, -1 매도). */
+  trade_side?: 1 | -1
 }
 
 export interface FuturesTick {

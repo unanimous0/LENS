@@ -354,6 +354,29 @@ PDF 기준일 = `data/etf_info.xlsx`의 "날짜" 컬럼 (ETF 발행사가 산출
 
 ---
 
+## 차트 패널 — 4 grid (선택 ETF 또는 Top 자동)
+
+`grid-cols-4 h-[260px]` 가로 4분할:
+
+1. **TopBarChart**: Top 7 ETF 막대 (차익 모드별, 아래 별도 섹션)
+2. **TimeSeriesChart**: 선택 ETF의 차익bp(diffBp) 시계열 (5초 간격, signed line)
+3. **PriceNavChart**: 선택 ETF 가격 + iNAV + 괴리bp 시계열 (좌축 가격/NAV, 우축 bp)
+4. **OrderbookPanel**: 5호가 + **체결창 5행** (HTS 스타일)
+
+### OrderbookPanel — 5호가 + 체결창
+
+- grid 11 row stretch: 매도호가 5 + 구분선 4px + 체결 헤더 auto + 매수호가 5
+- 매수호가 5행의 왼쪽 빈 칸에 **최근 체결 5개 1:1 매핑** (i=0 매수1호가 옆 = 최신)
+- 체결 헤더 "체결가격 / 체결수량 / 누적수량" — 모두 가운데 정렬, 외곽 테두리 X
+- 체결가격은 매수→초록 / 매도→빨강. 수량은 매도일 때 음수 표시. 누적은 panel 표시 5개 합
+- 데이터 출처: LS S3_/K3_ stream의 `cgubun`(+/-) → trade_side, `cvolume` → 단일 체결 수량. backend StockTick/EtfTick에 `last_trade_volume`/`trade_side` 옵션 필드로 발행. frontend `marketStore.etfTrades`에 ETF당 최근 10개 누적 (`useWebSocket` dispatchOne에서 즉시 push, batch buf 우회)
+
+### PDF 펼침 행 — 사용 체크박스
+
+- `<input type="checkbox">` 18×18px. `<td>` align-middle + flex wrap으로 모든 행에서 정중앙 (각 행의 콘텐츠 height 다양해도 위치 일정)
+
+---
+
 ## TopBarChart (Top 7)
 
 차익 모드별:

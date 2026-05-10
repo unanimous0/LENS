@@ -536,6 +536,7 @@ export function EtfArbitragePage() {
   }, [])
   // history는 store가 자체 5초 interval로 push하니 직접 구독해도 부담 없음 + Sparkline은 React.memo
   const etfHistory = useMarketStore((s) => s.etfHistory)
+  const etfTrades = useMarketStore((s) => s.etfTrades)
   const pushEtfHistoryBatch = useMarketStore((s) => s.pushEtfHistoryBatch)
 
   useEffect(() => {
@@ -788,9 +789,14 @@ export function EtfArbitragePage() {
   metricsRef.current = metricsByCode
   useEffect(() => {
     const id = setInterval(() => {
-      const entries: Record<string, { diffBp: number }> = {}
+      const entries: Record<string, { diffBp: number; price: number; nav: number; priceNavBp: number }> = {}
       for (const [code, m] of Object.entries(metricsRef.current)) {
-        entries[code] = { diffBp: m.diffBp }
+        entries[code] = {
+          diffBp: m.diffBp,
+          price: m.etfPrice,
+          nav: m.nav,
+          priceNavBp: m.priceNavBp,
+        }
       }
       if (Object.keys(entries).length > 0) {
         pushEtfHistoryBatch(entries, HISTORY_MAX_POINTS)
@@ -987,12 +993,12 @@ export function EtfArbitragePage() {
         )
       })()}
 
-      {/* 차트 패널 — 좌(막대) / 중(호가) / 우(시계열) 같은 높이 */}
+      {/* 차트 패널 — 좌(막대) / 중1(차익 시계열) / 중2(가격·NAV·괴리 시계열) / 우(호가) 같은 높이 */}
       {chartsOpen && master && pdfs && (() => {
         const effectiveCode = selectedEtf ?? rows[0]?.code ?? null
         const effectiveName = effectiveCode ? master.find((e) => e.code === effectiveCode)?.name ?? '' : ''
         return (
-          <div className="grid grid-cols-3 gap-1 h-[260px]">
+          <div className="grid grid-cols-4 gap-1 h-[260px]">
             <div className="bg-black border border-white/[0.04] p-2 overflow-hidden [contain:paint]">
               <TopBarChart
                 rows={rows}
@@ -1011,11 +1017,20 @@ export function EtfArbitragePage() {
               />
             </div>
             <div className="bg-black border border-white/[0.04] p-2 overflow-hidden [contain:paint]">
+              <PriceNavChart
+                code={effectiveCode}
+                etfName={effectiveName}
+                history={effectiveCode ? etfHistory[effectiveCode] ?? [] : []}
+                isAuto={!selectedEtf}
+              />
+            </div>
+            <div className="bg-black border border-white/[0.04] p-2 overflow-hidden [contain:paint]">
               <OrderbookPanel
                 code={effectiveCode}
                 etfName={effectiveName}
                 ob={effectiveCode ? orderbookTicks[effectiveCode] : undefined}
                 price={effectiveCode ? (etfTicks[effectiveCode]?.price ?? stockTicks[effectiveCode]?.price ?? 0) : 0}
+                trades={effectiveCode ? etfTrades[effectiveCode] : undefined}
               />
             </div>
           </div>
@@ -1273,15 +1288,18 @@ const PdfRow = memo(function PdfRow({
       <td className={cn('py-1 px-2 text-right text-[11px] tabular-nums font-medium', tColor)}>{hasFut && Math.abs(T) > 0.001 ? formatBp(T) : '—'}</td>
       <td className={cn('py-1 px-2 text-right text-[11px] tabular-nums', futVol > 0 ? 'text-[#8b8b8e]' : 'text-[#5a5a5e]')}>{futVol > 0 ? futVol.toLocaleString() : '—'}</td>
       <td className={cn('py-1 px-2 text-right text-[11px] tabular-nums font-medium', contribColor)}>{isUsed && Math.abs(contribBp) > 0.001 ? formatBp(contribBp) : '—'}</td>
-      <td className="py-1 px-2 text-center">
-        <input
-          type="checkbox"
-          checked={!isExcluded && canToggle}
-          disabled={!canToggle}
-          onChange={() => onToggle(etfCode, code)}
-          className={cn('accent-accent w-3 h-3', !canToggle && 'cursor-not-allowed opacity-30')}
-          title={!hasFut ? '선물 없음' : !modeMatch ? `현재 모드(${arbModeLabel(favBuy, favSell)})와 불일치` : ''}
-        />
+      {/* 체크박스 td — flex 컨테이너로 wrap해서 행 height와 무관하게 정중앙 정렬 (input은 form 요소라 baseline 정렬이 행마다 달라지는 문제 회피) */}
+      <td className="py-1 px-2 align-middle">
+        <div className="flex items-center justify-center">
+          <input
+            type="checkbox"
+            checked={!isExcluded && canToggle}
+            disabled={!canToggle}
+            onChange={() => onToggle(etfCode, code)}
+            className={cn('accent-accent w-[18px] h-[18px] cursor-pointer block', !canToggle && 'cursor-not-allowed opacity-30')}
+            title={!hasFut ? '선물 없음' : !modeMatch ? `현재 모드(${arbModeLabel(favBuy, favSell)})와 불일치` : ''}
+          />
+        </div>
       </td>
     </tr>
   )
@@ -1482,7 +1500,7 @@ function ExpandedPanel({
 
       {/* PDF 테이블 */}
       <div className="rounded bg-[#0d0d0f] border border-white/[0.03]">
-        <table className="tabular-nums" style={{ tableLayout: 'fixed', width: '1568px' }}>
+        <table className="tabular-nums" style={{ tableLayout: 'fixed', width: '100%', minWidth: '1568px' }}>
           <colgroup>
             <col style={{ width: 80 }} />{/* 코드 */}
             <col style={{ width: 170 }} />{/* 종목명 */}
@@ -1847,8 +1865,16 @@ const Sparkline = memo(function Sparkline({ history, width = 150, height = 34 }:
   )
 })
 
-/** ETF 호가창 — 5호가만, 선택 ETF에 대한 즉시 시세 확인 용도 */
-const OrderbookPanel = memo(function OrderbookPanel({ code, etfName, ob, price }: { code: string | null; etfName: string; ob: import('@/types/market').OrderbookTick | undefined; price: number }) {
+/** ETF 호가창 — 5호가 + 최근 5체결, 선택 ETF에 대한 즉시 시세 확인 용도 */
+const OrderbookPanel = memo(function OrderbookPanel({
+  code, etfName, ob, price, trades,
+}: {
+  code: string | null;
+  etfName: string;
+  ob: import('@/types/market').OrderbookTick | undefined;
+  price: number;
+  trades?: import('@/stores/marketStore').TradeEntry[];
+}) {
   if (!code) {
     return (
       <div className="flex h-full items-center justify-center text-[11px] text-t3">
@@ -1869,48 +1895,90 @@ const OrderbookPanel = memo(function OrderbookPanel({ code, etfName, ob, price }
   // 잔량 막대 스케일 — 5호가 잔량 최댓값 기준
   const maxQty = Math.max(1, ...asks.map((l) => l.quantity), ...bids.map((l) => l.quantity))
 
+  // 최근 체결 5개 (최신순). 매도 = 음수 표시. 누적은 이번 패널 mount 후 sum.
+  const recent5 = (trades ?? []).slice(-5).reverse()
+  let runningCum = 0
+  const recentWithCum = recent5
+    .slice()
+    .reverse() // 오래된 순으로 뒤집어서 누적 계산
+    .map((t) => {
+      runningCum += t.volume
+      return { ...t, cum: runningCum }
+    })
+    .reverse() // 최신순으로 다시
+
   return (
     <div className="flex flex-col h-full text-[12px]">
       <div className="mb-1 flex items-center justify-between text-[11px] text-t3">
-        <span><span className="text-t1">{etfName}</span> 호가 5단</span>
+        <span><span className="text-t1">{etfName}</span> 호가</span>
         <span className="tabular-nums text-[10px] flex gap-2">
           <span className="text-[#bb4a65]">매도 {ob.total_ask_qty.toLocaleString()}</span>
           <span className="text-[#00b26b]">매수 {ob.total_bid_qty.toLocaleString()}</span>
         </span>
       </div>
-      {/* 호가창 본문 — 세로 가운데 정렬. 현재가에 매칭되는 호가에 흰색 ring 하이라이트. */}
-      <div className="flex-1 flex flex-col justify-center tabular-nums gap-1">
+      {/* 호가창 본문 — 세로 가운데 정렬. 현재가에 매칭되는 호가에 흰색 ring 하이라이트.
+       *  HTS 스타일: 매수호가 5행의 왼쪽(원래 빈) 칸에 최근 체결 5개를 1:1로 stack.
+       *  체결 인덱스 i=0이 최신 — 매수1호가 옆에 최신 체결이 보이도록.
+       *  체결 5행을 묶는 외곽 테두리: 첫행 border-top, 마지막행 border-bottom, 모든 행 border-l/r. */}
+      <div className="flex-1 grid tabular-nums min-h-0" style={{ gridTemplateRows: 'repeat(5, minmax(0, 1fr)) 4px auto repeat(5, minmax(0, 1fr))' }}>
         {asks.slice().reverse().map((l, i) => {
           const w = (l.quantity / maxQty) * 100
           const hi = price > 0 && l.price === price
           return (
-            <div key={`a-${i}`} className="grid grid-cols-[1fr_84px_1fr] items-center gap-1">
+            <div key={`a-${i}`} className="grid grid-cols-[1fr_84px_1fr] items-stretch gap-1 h-full">
               <div className="flex items-center justify-end gap-1 min-w-0 pr-1">
-                <span className="text-t3 text-[11px]">{l.quantity.toLocaleString()}</span>
-                <div className="h-4 bg-down/40 rounded-sm shrink-0" style={{ width: `${w * 0.8}%` }} />
+                <span className="text-t3 text-[10px]">{l.quantity.toLocaleString()}</span>
+                <div className="h-full max-h-4 bg-down/40 rounded-sm shrink-0 self-center" style={{ width: `${w * 0.8}%` }} />
               </div>
               <div className={cn(
-                'text-[#bb4a65] text-center font-medium text-[12px] py-[1px] rounded-sm',
+                'text-[#bb4a65] text-center font-medium text-[11px] rounded-sm flex items-center justify-center',
                 hi && 'bg-white/20 ring-1 ring-white/40 font-semibold',
               )}>{l.price.toLocaleString()}</div>
               <div></div>
             </div>
           )
         })}
-        <div className="my-1 border-t border-border/40"></div>
+        {/* 매도1호가↔매수1호가 구분선 — grid row 1개 차지, 가운데 가로선 */}
+        <div className="flex items-center"><div className="w-full border-t border-border/40"></div></div>
+        {/* 체결 헤더 row — 컨테이너 폭의 왼쪽으로 몰리고 열 사이 gap 작게.
+         *  flex + 각 span 고정 폭 → 헤더와 체결 행이 컬럼별 정확히 align */}
+        <div className="grid grid-cols-[1fr_84px_1fr] gap-1">
+          <div className="flex items-center gap-1 min-w-0 text-[9px] text-t4 leading-none px-1.5 py-[3px]">
+            <span className="w-[44px] text-center">체결가격</span>
+            <span className="w-[48px] text-center">체결수량</span>
+            <span className="w-[48px] text-center">누적수량</span>
+          </div>
+          <div></div>
+          <div></div>
+        </div>
         {bids.map((l, i) => {
           const w = (l.quantity / maxQty) * 100
           const hi = price > 0 && l.price === price
+          const trade = recentWithCum[i]
+          const isBuy = trade?.side === 1
           return (
-            <div key={`b-${i}`} className="grid grid-cols-[1fr_84px_1fr] items-center gap-1">
-              <div></div>
+            <div key={`b-${i}`} className="grid grid-cols-[1fr_84px_1fr] items-stretch gap-1 h-full">
+              {/* 매수호가 왼쪽 = 체결 1개 (i==0 최신). 헤더와 동일 폭/간격으로 column align. 외곽 테두리 X. */}
+              <div className="flex items-center gap-1 min-w-0 text-[10px] tabular-nums leading-tight px-1.5">
+                {trade ? (
+                  <>
+                    <span className={cn('w-[44px] text-center', isBuy ? 'text-[#00b26b]' : 'text-[#bb4a65]')}>
+                      {trade.price.toLocaleString()}
+                    </span>
+                    <span className={cn('w-[48px] text-center', isBuy ? 'text-[#00b26b]' : 'text-[#bb4a65]')}>
+                      {(isBuy ? trade.volume : -trade.volume).toLocaleString()}
+                    </span>
+                    <span className="w-[48px] text-center text-t3">{trade.cum.toLocaleString()}</span>
+                  </>
+                ) : null}
+              </div>
               <div className={cn(
-                'text-[#00b26b] text-center font-medium text-[12px] py-[1px] rounded-sm',
+                'text-[#00b26b] text-center font-medium text-[11px] rounded-sm flex items-center justify-center',
                 hi && 'bg-white/20 ring-1 ring-white/40 font-semibold',
               )}>{l.price.toLocaleString()}</div>
               <div className="flex items-center gap-1 min-w-0 pl-1">
-                <div className="h-4 bg-up/40 rounded-sm shrink-0" style={{ width: `${w * 0.8}%` }} />
-                <span className="text-t3 text-[11px]">{l.quantity.toLocaleString()}</span>
+                <div className="h-full max-h-4 bg-up/40 rounded-sm shrink-0 self-center" style={{ width: `${w * 0.8}%` }} />
+                <span className="text-t3 text-[10px]">{l.quantity.toLocaleString()}</span>
               </div>
             </div>
           )
@@ -1934,7 +2002,6 @@ const TimeSeriesChart = memo(function TimeSeriesChart({ code, etfName, history, 
       <div className="flex flex-col h-full">
         <div className="mb-1 text-[11px] text-t3">
           <span className="text-t1">{etfName}</span> 시계열
-          {isAuto && <span className="ml-1 text-t4">(Top 자동선택)</span>}
         </div>
         <div className="flex flex-1 items-center justify-center text-[11px] text-t4">
           데이터 누적 중… (5초 간격, 현재 {history.length}점)
@@ -1978,7 +2045,6 @@ const TimeSeriesChart = memo(function TimeSeriesChart({ code, etfName, history, 
       <div className="mb-1 flex items-center justify-between text-[11px] text-t3">
         <span>
           <span className="text-t1">{etfName}</span> 시계열 ({dur}분)
-          {isAuto && <span className="ml-1 text-t4">(Top 자동선택)</span>}
         </span>
         <span className="flex items-center gap-3 tabular-nums">
           <span className={useSell ? 'text-down' : 'text-up'}>
@@ -2040,3 +2106,123 @@ function formatHM(ts: number): string {
   const d = new Date(ts)
   return `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}:${d.getSeconds().toString().padStart(2, '0')}`
 }
+
+/** PriceNavChart — ETF 가격 + iNAV + 괴리bp 시계열.
+ *  - price/nav: 같은 좌측 y축 (보통 거의 일치). 흰색/회색 라인
+ *  - priceNavBp: 우측 별도 y축. 부호따라 초록/빨강 (양수=프리미엄=초록, 음수=디스카운트=빨강)
+ *  부담 측면: 같은 history 배열에 누적된 필드 사용. 5초 간격, 차트 1개당 라인 3개. SVG path 3개라 무비용.
+ */
+const PriceNavChart = memo(function PriceNavChart({
+  code, etfName, history, isAuto,
+}: {
+  code: string | null; etfName: string;
+  history: { t: number; price: number; nav: number; priceNavBp: number }[];
+  isAuto: boolean;
+}) {
+  if (!code) {
+    return (
+      <div className="flex h-full items-center justify-center text-[11px] text-t3">
+        ETF 클릭 시 가격·NAV 추이 표시
+      </div>
+    )
+  }
+  // 유효 포인트만 (price, nav 모두 > 0)
+  const pts = history.filter((p) => p.price > 0 && p.nav > 0)
+  if (pts.length < 2) {
+    return (
+      <div className="flex flex-col h-full">
+        <div className="mb-1 text-[11px] text-t3">
+          <span className="text-t1">{etfName}</span> 가격·NAV·괴리
+        </div>
+        <div className="flex flex-1 items-center justify-center text-[11px] text-t4">
+          데이터 누적 중… (5초 간격, 현재 {pts.length}점)
+        </div>
+      </div>
+    )
+  }
+
+  const W = 100
+  const H = 60
+  const minT = pts[0].t
+  const maxT = pts[pts.length - 1].t
+  const span = Math.max(1, maxT - minT)
+  const last = pts[pts.length - 1]
+
+  // 좌축 = price + nav 통합 스케일
+  const priceVals = pts.flatMap((p) => [p.price, p.nav])
+  const minP = Math.min(...priceVals)
+  const maxP = Math.max(...priceVals)
+  const pSpan = Math.max(0.001, maxP - minP)
+  // 우축 = 괴리bp (signed)
+  const bpVals = pts.map((p) => p.priceNavBp)
+  const minBp = Math.min(...bpVals, 0)
+  const maxBp = Math.max(...bpVals, 0)
+  const bpSpan = Math.max(0.1, maxBp - minBp)
+
+  const padTop = 2, padBot = 2
+  const padLeft = 14   // 좌축 라벨 (가격: 6자리 가능)
+  const padRight = 10  // 우축 라벨 (bp)
+  const drawH = H - padTop - padBot
+  const drawW = W - padLeft - padRight
+
+  const xOf = (t: number) => padLeft + ((t - minT) / span) * drawW
+  const yPriceOf = (v: number) => padTop + (1 - (v - minP) / pSpan) * drawH
+  const yBpOf = (v: number) => padTop + (1 - (v - minBp) / bpSpan) * drawH
+
+  const pricePath = pts.map((p, i) => `${i === 0 ? 'M' : 'L'} ${xOf(p.t).toFixed(2)} ${yPriceOf(p.price).toFixed(2)}`).join(' ')
+  const navPath = pts.map((p, i) => `${i === 0 ? 'M' : 'L'} ${xOf(p.t).toFixed(2)} ${yPriceOf(p.nav).toFixed(2)}`).join(' ')
+  const bpPath = pts.map((p, i) => `${i === 0 ? 'M' : 'L'} ${xOf(p.t).toFixed(2)} ${yBpOf(p.priceNavBp).toFixed(2)}`).join(' ')
+
+  const dur = ((maxT - minT) / 1000 / 60).toFixed(1)
+  const bpColor = last.priceNavBp > 0 ? '#30d158' : last.priceNavBp < 0 ? '#ff6b60' : '#8e8e93'
+  const zeroBpY = yBpOf(0)
+  const showZeroLine = minBp < 0 && maxBp > 0
+
+  return (
+    <div className="flex flex-col h-full">
+      <div className="mb-1 flex items-center justify-between text-[11px] text-t3">
+        <span>
+          <span className="text-t1">{etfName}</span> 가격·NAV·괴리 ({dur}분)
+        </span>
+        <span className="flex items-center gap-3 tabular-nums text-[10px]">
+          <span className="text-t1">{last.price.toLocaleString()}</span>
+          <span className="text-t3">NAV {last.nav.toLocaleString(undefined, { maximumFractionDigits: 0 })}</span>
+          <span style={{ color: bpColor }}>{fmt(last.priceNavBp, 2)}bp</span>
+        </span>
+      </div>
+      <div className="flex-1 relative min-h-0">
+        {/* 좌축 라벨 (price) */}
+        <div className="absolute left-0 top-[3.3%] -translate-y-1/2 text-[9px] text-t4 tabular-nums w-12 pr-1 text-right z-10 leading-none">{maxP.toFixed(0)}</div>
+        <div className="absolute left-0 bottom-[3.3%] translate-y-1/2 text-[9px] text-t4 tabular-nums w-12 pr-1 text-right z-10 leading-none">{minP.toFixed(0)}</div>
+        {/* 우축 라벨 (bp) */}
+        <div className="absolute right-0 top-[3.3%] -translate-y-1/2 text-[9px] tabular-nums w-9 pl-1 text-left z-10 leading-none" style={{ color: '#8e8e93' }}>{fmt(maxBp, 1)}</div>
+        <div className="absolute right-0 bottom-[3.3%] translate-y-1/2 text-[9px] tabular-nums w-9 pl-1 text-left z-10 leading-none" style={{ color: '#8e8e93' }}>{fmt(minBp, 1)}</div>
+        <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" className="absolute inset-0 w-full h-full">
+          {/* 가로 그리드 */}
+          <line x1={padLeft} y1={padTop} x2={W - padRight} y2={padTop} stroke="currentColor" strokeOpacity="0.08" vectorEffect="non-scaling-stroke" />
+          <line x1={padLeft} y1={H / 2} x2={W - padRight} y2={H / 2} stroke="currentColor" strokeOpacity="0.08" vectorEffect="non-scaling-stroke" />
+          <line x1={padLeft} y1={H - padBot} x2={W - padRight} y2={H - padBot} stroke="currentColor" strokeOpacity="0.08" vectorEffect="non-scaling-stroke" />
+          {/* 0 bp선 (있으면) — 우축 기준 점선 */}
+          {showZeroLine && (
+            <line x1={padLeft} y1={zeroBpY} x2={W - padRight} y2={zeroBpY} stroke="#8e8e93" strokeOpacity="0.4" strokeDasharray="0.5 0.5" vectorEffect="non-scaling-stroke" />
+          )}
+          {/* 괴리bp (우축, 신호 색) — 가장 약하게 깔리는 배경 라인 */}
+          <path d={bpPath} fill="none" stroke={bpColor} strokeOpacity="0.55" strokeWidth="1" vectorEffect="non-scaling-stroke" strokeLinejoin="round" />
+          {/* iNAV (좌축, 회색 점선) */}
+          <path d={navPath} fill="none" stroke="#8e8e93" strokeWidth="0.9" strokeDasharray="1 0.6" vectorEffect="non-scaling-stroke" strokeLinejoin="round" />
+          {/* ETF 가격 (좌축, 흰색 실선 — 강조) */}
+          <path d={pricePath} fill="none" stroke="#ffffff" strokeWidth="1.2" vectorEffect="non-scaling-stroke" strokeLinejoin="round" />
+        </svg>
+      </div>
+      <div className="flex justify-between text-[9px] text-t4 tabular-nums px-1 mt-0.5">
+        <span>{formatHM(minT)}</span>
+        <span className="flex gap-2 text-[8.5px]">
+          <span className="text-white">━ 가격</span>
+          <span className="text-t3">┄ NAV</span>
+          <span style={{ color: bpColor }}>━ 괴리bp</span>
+        </span>
+        <span>{formatHM(maxT)}</span>
+      </div>
+    </div>
+  )
+})

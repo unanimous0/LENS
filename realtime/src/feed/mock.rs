@@ -98,6 +98,8 @@ fn snap(price: f64) -> f64 {
 
 fn make_etf_tick(code: &str, price: f64, nav: f64, rng: &mut impl Rng) -> EtfTick {
     let now = Utc::now().format("%Y-%m-%dT%H:%M:%S%.6f").to_string();
+    let cvolume = rng.random_range(50..5_000);
+    let side: i8 = if rng.random_bool(0.5) { 1 } else { -1 };
     EtfTick {
         code: code.to_string(), name: code.to_string(),
         price: snap(price),
@@ -106,11 +108,15 @@ fn make_etf_tick(code: &str, price: f64, nav: f64, rng: &mut impl Rng) -> EtfTic
         spread_bid_bp: 0.0, spread_ask_bp: 0.0,
         volume: rng.random_range(1_000..50_000),
         timestamp: now,
+        last_trade_volume: Some(cvolume),
+        trade_side: Some(side),
     }
 }
 
 fn make_stock_tick(code: &str, price: f64, base: f64, rng: &mut impl Rng) -> StockTick {
     let now = Utc::now().format("%Y-%m-%dT%H:%M:%S%.6f").to_string();
+    let cvolume = rng.random_range(50..5_000);
+    let side: i8 = if rng.random_bool(0.5) { 1 } else { -1 };
     StockTick {
         code: code.to_string(), name: code.to_string(),
         price: snap(price),
@@ -121,6 +127,8 @@ fn make_stock_tick(code: &str, price: f64, base: f64, rng: &mut impl Rng) -> Sto
         high: Some(snap(base * 1.012)),
         low: Some(snap(base * 0.988)),
         prev_close: Some(snap(base * 0.995)),
+        last_trade_volume: Some(cvolume),
+        trade_side: Some(side),
     }
 }
 

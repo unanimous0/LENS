@@ -3,6 +3,30 @@ import type { ETFTick, StockTick, FuturesTick, OrderbookTick, NetworkMode } from
 
 export type FeedState = 'fresh' | 'quiet' | 'stale' | 'pre_open' | 'post_close' | 'closed' | 'mock' | 'internal' | 'unknown'
 
+/** ETF 시계열 한 포인트 — 시간 + 차익bp + 가격/NAV/괴리bp 종합 */
+export type EtfHistoryPoint = {
+  t: number
+  diffBp: number
+  price: number       // ETF 현재가 (없으면 0)
+  nav: number         // 라이브 iNAV (없으면 0)
+  priceNavBp: number  // (price - nav) / nav · 10000
+}
+/** 한 push 사이클의 ETF별 metric snapshot */
+export type EtfHistoryEntry = {
+  diffBp: number
+  price: number
+  nav: number
+  priceNavBp: number
+}
+
+/** 한 체결 entry — 호가창 패널에 최근 N개 stack. */
+export type TradeEntry = {
+  t: number          // 수신 시각 (ms)
+  price: number
+  volume: number     // 그 체결의 수량 (cvolume)
+  side: 1 | -1       // +1 매수 / -1 매도
+}
+
 interface MarketState {
   networkMode: NetworkMode
   setNetworkMode: (mode: NetworkMode) => void
@@ -20,10 +44,17 @@ interface MarketState {
   batchUpdateOrderbooks: (ticks: Record<string, OrderbookTick>) => void
   clearOrderbook: (code: string) => void
   clearOrderbooks: () => void
-  /** ETF 메트릭 시계열 history. ETF 코드 → 최근 N개 포인트. 단일 signed 차익bp (PDF 매도차-매수차).
-   *  양수=매도차 우세, 음수=매수차 우세. 페이지 mount 동안 5초 간격으로 push. unmount해도 유지. */
-  etfHistory: Record<string, { t: number; diffBp: number }[]>
-  pushEtfHistoryBatch: (entries: Record<string, { diffBp: number }>, max: number) => void
+  /** ETF 메트릭 시계열 history. ETF 코드 → 최근 N개 포인트.
+   *  - diffBp: PDF 매도차-매수차 (signed). 양수=매도차 우세, 음수=매수차 우세
+   *  - price/nav/priceNavBp: ETF 가격 / 라이브 iNAV / 괴리bp — 가격·NAV 차트용
+   *  페이지 mount 동안 5초 간격으로 push. unmount해도 유지. */
+  etfHistory: Record<string, EtfHistoryPoint[]>
+  pushEtfHistoryBatch: (entries: Record<string, EtfHistoryEntry>, max: number) => void
+  /** ETF별 최근 체결 (호가창 하단의 실시간 체결내역).
+   *  ETFTick 들어올 때 trade_side가 있으면 push (Mock도 +1/-1 채워줌).
+   *  ETF당 최근 TRADES_MAX개만 보존 (메모리 600 ETF × 10 × ~40B = 240KB). */
+  etfTrades: Record<string, TradeEntry[]>
+  pushEtfTrade: (code: string, entry: TradeEntry) => void
   connected: boolean
   setConnected: (v: boolean) => void
   feedState: FeedState
@@ -127,11 +158,20 @@ export const useMarketStore = create<MarketState>((set) => ({
       const next = { ...state.etfHistory }
       for (const [code, m] of Object.entries(entries)) {
         const arr = next[code] ? next[code].slice() : []
-        arr.push({ t, diffBp: m.diffBp })
+        arr.push({ t, diffBp: m.diffBp, price: m.price, nav: m.nav, priceNavBp: m.priceNavBp })
         if (arr.length > max) arr.splice(0, arr.length - max)
         next[code] = arr
       }
       return { etfHistory: next }
+    }),
+  etfTrades: {},
+  pushEtfTrade: (code, entry) =>
+    set((state) => {
+      const TRADES_MAX = 10  // 호가창 하단 5개 보여주려면 여유 두고 10개
+      const arr = state.etfTrades[code] ? state.etfTrades[code].slice() : []
+      arr.push(entry)
+      if (arr.length > TRADES_MAX) arr.splice(0, arr.length - TRADES_MAX)
+      return { etfTrades: { ...state.etfTrades, [code]: arr } }
     }),
   connected: false,
   setConnected: (v) => set({ connected: v }),

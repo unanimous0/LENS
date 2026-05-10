@@ -390,6 +390,8 @@ impl InternalFeed {
                 spread_ask_bp: round2(spread_ask_bp),
                 volume,
                 timestamp,
+                last_trade_volume: None,  // 내부망 stream에 cgubun/cvolume 매핑 미구현
+                trade_side: None,
             });
             let _ = tx.send(msg).await;
         } else {
@@ -406,6 +408,8 @@ impl InternalFeed {
                 high: None,
                 low: None,
                 prev_close: None,
+                last_trade_volume: None,
+                trade_side: None,
             });
             let _ = tx.send(msg).await;
         }
