@@ -38,3 +38,8 @@ internal_sending/
 
 # Playwright MCP debug artifacts (screenshots, console logs, page snapshots)
 .playwright-mcp/
+
+# LS API 가이드 자동 추출 — venv + 디버그 산출물 (ls_api_full.md만 commit)
+.venv-scraper/
+docs/ls_api_guide/_raw/
+docs/ls_api_guide/_recon_full.html

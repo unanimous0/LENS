@@ -5,6 +5,27 @@
 LS증권 OpenAPI를 통해 실시간 주식/ETF/선물 시세, 호가, 체결 데이터를 수신.
 LENS의 종목차익 페이지 등에서 활용 예정.
 
+## ⚠️ 작업 전 필수 — 가이드 자동 추출본 grep
+
+LS API 관련 작업(새 기능 / 수정 / 디버깅) 시 **가장 먼저 `docs/ls_api_guide/ls_api_full.md`를 grep**.
+
+- LS 가이드 페이지의 **365개 TR 전체 자동 추출** (Request/Response 예시 포함, 1.17 MB)
+- TR 코드/키워드/그룹 단위 검색 즉시 가능 → PDF 받기 전 답이 있는지 확인 → "안 되는 거였구나" 뻘짓 방지
+- 가이드 누락 25개 TR (예: t8414/t8415/t8416 선물 분봉/일봉)은 같은 파일 상단 섹션에 명시 — 필요 시 LS 포털 PDF 별도 다운로드
+- 갱신: `python3 scripts/scrape_ls_api_guide.py` (월 1회 권장, 2~3분 소요)
+- 폴더 README: `docs/ls_api_guide/README.md`
+
+```bash
+# TR 코드로 호출법 확인
+grep -A 50 "^### t1302 " docs/ls_api_guide/ls_api_full.md
+
+# 키워드 검색
+grep -i "분봉\|N분\|차트" docs/ls_api_guide/ls_api_full.md | head
+
+# 그룹 단위 보기
+awk '/^## \[주식\] 차트/,/^---$/' docs/ls_api_guide/ls_api_full.md
+```
+
 ## 사전 요건
 
 1. LS증권 계좌 보유

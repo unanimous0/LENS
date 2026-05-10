@@ -80,6 +80,37 @@ LENS/
 - 프론트엔드 NetworkToggle로 런타임 전환 (내부망/외부망/Mock)
 - 기존 다른 프로젝트의 PostgreSQL DB를 연결해서 사용 가능
 
+### 시계열 데이터 (백테스팅용) — Finance_Data 프로젝트와 분담
+
+LENS는 실시간 트레이딩 데스크 도구. 과거 시계열 데이터(일봉/분봉)는 **별도 프로젝트 `Finance_Data` (`/home/una0/projects/Finance_Data`)에서 중앙 관리**, LENS는 read-only로 조회.
+
+| 데이터 | 위치 | 출처 | 갱신 |
+|---|---|---|---|
+| 일봉 OHLCV (`ohlcv_daily`) | Finance_Data PostgreSQL+TimescaleDB | 인포맥스 API | 매일 16:30 KST daily_update |
+| 30초봉 OHLCV (`ohlcv_30sec`) | 동일 DB hypertable | **LS API t8412** | 매일 05:30 KST daily_update STEP 5 |
+| 종목 마스터 (`stocks`) | 동일 | 인포맥스 | 매일 |
+| 지수 구성 종목 (`index_components` SCD2) | 동일 | KODEX 200/코스닥150 PDF | 매일 |
+| ETF PDF (`etf_portfolios` SCD2) | 동일 | 인포맥스 `/api/etf/port` | 매일 |
+| 배당 (`dividends`) | 동일 | DART | 매일 |
+
+**LENS read-only 계정**: `korea_stock_reader` (Finance_Data가 발급).
+
+**분봉 수집 정책 (Phase 6 진행 중, 2026-05 기준)**:
+- LS API **t8412 (주식차트 N분, gubun=0=30초봉)** 사용 — t1302는 직전 거래일만 자동 반환이라 백필 불가, t8412는 `sdate`/`edate` 명시로 과거 백필 가능
+- 종목 스코프: KOSPI200 + KOSDAQ150 + 한국 ETF 636 (해외 키워드 제외) + ETF PDF stocks union ≈ 2,500~2,700종목
+- ETF 해외 제외 키워드: `미국 / 나스닥 / S&P / 차이나 / 항셍 / WTI / (H) 헤지 표기 / 글로벌` 등 (정확한 룰은 `Finance_Data` 측 SQL)
+- 봉당 거래량 = `cvolume`(LS의 봉 단위 거래량) → DB의 `volume` 컬럼에 저장. LS의 `volume`(누적)은 검증용으로만 사용 후 버림
+- 거래대금 = LS의 `value` 필드 (백만원 단위) × 1_000_000 → `trading_value` (NOT NULL)
+- 15:30 종가 단일가는 t8412에 없음 (15:29:30 봉이 마지막). 백테스트 시 종가는 **`ohlcv_daily.close` 사용** (SSoT 분리 — 분봉은 분 단위 흐름, 종가/시가는 일봉 책임)
+- 백필 시작일: 2026-01-02. 단일 워커 약 56시간 (주말 작업)
+- 일배치 운영 시간: 새벽 05:30 KST (LENS realtime의 LS API 활동과 시간대 분리)
+- LS 계정은 LENS realtime과 공유 (시간대 분리로 충돌 회피)
+
+**Phase 7 (선물 분봉) — 별도**:
+- 주식선물 front+back 500 + 지수선물 front+back ~10
+- LS API t8415 (선물 분봉) — **LS 가이드 페이지에 자료 누락**, 사용자가 LS 포털에서 PDF 별도 다운로드해서 `docs/ls_api_guide/`에 추가해야 진행 가능
+- Phase 6 안정화 후 진행
+
 ## 새 기능 추가 방법
 
 1. `frontend/src/pages/새기능.tsx` 파일 생성 (export function 새기능Page)

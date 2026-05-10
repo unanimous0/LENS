@@ -23,6 +23,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **[features.md](features.md)** — 구현된 기능 상세 (대여가능확인, 상환가능확인, 실시간 시세, 데이터 어댑터)
 - **[architecture.md](architecture.md)** — 프로젝트 구조, 데이터 소스 전략, 새 기능 추가 방법
 - **[ls-api.md](ls-api.md)** — LS증권 OpenAPI 연동 가이드 (실시간 시세, 선물 베이시스)
+- **[docs/ls_api_guide/ls_api_full.md](docs/ls_api_guide/ls_api_full.md)** — **LS API 365개 TR 전체 자동 추출본** (Request/Response 예시 포함). LS API 의문 시 PDF 받기 전 무조건 여기 grep 우선
 - **[internal-deploy.md](internal-deploy.md)** — 내부망 배포 가이드 (오프라인 Windows 설치)
 - **[realtime-service.md](realtime-service.md)** — Rust 실시간 데이터 서비스 아키텍처 (모든 실시간 화면의 공통 인프라)
 - **[stock-arbitrage.md](stock-arbitrage.md)** — 종목차익 기능 설계 (베이시스 모니터링 + ETF 차익 계산)
@@ -74,6 +75,7 @@ CSS 변수는 `globals.css`의 `@theme inline`에 정의. Tailwind 클래스로 
 - 코드의 로직, 타입, 인터페이스, 변수, 함수 시그니처 등 동작에 영향을 주는 변경을 한 후에는 반드시 별도 에이전트를 생성하여 변경의 영향 범위를 검증할 것. 그리고 단순 문자열 검색뿐 아니라, 호출 체인·데이터 흐름·의존 관계를 따라가며 정합성이 깨지는 곳이 없는지 확인할 것. 단, 단순 문자열/라벨/주석 수정은 제외.
 - 프로젝트 전반에 걸쳐 **최적화와 속도를 중시**할 것. 불필요한 반복 순회, DataFrame concat 반복, 중복 연산 등을 피하고 효율적인 자료구조와 알고리즘을 선택한다.
 - 대량 데이터 처리 시 pandas 외에 더 적합한 도구(polars, numpy, 순수 Python 등)가 있다면 적극 검토한다. 단, 소규모 데이터에서 체감 차이 없이 의존성만 늘리는 도입은 지양.
+- **LS API 의문 시 절차** — 새 기능 만들거나 기존 동작 수정할 때 LS API의 호출법/필드/제한 등에 의문이 생기면 **반드시 `docs/ls_api_guide/ls_api_full.md`를 먼저 grep**. 365개 TR 전부 Request/Response 예시 포함. 답이 없을 때만 PDF 별도 다운로드. "안 되는 거였구나" 뻘짓 방지의 단일 진실원. 사용 예: `grep -A 50 "^### t1302 " docs/ls_api_guide/ls_api_full.md`. 가이드 누락 25개 TR 목록은 같은 파일 상단 섹션 참조. 갱신: `python3 scripts/scrape_ls_api_guide.py` (월 1회 권장).
 
 ## 코드 컨벤션
 
