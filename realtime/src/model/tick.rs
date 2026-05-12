@@ -54,6 +54,35 @@ pub struct StockTick {
     /// t1102/초기 fetch / 모르는 케이스는 None.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub trade_side: Option<i8>,
+    /// 매매정지 상태 (t1405 jongchk=2). true면 가격/거래량 무의미 — UI는 "거래정지" 표시,
+    /// 차익 계산은 null 처리.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub halted: bool,
+    /// 상한가 (t1102 `uplmtprice`). 당일 거의 안 변함 — 초기 fetch 시 한 번 박음.
+    /// 프론트가 price >= upper_limit 으로 상한가 도달 판정.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub upper_limit: Option<f64>,
+    /// 하한가 (t1102 `dnlmtprice`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lower_limit: Option<f64>,
+    /// VI(변동성완화장치) 발동 상태 (VI_ stream vi_gubun ≠ "0"). 2분 단일가 매매 중 — 즉각 거래 불가.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub vi_active: bool,
+    /// 투자경고 종목 (t1405 jongchk=1). 거래 가능, 위험 종목 표시.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub warning: bool,
+    /// 정리매매 종목 (t1405 jongchk=3). 상장폐지 직전, 가격 거의 안 움직임.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub liquidation: bool,
+    /// 이상급등 (t1102 abnormal_rise_gu ≠ "0").
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub abnormal_rise: bool,
+    /// 저유동성 (t1102 low_lqdt_gu ≠ "0").
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub low_liquidity: bool,
+    /// 관리종목 (t1404 폴러).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub under_management: bool,
 }
 
 /// 선물 틱

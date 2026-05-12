@@ -217,11 +217,16 @@ export function DividendsPage() {
     return [...selected.history]
       .reverse()
       .slice(-10)
-      .map((d) => ({
-        label: `${periodShort(d.period)} ${String(d.fiscal_year).slice(2)}`,
-        amount: d.amount,
-        confirmed: d.confirmed,
-      }))
+      .map((d) => {
+        // ex_date에서 월 추출 (YYYY-MM-DD 가정). 없으면 분기에서 추정 (Q1=3, Q2=6, Q3=9, Q4=12)
+        const m = d.ex_date?.slice(5, 7) ?? quarterMonth(d.period)
+        const monthSuffix = m ? ` (${parseInt(m, 10)}월)` : ''
+        return {
+          label: `${periodShort(d.period)} ${String(d.fiscal_year).slice(2)}${monthSuffix}`,
+          amount: d.amount,
+          confirmed: d.confirmed,
+        }
+      })
   }, [selected])
 
   // 가상화 (main 단일 스크롤 — CLAUDE.md)
@@ -851,4 +856,18 @@ function SortTh({
 function periodShort(period: string): string {
   if (period === 'ANNUAL') return 'Y'
   return period
+}
+
+// ex_date 없을 때 분기/반기에서 결산월 추정 — 한국 12월 결산 가정.
+function quarterMonth(period: string): string | null {
+  switch (period) {
+    case 'Q1': return '03'
+    case 'Q2': return '06'
+    case 'Q3': return '09'
+    case 'Q4':
+    case 'ANNUAL': return '12'
+    case 'H1': return '06'
+    case 'H2': return '12'
+    default: return null
+  }
 }

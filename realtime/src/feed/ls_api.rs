@@ -251,6 +251,51 @@ impl MarketFeed for LsApiFeed {
             });
         }
 
+        // t1405 종목 상태 폴러 — 1시간 주기로 매매정지/투자경고/정리매매 set 모두 갱신.
+        // 첫 fetch는 spawn 후 5초 (토큰/네트워크 안정화 대기). gubun=0.
+        {
+            let ak = self.app_key.clone();
+            let as_ = self.app_secret.clone();
+            let cancel_h = cancel.clone();
+            tokio::spawn(async move {
+                use std::time::Duration;
+                tokio::select! {
+                    _ = tokio::time::sleep(Duration::from_secs(5)) => {}
+                    _ = cancel_h.cancelled() => return,
+                }
+                loop {
+                    if cancel_h.is_cancelled() { return; }
+                    let token = match super::ls_rest::get_or_fetch_token(&ak, &as_).await {
+                        Ok(t) => t,
+                        Err(e) => {
+                            warn!("t1405 poll: token fail: {e}");
+                            tokio::select! {
+                                _ = tokio::time::sleep(Duration::from_secs(60)) => {}
+                                _ = cancel_h.cancelled() => return,
+                            }
+                            continue;
+                        }
+                    };
+                    match super::ls_rest::update_t1405_sets(&token).await {
+                        Ok(((ho, hn), (wo, wn), (lo, ln))) => info!(
+                            "t1405 poll: halted {ho}→{hn} / warning {wo}→{wn} / liquidation {lo}→{ln}"
+                        ),
+                        Err(e) => warn!("t1405 poll: {e}"),
+                    }
+                    // 같은 사이클에 t1404 관리종목도 갱신.
+                    tokio::time::sleep(Duration::from_millis(1100)).await;
+                    match super::ls_rest::update_under_management_set(&token).await {
+                        Ok((o, n)) => info!("t1404 poll: under_management {o}→{n}"),
+                        Err(e) => warn!("t1404 poll: {e}"),
+                    }
+                    tokio::select! {
+                        _ = tokio::time::sleep(Duration::from_secs(3600)) => {}
+                        _ = cancel_h.cancelled() => return,
+                    }
+                }
+            });
+        }
+
         // 일일 자동 새로고침 — 영업일 08:30 KST(장 시작 전 prev_close 갱신) +
         // 15:50 KST(당일 종가 캡처). start_dev이 며칠 돌아도 prev_close가 항상
         // 직전 영업일 종가 유지. 휴장일/주말은 skip → 마지막 fetch 데이터 그대로 유효.
@@ -435,10 +480,13 @@ impl MarketFeed for LsApiFeed {
                             stocks_cancel.cancel();
                             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
+                            // 각 종목당 체결(S3_/K3_) + VI 발동(VI_) 두 개 구독.
+                            // VI_는 메시지 빈도 낮지만 같은 종목 단위라 spawn_stocks_connections가
+                            // 190/conn 분할에서 함께 처리 — 단순.
                             let stocks_subs: Vec<(String, String)> = current_stocks.keys()
-                                .map(|code| {
+                                .flat_map(|code| {
                                     let tr = if kosdaq_codes.contains(code) { "K3_" } else { "S3_" };
-                                    (tr.to_string(), code.clone())
+                                    [(tr.to_string(), code.clone()), ("VI_".to_string(), code.clone())]
                                 })
                                 .collect();
                             info!("SubscribeStocks: +{} new ({} total unique, {} active subs)", newly_added.len(), current_stocks.len(), codes.len());
@@ -496,9 +544,9 @@ impl MarketFeed for LsApiFeed {
                                 stocks_cancel = CancellationToken::new();
                             } else {
                                 let stocks_subs: Vec<(String, String)> = current_stocks.keys()
-                                    .map(|code| {
+                                    .flat_map(|code| {
                                         let tr = if kosdaq_codes.contains(code) { "K3_" } else { "S3_" };
-                                        (tr.to_string(), code.clone())
+                                        [(tr.to_string(), code.clone()), ("VI_".to_string(), code.clone())]
                                     })
                                     .collect();
                                 info!("UnsubscribeStocks: -{} (refcount→0 for {}, {} unique remain)", codes.len(), actually_dropped.len(), current_stocks.len());
@@ -1081,6 +1129,19 @@ async fn handle_tick(
                     prev_close: None,
                     last_trade_volume: if cvolume > 0 { Some(cvolume) } else { None },
                     trade_side,
+                    halted: super::ls_rest::is_halted(tr_key),
+                    // 상/하한가는 t1102 초기값에서만 박음 — 실시간 stream(S3_/K3_) tick엔
+                    // 별도 필드 없고 어차피 당일 변동 없음. None이면 프론트가 첫 stockTicks 값 유지(spread merge).
+                    upper_limit: None,
+                    lower_limit: None,
+                    vi_active: super::ls_rest::is_vi_active(tr_key),
+                    warning: super::ls_rest::is_warning(tr_key),
+                    liquidation: super::ls_rest::is_liquidation(tr_key),
+                    // 이상급등/저유동성은 t1102 응답 필드 — S3_/K3_ 실시간엔 없음.
+                    // 프론트 store가 prev sticky로 유지하면 t1102 초기 fetch 값 보존.
+                    abnormal_rise: false,
+                    low_liquidity: false,
+                    under_management: super::ls_rest::is_under_management(tr_key),
                 })).await;
             } else {
                 // ETF S3_ 체결 → price/volume + cvolume/trade_side. nav는 I5_ 스트림이 채움 (bridge merge로 보존).
@@ -1157,6 +1218,14 @@ async fn handle_tick(
                     trade_side: None,
                 })).await;
             }
+        }
+        // VI 발동/해제 (본장). vi_gubun "0"=해제, 그 외=발동.
+        // 메시지 자체는 set만 토글 — emit은 다음 S3_/K3_/t1102 시점에 박힘.
+        "VI_" => {
+            let gubun = body["vi_gubun"].as_str().unwrap_or("0");
+            let active = gubun != "0";
+            super::ls_rest::set_vi_active(tr_key, active);
+            tracing::info!("VI_ {tr_key} gubun={gubun} {}", if active {"발동"} else {"해제"});
         }
         _ => {}
     }

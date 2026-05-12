@@ -96,6 +96,183 @@ pub async fn invalidate_token_cache() {
     info!("token cache: invalidated");
 }
 
+// ────────────────────────────────────────────────────────────────────────────
+// t1405 종목 상태 캐시 — 매매정지(jongchk=2) / 투자경고(=1) / 정리매매(=3)
+// ls_api.rs의 spawn 워커가 1시간 주기로 모두 갱신. StockTick 만들 때 참조해 박음.
+// ────────────────────────────────────────────────────────────────────────────
+
+static HALTED_STOCKS: OnceLock<DashMap<String, ()>> = OnceLock::new();
+static WARNING_STOCKS: OnceLock<DashMap<String, ()>> = OnceLock::new();      // 투자경고
+static LIQUIDATION_STOCKS: OnceLock<DashMap<String, ()>> = OnceLock::new();  // 정리매매
+
+fn halted_stocks() -> &'static DashMap<String, ()> { HALTED_STOCKS.get_or_init(DashMap::new) }
+fn warning_stocks() -> &'static DashMap<String, ()> { WARNING_STOCKS.get_or_init(DashMap::new) }
+fn liquidation_stocks() -> &'static DashMap<String, ()> { LIQUIDATION_STOCKS.get_or_init(DashMap::new) }
+
+/// 종목이 현재 매매정지 상태인지. 호출자(StockTick 발행 경로)는 lock-free.
+pub fn is_halted(code: &str) -> bool { halted_stocks().contains_key(code) }
+pub fn is_warning(code: &str) -> bool { warning_stocks().contains_key(code) }
+pub fn is_liquidation(code: &str) -> bool { liquidation_stocks().contains_key(code) }
+
+/// t1405로 특정 종류(jongchk) 종목 전체 목록을 받아옴. cts_shcode 페이지네이션 처리.
+/// gubun=0(전체 시장), jongchk: 1=투자경고, 2=매매정지, 3=정리매매.
+async fn fetch_t1405_stocks(token: &str, jongchk: &str) -> Result<HashSet<String>, String> {
+    let client = reqwest::Client::new();
+    let mut all = HashSet::new();
+    let mut cts: String = " ".to_string();
+    let mut page = 0u32;
+    loop {
+        let body = serde_json::json!({
+            "t1405InBlock": {"gubun": "0", "jongchk": jongchk, "cts_shcode": cts}
+        });
+        let tr_cont = if page == 0 { "N" } else { "Y" };
+        let resp = client.post(T1102_URL)
+            .header("authorization", format!("Bearer {token}"))
+            .header("tr_cd", "t1405")
+            .header("tr_cont", tr_cont)
+            .header("content-type", "application/json")
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| format!("http: {e}"))?;
+        let status = resp.status();
+        if !status.is_success() {
+            return Err(format!("http {status}"));
+        }
+        let j: serde_json::Value = resp.json().await.map_err(|e| format!("json: {e}"))?;
+        let out = j["t1405OutBlock1"].as_array().cloned().unwrap_or_default();
+        if out.is_empty() { break; }
+        for it in &out {
+            if let Some(s) = it["shcode"].as_str() {
+                all.insert(s.to_string());
+            }
+        }
+        let next_cts = j["t1405OutBlock"]["cts_shcode"]
+            .as_str().unwrap_or("").trim().to_string();
+        if next_cts.is_empty() || next_cts == cts.trim() { break; }
+        cts = next_cts;
+        page += 1;
+        tokio::time::sleep(Duration::from_millis(1100)).await;  // TPS=1
+        if page > 50 { break; }
+    }
+    Ok(all)
+}
+
+fn replace_set(cache: &DashMap<String, ()>, new_set: &HashSet<String>) -> (usize, usize) {
+    let old_size = cache.len();
+    let to_remove: Vec<String> = cache.iter()
+        .filter(|e| !new_set.contains(e.key()))
+        .map(|e| e.key().clone())
+        .collect();
+    for c in to_remove { cache.remove(&c); }
+    for c in new_set { cache.insert(c.clone(), ()); }
+    (old_size, new_set.len())
+}
+
+/// 세 카테고리 한 번에 갱신. (halted_old→new, warning_old→new, liquidation_old→new).
+/// TPS=1 가드: 페이지네이션 사이 + 카테고리 사이 각각 sleep.
+pub async fn update_t1405_sets(token: &str) -> Result<((usize, usize), (usize, usize), (usize, usize)), String> {
+    let halted_set = fetch_t1405_stocks(token, "2").await?;
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    let warning_set = fetch_t1405_stocks(token, "1").await?;
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    let liquidation_set = fetch_t1405_stocks(token, "3").await?;
+    Ok((
+        replace_set(halted_stocks(), &halted_set),
+        replace_set(warning_stocks(), &warning_set),
+        replace_set(liquidation_stocks(), &liquidation_set),
+    ))
+}
+
+/// 매매정지만 갱신 (기존 호환). 새 코드는 update_t1405_sets 사용 권장.
+pub async fn update_halted_set(token: &str) -> Result<(usize, usize), String> {
+    let new_set = fetch_t1405_stocks(token, "2").await?;
+    Ok(replace_set(halted_stocks(), &new_set))
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// 관리종목 캐시 (t1404)
+// ────────────────────────────────────────────────────────────────────────────
+
+static UNDER_MANAGEMENT_STOCKS: OnceLock<DashMap<String, ()>> = OnceLock::new();
+
+fn under_management_stocks() -> &'static DashMap<String, ()> {
+    UNDER_MANAGEMENT_STOCKS.get_or_init(DashMap::new)
+}
+
+pub fn is_under_management(code: &str) -> bool {
+    under_management_stocks().contains_key(code)
+}
+
+/// t1404 "관리/불성실/투자유의조회" — jongchk=1 (관리종목 추정. PDF 없어 검증 호출 시 결과 확인).
+async fn fetch_t1404_stocks(token: &str, jongchk: &str) -> Result<HashSet<String>, String> {
+    let client = reqwest::Client::new();
+    let mut all = HashSet::new();
+    let mut cts: String = " ".to_string();
+    let mut page = 0u32;
+    loop {
+        let body = serde_json::json!({
+            "t1404InBlock": {"gubun": "0", "jongchk": jongchk, "cts_shcode": cts}
+        });
+        let tr_cont = if page == 0 { "N" } else { "Y" };
+        let resp = client.post(T1102_URL)
+            .header("authorization", format!("Bearer {token}"))
+            .header("tr_cd", "t1404")
+            .header("tr_cont", tr_cont)
+            .header("content-type", "application/json")
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| format!("http: {e}"))?;
+        if !resp.status().is_success() { return Err(format!("http {}", resp.status())); }
+        let j: serde_json::Value = resp.json().await.map_err(|e| format!("json: {e}"))?;
+        let out = j["t1404OutBlock1"].as_array().cloned().unwrap_or_default();
+        if out.is_empty() { break; }
+        for it in &out {
+            if let Some(s) = it["shcode"].as_str() { all.insert(s.to_string()); }
+        }
+        let next_cts = j["t1404OutBlock"]["cts_shcode"]
+            .as_str().unwrap_or("").trim().to_string();
+        if next_cts.is_empty() || next_cts == cts.trim() { break; }
+        cts = next_cts;
+        page += 1;
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+        if page > 50 { break; }
+    }
+    Ok(all)
+}
+
+pub async fn update_under_management_set(token: &str) -> Result<(usize, usize), String> {
+    let new_set = fetch_t1404_stocks(token, "1").await?;
+    Ok(replace_set(under_management_stocks(), &new_set))
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// VI(변동성완화장치) 발동 종목 캐시
+// VI_ 실시간 stream이 vi_gubun "0"(해제) / 그 외(발동) 토글로 갱신.
+// ls_api.rs가 직접 set_vi_active(code, active)로 set/clear.
+// ────────────────────────────────────────────────────────────────────────────
+
+static VI_ACTIVE_STOCKS: OnceLock<DashMap<String, ()>> = OnceLock::new();
+
+fn vi_active_stocks() -> &'static DashMap<String, ()> {
+    VI_ACTIVE_STOCKS.get_or_init(DashMap::new)
+}
+
+pub fn is_vi_active(code: &str) -> bool {
+    vi_active_stocks().contains_key(code)
+}
+
+/// VI 상태 토글. active=true면 set에 추가, false면 제거.
+pub fn set_vi_active(code: &str, active: bool) {
+    let cache = vi_active_stocks();
+    if active {
+        cache.insert(code.to_string(), ());
+    } else {
+        cache.remove(code);
+    }
+}
+
 /// 구독 목록의 모든 종목에 대해 초기 가격 조회.
 /// t8402(선물/스프레드)와 t1102(현물)을 **병렬 태스크**로 동시 실행.
 pub async fn fetch_initial_prices(
@@ -298,6 +475,13 @@ pub async fn fetch_stocks_initial(
                 let h = pf(detail.get("high"));
                 let l = pf(detail.get("low"));
                 let pc = pf(detail.get("recprice"));
+                let uplmt = pf(detail.get("uplmtprice"));
+                let dnlmt = pf(detail.get("dnlmtprice"));
+                // 이상급등/저유동성 — t1102 응답에 직접 들어옴. "0" = 정상, 그 외 = 해당 상태.
+                let abnormal_rise = detail.get("abnormal_rise_gu")
+                    .and_then(|v| v.as_str()).map(|s| s != "0" && !s.is_empty()).unwrap_or(false);
+                let low_liquidity = detail.get("low_lqdt_gu")
+                    .and_then(|v| v.as_str()).map(|s| s != "0" && !s.is_empty()).unwrap_or(false);
                 let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.6f").to_string();
                 let name = names.get(code.as_str()).cloned().unwrap_or_default();
 
@@ -316,6 +500,15 @@ pub async fn fetch_stocks_initial(
                         prev_close: if pc > 0.0 { Some(pc) } else { None },
                         last_trade_volume: None,  // t1102 스냅샷 — 체결 단위 정보 X
                         trade_side: None,
+                        halted: is_halted(code),
+                        upper_limit: if uplmt > 0.0 { Some(uplmt) } else { None },
+                        lower_limit: if dnlmt > 0.0 { Some(dnlmt) } else { None },
+                        vi_active: is_vi_active(code),
+                        warning: is_warning(code),
+                        liquidation: is_liquidation(code),
+                        abnormal_rise,
+                        low_liquidity,
+                        under_management: is_under_management(code),
                     })).await;
                     if let Some(set) = fetched { set.insert(code.clone(), ()); }
                     if let Some(fmap) = failed { fmap.remove(code); }
@@ -335,6 +528,15 @@ pub async fn fetch_stocks_initial(
                         prev_close: Some(pc),
                         last_trade_volume: None,
                         trade_side: None,
+                        halted: is_halted(code),
+                        upper_limit: if uplmt > 0.0 { Some(uplmt) } else { None },
+                        lower_limit: if dnlmt > 0.0 { Some(dnlmt) } else { None },
+                        vi_active: is_vi_active(code),
+                        warning: is_warning(code),
+                        liquidation: is_liquidation(code),
+                        abnormal_rise,
+                        low_liquidity,
+                        under_management: is_under_management(code),
                     })).await;
                     if let Some(fmap) = failed {
                         let prev = fmap.get(code).map(|e| e.attempt_count).unwrap_or(0);

@@ -410,6 +410,15 @@ impl InternalFeed {
                 prev_close: None,
                 last_trade_volume: None,
                 trade_side: None,
+                halted: false,  // 사내망 stream엔 halt 정보 없음
+                upper_limit: None,
+                lower_limit: None,
+                vi_active: false,
+                warning: false,
+                liquidation: false,
+                abnormal_rise: false,
+                low_liquidity: false,
+                under_management: false,
             });
             let _ = tx.send(msg).await;
         }

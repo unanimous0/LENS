@@ -129,6 +129,15 @@ fn make_stock_tick(code: &str, price: f64, base: f64, rng: &mut impl Rng) -> Sto
         prev_close: Some(snap(base * 0.995)),
         last_trade_volume: Some(cvolume),
         trade_side: Some(side),
+        halted: false,
+        upper_limit: Some(snap(base * 1.30)),
+        lower_limit: Some(snap(base * 0.70)),
+        vi_active: false,
+        warning: false,
+        liquidation: false,
+        abnormal_rise: false,
+        low_liquidity: false,
+        under_management: false,
     }
 }
 

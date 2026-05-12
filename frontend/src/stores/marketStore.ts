@@ -88,7 +88,14 @@ function mergeStockTick(tick: StockTick, prev: StockTick | undefined): StockTick
   if (pLow != null && pLow > 0 && (low === undefined || pLow < low)) low = pLow
   if (price > 0 && (low === undefined || price < low)) low = price
   const prev_close = tick.prev_close ?? prev?.prev_close
-  return { ...tick, cum_volume: cumVolume, high, low, prev_close }
+  // 상/하한가는 t1102 초기 fetch에서만 박힘. 실시간 stream tick이 덮어쓰지 않게 prev 값 sticky.
+  const upper_limit = tick.upper_limit ?? prev?.upper_limit
+  const lower_limit = tick.lower_limit ?? prev?.lower_limit
+  // 이상급등/저유동성도 t1102 응답에서만 추출되고 S3_/K3_엔 없음 — sticky.
+  // false도 의미 있는 값(해제)이지만 S3_/K3_는 항상 false라 정보 손실 위험 → prev OR로 보존.
+  const abnormal_rise = tick.abnormal_rise || prev?.abnormal_rise
+  const low_liquidity = tick.low_liquidity || prev?.low_liquidity
+  return { ...tick, cum_volume: cumVolume, high, low, prev_close, upper_limit, lower_limit, abnormal_rise, low_liquidity }
 }
 
 export const useMarketStore = create<MarketState>((set) => ({
