@@ -1,3 +1,4 @@
+import logging
 import math
 
 from fastapi import APIRouter, File, Form, UploadFile, HTTPException
@@ -12,6 +13,8 @@ from services.lending_parser import (
 from services.lending_calculator import calculate_availability
 from services.borrowing_calculator import parse_esafe_for_borrowing, calculate_borrowing
 from services.file_resolver import find_files_in_folder, read_file_bytes
+
+logger = logging.getLogger("uvicorn.error")
 
 router = APIRouter(tags=["lending"])
 
@@ -140,7 +143,9 @@ async def get_restricted_codes(
     try:
         codes = parse_restricted_funds(file_bytes)
         return {"codes": codes}
-    except Exception:
+    except (ValueError, KeyError) as e:
+        # 파싱 가능한 형식 오류만 빈 결과로. 그 외 (OS 오류 등)는 그대로 전파.
+        logger.warning("parse_restricted_funds failed: %s", e)
         return {"codes": []}
 
 

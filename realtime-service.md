@@ -179,7 +179,22 @@ Mock:   MockFeed가 직접 프론트엔드 포맷 생성 → 브로드캐스트 
     "price": 58400.0,
     "volume": 10,
     "cum_volume": 5234567,
-    "timestamp": "2026-04-15T09:30:00.123456"
+    "timestamp": "2026-04-15T09:30:00.123456",
+    "is_initial": false,
+    "high": 58500.0,
+    "low": 58200.0,
+    "prev_close": 58100.0,
+    "last_trade_volume": 10,
+    "trade_side": 1,
+    "halted": false,
+    "upper_limit": 75530.0,
+    "lower_limit": 40670.0,
+    "vi_active": false,
+    "warning": false,
+    "liquidation": false,
+    "abnormal_rise": false,
+    "low_liquidity": false,
+    "under_management": false
   }
 }
 ```
@@ -187,6 +202,17 @@ Mock:   MockFeed가 직접 프론트엔드 포맷 생성 → 브로드캐스트 
 - 일반 주식 체결 (ETF가 아닌 종목). NAV 개념 없음.
 - `cum_volume`: 당일 누적 거래량 (내부망 Trade의 `cs` 필드)
 - ETF vs 주식 구분: 내부망에서는 NAV 데이터(Index fl=1,10,18) 수신 여부로 자동 판별
+- 상태 필드 (전부 `#[serde(skip_serializing_if)]` — false/None이면 직렬화 X):
+  - `is_initial`: true면 t1102/t8402 초기 스냅샷 (실시간 X — 이미 실시간 값 있으면 무시)
+  - `high/low/prev_close`: 당일 고가/저가, 전일 종가
+  - `last_trade_volume`: 그 체결의 단일 수량 (cum_volume과 별개)
+  - `trade_side`: +1=매수, -1=매도 (LS S3_/K3_의 cgubun)
+  - `halted`: 매매정지 (t1405 jongchk=2)
+  - `upper_limit/lower_limit`: 상한가/하한가 (t1102, 당일 거의 불변)
+  - `vi_active`: VI 발동 (VI_ stream, 2분 단일가 매매 중)
+  - `warning/liquidation`: 투자경고/정리매매 (t1405)
+  - `abnormal_rise/low_liquidity`: 이상급등/저유동성 (t1102)
+  - `under_management`: 관리종목 (t1404)
 
 **선물 틱**:
 ```json
@@ -230,14 +256,16 @@ WebSocket 실시간 구독 (전체 레퍼런스: [ls-api.md](ls-api.md)):
 
 | 데이터 | TR코드 | WebSocket URL |
 |--------|--------|---------------|
-| 주식 체결 (KOSPI) | S3_ | `wss://.../websocket/stock` |
-| 주식 체결 (KOSDAQ) | K3_ | `wss://.../websocket/stock` |
-| 주식선물 체결 | JC0 | `wss://.../websocket/futureoption` |
-| 주식선물 호가 | JH0 | `wss://.../websocket/futureoption` |
-| KOSPI200 선물 체결 | **FC9** (구 FC0, 5/28 deprecate) | `wss://.../websocket/futureoption` |
-| KOSPI200 선물 호가 | **FH9** (구 FH0, 5/28 deprecate) | `wss://.../websocket/futureoption` |
-| ETF NAV | I5_ | `wss://.../websocket/stock` |
-| 지수 | IJ_ | `wss://.../websocket/indtp` |
+| 주식 체결 (KOSPI) | S3_ | `wss://.../websocket` |
+| 주식 체결 (KOSDAQ) | K3_ | `wss://.../websocket` |
+| 주식선물 체결 | JC0 | `wss://.../websocket` |
+| 주식선물 호가 | JH0 | `wss://.../websocket` |
+| KOSPI200 선물 체결 | **FC9** (구 FC0, 5/28 deprecate) | `wss://.../websocket` |
+| KOSPI200 선물 호가 | **FH9** (구 FH0, 5/28 deprecate) | `wss://.../websocket` |
+| ETF NAV | I5_ | `wss://.../websocket` |
+| 지수 | IJ_ | `wss://.../websocket` |
+
+> 모든 TR 단일 경로 `/websocket` 사용 (이전 `/websocket/stock` 등 분리 표기는 잘못). 시장 구분은 구독 메시지의 `tr_cd` 로 한다.
 
 주의사항:
 - 인증 토큰 매일 07:00 만료 → Rust 서비스에서 자동 재발급

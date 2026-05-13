@@ -1,3 +1,5 @@
+import logging
+
 from fastapi import APIRouter, File, Form, UploadFile, HTTPException
 from typing import Optional
 
@@ -6,6 +8,8 @@ from services.repayment_parser import parse_repayment_files, parse_esafe_lenders
 from services.repayment_calculator import calculate_repayment, apply_filters, deduct_repay_schedule
 from services.lending_parser import parse_mm_funds, parse_restricted_funds
 from services.file_resolver import find_files_in_folder, read_file_bytes
+
+logger = logging.getLogger("uvicorn.error")
 
 router = APIRouter(tags=["repayment"])
 
@@ -73,20 +77,20 @@ async def calculate_repay(
     except Exception as e:
         raise HTTPException(400, f"파일 파싱 오류: {str(e)}")
 
-    # MM펀드 / 상환불가펀드 파싱
+    # MM펀드 / 상환불가펀드 파싱 — 형식 오류만 빈 결과로 흡수. 그 외 예외는 전파.
     mm_funds: set[str] = set()
     if mm_bytes:
         try:
             mm_funds = parse_mm_funds(mm_bytes)
-        except Exception:
-            pass
+        except (ValueError, KeyError) as e:
+            logger.warning("parse_mm_funds failed: %s", e)
 
     restricted_suffixes: list[str] = []
     if restricted_bytes:
         try:
             restricted_suffixes = parse_restricted_funds(restricted_bytes)
-        except Exception:
-            pass
+        except (ValueError, KeyError) as e:
+            logger.warning("parse_restricted_funds failed: %s", e)
 
     filters = {
         "exclude_fund_codes": [c.strip() for c in exclude_fund_codes.split(",") if c.strip()] if exclude_fund_codes else [],

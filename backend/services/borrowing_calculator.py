@@ -50,8 +50,16 @@ def parse_esafe_for_borrowing(file_bytes: bytes, counterparty: str = "대여자"
     return df.reset_index(drop=True)
 
 
-def calculate_borrowing(df: pd.DataFrame, expensive_threshold: float = 0.05, expensive_inclusive: bool = False) -> dict:
-    """차입/대여 분석 결과 산출. expensive_threshold: 고비용 기준 수수료율(%). expensive_inclusive: True면 이상(>=), False면 초과(>)."""
+def calculate_borrowing(df: pd.DataFrame, expensive_threshold: float = 5.0, expensive_inclusive: bool = True) -> dict:
+    """차입/대여 분석 결과 산출.
+
+    expensive_threshold: 고비용 기준 수수료율(%). 단위는 % (예: 5.0 = 5%).
+    expensive_inclusive: True면 이상(≥), False면 초과(>).
+
+    기본값 5.0/True 는 대차거래 관행상 "고비용" 임계.
+    이전 기본값(0.05/False)은 0.05%로 너무 낮아 거의 모든 종목이 고비용으로
+    분류되는 버그였음 — borrowing 페이지가 그 기본값 사용 중이라 의미 깨졌음.
+    """
     by_lender = _cost_by_group(df, group_cols=["대여자계좌", "대여자명"], include_details=True)
     by_stock = _cost_by_group(df, group_cols=["단축코드", "종목명"], include_details=True)
 

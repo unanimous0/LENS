@@ -90,10 +90,11 @@ pub async fn get_or_fetch_token(app_key: &str, app_secret: &str) -> Result<Strin
 }
 
 /// LS가 401 또는 토큰 무효 응답 줄 때 캐시 강제 무효화.
-#[allow(dead_code)]
+/// fetch_t1102/t8402/t1405/t1404가 401/403 받으면 호출. 다음 get_or_fetch_token이
+/// 새 토큰 발급 → 폴러/sweep 다음 cycle부터 회복.
 pub async fn invalidate_token_cache() {
     *token_cache().lock().await = None;
-    info!("token cache: invalidated");
+    info!("token cache: invalidated (401/403 received)");
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -136,6 +137,10 @@ async fn fetch_t1405_stocks(token: &str, jongchk: &str) -> Result<HashSet<String
             .await
             .map_err(|e| format!("http: {e}"))?;
         let status = resp.status();
+        if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
+            invalidate_token_cache().await;
+            return Err(format!("http {status} (token invalidated)"));
+        }
         if !status.is_success() {
             return Err(format!("http {status}"));
         }
@@ -160,12 +165,15 @@ async fn fetch_t1405_stocks(token: &str, jongchk: &str) -> Result<HashSet<String
 
 fn replace_set(cache: &DashMap<String, ()>, new_set: &HashSet<String>) -> (usize, usize) {
     let old_size = cache.len();
+    // 갱신 중 빈 윈도우 회피 — insert 먼저 (중복은 무해), 차집합만 remove.
+    // 이전엔 remove → insert 순이라 그 사이 짧게 set이 비어 is_halted() 등이
+    // false로 잘못 답할 수 있었음.
+    for c in new_set { cache.insert(c.clone(), ()); }
     let to_remove: Vec<String> = cache.iter()
         .filter(|e| !new_set.contains(e.key()))
         .map(|e| e.key().clone())
         .collect();
     for c in to_remove { cache.remove(&c); }
-    for c in new_set { cache.insert(c.clone(), ()); }
     (old_size, new_set.len())
 }
 
@@ -224,7 +232,12 @@ async fn fetch_t1404_stocks(token: &str, jongchk: &str) -> Result<HashSet<String
             .send()
             .await
             .map_err(|e| format!("http: {e}"))?;
-        if !resp.status().is_success() { return Err(format!("http {}", resp.status())); }
+        let status = resp.status();
+        if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
+            invalidate_token_cache().await;
+            return Err(format!("http {status} (token invalidated)"));
+        }
+        if !status.is_success() { return Err(format!("http {status}")); }
         let j: serde_json::Value = resp.json().await.map_err(|e| format!("json: {e}"))?;
         let out = j["t1404OutBlock1"].as_array().cloned().unwrap_or_default();
         if out.is_empty() { break; }
@@ -375,9 +388,9 @@ async fn fetch_futures_initial(
                     let name = names.get(code.as_str()).cloned().unwrap_or_default();
                     let underlying = pf(detail.get("baseprice"));
                     let basis = if underlying > 0.0 { price - underlying } else { 0.0 };
-                    // 미결제약정: mgjv(잔고), mgjvdiff(전일대비). 키 없으면 None.
-                    let oi = detail.get("mgjv").map(|v| pi(Some(v)));
-                    let oi_change = detail.get("mgjvdiff").map(|v| pi(Some(v)));
+                    // 미결제약정: mgjv(잔고), mgjvdiff(전일대비). 키 없거나 Null이면 None.
+                    let oi = detail.get("mgjv").filter(|v| !v.is_null()).map(|v| pi(Some(v)));
+                    let oi_change = detail.get("mgjvdiff").filter(|v| !v.is_null()).map(|v| pi(Some(v)));
 
                     let _ = tx.send(WsMessage::FuturesTick(FuturesTick {
                         code: code.clone(), name: name.clone(),
@@ -643,6 +656,11 @@ async fn fetch_t8402(client: &reqwest::Client, token: &str, code: &str) -> Resul
                     Err(e) => last_err = format!("parse: {e}"),
                 }
             }
+            Ok(resp) if resp.status() == reqwest::StatusCode::UNAUTHORIZED
+                || resp.status() == reqwest::StatusCode::FORBIDDEN => {
+                invalidate_token_cache().await;
+                return Err(format!("http {} (token invalidated)", resp.status()));
+            }
             Ok(resp) => last_err = format!("http {}", resp.status()),
             Err(e) => last_err = format!("send: {e}"),
         }
@@ -671,6 +689,11 @@ async fn fetch_t1102(client: &reqwest::Client, token: &str, code: &str) -> Resul
                     }
                     Err(e) => last_err = format!("parse: {e}"),
                 }
+            }
+            Ok(resp) if resp.status() == reqwest::StatusCode::UNAUTHORIZED
+                || resp.status() == reqwest::StatusCode::FORBIDDEN => {
+                invalidate_token_cache().await;
+                return Err(format!("http {} (token invalidated)", resp.status()));
             }
             Ok(resp) => last_err = format!("http {}", resp.status()),
             Err(e) => last_err = format!("send: {e}"),

@@ -12,10 +12,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 |------|------|
 | 프론트엔드 | Vite + React 19 + TypeScript + Tailwind CSS v4 |
 | 상태관리 | Zustand |
-| 백엔드 | FastAPI (Python) |
-| 실시간 데이터 | WebSocket (FastAPI ↔ React) |
-| DB | PostgreSQL (asyncpg) + Redis |
-| 배포 | Docker Compose |
+| 백엔드 (파일 파싱/계산/DB 조회) | FastAPI (Python, port 8100) |
+| 실시간 데이터 서비스 | Rust + axum (port 8200) — LS WS 직접 + 자체 WebSocket로 프론트 전달 |
+| DB | Finance_Data PostgreSQL (`korea_stock_data`, read-only, asyncpg) — ETF 마스터/PDF, 시계열 등. LENS 자체 DB 없음 |
+| 배포 | Docker Compose (외부망) / zip 배포 (내부망) |
 
 ## 상세 문서
 

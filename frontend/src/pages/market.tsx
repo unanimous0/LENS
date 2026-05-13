@@ -28,18 +28,23 @@ export function MarketPage() {
         ) : (
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
             {etfList.map((tick) => {
+              // LS feed는 spread_bp를 0으로 보냄(NAV가 I5_에서 별도 와서 합쳐지기 전 timing).
+              // nav 또는 price가 0이면 괴리 계산 무의미 — "—" 표시.
+              const valid = tick.nav > 0 && tick.price > 0
               let bg = 'bg-bg-surface-2 text-t2'
-              if (tick.spread_bp > 10) bg = 'bg-up text-white'
-              else if (tick.spread_bp > 5) bg = 'bg-up-bg text-up'
-              else if (tick.spread_bp > 0) bg = 'bg-up-bg text-up'
-              else if (tick.spread_bp < -10) bg = 'bg-blue text-white'
-              else if (tick.spread_bp < -5) bg = 'bg-down-bg text-down'
-              else if (tick.spread_bp < 0) bg = 'bg-down-bg text-down'
+              if (valid) {
+                if (tick.spread_bp > 10) bg = 'bg-up text-white'
+                else if (tick.spread_bp > 5) bg = 'bg-up-bg text-up'
+                else if (tick.spread_bp > 0) bg = 'bg-up-bg text-up'
+                else if (tick.spread_bp < -10) bg = 'bg-blue text-white'
+                else if (tick.spread_bp < -5) bg = 'bg-down-bg text-down'
+                else if (tick.spread_bp < 0) bg = 'bg-down-bg text-down'
+              }
               return (
                 <div key={tick.code} className={`rounded p-2.5 text-center ${bg}`}>
                   <div className="text-xs font-medium truncate opacity-80">{tick.name}</div>
                   <div className="text-base font-bold font-mono">
-                    {tick.spread_bp > 0 ? '+' : ''}{tick.spread_bp.toFixed(1)}
+                    {valid ? `${tick.spread_bp > 0 ? '+' : ''}${tick.spread_bp.toFixed(1)}` : '—'}
                   </div>
                 </div>
               )

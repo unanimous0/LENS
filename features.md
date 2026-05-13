@@ -245,14 +245,16 @@ DB는 사실(DART 확정)만, 추정은 매 요청 동적 계산.
 
 ---
 
-## 데이터 어댑터 패턴
+## 데이터 어댑터 (Rust realtime 서비스)
 
-`MarketDataAdapter` ABC로 데이터 소스 추상화:
-- `MockAdapter`: 개발용 랜덤 시세 (8 ETF + 3 선물, 1초 간격)
-- `InternalAdapter`: 내부망 (미구현)
-- `ExternalAdapter`: 외부망 (미구현)
+실시간 데이터는 Python backend가 아닌 **Rust realtime 서비스 (port 8200)** 가 담당. 2026-04 backend에서 분리됨 (성능/안정성).
 
-프론트엔드 토글 → `POST /api/network/mode/{mode}` → 어댑터 교체 → 스트리밍 재시작
+`feed/` 디렉토리의 어댑터:
+- **`ls_api`**: LS증권 OpenAPI WebSocket (S3_/K3_/JC0/JH0/H1_/HA_/I5_/VI_) + REST (t1102/t8402/t1405/t1404). 외부망 가정.
+- **`internal`**: 사내 거래소 수신 서버 (내부망 가정)
+- **`mock`**: 가짜 시세 (개발용, 시장 시간 무관)
+
+프론트엔드 NetworkToggle → `POST /mode/{mode}` (Rust) → 어댑터 교체 + cache clear + 신규 spawn. 프론트는 단일 `/ws/market` WebSocket 유지.
 
 ---
 

@@ -27,58 +27,64 @@ LENS/
 │   │       ├── lending-availability.tsx   # 대여가능확인
 │   │       └── repayment-check.tsx        # 상환가능확인
 │
-├── backend/                               # FastAPI
-│   ├── main.py                            # 앱 엔트리 (lifespan, CORS, 라우터)
+├── backend/                               # FastAPI — 파일 파싱/계산 + Finance_Data DB 조회 (실시간 X)
+│   ├── main.py                            # 앱 엔트리 (CORS, router graceful load)
 │   ├── core/
-│   │   ├── config.py                      # 환경 설정 (pydantic-settings)
-│   │   ├── database.py                    # PostgreSQL async 연결
-│   │   ├── app_state.py                   # AppState (어댑터 관리, 스트리밍)
-│   │   └── data/
-│   │       ├── adapter.py                 # MarketDataAdapter ABC + NetworkMode
-│   │       └── mock_adapter.py            # Mock 시세 생성기
+│   │   ├── config.py                      # 환경 설정 (DATABASE_URL_KOREA, CORS)
+│   │   └── database.py                    # Finance_Data DB async engine (read-only)
 │   ├── routers/
+│   │   ├── arbitrage.py                   # GET /api/arbitrage/master (주식선물 마스터 JSON 로드)
 │   │   ├── borrowing.py                   # POST /api/borrowing/analyze
+│   │   ├── dividends.py                   # GET /api/dividends (Finance_Data export → 메모리 캐시)
+│   │   ├── etfs.py                        # GET /api/etfs, /pdf-all, /{code}/pdf (etf_master_daily + etf_portfolio_daily)
 │   │   ├── health.py                      # GET /api/health
 │   │   ├── lending.py                     # POST /api/lending/calculate
-│   │   ├── repayment.py                   # POST /api/repayment/calculate, /api/repayment/lenders
-│   │   ├── market.py                      # GET/POST /api/network/mode, /api/etf/list, /api/basis
-│   │   └── ws.py                          # WebSocket /ws/market
-│   ├── models/
-│   │   ├── market.py                      # ETFTick, FuturesTick, BasisData
-│   │   └── portfolio.py                   # Position, PortfolioGreeks, ScenarioPnL
+│   │   └── repayment.py                   # POST /api/repayment/calculate, /lenders
 │   ├── schemas/
 │   │   ├── lending.py                     # LendingResponse, StockResult, FundBreakdown
 │   │   └── repayment.py                   # RepaymentResponse, RepaymentMatch, StockSummary
 │   └── services/
-│       ├── file_resolver.py               # 폴더 내 파일 자동 탐색 (패턴 매칭, NFC/NFD 정규화)
-│       ├── excel_reader.py                # 엑셀 읽기 (openpyxl → xlrd → xlwings fallback)
-│       ├── stock_code.py                  # 종목코드 정규화 (6자리/A접두/ISIN → 표준 6자리)
+│       ├── file_resolver.py               # 폴더 내 파일 자동 탐색
+│       ├── excel_reader.py                # read_excel (openpyxl → xlrd → xlwings fallback)
+│       ├── stock_code.py                  # 종목코드 정규화 (6자리/A접두/ISIN → 6자리)
+│       ├── futures_master.py              # data/futures_master.json 로드 (Finance_Data가 매일 export)
 │       ├── borrowing_calculator.py        # 차입 비용 분석 + Rollover 관리
 │       ├── lending_parser.py              # 대여가능 개별 파일 파싱 (5개 파일)
 │       ├── lending_calculator.py          # 대여가능 산출 로직
 │       ├── repayment_parser.py            # 상환가능 엑셀 파싱 (오피스 + 예탁원)
-│       └── repayment_calculator.py        # 상환가능 매칭 로직 + 필터
+│       ├── repayment_calculator.py        # 상환가능 매칭 로직 + 필터
+│       └── dividend_estimator.py          # 배당 추정 (DART 직전 분기 ± year offset)
 │
-├── features.md                            # 구현된 기능 상세
-├── architecture.md                        # 프로젝트 구조, 아키텍처
-├── data/                                  # 엑셀 데이터 파일
-├── start_dev.sh                           # 개발 서버 실행 스크립트
+├── realtime/                              # Rust 실시간 서비스 (port 8200)
+│   ├── src/
+│   │   ├── main.rs                        # axum 서버 + bridge (mpsc → broadcast), /mode/{mode}, /debug/stats
+│   │   ├── feed/                          # ls_api / ls_rest / internal / mock 어댑터
+│   │   ├── model/                         # StockTick / FuturesTick / EtfTick / OrderbookTick + WsMessage
+│   │   ├── ws/broadcast.rs                # 클라이언트 broadcast + Utf8Bytes cache
+│   │   ├── phase.rs, holidays.rs          # 장 phase + KRX 휴장일 게이트
+│   │   └── volume_cache.rs                # 누적 거래량 디스크 캐시 (재시작 시 인기 종목 정렬)
+│   └── Cargo.toml
+│
+├── features.md, architecture.md           # 문서
+├── data/                                  # futures_master.json (Finance_Data export), 엑셀 임시 등
+├── start_dev.sh                           # 개발 서버 실행 (backend + realtime + frontend 한 번에)
 ├── docker-compose.yml
 └── .env
 ```
 
 ## 데이터 소스 전략
 
-외부망(집 서버)과 내부망(회사 서버) 두 환경에서 동일 앱을 사용하되 데이터 출처만 다름:
+실시간 데이터는 **Rust realtime 서비스 (port 8200)** 가 LS증권 OpenAPI WebSocket에 직접 연결 — backend는 실시간 처리 X. backend(8100)는 파일 파싱·계산·Finance_Data DB 조회만 담당.
 
-| 환경 | 데이터 출처 |
+네트워크 모드 전환 — `POST /mode/{mode}` (Rust):
+
+| 모드 | 데이터 출처 |
 |------|------------|
-| 외부망 | HTS API, 주식 프로그램 API, 자체 PostgreSQL DB |
-| 내부망 | 한국거래소 데이터를 수신하는 회사 서버 |
+| `ls_api` | LS증권 OpenAPI (OAuth + WebSocket, 외부망 가정) |
+| `internal` | 사내 거래소 수신 서버 (회사 내부망 가정) |
+| `mock` | 가짜 시세 (개발용, 시장 시간 무관) |
 
-- `MarketDataAdapter` ABC 인터페이스로 추상화
-- 프론트엔드 NetworkToggle로 런타임 전환 (내부망/외부망/Mock)
-- 기존 다른 프로젝트의 PostgreSQL DB를 연결해서 사용 가능
+프론트엔드는 단일 WebSocket(`/ws/market`)으로 Rust 서비스에 연결. 모드 토글로 런타임 전환.
 
 ### 시계열 데이터 (백테스팅용) — Finance_Data 프로젝트와 분담
 

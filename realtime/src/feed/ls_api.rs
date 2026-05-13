@@ -1120,7 +1120,7 @@ async fn handle_tick(
                 // S3_/K3_는 body에 high/low 포함 (당일 고가/저가). 누락 시 None.
                 let h = pf(&body["high"]);
                 let l = pf(&body["low"]);
-                let _ = tx.send(WsMessage::StockTick(StockTick {
+                try_send_tick(tx, WsMessage::StockTick(StockTick {
                     code: tr_key.into(), name: name.into(),
                     price, volume, cum_volume: value * 1_000_000, timestamp: now,
                     is_initial: false,
@@ -1142,16 +1142,16 @@ async fn handle_tick(
                     abnormal_rise: false,
                     low_liquidity: false,
                     under_management: super::ls_rest::is_under_management(tr_key),
-                })).await;
+                }));
             } else {
                 // ETF S3_ 체결 → price/volume + cvolume/trade_side. nav는 I5_ 스트림이 채움 (bridge merge로 보존).
-                let _ = tx.send(WsMessage::EtfTick(EtfTick {
+                try_send_tick(tx, WsMessage::EtfTick(EtfTick {
                     code: tr_key.into(), name: name.into(),
                     price, nav: 0.0, spread_bp: 0.0,
                     spread_bid_bp: 0.0, spread_ask_bp: 0.0, volume, timestamp: now,
                     last_trade_volume: if cvolume > 0 { Some(cvolume) } else { None },
                     trade_side,
-                })).await;
+                }));
             }
         }
         "JC0" => {
@@ -1160,17 +1160,17 @@ async fn handle_tick(
             let underlying = pf(&body["basprice"]);
             let basis = if underlying > 0.0 { price - underlying } else { 0.0 };
             // 미결제약정: openyak(잔고), openyakcha(전일대비). 0이 와도 유효값일 수 있어
-            // body에 키가 있는지로 판단 — 키가 없으면 None.
-            let oi = body.get("openyak").map(pi);
-            let oi_change = body.get("openyakcha").map(pi);
+            // body에 키가 있고 Null이 아닐 때만 Some. (이전엔 Null도 0으로 통과해 "OI=0" 오표시)
+            let oi = body.get("openyak").filter(|v| !v.is_null()).map(pi);
+            let oi_change = body.get("openyakcha").filter(|v| !v.is_null()).map(pi);
 
-            let _ = tx.send(WsMessage::FuturesTick(FuturesTick {
+            try_send_tick(tx, WsMessage::FuturesTick(FuturesTick {
                 code: tr_key.into(), name: name.into(),
                 price, underlying_price: underlying, basis: r2(basis), volume, timestamp: now,
                 is_initial: false,
                 open_interest: oi,
                 open_interest_change: oi_change,
-            })).await;
+            }));
             // 주의: 기초자산(현물) StockTick은 파생해서 보내지 않음.
             // 현물은 S3_/K3_로 별도 구독 중이고, 여기서 보내면 cum_volume을 0으로 덮어써버려
             // 현물대금이 빈 칸이 되는 문제가 발생함.
@@ -1180,22 +1180,22 @@ async fn handle_tick(
             let (asks, bids) = parse_orderbook_levels(body, 10);
             let total_ask = pu(&body["totofferrem"]);
             let total_bid = pu(&body["totbidrem"]);
-            let _ = tx.send(WsMessage::OrderbookTick(OrderbookTick {
+            try_send_tick(tx, WsMessage::OrderbookTick(OrderbookTick {
                 code: tr_key.into(), name: name.into(),
                 asks, bids, total_ask_qty: total_ask, total_bid_qty: total_bid,
                 timestamp: now,
-            })).await;
+            }));
         }
         // 주식선물/스프레드 호가 (JH0): 5호가
         "JH0" => {
             let (asks, bids) = parse_orderbook_levels(body, 5);
             let total_ask = pu(&body["totofferrem"]);
             let total_bid = pu(&body["totbidrem"]);
-            let _ = tx.send(WsMessage::OrderbookTick(OrderbookTick {
+            try_send_tick(tx, WsMessage::OrderbookTick(OrderbookTick {
                 code: tr_key.into(), name: name.into(),
                 asks, bids, total_ask_qty: total_ask, total_bid_qty: total_bid,
                 timestamp: now,
-            })).await;
+            }));
         }
         // ETF iNAV (거래소 발행). nav 필드만 사용 — 다른 EtfTick 필드는 S3_가 채움.
         "I5_" => {
@@ -1207,7 +1207,7 @@ async fn handle_tick(
             }
             tracing::debug!("I5_ raw: code={} body={}", tr_key, body);
             if nav > 0.0 {
-                let _ = tx.send(WsMessage::EtfTick(EtfTick {
+                try_send_tick(tx, WsMessage::EtfTick(EtfTick {
                     code: tr_key.into(), name: name.into(),
                     price: 0.0,  // S3_가 채울 거 — bridge에서 cache merge로 보존됨
                     nav: r2(nav),
@@ -1216,7 +1216,7 @@ async fn handle_tick(
                     timestamp: now,
                     last_trade_volume: None,  // I5_는 NAV-only stream
                     trade_side: None,
-                })).await;
+                }));
             }
         }
         // VI 발동/해제 (본장). vi_gubun "0"=해제, 그 외=발동.
@@ -1262,6 +1262,18 @@ fn parse_orderbook_levels(body: &serde_json::Value, levels: usize) -> (Vec<Order
         }
     }
     (asks, bids)
+}
+
+/// LS feed → bridge mpsc 채널이 full이거나 receiver dropped 시 drop 카운터.
+/// 핫 path에서 `.await` blocking을 피하기 위해 try_send 사용 — 거의 0이어야 정상.
+/// /debug/stats 의 tx_dropped 로 노출.
+pub static TX_DROPPED: AtomicU64 = AtomicU64::new(0);
+
+/// `tx.send().await` 대신 핫 path 비블로킹. 채널 full 시 drop + 카운트.
+fn try_send_tick(tx: &mpsc::Sender<WsMessage>, msg: WsMessage) {
+    if tx.try_send(msg).is_err() {
+        TX_DROPPED.fetch_add(1, Ordering::Relaxed);
+    }
 }
 
 fn pf(v: &serde_json::Value) -> f64 {

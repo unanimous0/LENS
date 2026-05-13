@@ -549,8 +549,11 @@ export function EtfArbitragePage() {
     return () => clearInterval(id)
   }, [])
   // history는 store가 자체 5초 interval로 push하니 직접 구독해도 부담 없음 + Sparkline은 React.memo
-  const etfHistory = useMarketStore((s) => s.etfHistory)
-  const etfTrades = useMarketStore((s) => s.etfTrades)
+  // etfHistory/etfTrades 는 ETF 체결마다 ref가 바뀌므로 페이지 레벨 root selector면
+  // 200ms throttle을 무력화하고 600+ 행 전체를 매 체결마다 reconcile함.
+  // → 사용처별 셀럭티브 구독으로 좁힘:
+  //   - ArbRow 내부에서 자기 etf.code 의 history만 구독 (Sparkline용)
+  //   - 차트/Orderbook 패널은 effectiveCode(선택 또는 첫 행) 한 종목만 구독
   const pushEtfHistoryBatch = useMarketStore((s) => s.pushEtfHistoryBatch)
 
   useEffect(() => {
@@ -811,6 +814,12 @@ export function EtfArbitragePage() {
     return [...naturalRows].sort((a, b) => (orderMap.get(a.code) ?? Infinity) - (orderMap.get(b.code) ?? Infinity))
   }, [naturalRows, frozenOrder])
 
+  // 차트/Orderbook 패널이 가리키는 ETF — 선택 또는 정렬 첫 행.
+  // 이 한 종목에 대한 history/trades만 셀럭티브 구독해 page-level root selector 회피.
+  const effectiveCode = selectedEtf ?? rows[0]?.code ?? null
+  const effectiveHistory = useMarketStore((s) => effectiveCode ? s.etfHistory[effectiveCode] ?? [] : [])
+  const effectiveTrades = useMarketStore((s) => effectiveCode ? s.etfTrades[effectiveCode] : undefined)
+
   // 5초 간격 시계열 누적. 페이지 mount 동안 동작, unmount해도 zustand history는 유지.
   const metricsRef = useRef(metricsByCode)
   metricsRef.current = metricsByCode
@@ -932,7 +941,16 @@ export function EtfArbitragePage() {
                 </>
               )}
               <span className="ml-auto text-[10px] text-t4 tabular-nums">ETF {rows.length}개</span>
-              {loadedAt && <span className="text-[10px] text-t4">PDF: {loadedAt.slice(0, 10)}</span>}
+              {loadedAt && (() => {
+                // PDF snapshot 신선도 — Finance_Data 일배치가 매일 새벽 갱신. today 아니면 강조.
+                const today = todayKst()
+                const pdfDate = loadedAt.slice(0, 10)
+                const stale = pdfDate < today  // 문자열 비교 OK (ISO YYYY-MM-DD)
+                // 1영업일 이상 늦으면 더 강한 경고 (주말/공휴일 감안해 2일 갭부터 빨강)
+                const daysBehind = Math.max(0, Math.round((Date.parse(today) - Date.parse(pdfDate)) / 86400000))
+                const cls = !stale ? 'text-t4' : daysBehind >= 2 ? 'text-down font-medium' : 'text-warning'
+                return <span className={cn('text-[10px] tabular-nums', cls)} title={stale ? `오늘 갱신 안 됨 (${daysBehind}일 stale) — Finance_Data 일배치 확인` : ''}>PDF: {pdfDate}{stale && ' ⚠'}</span>
+              })()}
               <div className="flex items-center gap-1 rounded bg-[#1e1e22] px-2 py-1">
                 <svg viewBox="0 0 16 16" width="11" height="11" fill="currentColor" className="text-t4">
                   <path d="M11.74 10.32a6 6 0 1 0-1.42 1.42l3.47 3.47 1.42-1.42-3.47-3.47zM7 11a4 4 0 1 1 0-8 4 4 0 0 1 0 8z"/>
@@ -1041,7 +1059,7 @@ export function EtfArbitragePage() {
 
       {/* 차트 패널 — 좌(막대) / 중1(차익 시계열) / 중2(가격·NAV·괴리 시계열) / 우(호가) 같은 높이 */}
       {chartsOpen && master && pdfs && (() => {
-        const effectiveCode = selectedEtf ?? rows[0]?.code ?? null
+        // effectiveCode는 페이지 상단에서 이미 계산됨 (셀럭티브 구독용)
         const effectiveName = effectiveCode ? master.find((e) => e.code === effectiveCode)?.name ?? '' : ''
         return (
           <div className="grid grid-cols-4 gap-1 h-[260px]">
@@ -1058,7 +1076,7 @@ export function EtfArbitragePage() {
               <TimeSeriesChart
                 code={effectiveCode}
                 etfName={effectiveName}
-                history={effectiveCode ? etfHistory[effectiveCode] ?? [] : []}
+                history={effectiveHistory}
                 isAuto={!selectedEtf}
               />
             </div>
@@ -1066,7 +1084,7 @@ export function EtfArbitragePage() {
               <PriceNavChart
                 code={effectiveCode}
                 etfName={effectiveName}
-                history={effectiveCode ? etfHistory[effectiveCode] ?? [] : []}
+                history={effectiveHistory}
                 isAuto={!selectedEtf}
               />
             </div>
@@ -1076,7 +1094,7 @@ export function EtfArbitragePage() {
                 etfName={effectiveName}
                 ob={effectiveCode ? orderbookTicks[effectiveCode] : undefined}
                 price={effectiveCode ? (etfTicks[effectiveCode]?.price ?? stockTicks[effectiveCode]?.price ?? 0) : 0}
-                trades={effectiveCode ? etfTrades[effectiveCode] : undefined}
+                trades={effectiveTrades}
               />
             </div>
           </div>
@@ -1146,7 +1164,6 @@ export function EtfArbitragePage() {
                       key={entry.etf.code}
                       etf={entry.etf}
                       m={m}
-                      history={etfHistory[entry.etf.code]}
                       isSelected={isSelected}
                       onSelect={handleRowSelect}
                       maxMissingFrac={maxMissingPct / 100}
@@ -1851,15 +1868,18 @@ const ArbC = memo(function ArbC({ children, c, className }: { children: React.Re
 
 /** ArbRow — memo로 wrap된 행. m/history/isSelected ref 안정 시 reconcile skip.
  * 필터 클릭 시 metricsByCode가 재계산 안 되어야(=Step B 적용) 실제 효과 발현. */
-const ArbRow = memo(function ArbRow({ etf, m, history, isSelected, onSelect, maxMissingFrac, arbMode }: {
+const ArbRow = memo(function ArbRow({ etf, m, isSelected, onSelect, maxMissingFrac, arbMode }: {
   etf: EtfMaster
   m: EtfMetrics | undefined
-  history: { t: number; diffBp: number }[] | undefined
   isSelected: boolean
   onSelect: (code: string) => void
   maxMissingFrac: number  // 누락 비중 임계값 (0.01 = 1%). 초과 시 fNAV/실집행 컬럼 흐림
   arbMode: ArbMode        // 단일 모드일 때 차익bp를 해당 모드 차익bp와 동일하게 표시
 }) {
+  // history는 self selective — 자기 ETF의 entry가 변할 때만 이 행 재렌더.
+  // 페이지 root selector 였을 때는 어느 ETF든 entry 갱신되면 모든 ArbRow.history prop이
+  // 새 ref가 되어 600행 전체가 reconcile 됨.
+  const history = useMarketStore((s) => s.etfHistory[etf.code])
   const diffColor = m && Math.abs(m.diffBp) > 5
     ? (m.diffBp > 0 ? 'text-[#00b26b]' : 'text-[#bb4a65]')
     : 'text-white'
@@ -1924,7 +1944,10 @@ const ArbRow = memo(function ArbRow({ etf, m, history, isSelected, onSelect, max
   )
 })
 const STICKY_INHERIT_BG = { backgroundColor: 'inherit' as const }
-const EMPTY_SET: Set<string> = new Set()
+// 동일 인스턴스 재사용 (excluded prop 안정성). Object.freeze로 add/delete 호출 시 즉시 에러로
+// 누설 방지 — 향후 mutate 코드 들어오면 dev tool에 그 자리에서 잡힘.
+// (Set<string> 타입 유지: ExpandedPanel props 호환. has() 외 사용 의도 없음.)
+const EMPTY_SET: Set<string> = Object.freeze(new Set<string>()) as Set<string>
 
 /** Sparkline — diffBp 시계열. signed 한 줄 라인 차트.
  * 색은 마지막 시점 부호로 결정 (양수=매수차 초록, 음수=매도차 빨강). */

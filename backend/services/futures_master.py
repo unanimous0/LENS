@@ -9,7 +9,6 @@ LENS는 그 파일을 read-only로 읽기만 함.
 from __future__ import annotations
 
 import json
-from datetime import date, datetime
 from pathlib import Path
 
 DATA_DIR = Path(__file__).parent.parent.parent / "data"
@@ -24,25 +23,6 @@ def load_master() -> dict | None:
         return json.loads(MASTER_FILE.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return None
-
-
-def is_master_expired(master: dict) -> bool:
-    """근월물 만기일이 오늘이거나 지났으면 True.
-    daily_update가 매일 갱신하지만 만기 당일은 stale 직전이라 호출자가 경고 가능."""
-    items = master.get("items", [])
-    if not items:
-        return True
-
-    front = items[0].get("front", {})
-    expiry_str = front.get("expiry", "")
-    if not expiry_str or len(expiry_str) != 8:
-        return True
-
-    try:
-        expiry_date = datetime.strptime(expiry_str, "%Y%m%d").date()
-        return date.today() >= expiry_date
-    except ValueError:
-        return True
 
 
 async def ensure_master() -> dict:

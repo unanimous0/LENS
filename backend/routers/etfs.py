@@ -18,6 +18,7 @@ from fastapi import APIRouter, HTTPException
 from sqlalchemy import text
 
 from core.database import korea_async_session
+from services.stock_code import normalize_stock_code as _norm_code
 
 router = APIRouter(prefix="/etfs", tags=["etfs"])
 
@@ -60,16 +61,6 @@ _cache = _Cache()
 _load_lock = asyncio.Lock()
 
 
-def _norm_code(code) -> str:
-    """'A000370' → '000370', '000370' → '000370'. None은 빈 문자열."""
-    if code is None:
-        return ""
-    s = str(code).strip().upper()
-    if len(s) == 7 and s.startswith("A"):
-        return s[1:]
-    return s
-
-
 async def _ensure_loaded() -> None:
     """캐시 만료 시 Finance_Data DB에서 최신 snapshot 일괄 로드."""
     if time.monotonic() - _cache.fetched_at < CACHE_TTL_SEC and _cache.etfs:
@@ -85,25 +76,32 @@ async def _ensure_loaded() -> None:
 
 
 async def _load_from_db() -> None:
-    """각 테이블의 최신 snapshot_date 기준으로 마스터/PDF 일괄 fetch.
-    LATERAL 조인 대신 max(snapshot_date) 한 번 + 그 날짜로 필터링 (간단·빠름).
+    """각 테이블의 공통 최신 snapshot_date 기준으로 마스터/PDF 일괄 fetch.
+
+    Finance_Data 일배치가 두 테이블을 같은 사이클에 적재하긴 하지만, 호출 시점에
+    한쪽만 새 날짜로 들어와 있는 짧은 윈도우 가능 (예: master 5/14, pdf 5/13).
+    그러면 같은 날짜 master/pdf row가 하나도 없어 PDF 비어 보임.
+    두 테이블의 MAX(snapshot_date) 중 작은 값을 공통 기준일로 사용 → 정합성 보장.
     """
     async with korea_async_session() as session:
-        # 최신 snapshot_date (마스터/PDF가 같은 5/30 새벽에 동시 적재되므로 같은 날짜)
+        # 두 테이블 각자의 MAX를 한 번에 받아 최소값으로 잠재 불일치 회피
         result = await session.execute(text(
-            "SELECT MAX(snapshot_date) FROM etf_master_daily"
+            "SELECT "
+            "(SELECT MAX(snapshot_date) FROM etf_master_daily) AS m, "
+            "(SELECT MAX(snapshot_date) FROM etf_portfolio_daily) AS p"
         ))
-        latest_date = result.scalar()
-        if latest_date is None:
-            raise RuntimeError("etf_master_daily에 데이터 없음")
+        row = result.first()
+        m_date, p_date = (row.m, row.p) if row else (None, None)
+        if m_date is None or p_date is None:
+            raise RuntimeError("etf_master_daily/etf_portfolio_daily 둘 다 데이터 필요")
+        # 더 보수적인 (작은) 쪽 채택
+        latest_date = min(m_date, p_date)
 
-        # 마스터
         master_rows = (await session.execute(text(
             "SELECT etf_code, kr_name, creation_unit, tracking_multiple, replication "
             "FROM etf_master_daily WHERE snapshot_date = :d"
         ), {"d": latest_date})).all()
 
-        # PDF (현금 + 종목 모두)
         pdf_rows = (await session.execute(text(
             "SELECT etf_code, component_code, component_name, shares, is_cash "
             "FROM etf_portfolio_daily WHERE snapshot_date = :d"

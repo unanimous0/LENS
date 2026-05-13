@@ -66,6 +66,9 @@ pub struct Stats {
     pub emit_pc_only: AtomicU64,
     /// t1102 시도 총 횟수 (성공+실패+pc-only). REQ_INTERVAL 사용량 직관적 추정용.
     pub fetch_attempts: AtomicU64,
+    /// LS feed → mpsc channel try_send 실패 (채널 full). 핫 path drop 카운터.
+    /// 정상 운영 시 0. 누적되면 bridge가 못 따라잡는 상황 — 토론/튜닝 신호.
+    pub tx_dropped: AtomicU64,
     /// 프로세스 시작 시각.
     started: std::sync::OnceLock<Instant>,
 }
@@ -321,26 +324,33 @@ async fn main() {
                     }
 
                     // batch envelope: 개별 직렬화 + 캐시 갱신 + ticks 배열에 누적
+                    // 핵심: item을 Utf8Bytes로 변환 후 cache는 cheap clone(Arc refcount inc),
+                    // envelope 조립은 str push_str. 이전엔 cache용 String::clone(heap 전체 복사)이
+                    // 매 tick × 600+ 종목에 발생했음.
                     let t_ser_start = Instant::now();
-                    let mut items_json: Vec<String> = Vec::with_capacity(pending.len());
+                    let mut items_bytes: Vec<axum::extract::ws::Utf8Bytes> = Vec::with_capacity(pending.len());
+                    let mut total_len: usize = 0;
                     for (_, msg) in pending.drain() {
                         let Ok(item) = serde_json::to_string(&msg) else { continue };
+                        // String → Utf8Bytes: 내부 heap을 통째 인수 (복사 0).
+                        let item_bytes = axum::extract::ws::Utf8Bytes::from(item);
                         if let Some(cache_key) = msg_cache_key(&msg) {
-                            bc.cache_if_changed(cache_key, axum::extract::ws::Utf8Bytes::from(item.clone()));
+                            // cheap clone — Bytes(Arc) refcount inc만, heap 복사 X.
+                            bc.cache_if_changed(cache_key, item_bytes.clone());
                         }
-                        items_json.push(item);
+                        total_len += item_bytes.len();
+                        items_bytes.push(item_bytes);
                     }
-                    if items_json.is_empty() { continue; }
+                    if items_bytes.is_empty() { continue; }
 
-                    // {"type":"batch","ticks":[<item1>,<item2>,...]} — items는 이미 JSON 문자열이라
-                    // 한 번 더 to_string하지 말고 직접 조립해 직렬화 비용 절약.
-                    let mut envelope = String::with_capacity(items_json.iter().map(|s| s.len()).sum::<usize>() + 32);
+                    // {"type":"batch","ticks":[<item1>,<item2>,...]} 직접 조립.
+                    let mut envelope = String::with_capacity(total_len + items_bytes.len() + 32);
                     envelope.push_str("{\"type\":\"batch\",\"ticks\":[");
                     let mut first = true;
-                    for item in items_json {
+                    for item_bytes in &items_bytes {
                         if !first { envelope.push(','); }
                         first = false;
-                        envelope.push_str(&item);
+                        envelope.push_str(item_bytes);
                     }
                     envelope.push_str("]}");
                     let ser_elapsed = t_ser_start.elapsed().as_nanos() as u64;
@@ -1092,6 +1102,9 @@ async fn debug_stats(State(state): State<AppState>) -> Json<serde_json::Value> {
         "ws_clients": state.broadcaster.receiver_count(),
         "ws_lag_total": s.ws_lag_total.load(Ordering::Relaxed),
         "reconnect_count": s.reconnect_count.load(Ordering::Relaxed),
+        // LS feed → bridge mpsc 채널 full로 drop된 틱 수. 0이 정상.
+        // 누적되면 bridge가 못 따라잡거나 broadcast/serialize 핫 path가 느린 신호.
+        "tx_dropped": crate::feed::ls_api::TX_DROPPED.load(Ordering::Relaxed),
         "feed_mode": mode,
         "feed_state": feed_state,
         "feed_age_sec": age_sec,

@@ -21,6 +21,8 @@ export interface StockTick {
   volume: number
   cum_volume: number
   timestamp: string
+  /** true = t8402/t1102 초기 스냅샷. 이미 실시간 값 있으면 무시. */
+  is_initial?: boolean
   /** 당일 고가 — 백엔드(S3_/K3_/t1102)가 보내거나, marketStore가 running max로 보강 */
   high?: number
   /** 당일 저가 */

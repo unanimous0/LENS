@@ -206,12 +206,13 @@ missingWeight = Σ(prev_close × qty for S=0 종목) / 전체 추정
 
 PDF 현물 바스켓을 개별주식선물로 대체하는 차익은 **현물 1× ETF에서만 의미**. 다른 유형은 자체 NAV 산출 자체가 깨짐 (PDF에 지수선물 라인이 들어가는데 일중 평가는 전일정산가 필요, 인버스는 PDF가 빈 껍데기, 채권형은 채권 시세 피드 별개 등).
 
-**Backend 분류** — `backend/routers/etfs.py::_is_arbitrable(group, name)`:
-- 그룹이 `주식-`로 시작하지 않으면 false (채권-/혼합-/통화-/원자재-/부동산/기타)
-- 종목명에 `레버리지`/`인버스`/`2X`/`3X`/`선물`/`커버드콜` 포함 시 false
+**Backend 분류** — `backend/routers/etfs.py::_is_arbitrable(name, tracking_multiple, replication)`:
+- `tracking_multiple` 이 `일반` 포함 안 함 → false (레버리지/인버스/2X)
+- `replication` 이 `실물` 포함 안 함 → false (합성 ETF)
+- 종목명에 `레버리지`/`인버스`/`2X`/`3X`/`선물`/`커버드콜`/`채권`/`회사채`/`국고채`/`국채`/`혼합`/`원자재`/`통화`/`부동산`/`리츠`/`금현물`/`은현물`/`WTI`/`원유`/`달러`/`엔화`/`위안` 포함 시 false
 - `/etfs`, `/etfs/pdf-all`, `/etfs/{code}/pdf` 응답에 `arbitrable: bool` 포함
 
-총 589개 중 **차익 361 / 비차익 228**. 비차익 예: KODEX 레버리지(122630), KODEX 인버스(114800), KODEX 200선물인버스2X(252670), KODEX 200롱코스닥150숏선물(360140), TIGER 미국나스닥100ETF선물(483240), TIGER 200커버드콜(289480), 채권/혼합/통화/원자재/부동산 ETF 전부. 커버드콜은 옵션 매도 프리미엄을 더해 NAV가 단순 현물 합산과 달라 PDF 기반 차익 산출 부정확.
+총 636 ETF 중 **차익 ~430 / 비차익 ~200** (2026-05-13 기준). 비차익 예: KODEX 레버리지(122630), KODEX 인버스(114800), KODEX 200선물인버스2X(252670), TIGER 200커버드콜(289480), 채권/혼합/통화/원자재/부동산/리츠 ETF 전부. 커버드콜은 옵션 매도 프리미엄을 더해 NAV가 단순 현물 합산과 달라 PDF 기반 차익 산출 부정확.
 
 **Frontend UI** — `etf-arbitrage.tsx`:
 - `EtfMaster.arbitrable` 누락 시 true 폴백 (구버전 백엔드 호환)
