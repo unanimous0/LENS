@@ -1,257 +1,19 @@
+"""주식선물 마스터 데이터 로더.
+
+데이터 출처: Finance_Data DB의 일배치가 매일 새벽 5:30 KST에 `data/futures_master.json` 갱신.
+LENS는 그 파일을 read-only로 읽기만 함.
+
+이전 (~2026-05-13): LENS backend가 LS API t8401/t8402 직접 호출
+변경 후: Finance_Data 측이 daily_update 끝에 JSON export (단일 진실원)
 """
-주식선물 마스터 데이터 관리.
-- 외부망: LS API t8401(목록) + t8402(상세) 호출 → JSON 저장
-- 내부망: 외부망에서 만든 JSON 파일 사용 (압축에 포함)
-- 자동 갱신: 서버 시작 시 근월물 만기일 체크 → 지났으면 자동 호출
-"""
+from __future__ import annotations
+
 import json
-import os
-import re
-import time
 from datetime import date, datetime
 from pathlib import Path
 
-import httpx
-
 DATA_DIR = Path(__file__).parent.parent.parent / "data"
 MASTER_FILE = DATA_DIR / "futures_master.json"
-
-TOKEN_URL = "https://openapi.ls-sec.co.kr:8080/oauth2/token"
-API_BASE = "https://openapi.ls-sec.co.kr:8080"
-
-
-async def _get_token(app_key: str, app_secret: str) -> str:
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            TOKEN_URL,
-            data={
-                "grant_type": "client_credentials",
-                "appkey": app_key,
-                "appsecretkey": app_secret,
-                "scope": "oob",
-            },
-        )
-        resp.raise_for_status()
-        return resp.json()["access_token"]
-
-
-async def _call_tr(token: str, tr_cd: str, path: str, body: dict) -> dict:
-    async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.post(
-            f"{API_BASE}/{path}",
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {token}",
-                "tr_cd": tr_cd,
-                "tr_cont": "N",
-            },
-            json=body,
-        )
-        resp.raise_for_status()
-        return resp.json()
-
-
-def _extract_expiry_month(hname: str) -> str:
-    """종목명에서 만기월 추출: '삼성전자 F 202605' → '202605'"""
-    m = re.search(r"(\d{6})", hname)
-    return m.group(1) if m else ""
-
-
-def _second_thursday(year: int, month: int) -> date:
-    """해당 월의 둘째 목요일 날짜를 반환."""
-    # 1일의 요일 (0=월 ... 3=목 ... 6=일)
-    first = date(year, month, 1)
-    thu = 3  # Thursday
-    # 첫째 목요일: 1일이 목요일이면 1일, 아니면 다음 목요일
-    days_until_thu = (thu - first.weekday()) % 7
-    first_thu = 1 + days_until_thu
-    second_thu = first_thu + 7
-    return date(year, month, second_thu)
-
-
-def _next_month(year: int, month: int) -> tuple[int, int]:
-    return (year + 1, 1) if month == 12 else (year, month + 1)
-
-
-def _determine_front_back(today: date) -> tuple[str, str]:
-    """현재 날짜 기준 근월/원월 판별.
-    주식선물 만기: 매월 둘째 목요일.
-    만기일 당일까지는 해당 월이 근월, 만기일 다음날부터 다음 달이 근월."""
-    y, m = today.year, today.month
-    expiry = _second_thursday(y, m)
-    if today <= expiry:
-        front_y, front_m = y, m
-    else:
-        front_y, front_m = _next_month(y, m)
-    back_y, back_m = _next_month(front_y, front_m)
-    return f"{front_y}{front_m:02d}", f"{back_y}{back_m:02d}"
-
-
-async def fetch_and_save_master() -> dict:
-    """LS API에서 주식선물 마스터 데이터를 가져와 JSON으로 저장."""
-    from dotenv import load_dotenv
-    load_dotenv()
-    app_key = os.environ.get("LS_APP_KEY", "")
-    app_secret = os.environ.get("LS_APP_SECRET", "")
-    if not app_key or not app_secret:
-        raise RuntimeError("LS_APP_KEY / LS_APP_SECRET 환경변수 필요")
-
-    token = await _get_token(app_key, app_secret)
-
-    # 1. t8401: 전체 주식선물 목록
-    data = await _call_tr(token, "t8401", "futureoption/market-data", {
-        "t8401InBlock": {"dummy": ""},
-    })
-    all_futures = data.get("t8401OutBlock", [])
-
-    # 기초자산별 그룹핑
-    from collections import defaultdict
-    by_base: dict[str, list[dict]] = defaultdict(list)
-    for item in all_futures:
-        expiry = _extract_expiry_month(item.get("hname", ""))
-        if expiry:
-            item["expiry"] = expiry
-            by_base[item["basecode"]].append(item)
-
-    # t8436: 코스닥 종목 목록 (코스피/코스닥 구분용)
-    kosdaq_data = await _call_tr(token, "t8436", "stock/etc", {
-        "t8436InBlock": {"gubun": "2"},
-    })
-    kosdaq_codes = {}
-    for item in kosdaq_data.get("t8436OutBlock", []):
-        kosdaq_codes[item["shcode"]] = "KOSDAQ"
-
-    today = date.today()
-    front_month, back_month = _determine_front_back(today)
-
-    # 근월-차월 스프레드 필터링 (front_month+back_month 패턴)
-    fm_suffix = front_month[2:]  # "202605" → "0605" → 뒤 2자리 "05" → 코드에서는 "65"
-    # 선물코드에서 월 인코딩: 05→65, 06→66, 07→67, 09→69, 12→6C
-    month_to_code = {"01": "61", "02": "62", "03": "63", "04": "64", "05": "65",
-                     "06": "66", "07": "67", "08": "68", "09": "69", "10": "6A",
-                     "11": "6B", "12": "6C"}
-    front_code_suffix = month_to_code.get(front_month[4:], "65")
-    back_code_suffix = month_to_code.get(back_month[4:], "66")
-    spread_pattern = front_code_suffix + back_code_suffix  # "6566" for 05→06
-
-    # 정확한 근월-차월 스프레드만 선별
-    spread_by_base_filtered: dict[str, str] = {}
-    for item in all_futures:
-        shcode = item.get("shcode", "")
-        if shcode.startswith("D") and shcode.endswith("S") and spread_pattern in shcode:
-            base = item.get("basecode", "")
-            if base:
-                spread_by_base_filtered[base] = shcode
-
-    # 2. 근월/원월 필터 → 근월물만 t8402로 정적 정보(종목명, 만기, 승수) 조회
-    items = []
-    for base_code, futures_list in sorted(by_base.items()):
-        futures_list.sort(key=lambda x: x["expiry"])
-        front = next((f for f in futures_list if f["expiry"] == front_month), None)
-        back = next((f for f in futures_list if f["expiry"] == back_month), None)
-
-        if not front:
-            continue
-
-        # t8402: 근월물에서 정적 정보만 (종목명, 만기일, 승수)
-        front_detail = await _fetch_detail_safe(token, front["shcode"])
-        await _sleep(0.12)
-        base_name = front_detail.get("basehname", front["hname"].strip().split("F")[0].strip())
-        clean_base = base_code[1:] if base_code.startswith("A") and len(base_code) == 7 else base_code
-
-        entry = {
-            "base_code": clean_base,
-            "base_name": base_name,
-            "market": kosdaq_codes.get(clean_base, "KOSPI"),
-            "front": _build_static_entry(front, front_detail),
-        }
-
-        # 원월물: t8402 호출 불필요, t8401 정보만으로 충분
-        if back:
-            entry["back"] = {
-                "code": back["shcode"],
-                "name": back["hname"].strip(),
-                "expiry": back_month,
-                "days_left": int(front_detail.get("jandatecnt", 0)) + 28,  # 근월 만기 + ~1개월 근사
-                "multiplier": _parse_multiplier(front_detail.get("mulcnt", "10")),  # 승수는 동일
-            }
-
-        # 스프레드 코드 (t8401에서 이미 매칭, 가격은 실시간으로)
-        spread_code = spread_by_base_filtered.get(base_code, "")
-        if spread_code:
-            entry["spread_code"] = spread_code
-
-        items.append(entry)
-
-    # 종목명 누락 재시도 (t8402 실패했을 경우)
-    await _sleep(1.0)
-    for entry in items:
-        if not entry.get("base_name") or entry["base_name"] == entry["front"]["code"]:
-            detail = await _fetch_detail_safe(token, entry["front"]["code"])
-            if detail and detail.get("basehname"):
-                entry["base_name"] = detail["basehname"]
-            await _sleep(0.15)
-
-    master: dict = {
-        "updated": today.isoformat(),
-        "front_month": front_month,
-        "back_month": back_month,
-        "count": len(items),
-        "items": items,
-    }
-
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    MASTER_FILE.write_text(json.dumps(master, ensure_ascii=False, indent=2), encoding="utf-8")
-    return master
-
-
-async def _fetch_detail(token: str, shcode: str) -> dict:
-    """t8402: 주식선물 현재가 상세 조회."""
-    data = await _call_tr(token, "t8402", "futureoption/market-data", {
-        "t8402InBlock": {"focode": shcode},
-    })
-    return data.get("t8402OutBlock", {})
-
-
-async def _fetch_detail_safe(token: str, shcode: str, retries: int = 3) -> dict:
-    """t8402 호출. 실패 시 재시도, 최종 실패 시 빈 dict 반환."""
-    for attempt in range(retries + 1):
-        try:
-            return await _fetch_detail(token, shcode)
-        except Exception:
-            if attempt < retries:
-                await _sleep(1.0)
-    return {}
-
-
-def _build_static_entry(item: dict, detail: dict) -> dict:
-    """정적 정보만 (코드, 이름, 만기, 승수). 가격/거래량은 실시간으로."""
-    return {
-        "code": item["shcode"],
-        "name": item["hname"].strip(),
-        "expiry": detail.get("lastmonth", item.get("expiry", "")),
-        "days_left": int(detail.get("jandatecnt", 0)),
-        "multiplier": _parse_multiplier(detail.get("mulcnt", "10")),
-    }
-
-
-def _parse_price(val: str) -> float:
-    try:
-        return float(val)
-    except (ValueError, TypeError):
-        return 0.0
-
-
-def _parse_multiplier(val: str) -> float:
-    try:
-        return float(val)
-    except (ValueError, TypeError):
-        return 10.0
-
-
-async def _sleep(seconds: float):
-    import asyncio
-    await asyncio.sleep(seconds)
 
 
 def load_master() -> dict | None:
@@ -265,7 +27,8 @@ def load_master() -> dict | None:
 
 
 def is_master_expired(master: dict) -> bool:
-    """근월물 만기일이 오늘이거나 지났으면 True."""
+    """근월물 만기일이 오늘이거나 지났으면 True.
+    daily_update가 매일 갱신하지만 만기 당일은 stale 직전이라 호출자가 경고 가능."""
     items = master.get("items", [])
     if not items:
         return True
@@ -282,123 +45,14 @@ def is_master_expired(master: dict) -> bool:
         return True
 
 
-def _is_stale(master: dict) -> bool:
-    """만기 지났으면 True. 일자 기준 갱신은 불필요 (정적 데이터)."""
-    return is_master_expired(master)
-
-
 async def ensure_master() -> dict:
-    """마스터 데이터가 유효하면 로드, 만기 지났으면 갱신.
-    매일 첫 호출 시 승수 변경도 백그라운드 체크."""
-    import asyncio
-
+    """마스터 데이터 로드. 파일이 없으면 503 RuntimeError.
+    Finance_Data 측 daily_update가 매일 새벽 5:30 KST에 자동 갱신하므로
+    LENS 측 fetch 로직 없음."""
     master = load_master()
-
-    if master and not _is_stale(master):
-        # 오늘 승수 체크 안 했으면 백그라운드로
-        _maybe_check_multipliers(asyncio.get_event_loop())
-        return master
-
-    # 만기 지남 → 기존 파일 즉시 반환 + 백그라운드 갱신
-    if master:
-        asyncio.create_task(_background_refresh())
-        return master
-
-    # 파일 자체가 없으면 → 동기 갱신 (최초 실행)
-    try:
-        master = await fetch_and_save_master()
-        return master
-    except Exception as e:
-        raise RuntimeError(f"마스터 데이터 없음, LS API 호출 실패: {e}")
-
-
-_last_multiplier_check: str = ""
-
-def _maybe_check_multipliers(loop):
-    """오늘 아직 승수 체크 안 했으면 백그라운드 실행."""
-    import asyncio
-    global _last_multiplier_check
-    today = date.today().isoformat()
-    if _last_multiplier_check == today:
-        return
-    _last_multiplier_check = today
-    asyncio.ensure_future(_background_multiplier_check())
-
-
-async def _background_refresh():
-    """백그라운드에서 마스터 갱신. 실패해도 무시."""
-    try:
-        await fetch_and_save_master()
-    except Exception:
-        pass
-
-
-async def _background_multiplier_check():
-    """백그라운드에서 승수 변경 체크. 변경 있으면 마스터 파일 업데이트."""
-    try:
-        changed = await check_and_update_multipliers()
-        if changed:
-            import logging
-            logging.getLogger(__name__).warning(f"승수 변경 감지: {changed}")
-    except Exception:
-        pass
-
-
-async def check_and_update_multipliers() -> dict[str, float]:
-    """마스터의 승수가 변경됐는지 체크. 변경 있으면 마스터 파일 업데이트.
-    t8402로 근월물만 조회 (250건, ~30초)."""
-    from dotenv import load_dotenv
-    load_dotenv()
-    app_key = os.environ.get("LS_APP_KEY", "")
-    app_secret = os.environ.get("LS_APP_SECRET", "")
-    if not app_key or not app_secret:
-        return {}
-
-    master = load_master()
-    if not master:
-        return {}
-
-    token = await _get_token(app_key, app_secret)
-    changed = {}
-
-    for item in master["items"]:
-        code = item["front"]["code"]
-        old_mul = item["front"].get("multiplier", 10)
-        detail = await _fetch_detail_safe(token, code, retries=1)
-        if detail:
-            new_mul = _parse_multiplier(detail.get("mulcnt", "10"))
-            if new_mul != old_mul:
-                changed[code] = new_mul
-                item["front"]["multiplier"] = new_mul
-                if "back" in item:
-                    item["back"]["multiplier"] = new_mul
-        await _sleep(0.12)
-
-    if changed:
-        DATA_DIR.mkdir(parents=True, exist_ok=True)
-        MASTER_FILE.write_text(json.dumps(master, ensure_ascii=False, indent=2), encoding="utf-8")
-
-    return changed
-
-
-async def fetch_prices_batch(codes: list[str]) -> dict[str, dict]:
-    """여러 선물 코드의 최신 가격을 t8402로 일괄 조회.
-    TPS 제한(10) 고려하여 순차 호출, 결과를 {code: {price, volume}} 딕셔너리로 반환."""
-    from dotenv import load_dotenv
-    load_dotenv()
-    app_key = os.environ.get("LS_APP_KEY", "")
-    app_secret = os.environ.get("LS_APP_SECRET", "")
-    if not app_key or not app_secret:
-        return {}
-
-    token = await _get_token(app_key, app_secret)
-    result = {}
-    for code in codes:
-        detail = await _fetch_detail_safe(token, code)
-        if detail:
-            result[code] = {
-                "price": _parse_price(detail.get("price", "0")),
-                "volume": int(_parse_price(detail.get("volume", "0"))),
-            }
-        await _sleep(0.12)  # TPS=10
-    return result
+    if master is None:
+        raise RuntimeError(
+            "data/futures_master.json 없음. "
+            "Finance_Data 측 daily_update 동작 확인 필요."
+        )
+    return master
