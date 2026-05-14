@@ -584,6 +584,131 @@ pub async fn load_index_intraday_batch(
     Ok(out)
 }
 
+/// 기존 bars 벡터의 마지막 ts 이후의 *새 bars*만 끝에 append.
+/// `new`는 ASC 정렬되어 있다고 가정.
+/// 반환: 실제 추가된 bar 개수.
+fn extend_after_last(existing: &mut Vec<Bar>, new: &[Bar]) -> usize {
+    if new.is_empty() {
+        return 0;
+    }
+    let last_ts = existing.last().map(|b| b.ts).unwrap_or(i64::MIN);
+    let start = new.iter().position(|b| b.ts > last_ts).unwrap_or(new.len());
+    let n = new.len() - start;
+    if n > 0 {
+        existing.extend(new[start..].iter().copied());
+    }
+    n
+}
+
+/// 증분 갱신 — universe 종목 중 *이미 캐시에 있는* 것에 한해 last ts 이후 fetch + append.
+///
+/// 매 cron 사이클마다 호출. PG 쿼리는 *작은 cutoff*만 — partition pruning 강력.
+/// 새 universe 종목 (캐시 없음) 은 *이번 cron에선 skip*. full reload (재기동) 시 채워짐.
+///
+/// 반환: (추가된 bar 총합, 갱신된 series 수).
+pub async fn incremental_update_stocks(
+    pool: &PgPool,
+    cache: &SeriesCache,
+    codes: &[String],
+    asset_type: AssetType,
+    lookback_days_daily: i32,
+    lookback_days_1m: i32,
+    lookback_days_30s: i32,
+) -> Result<(usize, usize), sqlx::Error> {
+    // lookback이 0이면 fetch 자체 skip
+    let daily = if lookback_days_daily > 0 {
+        load_stock_daily_batch(pool, codes, lookback_days_daily).await?
+    } else {
+        HashMap::new()
+    };
+    let m1 = if lookback_days_1m > 0 {
+        load_stock_intraday_batch(pool, codes, 60, lookback_days_1m).await?
+    } else {
+        HashMap::new()
+    };
+    let s30 = if lookback_days_30s > 0 {
+        load_stock_intraday_batch(pool, codes, 30, lookback_days_30s).await?
+    } else {
+        HashMap::new()
+    };
+
+    let mut total_added = 0usize;
+    let mut series_updated = 0usize;
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    for code in codes {
+        let key = series_key(asset_type, code);
+        if let Some(mut entry) = cache.get_mut(&key) {
+            let mut added = 0usize;
+            if let Some(bars) = daily.get(code) {
+                added += extend_after_last(&mut entry.bars_1d, bars);
+            }
+            if let Some(bars) = m1.get(code) {
+                added += extend_after_last(&mut entry.bars_1m, bars);
+            }
+            if let Some(bars) = s30.get(code) {
+                added += extend_after_last(&mut entry.bars_30s, bars);
+            }
+            if added > 0 {
+                entry.last_updated = now_ms;
+                total_added += added;
+                series_updated += 1;
+            }
+        }
+    }
+    Ok((total_added, series_updated))
+}
+
+/// 지수 증분 — 위 stocks와 동일 패턴, index_* 테이블 사용.
+pub async fn incremental_update_indices(
+    pool: &PgPool,
+    cache: &SeriesCache,
+    codes: &[String],
+    lookback_days_daily: i32,
+    lookback_days_1m: i32,
+    lookback_days_30s: i32,
+) -> Result<(usize, usize), sqlx::Error> {
+    let daily = if lookback_days_daily > 0 {
+        load_index_daily_batch(pool, codes, lookback_days_daily).await?
+    } else {
+        HashMap::new()
+    };
+    let m1 = if lookback_days_1m > 0 {
+        load_index_intraday_batch(pool, codes, 60, lookback_days_1m).await?
+    } else {
+        HashMap::new()
+    };
+    let s30 = if lookback_days_30s > 0 {
+        load_index_intraday_batch(pool, codes, 30, lookback_days_30s).await?
+    } else {
+        HashMap::new()
+    };
+
+    let mut total_added = 0usize;
+    let mut series_updated = 0usize;
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    for code in codes {
+        let key = series_key(AssetType::Index, code);
+        if let Some(mut entry) = cache.get_mut(&key) {
+            let mut added = 0usize;
+            if let Some(bars) = daily.get(code) {
+                added += extend_after_last(&mut entry.bars_1d, bars);
+            }
+            if let Some(bars) = m1.get(code) {
+                added += extend_after_last(&mut entry.bars_1m, bars);
+            }
+            if let Some(bars) = s30.get(code) {
+                added += extend_after_last(&mut entry.bars_30s, bars);
+            }
+            if added > 0 {
+                entry.last_updated = now_ms;
+                total_added += added;
+                series_updated += 1;
+            }
+        }
+    }
+    Ok((total_added, series_updated))
+}
+
 /// 지수 universe 워밍업 — 일봉 + 1분봉 + 30초봉 batch. 분봉 정책은 §12 참조.
 pub async fn warmup_universe_indices_batch(
     pool: &PgPool,

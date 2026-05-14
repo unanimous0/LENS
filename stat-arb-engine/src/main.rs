@@ -47,6 +47,13 @@ const WARMUP_DAYS_1M: i32 = 130;
 /// 더 길게 잡고 싶으면 batch chunk 분할 필요. 분봉 정책은 stat-arb-engine.md §12 참조.
 const WARMUP_DAYS_30S: i32 = 5;
 
+/// 증분 갱신 lookback (캘린더일).
+/// 매 cron 사이클마다 *이 일수* 만큼만 PG에서 fetch하고 dedup append.
+/// 주말/공휴일 cron 공백 후 깨어났을 때 누락 방지를 위해 lookback 충분히.
+const INCR_LOOKBACK_DAILY: i32 = 7;
+const INCR_LOOKBACK_1M: i32 = 0; // 1분봉 raw는 4/24까지 고정 — incr skip
+const INCR_LOOKBACK_30S: i32 = 7;
+
 /// 통계량 재계산 cron 주기. 10분 — 분봉 한두 개 들어오는 단위.
 /// 환경변수 `STATARB_RECOMPUTE_SECS` 로 오버라이드 (시연/테스트용).
 fn recompute_interval() -> Duration {
@@ -443,13 +450,12 @@ async fn spawn_recompute_loop(
         interval.as_secs()
     );
 
-    // 초기 1회 — Sleep phase 여도 첫 데이터는 채워둠 (장 외 시간 시작 시 빈 화면 방지).
+    // 초기 1회 — full warmup. Sleep phase 여도 첫 데이터는 채워둠 (장 외 시간 시작 시 빈 화면 방지).
     load_groups(&pool, &groups, &stats).await;
-    warmup_and_discover(&pool, &cache, &pairs, &stats).await;
+    warmup_and_discover(&pool, &cache, &pairs, &stats, UpdateMode::Full).await;
 
-    // 메인 루프
+    // 메인 루프 — 증분
     loop {
-        // 다음 cycle 까지 대기 (또는 cancel)
         tokio::select! {
             _ = tokio::time::sleep(interval) => {}
             _ = cancel.cancelled() => {
@@ -458,12 +464,12 @@ async fn spawn_recompute_loop(
             }
         }
 
-        // Sleep phase면 활성화될 때까지 대기 — 야간엔 분봉 안 들어오니까 재발굴 의미 없음.
+        // Sleep phase면 활성화될 때까지 대기.
         if !phase::wait_until_active(&cancel, "recompute").await {
-            return; // cancelled during wait
+            return;
         }
 
-        warmup_and_discover(&pool, &cache, &pairs, &stats).await;
+        warmup_and_discover(&pool, &cache, &pairs, &stats, UpdateMode::Incremental).await;
         stats.recompute_cycles.fetch_add(1, Ordering::Relaxed);
     }
 }
@@ -504,17 +510,26 @@ async fn load_groups(
 /// ETF universe 상위 N개 (1개월 평균 거래대금 내림차순).
 const ETF_TOP_N: i32 = 100;
 
-/// universe 워밍업 + 1:1 발굴.
-/// PR5: KOSPI200 + KOSDAQ150 주식 + ETF + 주요 지수 통합.
+/// 워밍업 vs 증분 모드 — `warmup_and_discover`에 전달.
+#[derive(Debug, Clone, Copy)]
+enum UpdateMode {
+    /// 캐시 초기화하고 1년치 다 로드 (기동 시 1회).
+    Full,
+    /// 캐시 유지하고 최근 N일치만 dedup append (매 cron).
+    Incremental,
+}
+
+/// universe 워밍업 + 1:1 발굴. Full(기동 1회) / Incremental(매 cron) 모드 분기.
 async fn warmup_and_discover(
     pool: &PgPool,
     cache: &SeriesCache,
     pairs: &Arc<RwLock<PairsState>>,
     stats: &Arc<EngineStats>,
+    mode: UpdateMode,
 ) {
     let t_total = Instant::now();
 
-    // 1. universe 추출
+    // 1. universe 추출 (가벼움 — 매번 재추출하여 신규 종목 반영)
     let universe = match universe::load_full(pool, ETF_TOP_N).await {
         Ok(u) => u,
         Err(e) => {
@@ -522,90 +537,78 @@ async fn warmup_and_discover(
             return;
         }
     };
-    info!(
-        "[universe] KOSPI200 {} + KOSDAQ150 {} + ETF {} + Index {} = total {}",
-        universe.stocks_kospi200.len(),
-        universe.stocks_kosdaq150.len(),
-        universe.etfs.len(),
-        universe.indices.len(),
-        universe.total_count()
-    );
 
-    // 2. 자산군별 batch 워밍업
-    let t_warm = Instant::now();
-
-    // Stock: KOSPI200 + KOSDAQ150 합쳐서 한 batch
     let mut stock_codes: Vec<String> = Vec::with_capacity(
         universe.stocks_kospi200.len() + universe.stocks_kosdaq150.len(),
     );
     stock_codes.extend(universe.stocks_kospi200.iter().map(|s| s.code.clone()));
     stock_codes.extend(universe.stocks_kosdaq150.iter().map(|s| s.code.clone()));
-
     let etf_codes: Vec<String> = universe.etfs.iter().map(|e| e.code.clone()).collect();
     let index_codes: Vec<String> = universe.indices.iter().map(|i| i.code.clone()).collect();
 
-    let (stock_n, stock_b) = data::bars::warmup_universe_stocks_batch(
-        pool,
-        cache,
-        &stock_codes,
-        AssetType::Stock,
-        WARMUP_DAYS_DAILY,
-        WARMUP_DAYS_1M,
-        WARMUP_DAYS_30S,
-    )
-    .await
-    .unwrap_or_else(|e| {
-        warn!("[warmup] Stock 실패: {e}");
-        (0, 0)
-    });
+    // 2. 워밍업 (Full or Incremental)
+    let t_warm = Instant::now();
+    match mode {
+        UpdateMode::Full => {
+            info!(
+                "[universe] KOSPI200 {} + KOSDAQ150 {} + ETF {} + Index {} = total {}",
+                universe.stocks_kospi200.len(),
+                universe.stocks_kosdaq150.len(),
+                universe.etfs.len(),
+                universe.indices.len(),
+                universe.total_count()
+            );
 
-    let (etf_n, etf_b) = data::bars::warmup_universe_stocks_batch(
-        pool,
-        cache,
-        &etf_codes,
-        AssetType::Etf,
-        WARMUP_DAYS_DAILY,
-        WARMUP_DAYS_1M,
-        WARMUP_DAYS_30S,
-    )
-    .await
-    .unwrap_or_else(|e| {
-        warn!("[warmup] ETF 실패: {e}");
-        (0, 0)
-    });
+            let (stock_n, stock_b) = data::bars::warmup_universe_stocks_batch(
+                pool, cache, &stock_codes, AssetType::Stock,
+                WARMUP_DAYS_DAILY, WARMUP_DAYS_1M, WARMUP_DAYS_30S,
+            ).await.unwrap_or_else(|e| { warn!("[warmup] Stock 실패: {e}"); (0, 0) });
 
-    let (idx_n, idx_b) = data::bars::warmup_universe_indices_batch(
-        pool,
-        cache,
-        &index_codes,
-        WARMUP_DAYS_DAILY,
-        WARMUP_DAYS_1M,
-        WARMUP_DAYS_30S,
-    )
-    .await
-    .unwrap_or_else(|e| {
-        warn!("[warmup] Index 실패: {e}");
-        (0, 0)
-    });
+            let (etf_n, etf_b) = data::bars::warmup_universe_stocks_batch(
+                pool, cache, &etf_codes, AssetType::Etf,
+                WARMUP_DAYS_DAILY, WARMUP_DAYS_1M, WARMUP_DAYS_30S,
+            ).await.unwrap_or_else(|e| { warn!("[warmup] ETF 실패: {e}"); (0, 0) });
 
-    let total_series = stock_n + etf_n + idx_n;
-    let total_bars = stock_b + etf_b + idx_b;
-    stats.pg_queries.fetch_add(9, Ordering::Relaxed); // 3자산군 × 3 (daily+1m+30s)
-    info!(
-        "[warmup] Stock {}series/{}b · ETF {}/{}  · Index {}/{}  = total {}/{} ({:.1}초)",
-        stock_n,
-        stock_b,
-        etf_n,
-        etf_b,
-        idx_n,
-        idx_b,
-        total_series,
-        total_bars,
-        t_warm.elapsed().as_secs_f64()
-    );
+            let (idx_n, idx_b) = data::bars::warmup_universe_indices_batch(
+                pool, cache, &index_codes,
+                WARMUP_DAYS_DAILY, WARMUP_DAYS_1M, WARMUP_DAYS_30S,
+            ).await.unwrap_or_else(|e| { warn!("[warmup] Index 실패: {e}"); (0, 0) });
+
+            stats.pg_queries.fetch_add(9, Ordering::Relaxed);
+            info!(
+                "[warmup:Full] Stock {}series/{}b · ETF {}/{}  · Index {}/{}  = total {}/{} ({:.1}초)",
+                stock_n, stock_b, etf_n, etf_b, idx_n, idx_b,
+                stock_n + etf_n + idx_n, stock_b + etf_b + idx_b,
+                t_warm.elapsed().as_secs_f64()
+            );
+        }
+        UpdateMode::Incremental => {
+            let (s_added, s_ser) = data::bars::incremental_update_stocks(
+                pool, cache, &stock_codes, AssetType::Stock,
+                INCR_LOOKBACK_DAILY, INCR_LOOKBACK_1M, INCR_LOOKBACK_30S,
+            ).await.unwrap_or_else(|e| { warn!("[incr] Stock 실패: {e}"); (0, 0) });
+
+            let (e_added, e_ser) = data::bars::incremental_update_stocks(
+                pool, cache, &etf_codes, AssetType::Etf,
+                INCR_LOOKBACK_DAILY, INCR_LOOKBACK_1M, INCR_LOOKBACK_30S,
+            ).await.unwrap_or_else(|e| { warn!("[incr] ETF 실패: {e}"); (0, 0) });
+
+            let (i_added, i_ser) = data::bars::incremental_update_indices(
+                pool, cache, &index_codes,
+                INCR_LOOKBACK_DAILY, INCR_LOOKBACK_1M, INCR_LOOKBACK_30S,
+            ).await.unwrap_or_else(|e| { warn!("[incr] Index 실패: {e}"); (0, 0) });
+
+            stats.pg_queries.fetch_add(6, Ordering::Relaxed); // 3자산군 × 2 (daily+30s, 1m skip)
+            info!(
+                "[warmup:Incr] +bars Stock {}/{}ser · ETF {}/{}ser · Index {}/{}ser ({:.1}초)",
+                s_added, s_ser, e_added, e_ser, i_added, i_ser,
+                t_warm.elapsed().as_secs_f64()
+            );
+        }
+    }
 
     // 3. 종목명 룩업 — 모든 자산군 통합 (series_key 형식)
-    let mut names: HashMap<String, String> = HashMap::with_capacity(total_series);
+    let mut names: HashMap<String, String> = HashMap::with_capacity(cache.len());
     for s in &universe.stocks_kospi200 {
         names.insert(series_key(AssetType::Stock, &s.code), s.name.clone());
     }
