@@ -14,7 +14,7 @@ mod universe;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use axum::extract::{Query, State};
 use axum::http::Method;
@@ -39,6 +39,16 @@ const PORT: u16 = 8300;
 const WARMUP_DAYS_DAILY: i32 = 365;
 /// 1분봉 워밍업 길이 (캘린더일). 너무 길면 메모리 큼 — 14일치면 약 영업일 10일 = 3,900 bar/종목.
 const WARMUP_DAYS_1M: i32 = 14;
+
+/// 통계량 재계산 cron 주기. 10분 — 분봉 한두 개 들어오는 단위.
+/// 환경변수 `STATARB_RECOMPUTE_SECS` 로 오버라이드 (시연/테스트용).
+fn recompute_interval() -> Duration {
+    std::env::var("STATARB_RECOMPUTE_SECS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .map(Duration::from_secs)
+        .unwrap_or(Duration::from_secs(10 * 60))
+}
 
 /// 런타임 카운터. realtime의 Stats 패턴 차용 — `/debug/stats`로 노출.
 #[derive(Default)]
@@ -299,15 +309,23 @@ async fn main() {
     let pairs = Arc::new(RwLock::new(PairsState::default()));
     let groups_state = Arc::new(RwLock::new(GroupsState::default()));
 
-    // 백그라운드: 그룹 자동 생성 + universe 워밍업 + 1:1 발굴. 서버는 즉시 응답 가능.
+    // 백그라운드: 그룹 자동 생성 + 초기 발굴 + 10분 cron 재발굴 루프.
     if let Some(pool) = pg.clone() {
         let cache_clone = cache.clone();
         let pairs_clone = pairs.clone();
         let groups_clone = groups_state.clone();
         let stats_clone = engine_stats.clone();
+        let cancel_clone = cancel.clone();
         tokio::spawn(async move {
-            load_groups(&pool, &groups_clone, &stats_clone).await;
-            warmup_and_discover(&pool, &cache_clone, &pairs_clone, &stats_clone).await;
+            spawn_recompute_loop(
+                pool,
+                cache_clone,
+                pairs_clone,
+                groups_clone,
+                stats_clone,
+                cancel_clone,
+            )
+            .await;
         });
     }
 
@@ -343,6 +361,47 @@ async fn main() {
         .with_graceful_shutdown(shutdown_signal(cancel))
         .await
         .expect("server error");
+}
+
+/// 백그라운드 루프 — 기동 직후 초기 발굴 1회, 그 후 RECOMPUTE_INTERVAL 마다 재발굴.
+/// Phase가 Sleep 시 wait_until_active로 대기. 다음 영업일 08:30에 자동 깨어남.
+async fn spawn_recompute_loop(
+    pool: PgPool,
+    cache: SeriesCache,
+    pairs: Arc<RwLock<PairsState>>,
+    groups: Arc<RwLock<GroupsState>>,
+    stats: Arc<EngineStats>,
+    cancel: CancellationToken,
+) {
+    let interval = recompute_interval();
+    info!(
+        "[scheduler] recompute interval = {}초",
+        interval.as_secs()
+    );
+
+    // 초기 1회 — Sleep phase 여도 첫 데이터는 채워둠 (장 외 시간 시작 시 빈 화면 방지).
+    load_groups(&pool, &groups, &stats).await;
+    warmup_and_discover(&pool, &cache, &pairs, &stats).await;
+
+    // 메인 루프
+    loop {
+        // 다음 cycle 까지 대기 (또는 cancel)
+        tokio::select! {
+            _ = tokio::time::sleep(interval) => {}
+            _ = cancel.cancelled() => {
+                info!("[scheduler] cancelled");
+                return;
+            }
+        }
+
+        // Sleep phase면 활성화될 때까지 대기 — 야간엔 분봉 안 들어오니까 재발굴 의미 없음.
+        if !phase::wait_until_active(&cancel, "recompute").await {
+            return; // cancelled during wait
+        }
+
+        warmup_and_discover(&pool, &cache, &pairs, &stats).await;
+        stats.recompute_cycles.fetch_add(1, Ordering::Relaxed);
+    }
 }
 
 /// 도메인 그룹 (index/sector/etf) 자동 생성. PG 3 쿼리 (try_join).

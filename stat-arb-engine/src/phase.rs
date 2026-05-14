@@ -55,11 +55,45 @@ pub fn current() -> Phase {
 }
 
 pub fn is_active() -> bool {
+    // 시연/테스트용 우회 — phase 게이트를 강제로 Live 취급. 운영 배포 시엔 설정 X.
+    if std::env::var("STATARB_FORCE_LIVE").as_deref() == Ok("1") {
+        return true;
+    }
     !matches!(current(), Phase::Sleep)
 }
 
 fn is_non_trading_day(d: chrono::NaiveDate) -> bool {
     matches!(d.weekday(), Weekday::Sat | Weekday::Sun) || crate::holidays::is_krx_holiday(d)
+}
+
+/// Sleep phase 동안 대기. Active 진입 시 true 반환. cancel 시 false.
+/// label은 로그용 (어느 task가 sleeping 중인지 식별).
+pub async fn wait_until_active(cancel: &CancellationToken, label: &str) -> bool {
+    if is_active() {
+        return true;
+    }
+    let next = next_attach_time();
+    let now = Local::now();
+    let total_secs = (next - now).num_seconds().max(60) as u64;
+    info!(
+        "[PHASE] {label}: sleep — next attach at {} ({}분 후)",
+        next.format("%Y-%m-%d %H:%M"),
+        total_secs / 60
+    );
+    // 5분 단위 wake-up — 캘린더 변경/시계 보정 등 ad-hoc 케이스 대비.
+    let mut remaining = total_secs;
+    while remaining > 0 {
+        let chunk = remaining.min(300);
+        tokio::select! {
+            _ = tokio::time::sleep(Duration::from_secs(chunk)) => {}
+            _ = cancel.cancelled() => return false,
+        }
+        if is_active() {
+            return true;
+        }
+        remaining = remaining.saturating_sub(chunk);
+    }
+    is_active()
 }
 
 pub fn next_attach_time() -> DateTime<Local> {
