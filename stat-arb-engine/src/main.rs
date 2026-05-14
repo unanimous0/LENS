@@ -4,49 +4,65 @@
 //! 자세한 설계는 ../stat-arb-engine.md 참조.
 
 mod data;
+mod discovery;
 mod holidays;
 mod phase;
+mod stats;
+mod universe;
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
-use axum::extract::State;
+use axum::extract::{Query, State};
 use axum::http::Method;
 use axum::routing::get;
 use axum::{Json, Router};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use tokio::signal;
+use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 use tower_http::cors::{Any, CorsLayer};
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
-use data::bars::{AssetType, SeriesCache};
+use data::bars::{series_key, AssetType, SeriesCache};
+use discovery::PairResult;
 
 const PORT: u16 = 8300;
+
+/// 일봉 워밍업 길이 (캘린더일). 1년 ≈ 252영업일 = 365캘린더일.
+const WARMUP_DAYS_DAILY: i32 = 365;
+/// 1분봉 워밍업 길이 (캘린더일). 너무 길면 메모리 큼 — 14일치면 약 영업일 10일 = 3,900 bar/종목.
+const WARMUP_DAYS_1M: i32 = 14;
 
 /// 런타임 카운터. realtime의 Stats 패턴 차용 — `/debug/stats`로 노출.
 #[derive(Default)]
 pub struct EngineStats {
-    /// 통계량 갱신 사이클 횟수
     pub recompute_cycles: AtomicU64,
-    /// 후보 풀 재발굴 횟수
     pub discovery_runs: AtomicU64,
-    /// 발굴된 페어 총 개수 (마지막 사이클 기준)
     pub pairs_total: AtomicU64,
-    /// PG 쿼리 호출 횟수
     pub pg_queries: AtomicU64,
-    /// realtime 스냅샷 fetch 호출 횟수
     pub realtime_fetches: AtomicU64,
     started: std::sync::OnceLock<Instant>,
+}
+
+/// 발굴된 1:1 페어 + 종목명 룩업 테이블 (key → 표시명).
+#[derive(Default)]
+pub struct PairsState {
+    pub pairs: Vec<PairResult>,
+    pub names: HashMap<String, String>,
+    pub last_run_ms: i64,
+    pub last_run_duration_ms: u64,
 }
 
 #[derive(Clone)]
 struct AppState {
     pg: Option<PgPool>,
     cache: SeriesCache,
+    pairs: Arc<RwLock<PairsState>>,
     stats: Arc<EngineStats>,
 }
 
@@ -69,9 +85,7 @@ struct StatsResp {
     pairs_total: u64,
     pg_queries: u64,
     realtime_fetches: u64,
-    /// 시계열 캐시: 자산 종목 수
     cache_series: usize,
-    /// 시계열 캐시: 모든 자산의 bar 총합 (30s+1m+1d)
     cache_bars_total: usize,
 }
 
@@ -118,9 +132,40 @@ async fn debug_stats(State(state): State<AppState>) -> Json<StatsResp> {
     })
 }
 
+#[derive(Deserialize)]
+struct PairsQuery {
+    /// 반환할 최대 페어 수. 디폴트 100.
+    #[serde(default = "default_limit")]
+    limit: usize,
+}
+
+fn default_limit() -> usize {
+    100
+}
+
+#[derive(Serialize)]
+struct PairsResp {
+    total: usize,
+    returned: usize,
+    last_run_ms: i64,
+    last_run_duration_ms: u64,
+    pairs: Vec<PairResult>,
+}
+
+async fn list_pairs(State(state): State<AppState>, Query(q): Query<PairsQuery>) -> Json<PairsResp> {
+    let s = state.pairs.read().await;
+    let returned = s.pairs.iter().take(q.limit).cloned().collect::<Vec<_>>();
+    Json(PairsResp {
+        total: s.pairs.len(),
+        returned: returned.len(),
+        last_run_ms: s.last_run_ms,
+        last_run_duration_ms: s.last_run_duration_ms,
+        pairs: returned,
+    })
+}
+
 #[tokio::main]
 async fn main() {
-    // .env 파일 로드 (있으면). 없어도 OK — 환경변수로 직접 받을 수 있음.
     let _ = dotenvy::dotenv();
 
     tracing_subscriber::fmt()
@@ -131,10 +176,9 @@ async fn main() {
     info!("stat-arb-engine starting on port {PORT}");
     info!("startup phase: {}", phase::current());
 
-    let stats = Arc::new(EngineStats::default());
-    stats.started.set(Instant::now()).ok();
+    let engine_stats = Arc::new(EngineStats::default());
+    engine_stats.started.set(Instant::now()).ok();
 
-    // PG 연결. 실패해도 서비스는 기동 (헬스체크에 pg_connected=false 노출).
     let pg = match data::pg_loader::connect().await {
         Ok(pool) => match data::pg_loader::ping(&pool).await {
             Ok(_) => {
@@ -156,22 +200,23 @@ async fn main() {
     phase::spawn_watchdog(cancel.clone());
 
     let cache = data::bars::new_cache();
+    let pairs = Arc::new(RwLock::new(PairsState::default()));
 
-    // 초기 워밍업 — 백그라운드. 서버는 즉시 응답 가능.
-    // PR2 검증용 소규모 로드: 삼성전자(005930) + KOSPI200 ETF(069500) + KOSPI200 지수.
-    // 본격 universe 로딩은 PR3에서.
+    // 백그라운드: universe 워밍업 + 1:1 발굴. 서버는 즉시 응답 가능.
     if let Some(pool) = pg.clone() {
         let cache_clone = cache.clone();
-        let stats_clone = stats.clone();
+        let pairs_clone = pairs.clone();
+        let stats_clone = engine_stats.clone();
         tokio::spawn(async move {
-            initial_warmup(&pool, &cache_clone, &stats_clone).await;
+            warmup_and_discover(&pool, &cache_clone, &pairs_clone, &stats_clone).await;
         });
     }
 
     let app_state = AppState {
         pg,
         cache,
-        stats: stats.clone(),
+        pairs,
+        stats: engine_stats.clone(),
     };
 
     let cors = CorsLayer::new()
@@ -182,6 +227,7 @@ async fn main() {
     let app = Router::new()
         .route("/health", get(health))
         .route("/debug/stats", get(debug_stats))
+        .route("/pairs", get(list_pairs))
         .layer(cors)
         .with_state(app_state);
 
@@ -198,30 +244,79 @@ async fn main() {
         .expect("server error");
 }
 
-/// PR2 검증용 초기 워밍업. 본격 universe는 PR3.
-async fn initial_warmup(pool: &PgPool, cache: &SeriesCache, stats: &Arc<EngineStats>) {
-    let t0 = Instant::now();
-    let targets: &[(&str, AssetType)] = &[
-        ("005930", AssetType::Stock),     // 삼성전자
-        ("069500", AssetType::Etf),       // KODEX 200
-        ("K2G01P", AssetType::Index),     // 코스피 200 지수
-    ];
-    let mut total_bars = 0usize;
-    for (code, asset_type) in targets {
-        match data::bars::warmup_one(pool, cache, code, *asset_type, 90).await {
-            Ok(n) => {
-                stats.pg_queries.fetch_add(3, Ordering::Relaxed);
-                total_bars += n;
-                info!("[warmup] {code} ({}): {n} bars", asset_type.as_str());
-            }
-            Err(e) => warn!("[warmup] {code} 실패: {e}"),
+/// universe 워밍업 + 1:1 발굴.
+/// PR3: KOSPI200 구성종목 일봉 90일.
+async fn warmup_and_discover(
+    pool: &PgPool,
+    cache: &SeriesCache,
+    pairs: &Arc<RwLock<PairsState>>,
+    stats: &Arc<EngineStats>,
+) {
+    let t_total = Instant::now();
+
+    // 1. universe 추출
+    let universe = match universe::load_kospi200(pool).await {
+        Ok(v) => v,
+        Err(e) => {
+            warn!("[universe] KOSPI200 로딩 실패: {e}");
+            return;
         }
-    }
+    };
+    info!("[universe] KOSPI200 {} 종목", universe.len());
+
+    // 2. Batch 워밍업 — universe 전체를 일봉 1쿼리 + 1분봉 1쿼리로.
+    // TimescaleDB hypertable이라 cutoff 고정 date가 plan-time chunk pruning 가능 — out of shared memory 방지.
+    let t_warm = Instant::now();
+    let codes: Vec<String> = universe.iter().map(|s| s.code.clone()).collect();
+    let (series_n, total_bars) = match data::bars::warmup_universe_stocks_batch(
+        pool,
+        cache,
+        &codes,
+        AssetType::Stock,
+        WARMUP_DAYS_DAILY,
+        WARMUP_DAYS_1M,
+    )
+    .await
+    {
+        Ok(v) => v,
+        Err(e) => {
+            warn!("[warmup] batch 로딩 실패: {e}");
+            return;
+        }
+    };
+    stats.pg_queries.fetch_add(2, Ordering::Relaxed); // daily + 1m
     info!(
-        "[warmup] 완료 — {} series, {} bars total, {:.1}초",
-        cache.len(),
+        "[warmup] 완료 — {} series, {} bars total, {:.1}초 (batch 2 query)",
+        series_n,
         total_bars,
-        t0.elapsed().as_secs_f64()
+        t_warm.elapsed().as_secs_f64()
+    );
+
+    // 3. 종목명 룩업
+    let names: HashMap<String, String> = universe
+        .iter()
+        .map(|s| (series_key(AssetType::Stock, &s.code), s.name.clone()))
+        .collect();
+
+    // 4. 1:1 발굴
+    let t_disc = Instant::now();
+    let result = discovery::discover_all_one_to_one(cache, &names);
+    let disc_ms = t_disc.elapsed().as_millis() as u64;
+    stats.discovery_runs.fetch_add(1, Ordering::Relaxed);
+    stats.pairs_total.store(result.len() as u64, Ordering::Relaxed);
+
+    // 5. 상태 저장
+    {
+        let mut s = pairs.write().await;
+        s.pairs = result;
+        s.names = names;
+        s.last_run_ms = chrono::Utc::now().timestamp_millis();
+        s.last_run_duration_ms = disc_ms;
+    }
+
+    info!(
+        "[전체] 완료 {:.1}초 (warmup + discovery)",
+        t_total.elapsed().as_secs_f64()
     );
 }
 

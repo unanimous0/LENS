@@ -19,6 +19,7 @@ use dashmap::DashMap;
 use serde::Serialize;
 use sqlx::types::BigDecimal;
 use sqlx::PgPool;
+use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -131,7 +132,19 @@ fn bd_to_f64(v: Option<BigDecimal>) -> f64 {
         .unwrap_or(0.0)
 }
 
-/// 주식/ETF 일봉. `days`일 전부터 오늘까지 ASC.
+/// 일봉 cutoff 날짜를 Rust에서 계산. PG에 *상수 date*로 bind 해야
+/// TimescaleDB chunk plan-time pruning이 작동 — `current_date - $param::int`
+/// 같은 parameterized 표현은 모든 chunk를 plan에 포함시켜 lock 누적/메모리 폭주.
+fn cutoff_date(days: i32) -> NaiveDate {
+    chrono::Local::now().date_naive() - chrono::Duration::days(days as i64)
+}
+
+/// 일봉의 분봉용 cutoff (timestamp). 분봉 hypertable도 동일 이유로 *상수 timestamp* 필요.
+fn cutoff_ts(days: i32) -> chrono::DateTime<chrono::Utc> {
+    chrono::Utc::now() - chrono::Duration::days(days as i64)
+}
+
+/// 주식/ETF 일봉. `days`일 전부터 오늘까지 ASC. (단일 종목)
 pub async fn load_stock_daily(
     pool: &PgPool,
     code: &str,
@@ -139,10 +152,14 @@ pub async fn load_stock_daily(
 ) -> Result<Vec<Bar>, sqlx::Error> {
     let sql = "SELECT time, open_price, high_price, low_price, close_price, COALESCE(volume, 0)
                FROM ohlcv_daily
-               WHERE stock_code = $1 AND time > current_date - $2::int
+               WHERE stock_code = $1 AND time >= $2
                ORDER BY time ASC";
     let rows: Vec<(NaiveDate, Option<i32>, Option<i32>, Option<i32>, Option<i32>, i64)> =
-        sqlx::query_as(sql).bind(code).bind(days).fetch_all(pool).await?;
+        sqlx::query_as(sql)
+            .bind(code)
+            .bind(cutoff_date(days))
+            .fetch_all(pool)
+            .await?;
     Ok(rows
         .into_iter()
         .map(|(t, o, h, l, c, v)| Bar {
@@ -156,7 +173,7 @@ pub async fn load_stock_daily(
         .collect())
 }
 
-/// 주식/ETF 분봉. `interval_sec` = 30 또는 60. `days`일 전부터 오늘까지 ASC.
+/// 주식/ETF 분봉. `interval_sec` = 30 또는 60. `days`일 전부터 오늘까지 ASC. (단일 종목)
 pub async fn load_stock_intraday(
     pool: &PgPool,
     code: &str,
@@ -165,8 +182,7 @@ pub async fn load_stock_intraday(
 ) -> Result<Vec<Bar>, sqlx::Error> {
     let sql = "SELECT time, open, high, low, close, volume
                FROM ohlcv_intraday
-               WHERE stock_code = $1 AND interval_seconds = $2
-                 AND time > now() - ($3::int || ' days')::interval
+               WHERE stock_code = $1 AND interval_seconds = $2 AND time >= $3
                ORDER BY time ASC";
     let rows: Vec<(
         chrono::DateTime<chrono::Utc>,
@@ -178,7 +194,7 @@ pub async fn load_stock_intraday(
     )> = sqlx::query_as(sql)
         .bind(code)
         .bind(interval_sec)
-        .bind(days)
+        .bind(cutoff_ts(days))
         .fetch_all(pool)
         .await?;
     Ok(rows
@@ -206,8 +222,7 @@ pub async fn load_futures_daily(
 ) -> Result<Vec<Bar>, sqlx::Error> {
     let sql = "SELECT time, open, high, low, close, COALESCE(volume, 0)
                FROM futures_ohlcv_daily
-               WHERE underlying_code = $1 AND contract_class = $2
-                 AND time > current_date - $3::int
+               WHERE underlying_code = $1 AND contract_class = $2 AND time >= $3
                ORDER BY time ASC";
     let rows: Vec<(
         NaiveDate,
@@ -219,7 +234,7 @@ pub async fn load_futures_daily(
     )> = sqlx::query_as(sql)
         .bind(underlying_code)
         .bind(contract_class)
-        .bind(days)
+        .bind(cutoff_date(days))
         .fetch_all(pool)
         .await?;
     Ok(rows
@@ -245,8 +260,7 @@ pub async fn load_futures_intraday(
 ) -> Result<Vec<Bar>, sqlx::Error> {
     let sql = "SELECT time, open, high, low, close, volume
                FROM futures_ohlcv_intraday
-               WHERE futures_code = $1 AND interval_seconds = $2
-                 AND time > now() - ($3::int || ' days')::interval
+               WHERE futures_code = $1 AND interval_seconds = $2 AND time >= $3
                ORDER BY time ASC";
     let rows: Vec<(
         chrono::DateTime<chrono::Utc>,
@@ -258,7 +272,7 @@ pub async fn load_futures_intraday(
     )> = sqlx::query_as(sql)
         .bind(futures_code)
         .bind(interval_sec)
-        .bind(days)
+        .bind(cutoff_ts(days))
         .fetch_all(pool)
         .await?;
     Ok(rows
@@ -282,7 +296,7 @@ pub async fn load_index_daily(
 ) -> Result<Vec<Bar>, sqlx::Error> {
     let sql = "SELECT time, open, high, low, close, COALESCE(volume, 0)
                FROM index_ohlcv_daily
-               WHERE code = $1 AND time > current_date - $2::int
+               WHERE code = $1 AND time >= $2
                ORDER BY time ASC";
     let rows: Vec<(
         NaiveDate,
@@ -291,7 +305,11 @@ pub async fn load_index_daily(
         Option<BigDecimal>,
         BigDecimal,
         i64,
-    )> = sqlx::query_as(sql).bind(code).bind(days).fetch_all(pool).await?;
+    )> = sqlx::query_as(sql)
+        .bind(code)
+        .bind(cutoff_date(days))
+        .fetch_all(pool)
+        .await?;
     Ok(rows
         .into_iter()
         .map(|(t, o, h, l, c, v)| Bar {
@@ -314,8 +332,7 @@ pub async fn load_index_intraday(
 ) -> Result<Vec<Bar>, sqlx::Error> {
     let sql = "SELECT time, open, high, low, close, volume
                FROM index_ohlcv_intraday
-               WHERE index_code = $1 AND interval_seconds = $2
-                 AND time > now() - ($3::int || ' days')::interval
+               WHERE index_code = $1 AND interval_seconds = $2 AND time >= $3
                ORDER BY time ASC";
     let rows: Vec<(
         chrono::DateTime<chrono::Utc>,
@@ -327,7 +344,7 @@ pub async fn load_index_intraday(
     )> = sqlx::query_as(sql)
         .bind(code)
         .bind(interval_sec)
-        .bind(days)
+        .bind(cutoff_ts(days))
         .fetch_all(pool)
         .await?;
     Ok(rows
@@ -347,35 +364,43 @@ pub async fn load_index_intraday(
 // 워밍업 — 캐시에 채워넣기
 // ---------------------------------------------------------------------------
 
-/// 자산 한 종목에 대해 일봉 / 30초 / 1분 봉을 모두 로드해서 캐시에 넣는다.
-/// 분봉 양은 *얕게* — 30초 1일, 1분 3일, 일봉은 days_daily.
-/// 초기 부담 줄이기 위함. 본격 로드는 다음 PR에서 universe 확장.
+/// 자산 한 종목에 대해 시계열을 로드해서 캐시에 넣는다.
+///
+/// `with_intraday=false` 면 일봉만. 단일 종목 detail 조회용 (PR4a부터 universe 워밍업은 batch).
+/// 향후 페어 상세/수동 검증 API에서 사용.
+#[allow(dead_code)]
 pub async fn warmup_one(
     pool: &PgPool,
     cache: &SeriesCache,
     code: &str,
     asset_type: AssetType,
     days_daily: i32,
+    with_intraday: bool,
 ) -> Result<usize, sqlx::Error> {
     let (bars_30s, bars_1m, bars_1d) = match asset_type {
         AssetType::Stock | AssetType::Etf => {
             let d = load_stock_daily(pool, code, days_daily).await?;
-            let s30 = load_stock_intraday(pool, code, 30, 1).await?;
-            let m1 = load_stock_intraday(pool, code, 60, 3).await?;
-            (s30, m1, d)
+            if with_intraday {
+                let s30 = load_stock_intraday(pool, code, 30, 1).await?;
+                let m1 = load_stock_intraday(pool, code, 60, 3).await?;
+                (s30, m1, d)
+            } else {
+                (Vec::new(), Vec::new(), d)
+            }
         }
         AssetType::StockFuture | AssetType::IndexFuture => {
-            // intraday는 futures_code(만기 포함), daily는 underlying_code+contract_class.
-            // 임시: 이 자리에선 underlying_code 만 받는다고 가정 → contract_class='F' 디폴트.
             let d = load_futures_daily(pool, code, "F", days_daily).await?;
-            // 분봉은 futures_code가 필요 — PR2 단계에선 분봉 skip (Stock 위주 검증).
             (Vec::new(), Vec::new(), d)
         }
         AssetType::Index => {
             let d = load_index_daily(pool, code, days_daily).await?;
-            let s30 = load_index_intraday(pool, code, 30, 1).await?;
-            let m1 = load_index_intraday(pool, code, 60, 3).await?;
-            (s30, m1, d)
+            if with_intraday {
+                let s30 = load_index_intraday(pool, code, 30, 1).await?;
+                let m1 = load_index_intraday(pool, code, 60, 3).await?;
+                (s30, m1, d)
+            } else {
+                (Vec::new(), Vec::new(), d)
+            }
         }
     };
     let total = bars_30s.len() + bars_1m.len() + bars_1d.len();
@@ -389,4 +414,130 @@ pub async fn warmup_one(
     };
     cache.insert(series_key(asset_type, code), series);
     Ok(total)
+}
+
+// ---------------------------------------------------------------------------
+// Batch 로더 — universe 대량 워밍업용. 200 종목을 1 쿼리로.
+// ---------------------------------------------------------------------------
+
+/// 주식/ETF 일봉 batch. `codes` 배열을 PG `ANY($1)` 로 한 번에. 결과는 종목별 dict.
+pub async fn load_stock_daily_batch(
+    pool: &PgPool,
+    codes: &[String],
+    days: i32,
+) -> Result<HashMap<String, Vec<Bar>>, sqlx::Error> {
+    if codes.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let sql = "SELECT stock_code, time, open_price, high_price, low_price, close_price, COALESCE(volume, 0)
+               FROM ohlcv_daily
+               WHERE stock_code = ANY($1) AND time >= $2
+               ORDER BY stock_code, time ASC";
+    let rows: Vec<(
+        String,
+        NaiveDate,
+        Option<i32>,
+        Option<i32>,
+        Option<i32>,
+        Option<i32>,
+        i64,
+    )> = sqlx::query_as(sql)
+        .bind(codes)
+        .bind(cutoff_date(days))
+        .fetch_all(pool)
+        .await?;
+    let mut out: HashMap<String, Vec<Bar>> = HashMap::with_capacity(codes.len());
+    for (code, t, o, h, l, c, v) in rows {
+        out.entry(code).or_default().push(Bar {
+            ts: day_close_ts(t),
+            open: o.unwrap_or(0) as f64,
+            high: h.unwrap_or(0) as f64,
+            low: l.unwrap_or(0) as f64,
+            close: c.unwrap_or(0) as f64,
+            volume: v,
+        });
+    }
+    Ok(out)
+}
+
+/// 주식/ETF 분봉 batch.
+pub async fn load_stock_intraday_batch(
+    pool: &PgPool,
+    codes: &[String],
+    interval_sec: i16,
+    days: i32,
+) -> Result<HashMap<String, Vec<Bar>>, sqlx::Error> {
+    if codes.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let sql = "SELECT stock_code, time, open, high, low, close, volume
+               FROM ohlcv_intraday
+               WHERE stock_code = ANY($1) AND interval_seconds = $2 AND time >= $3
+               ORDER BY stock_code, time ASC";
+    let rows: Vec<(
+        String,
+        chrono::DateTime<chrono::Utc>,
+        BigDecimal,
+        BigDecimal,
+        BigDecimal,
+        BigDecimal,
+        i64,
+    )> = sqlx::query_as(sql)
+        .bind(codes)
+        .bind(interval_sec)
+        .bind(cutoff_ts(days))
+        .fetch_all(pool)
+        .await?;
+    let mut out: HashMap<String, Vec<Bar>> = HashMap::with_capacity(codes.len());
+    for (code, t, o, h, l, c, v) in rows {
+        out.entry(code).or_default().push(Bar {
+            ts: t.timestamp_millis(),
+            open: bd_to_f64(Some(o)),
+            high: bd_to_f64(Some(h)),
+            low: bd_to_f64(Some(l)),
+            close: bd_to_f64(Some(c)),
+            volume: v,
+        });
+    }
+    Ok(out)
+}
+
+/// universe 전체를 batch 쿼리로 워밍업해서 캐시에 저장. asset_type은 호출자가 부여.
+/// 일봉 + 1분봉. 30초봉은 양이 너무 많아 PR4a에선 skip (PR4b+에서 필요 시).
+///
+/// 반환: (insert된 series 수, bar 총합)
+pub async fn warmup_universe_stocks_batch(
+    pool: &PgPool,
+    cache: &SeriesCache,
+    codes: &[String],
+    asset_type: AssetType,
+    days_daily: i32,
+    days_1m: i32,
+) -> Result<(usize, usize), sqlx::Error> {
+    let daily = load_stock_daily_batch(pool, codes, days_daily).await?;
+    let m1 = load_stock_intraday_batch(pool, codes, 60, days_1m).await?;
+
+    let mut total_bars = 0usize;
+    let mut series_count = 0usize;
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    for code in codes {
+        let bars_1d = daily.get(code).cloned().unwrap_or_default();
+        let bars_1m = m1.get(code).cloned().unwrap_or_default();
+        let n = bars_1d.len() + bars_1m.len();
+        if n == 0 {
+            continue;
+        }
+        total_bars += n;
+        series_count += 1;
+        let series = AssetSeries {
+            code: code.clone(),
+            asset_type,
+            bars_30s: Vec::new(),
+            bars_1m,
+            bars_1d,
+            last_updated: now_ms,
+        };
+        cache.insert(series_key(asset_type, code), series);
+    }
+    Ok((series_count, total_bars))
 }
