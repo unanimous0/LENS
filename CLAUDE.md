@@ -14,7 +14,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | 상태관리 | Zustand |
 | 백엔드 (파일 파싱/계산/DB 조회) | FastAPI (Python, port 8100) |
 | 실시간 데이터 서비스 | Rust + axum (port 8200) — LS WS 직접 + 자체 WebSocket로 프론트 전달 |
-| DB | Finance_Data PostgreSQL (`korea_stock_data`, read-only, asyncpg) — ETF 마스터/PDF, 시계열 등. LENS 자체 DB 없음 |
+| 통계 차익거래 엔진 | Rust + axum (port 8300) — 페어 발굴 + 통계량 갱신 (10분/1시간 주기) |
+| DB | Finance_Data PostgreSQL (`korea_stock_data`, read-only, asyncpg) — ETF 마스터/PDF, 시계열 등. LENS 자체 DB 없음 (포지션은 backend의 SQLite) |
 | 배포 | Docker Compose (외부망) / zip 배포 (내부망) |
 
 ## 상세 문서
@@ -28,6 +29,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **[realtime-service.md](realtime-service.md)** — Rust 실시간 데이터 서비스 아키텍처 (모든 실시간 화면의 공통 인프라)
 - **[stock-arbitrage.md](stock-arbitrage.md)** — 종목차익 기능 설계 (베이시스 모니터링 + ETF 차익 계산)
 - **[etf-arbitrage.md](etf-arbitrage.md)** — ETF 차익 기능 설계 + **실시간 페이지 reference 구현**의 성능 최적화 다층 방어 표
+- **[stat-arb-engine.md](stat-arb-engine.md)** — 통계 차익거래 엔진 + 화면 설계 (M:N 페어 발굴, 대여·매도차 통합, 포지션 추적). 별도 Rust binary `stat-arb-engine/` (port 8300)
 
 ## 디자인 가이드
 
@@ -87,7 +89,8 @@ CSS 변수는 `globals.css`의 `@theme inline`에 정의. Tailwind 클래스로 
 
 ## 개발 환경
 
-- 프론트엔드: **3100** / 백엔드: **8100** / Vite 프록시: `/api` → `localhost:8100`, `/ws` → `ws://localhost:8100`
+- 프론트엔드: **3100** / 백엔드: **8100** / 실시간(Rust): **8200** / 통계 엔진(Rust): **8300**
+- Vite 프록시: `/api` → `localhost:8100`, `/ws` → `ws://localhost:8100`
 - Node.js v20 (nvm 사용)
 
 ```bash

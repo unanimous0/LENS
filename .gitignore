@@ -27,7 +27,8 @@ npm-debug.log*
 
 # Data files — 서버에서만 작업하고 내부망은 zip으로 옮기므로 git 추적 불필요.
 # 이미 commit된 futures_master.json/dividends_mock.json/krx_holidays.json은 그대로 추적됨.
-data/
+# anchored: 루트 data/만 — 하위 모듈의 src/data/ (예: stat-arb-engine) 는 영향 없음.
+/data/
 
 # Rust
 realtime/target/

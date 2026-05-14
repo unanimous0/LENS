@@ -1,0 +1,407 @@
+# 통계 차익거래 엔진 + 화면 (stat-arb)
+
+> ETF LP 입장에서 **통계적 차익거래**를 주 목적으로 하되, **대여 수익**과 **주식선물 매도차익**을 결합 활용. 발굴 → 진입 → 추적 → 청산까지의 사이클 전체를 다룬다.
+
+## 1. 목적
+
+### 1차 — 통계적 차익거래
+- 자산군 자유 조합 (주식 / 주식선물 / 지수선물 / ETF)
+- **M:N 페어** (1:1 아님). max 5×5. 필요 시 확장.
+- 시간축: 초단기 (30초/1분봉) / 단기 (1분~일봉) / 중기 (일봉)
+
+### 2차 — 대여·주식선물과의 결합
+- 고요율 종목 매수 정당화 도구: 쌩매수 대신 통계차익으로 헷지된 매수 → 매수분 대여 송출
+- 양방향 시너지: 통계차익으로 들어간 매수 포지션이 마침 고요율이면 대여, 베이시스 낮으면 주식선물 매도차 (수익 레이어 중첩)
+
+### 핵심 원칙
+- 통계적 엄밀성 / 정확성 최우선
+- 즉시 판단·실행 가능한 고밀도 UI (차트·그래프 적극)
+
+## 2. 핵심 결정사항 (1~11)
+
+| # | 항목 | 결정 |
+|---|---|---|
+| 1 | 시간축 표시 | 토글 + 페어 상세에 3 timeframe 미니차트 |
+| 2 | M×N 한도 | max 5×5. ETF↔PDF 부분 페어도 *통계 추정 대상* (사전 비중 X) |
+| 3 | 갱신 주기 | 통계량 10분. Rust 엔진. |
+| 4 | 자산군 매트릭스 | 8가지 카탈로그 모두 포함 + UI 토글 ON/OFF |
+| 5 | 탐색 전략 | 1:1 시장 전체 무차별 (사전 필터링) + M:N은 도메인 그룹 내. Dense PCA→Sparse CCA→Johansen + Sparse PCA 병렬 트랙 |
+| 6 | 갱신 비대칭 | 후보 풀 1시간/장개시, 통계량 10분 |
+| 7 | 시간축 디폴트 | 없음. 페어마다 3 timeframe 다 계산, 최적 timeframe 자동 선택 |
+| 8 | 엔진 위치 | 별도 binary `stat-arb-engine` (port 8300) |
+| 9 | 포지션 자동 라벨 | 수렴/발산/stale/청산권장 + z 분포 시각화 (히스토그램 + 산점도) |
+| 10 | 알림 | 화면 내 뱃지만 (외부 알림 없음) |
+| 11 | 부분 청산 | 미지원 (한 포지션 = 한 번 진입/한 번 청산) |
+
+## 3. 자산군 조합 카탈로그
+
+자산군 가리지 않음. 시장 가리지 않음. 자유 혼합.
+
+| 조합 | 예시 | 비고 |
+|---|---|---|
+| 주식 ↔ 주식 | 같은 섹터/지수 코호트 | 클래식 |
+| 주식 ↔ 주식선물 | 한국조선해양 ↔ 한화오션선물 (교차 SF 포함) | 종목차익 페이지와는 다른 영역 |
+| 주식 ↔ ETF | ETF가 그 주식 보유 시 | 비중 자동 추정 |
+| ETF ↔ ETF | 같은/관련 지수, 섹터 | 가장 깨끗한 페어 |
+| ETF ↔ 지수선물 | 지수 추종 ETF vs 선물 | 차익 본업 |
+| ETF ↔ 구성종목 부분 바스켓 | NAV arb 변형 — *PDF 비중 X, 새 hedge ratio 추정* | 5×5의 핵심 동기 |
+| 주식 ↔ 지수선물 | 베타 헷지 | 잔차가 idiosyncratic |
+| SF ↔ SF / SF ↔ 지수선물 | 선물 페어 / 기간구조 | |
+| ETF ↔ 주식선물 바스켓 | 현물+SF 혼합 바스켓도 가능 | |
+
+## 4. 도메인 그룹 (탐색 범위 제한자)
+
+자동 생성 그룹:
+
+| 시드 | 자동 구성 |
+|---|---|
+| 종목 X | X + X의 SF + X가 담긴 ETF들 + 같은 지수 ETF + 같은 섹터 동종 + 그 SF들 |
+| ETF Y | Y + Y의 PDF + PDF 종목들의 SF + 같은 카테고리 경쟁 ETF + 관련 지수선물 |
+| 섹터 S | 섹터 주식 + SF + 섹터 ETF |
+| 지수 I | 구성종목 + 구성 SF + 추종 ETF + 지수선물 + 인버스/레버리지 ETF |
+| 테마 T | 사용자가 한 번 정의해두면 자동 풀 |
+| 상관 클러스터 | historical correlation > 임계치 — 자산군 무관 자동 묶음 (의외 페어 발견용) |
+
+사용자 정의 그룹: 임의 종목/SF/ETF 혼합. 워치리스트 형태.
+
+## 5. 탐색 전략 (Phase별)
+
+### 5.1 1:1 시장 전체 무차별
+1. 사전 필터: 거래 활성도 + historical correlation > 0.5
+2. 모든 페어에 OLS hedge ratio → ADF / Engle-Granger cointegration test
+3. 살아남은 1:1 페어 → 후보 풀 1
+
+### 5.2 M:N — 도메인 그룹 내 (트랙 A: Dense PCA → Sparse CCA → Johansen)
+1. 그룹 안에서 Dense PCA → 후보 종목 풀 추출 (factor explanatory power)
+2. 풀을 양분해서 **Sparse CCA**: 양변 다 sparse한 선형결합 추출 → M:N 직접 발굴
+3. 발굴된 페어에 Johansen cointegration test → 잔차 stationarity 검증
+4. half-life, R², p-value 산출
+
+### 5.3 M:N — 도메인 그룹 내 (트랙 B: Sparse PCA)
+1. 그룹 안에서 Sparse PCA: 한 factor가 k개 종목만 쓰도록 sparsity 강제
+2. cluster 자체를 페어 시드로: `{ETF or 주식} ↔ {cluster}`
+3. 잔차 mean-reversion 검증 → Johansen으로 stationarity 확인
+
+### 5.4 발굴 결과 통합
+- 두 트랙 결과를 *한 스크리너 테이블*에 통합
+- 출처 뱃지: `[CCA]` `[sPCA]` `[1:1]`
+- 중복 발견 시 dedup, 두 점수 모두 표시 (신뢰도 ↑)
+
+### 5.5 수동 조립 + 즉시 검증
+- 사용자가 종목/비중 직접 입력 → 즉시 통계량 + 백테스트
+- 자동 발굴 누락 페어 보완
+
+### 5.6 3 Timeframe 동시 계산
+- 페어마다 30초/1분/일봉 모두 통계량 계산
+- `best_timeframe` 자동 선택 (z-score, half-life, p-value 종합 점수)
+- 스크리너 정렬은 *최고 점수 기준*. 사용자가 토글로 다른 timeframe 확인 가능.
+
+### 5.7 갱신 주기
+- **후보 풀 재발굴**: 장개시 / 1시간 (무거움)
+- **통계량 갱신**: 10분 (실시간 가격 반영)
+
+## 6. 아키텍처
+
+```
+LENS/
+├── realtime/                   기존 — LS WS gateway (port 8200)
+├── stat-arb-engine/            신규 — 통계 차익거래 (port 8300)
+│   ├── src/
+│   │   ├── main.rs             axum 서버
+│   │   ├── data/               PG 로드 + realtime 스냅샷 동기화
+│   │   ├── stats/              OLS, ADF, PCA, Sparse CCA, Johansen
+│   │   ├── discovery/          1:1, M:N, Sparse PCA 발굴
+│   │   ├── groups/             도메인 그룹 자동 생성
+│   │   ├── timeframes/         30s/1m/1d 캔들 집계 + best 선택
+│   │   ├── scheduler/          10분/1시간 cron
+│   │   ├── api/                REST 엔드포인트
+│   │   └── ls_utils/           [임시] LS 토큰/phase/holidays (lens-common 미루기)
+│   └── Cargo.toml
+├── backend/                    FastAPI (port 8100)
+│   ├── routers/
+│   │   ├── stat_arb_proxy.py   stat-arb-engine 프록시
+│   │   ├── loan_rates.py       대여요율 CRUD + CSV import
+│   │   ├── positions.py        포지션 CRUD
+│   │   └── saved_pairs.py      즐겨찾기
+│   └── data/lens.db            SQLite 영속화
+└── frontend/src/pages/
+    ├── stat-arb.tsx            메인 발굴 화면
+    ├── stat-arb-positions.tsx  포지션 리스트
+    └── stat-arb-position-detail.tsx  포지션 상세
+```
+
+### 분리 이유
+- 배포 비대칭: realtime 안정 vs 통계 활발 튜닝
+- 자원 격리: BLAS 연산이 realtime hot path 메모리 대역폭 침해 방지
+- 장애 격리: 통계 panic/OOM이 LS WS gateway 안 죽임
+- 데이터 공유 비용은 *10분 주기*라 미미
+
+### `lens-common` 추출은 미루기
+- 현재 `lens-worktree1`이 realtime 영역 작업 중 → 충돌 회피
+- stat-arb-engine은 LS 토큰/phase/holidays를 *임시 자체 보유*
+- worktree1 머지 후 `lens-common` workspace crate로 통합 리팩토링
+
+## 7. 데이터 모델
+
+### stat-arb-engine (in-memory)
+```rust
+struct Bar { ts: i64, open: f64, high: f64, low: f64, close: f64, volume: i64 }
+
+enum AssetType { Stock, StockFuture, IndexFuture, ETF }
+
+struct AssetSeries {
+    code: String,
+    asset_type: AssetType,
+    bars_30s: VecDeque<Bar>,
+    bars_1m:  VecDeque<Bar>,
+    bars_1d:  VecDeque<Bar>,
+}
+
+struct Leg { code: String, asset_type: AssetType, weight: f64, side: i8 /* +1 long, -1 short */ }
+
+enum Timeframe { Short, Mid, Long }
+enum Source { CCA, SparsePCA, OneToOne, Manual }
+
+struct PairStats {
+    z_score: f64,
+    half_life: f64,
+    coint_p: f64,
+    r_squared: f64,
+    hedge_ratio: Vec<f64>,
+    sample_size: usize,
+    score: f64,
+}
+
+struct Pair {
+    hash: String,
+    legs_left: Vec<Leg>,
+    legs_right: Vec<Leg>,
+    source: Source,
+    by_timeframe: HashMap<Timeframe, PairStats>,
+    best_timeframe: Timeframe,
+    last_updated: i64,
+}
+
+struct Group { id: String, name: String, group_type: GroupType, members: Vec<String> }
+```
+
+### FastAPI 영속화 (SQLite `backend/data/lens.db`)
+```sql
+groups (
+    id           TEXT PRIMARY KEY,
+    name         TEXT NOT NULL,
+    type         TEXT NOT NULL,  -- 'ETF', 'Index', 'Sector', 'Theme', 'User', 'Correlation'
+    members_json TEXT NOT NULL,
+    created_at   INTEGER NOT NULL
+);
+
+loan_rates (
+    code        TEXT PRIMARY KEY,
+    rate_pct    REAL NOT NULL,
+    source      TEXT,           -- 'Manual', 'CSV'
+    updated_at  INTEGER NOT NULL
+);
+
+saved_pairs (
+    id          TEXT PRIMARY KEY,
+    legs_json   TEXT NOT NULL,
+    note        TEXT,
+    created_at  INTEGER NOT NULL
+);
+
+positions (
+    id          TEXT PRIMARY KEY,
+    label       TEXT,
+    status      TEXT NOT NULL,  -- 'open', 'closed'
+    opened_at   INTEGER NOT NULL,
+    closed_at   INTEGER,
+    entry_z     REAL,
+    entry_stats_json TEXT,      -- 진입 시점 통계량 freeze
+    note        TEXT
+);
+
+position_legs (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    position_id   TEXT NOT NULL,
+    asset_type    TEXT NOT NULL,
+    code          TEXT NOT NULL,
+    side          INTEGER NOT NULL,  -- +1 long, -1 short
+    weight        REAL NOT NULL,
+    qty           INTEGER NOT NULL,
+    entry_price   REAL NOT NULL,
+    exit_price    REAL,
+    FOREIGN KEY (position_id) REFERENCES positions(id)
+);
+
+position_loans (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    position_id TEXT NOT NULL,
+    leg_id      INTEGER NOT NULL,
+    qty         INTEGER NOT NULL,
+    rate_pct    REAL NOT NULL,
+    started_at  INTEGER NOT NULL,
+    ended_at    INTEGER,
+    FOREIGN KEY (position_id) REFERENCES positions(id),
+    FOREIGN KEY (leg_id) REFERENCES position_legs(id)
+);
+
+position_snapshots (
+    position_id        TEXT NOT NULL,
+    ts                 INTEGER NOT NULL,
+    mark_pnl           REAL,
+    loan_pnl           REAL,
+    z_score            REAL,
+    coint_p            REAL,
+    hedge_ratio_drift  REAL,
+    PRIMARY KEY (position_id, ts),
+    FOREIGN KEY (position_id) REFERENCES positions(id)
+);
+```
+
+## 8. API 엔드포인트
+
+### stat-arb-engine (port 8300)
+```
+GET  /pairs?group=<id>&timeframe=auto&source=&min_score=
+GET  /pairs/:hash/detail               z 시계열 + 히스토그램 + 3 timeframe 통계
+POST /pairs/validate                   수동 조립 페어 즉시 검증
+POST /positions/:id/snapshot           포지션 현재 통계량 계산 (backend가 호출)
+GET  /scatter?status=active            활성 포지션 산점도 데이터
+GET  /groups                           도메인 그룹 리스트
+POST /groups                           사용자 정의 그룹 생성
+GET  /health
+GET  /debug/stats
+```
+
+### backend FastAPI (port 8100)
+```
+GET    /api/loan-rates                 종목별 대여요율 리스트
+PUT    /api/loan-rates/:code           수동 입력
+POST   /api/loan-rates/csv-import      CSV 일괄 업로드
+
+GET    /api/positions                  리스트 (status 필터)
+POST   /api/positions                  등록
+GET    /api/positions/:id              상세 (현재 통계량 stat-arb-engine 위임)
+POST   /api/positions/:id/close        청산 기록
+GET    /api/positions/:id/timeline     스냅샷 시계열
+DELETE /api/positions/:id
+
+GET    /api/saved-pairs                즐겨찾기 리스트
+POST   /api/saved-pairs                등록
+
+GET    /api/groups                     stat-arb-engine 위임
+POST   /api/groups                     사용자 정의 그룹
+```
+
+## 9. 화면 구조
+
+### 9.1 `/stat-arb` 메인 발굴
+- **좌측 필터 패널**: 자산군 매트릭스 (체크박스) + 도메인 그룹 선택 + timeframe 토글 + 출처 필터
+- **중앙 스크리너 테이블**: 한 줄 = 한 페어. 컬럼: 페어 구성 / z-score / half-life / p-value / 최적 timeframe / 출처 뱃지 / 대여요율 / 베이시스 / 점수
+- **우측 페어 상세 패널** (선택 시):
+  - 스프레드 시계열 + z-score 시계열 + 과거 z 분포 히스토그램 (현재 마킹)
+  - 3 timeframe 미니차트
+  - hedge ratio + leg 구성
+  - "이 조합으로 진입 기록" 버튼 → 포지션 등록 폼
+
+### 9.2 수동 조립 모드 (메인 화면 내 별도 탭)
+- leg 추가/삭제 UI (자산군, 종목, 방향, 비중)
+- "검증" 버튼 → 즉시 통계량 표시
+- "백테스트" 버튼 → 과거 시뮬레이션
+
+### 9.3 `/stat-arb/positions` 리스트
+- 테이블 컬럼: 페어 / 진입일 / 보유 / 진입 z / 현재 z / 회귀 % / 평가손익 / 대여수익 / 종합 PnL / 상태 뱃지
+- **활성 포지션 z 산점도**: x=진입 z, y=현재 z, 대각선 = 회귀 0% — 한눈에 시급 포지션 파악
+
+### 9.4 `/stat-arb/positions/:id` 상세
+- **상단 헤더**: 페어 요약 / 상태 / 종합 PnL / 진입 vs 현재 z / 예상 청산 도달일
+- **차트** (가장 중요):
+  - Spread 시계열 (진입 마킹 + 현재 마커)
+  - z-score 시계열 (±1, ±2 밴드, 청산 트리거)
+  - **과거 z 분포 히스토그램 + 진입/현재 마킹**
+  - 누적 PnL 스택 곡선 (통계차익 / 대여 / 매도차)
+- **Leg 테이블**: 종목 / 비중 / 진입가 / 현재가 / 변동 % / leg PnL
+- **통계량 변화**: 진입 시점 vs 현재 (cointegration p, half-life, R², hedge ratio drift)
+- **시그널 패널**: 회귀 %, 보유일/half-life 비교, 예상 청산일, 경고 (drift 등)
+- **액션**: 청산 기록 / 메모 추가
+
+### 자동 상태 분류
+- **수렴**: `|현재 z| < |진입 z| × 0.5`
+- **발산**: `|현재 z| > |진입 z| × 1.1`
+- **stale**: `보유일 > half-life × 2 && 회귀 < 50%`
+- **청산권장**: `|현재 z| < 0.3`
+
+## 10. PR 단위 분해
+
+> 16개 PR, 순수 작업일 약 15~21일 (이슈/디버깅 별도)
+
+### Phase 1 — 인프라 (1~2일)
+1. **`stat-arb-engine` skeleton** (port 8300, axum, `/health`, `/debug/stats`). LS 토큰/phase/holidays는 자체 보유 (lens-common 미루기)
+
+### Phase 2 — 통계 엔진 (5~7일)
+2. **과거 데이터 로딩** (Finance_Data PG → in-memory bars, 30s/1m/1d) + realtime 스냅샷 동기화
+3. **1:1 페어 발굴** (사전 필터 + OLS + ADF cointegration + half-life)
+4. **도메인 그룹 자동 생성** (ETF/지수/섹터/테마/사용자/상관)
+5. **M:N 발굴 트랙 A**: Dense PCA → Sparse CCA → Johansen
+6. **M:N 발굴 트랙 B**: Sparse PCA + cluster 잔차 페어
+7. **3 timeframe 동시 계산 + 최적 timeframe 자동 선택**
+
+### Phase 3 — 발굴 화면 (3~4일)
+8. **프론트 `/stat-arb` v1**: 자산군 토글 + 그룹 필터 + 스크리너 테이블 + 출처 뱃지
+9. **페어 상세 패널**: 스프레드 차트 + z-score 시계열 + 히스토그램 + 3 timeframe 미니차트
+10. **수동 조립 모드**: leg 입력 UI + 즉시 검증
+
+### Phase 4 — 보조 데이터 (2~3일)
+11. **대여요율** 입력/저장 + CSV import. 베이시스 store 재사용 → 스크리너 컬럼 통합
+12. **통합 PnL 시뮬레이터**: 통계차익 + 대여 + 매도차 레이어
+
+### Phase 5 — 포지션 추적 (4~5일)
+13. **SQLite 스키마** + 포지션 CRUD API + 등록 폼 (발굴 화면에서 prefill)
+14. **포지션 리스트** + 자동 라벨링 + 산점도
+15. **포지션 상세**: 차트 3종 + leg 테이블 + 통계량 변화 + 시그널 패널
+16. **청산 기록** + 확정 PnL
+
+### Phase 6 — 정리 (worktree1 머지 후)
+17. **`lens-common` workspace crate 추출**: realtime + stat-arb-engine 공유 모듈 통합 (LS 토큰, phase, holidays)
+
+## 11. 통계 알고리즘 노트
+
+### OLS hedge ratio + ADF
+- Engle-Granger 2단계: OLS로 `Y = αX + ε` 추정 → ε에 ADF stationarity test
+- p < 0.05 통과 시 cointegration 인정
+
+### Half-life
+- `Δε_t = θ ε_{t-1} + η_t` 회귀에서 `half-life = ln(2) / -θ`
+- 작을수록 빠른 회귀, 큰 값은 stale 위험
+
+### Dense PCA (사전 필터)
+- 그룹 안 N종목의 일/분 수익률 행렬 → PCA
+- 상위 k개 factor explanatory power 큰 종목만 후보 풀로
+
+### Sparse CCA (M:N 직접 발굴)
+- 두 그룹 X, Y 사이 canonical correlation 최대화
+- 양변 weight에 L1 penalty → sparse 추출
+- 라이브러리: `ndarray-linalg` + 자체 구현 (수렴 알고리즘)
+
+### Johansen (M:N cointegration 검정)
+- M+N 변수 시스템에서 공적분 벡터 추출 (eigendecomposition)
+- trace test / max eigenvalue test 통과 시 인정
+
+### Sparse PCA
+- PCA에 sparsity 강제 (factor당 k 종목 제한)
+- L1 penalty 또는 truncated power method
+- cluster 자체가 페어 시드
+
+## 12. 외부 연동
+
+- **베이시스**: `stock-arbitrage` 페이지 실시간 베이시스 store 재사용 → 스크리너 컬럼 + 포지션 상세 "매도차 가능성" 표시
+- **실시간 가격**: realtime WS 그대로 사용 (leg별 mark price)
+- **과거 데이터**: Finance_Data PG `korea_stock_data` — 일봉/30초/1분봉 (1분봉 backfill 5/15 완료 예정)
+- **대여요율**: 수동 입력 (외부 데이터 소스 없음). CSV 일괄 업로드 지원.
+
+## 13. 미해결 / 나중 결정
+
+- **자동 알림 외부 채널**: 현재 화면 뱃지만. 향후 Slack/이메일 필요 시 추가.
+- **부분 청산 / 추가 진입**: 현재 미지원. 운용해보고 필요성 판단.
+- **multi-user / 권한**: 단일 사용자 가정. 다중 사용자 필요 시 positions 테이블에 user_id 추가.
+- **백테스트 결과 저장**: 수동 조립 백테스트 결과를 saved_pairs에 함께 저장할지.

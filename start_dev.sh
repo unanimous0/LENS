@@ -2,7 +2,7 @@
 
 # LENS 개발 서버 실행 스크립트
 # 사용법: ./start_dev.sh
-# 접속: ssh -L 3100:localhost:3100 -L 8100:localhost:8100 -L 8200:localhost:8200 una0@100.64.229.73
+# 접속: ssh -L 3100:localhost:3100 -L 8100:localhost:8100 -L 8200:localhost:8200 -L 8300:localhost:8300 una0@100.64.229.73
 #       브라우저에서 http://localhost:3100
 
 cd "$(dirname "$0")"
@@ -16,7 +16,7 @@ set -m
 mkdir -p logs
 LOG_DAY=$(date +%Y%m%d)
 find logs/ -name "*.log*" -mtime +14 -delete 2>/dev/null
-echo "[로그] logs/{backend,realtime}.log.${LOG_DAY} 에 기록 (14일 후 자동 삭제)"
+echo "[로그] logs/{backend,realtime,statarb}.log.${LOG_DAY} 에 기록 (14일 후 자동 삭제)"
 
 # Node.js 버전 설정
 export NVM_DIR="$HOME/.nvm"
@@ -68,6 +68,22 @@ for i in $(seq 1 20); do
     sleep 0.5
 done
 
+# 통계 차익 엔진: 빌드 후 실행 (선택 — 디렉토리 없으면 스킵)
+if [ -d stat-arb-engine ]; then
+    echo "[stat-arb] 통계 엔진 빌드..."
+    (cd stat-arb-engine && cargo build --release --quiet)
+    echo "[stat-arb] 시작 (포트 8300)..."
+    (cd stat-arb-engine && ./target/release/stat-arb-engine 2>&1 | tee -a "../logs/statarb.log.${LOG_DAY}") &
+    STATARB_PID=$!
+    for i in $(seq 1 20); do
+        if curl -sf http://localhost:8300/health >/dev/null 2>&1; then
+            echo "[stat-arb] 준비됨"
+            break
+        fi
+        sleep 0.5
+    done
+fi
+
 # 프론트엔드 dev 모드 실행 — clearScreen=false 로 vite가 터미널을 비워 status가 가려지지 않게 함
 echo "[프론트엔드] dev 모드 시작 (포트 3100)..."
 (cd frontend && npx vite --host 0.0.0.0 --port 3100 --clearScreen false) &
@@ -78,6 +94,7 @@ echo "LENS 개발 서버 실행 완료"
 echo "   프론트엔드: http://localhost:3100"
 echo "   백엔드 API: http://localhost:8100"
 echo "   실시간 WS:  http://localhost:8200"
+[ -n "$STATARB_PID" ] && echo "   stat-arb:   http://localhost:8300"
 
 # 초기 fetch (t1102/t8402)는 ~10초 소요. 잠시 기다린 뒤 상태 요약 출력.
 print_status() {
@@ -93,6 +110,9 @@ print_status() {
     printf "  %-22s %b\n" "Frontend  (3100)" "$(chk 3100)"
     printf "  %-22s %b\n" "Backend   (8100)" "$(chk 8100)"
     printf "  %-22s %b\n" "Realtime  (8200)" "$(chk 8200)"
+    if [ -d stat-arb-engine ]; then
+        printf "  %-22s %b\n" "Stat-arb  (8300)" "$(chk 8300)"
+    fi
     echo
 
     local mode="unknown"
@@ -158,12 +178,12 @@ cleanup() {
     echo ""
     echo "[종료] 모든 프로세스 정리 중..."
     # 프로세스 그룹 단위 SIGTERM — subshell + set -m 덕에 각 &는 별도 PGID
-    for pid in "$BACKEND_PID" "$REALTIME_PID" "$FRONTEND_PID"; do
-        kill -TERM -- "-$pid" 2>/dev/null
+    for pid in "$BACKEND_PID" "$REALTIME_PID" "$STATARB_PID" "$FRONTEND_PID"; do
+        [ -n "$pid" ] && kill -TERM -- "-$pid" 2>/dev/null
     done
     sleep 1
     # 잔존 프로세스 백업 정리 (포트 기반)
-    fuser -k 3100/tcp 8100/tcp 8200/tcp 2>/dev/null
+    fuser -k 3100/tcp 8100/tcp 8200/tcp 8300/tcp 2>/dev/null
     exit 0
 }
 trap cleanup INT TERM
