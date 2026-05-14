@@ -502,6 +502,124 @@ pub async fn load_stock_intraday_batch(
     Ok(out)
 }
 
+/// 지수 일봉 batch.
+pub async fn load_index_daily_batch(
+    pool: &PgPool,
+    codes: &[String],
+    days: i32,
+) -> Result<HashMap<String, Vec<Bar>>, sqlx::Error> {
+    if codes.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let sql = "SELECT code, time, open, high, low, close, COALESCE(volume, 0)
+               FROM index_ohlcv_daily
+               WHERE code = ANY($1) AND time >= $2
+               ORDER BY code, time ASC";
+    let rows: Vec<(
+        String,
+        NaiveDate,
+        Option<BigDecimal>,
+        Option<BigDecimal>,
+        Option<BigDecimal>,
+        BigDecimal,
+        i64,
+    )> = sqlx::query_as(sql)
+        .bind(codes)
+        .bind(cutoff_date(days))
+        .fetch_all(pool)
+        .await?;
+    let mut out: HashMap<String, Vec<Bar>> = HashMap::with_capacity(codes.len());
+    for (code, t, o, h, l, c, v) in rows {
+        out.entry(code).or_default().push(Bar {
+            ts: day_close_ts(t),
+            open: bd_to_f64(o),
+            high: bd_to_f64(h),
+            low: bd_to_f64(l),
+            close: bd_to_f64(Some(c)),
+            volume: v,
+        });
+    }
+    Ok(out)
+}
+
+/// 지수 분봉 batch.
+pub async fn load_index_intraday_batch(
+    pool: &PgPool,
+    codes: &[String],
+    interval_sec: i16,
+    days: i32,
+) -> Result<HashMap<String, Vec<Bar>>, sqlx::Error> {
+    if codes.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let sql = "SELECT index_code, time, open, high, low, close, volume
+               FROM index_ohlcv_intraday
+               WHERE index_code = ANY($1) AND interval_seconds = $2 AND time >= $3
+               ORDER BY index_code, time ASC";
+    let rows: Vec<(
+        String,
+        chrono::DateTime<chrono::Utc>,
+        Option<BigDecimal>,
+        Option<BigDecimal>,
+        Option<BigDecimal>,
+        BigDecimal,
+        i64,
+    )> = sqlx::query_as(sql)
+        .bind(codes)
+        .bind(interval_sec)
+        .bind(cutoff_ts(days))
+        .fetch_all(pool)
+        .await?;
+    let mut out: HashMap<String, Vec<Bar>> = HashMap::with_capacity(codes.len());
+    for (code, t, o, h, l, c, v) in rows {
+        out.entry(code).or_default().push(Bar {
+            ts: t.timestamp_millis(),
+            open: bd_to_f64(o),
+            high: bd_to_f64(h),
+            low: bd_to_f64(l),
+            close: bd_to_f64(Some(c)),
+            volume: v,
+        });
+    }
+    Ok(out)
+}
+
+/// 지수 universe 워밍업 — 일봉 + 1분봉 batch.
+pub async fn warmup_universe_indices_batch(
+    pool: &PgPool,
+    cache: &SeriesCache,
+    codes: &[String],
+    days_daily: i32,
+    days_1m: i32,
+) -> Result<(usize, usize), sqlx::Error> {
+    let daily = load_index_daily_batch(pool, codes, days_daily).await?;
+    let m1 = load_index_intraday_batch(pool, codes, 60, days_1m).await?;
+
+    let mut total_bars = 0usize;
+    let mut series_count = 0usize;
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    for code in codes {
+        let bars_1d = daily.get(code).cloned().unwrap_or_default();
+        let bars_1m = m1.get(code).cloned().unwrap_or_default();
+        let n = bars_1d.len() + bars_1m.len();
+        if n == 0 {
+            continue;
+        }
+        total_bars += n;
+        series_count += 1;
+        let series = AssetSeries {
+            code: code.clone(),
+            asset_type: AssetType::Index,
+            bars_30s: Vec::new(),
+            bars_1m,
+            bars_1d,
+            last_updated: now_ms,
+        };
+        cache.insert(series_key(AssetType::Index, code), series);
+    }
+    Ok((series_count, total_bars))
+}
+
 /// universe 전체를 batch 쿼리로 워밍업해서 캐시에 저장. asset_type은 호출자가 부여.
 /// 일봉 + 1분봉. 30초봉은 양이 너무 많아 PR4a에선 skip (PR4b+에서 필요 시).
 ///

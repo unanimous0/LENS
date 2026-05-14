@@ -378,7 +378,11 @@ async fn load_groups(
     }
 }
 
+/// ETF universe 상위 N개 (1개월 평균 거래대금 내림차순).
+const ETF_TOP_N: i32 = 100;
+
 /// universe 워밍업 + 1:1 발굴.
+/// PR5: KOSPI200 + KOSDAQ150 주식 + ETF + 주요 지수 통합.
 async fn warmup_and_discover(
     pool: &PgPool,
     cache: &SeriesCache,
@@ -388,48 +392,106 @@ async fn warmup_and_discover(
     let t_total = Instant::now();
 
     // 1. universe 추출
-    let universe = match universe::load_kospi200(pool).await {
-        Ok(v) => v,
+    let universe = match universe::load_full(pool, ETF_TOP_N).await {
+        Ok(u) => u,
         Err(e) => {
-            warn!("[universe] KOSPI200 로딩 실패: {e}");
+            warn!("[universe] 로딩 실패: {e}");
             return;
         }
     };
-    info!("[universe] KOSPI200 {} 종목", universe.len());
+    info!(
+        "[universe] KOSPI200 {} + KOSDAQ150 {} + ETF {} + Index {} = total {}",
+        universe.stocks_kospi200.len(),
+        universe.stocks_kosdaq150.len(),
+        universe.etfs.len(),
+        universe.indices.len(),
+        universe.total_count()
+    );
 
-    // 2. Batch 워밍업 — universe 전체를 일봉 1쿼리 + 1분봉 1쿼리로.
-    // TimescaleDB hypertable이라 cutoff 고정 date가 plan-time chunk pruning 가능 — out of shared memory 방지.
+    // 2. 자산군별 batch 워밍업
     let t_warm = Instant::now();
-    let codes: Vec<String> = universe.iter().map(|s| s.code.clone()).collect();
-    let (series_n, total_bars) = match data::bars::warmup_universe_stocks_batch(
+
+    // Stock: KOSPI200 + KOSDAQ150 합쳐서 한 batch
+    let mut stock_codes: Vec<String> = Vec::with_capacity(
+        universe.stocks_kospi200.len() + universe.stocks_kosdaq150.len(),
+    );
+    stock_codes.extend(universe.stocks_kospi200.iter().map(|s| s.code.clone()));
+    stock_codes.extend(universe.stocks_kosdaq150.iter().map(|s| s.code.clone()));
+
+    let etf_codes: Vec<String> = universe.etfs.iter().map(|e| e.code.clone()).collect();
+    let index_codes: Vec<String> = universe.indices.iter().map(|i| i.code.clone()).collect();
+
+    let (stock_n, stock_b) = data::bars::warmup_universe_stocks_batch(
         pool,
         cache,
-        &codes,
+        &stock_codes,
         AssetType::Stock,
         WARMUP_DAYS_DAILY,
         WARMUP_DAYS_1M,
     )
     .await
-    {
-        Ok(v) => v,
-        Err(e) => {
-            warn!("[warmup] batch 로딩 실패: {e}");
-            return;
-        }
-    };
-    stats.pg_queries.fetch_add(2, Ordering::Relaxed); // daily + 1m
+    .unwrap_or_else(|e| {
+        warn!("[warmup] Stock 실패: {e}");
+        (0, 0)
+    });
+
+    let (etf_n, etf_b) = data::bars::warmup_universe_stocks_batch(
+        pool,
+        cache,
+        &etf_codes,
+        AssetType::Etf,
+        WARMUP_DAYS_DAILY,
+        WARMUP_DAYS_1M,
+    )
+    .await
+    .unwrap_or_else(|e| {
+        warn!("[warmup] ETF 실패: {e}");
+        (0, 0)
+    });
+
+    let (idx_n, idx_b) = data::bars::warmup_universe_indices_batch(
+        pool,
+        cache,
+        &index_codes,
+        WARMUP_DAYS_DAILY,
+        WARMUP_DAYS_1M,
+    )
+    .await
+    .unwrap_or_else(|e| {
+        warn!("[warmup] Index 실패: {e}");
+        (0, 0)
+    });
+
+    let total_series = stock_n + etf_n + idx_n;
+    let total_bars = stock_b + etf_b + idx_b;
+    stats.pg_queries.fetch_add(6, Ordering::Relaxed); // 3자산군 × 2 (daily+1m)
     info!(
-        "[warmup] 완료 — {} series, {} bars total, {:.1}초 (batch 2 query)",
-        series_n,
+        "[warmup] Stock {}series/{}b · ETF {}/{}  · Index {}/{}  = total {}/{} ({:.1}초)",
+        stock_n,
+        stock_b,
+        etf_n,
+        etf_b,
+        idx_n,
+        idx_b,
+        total_series,
         total_bars,
         t_warm.elapsed().as_secs_f64()
     );
 
-    // 3. 종목명 룩업
-    let names: HashMap<String, String> = universe
-        .iter()
-        .map(|s| (series_key(AssetType::Stock, &s.code), s.name.clone()))
-        .collect();
+    // 3. 종목명 룩업 — 모든 자산군 통합 (series_key 형식)
+    let mut names: HashMap<String, String> = HashMap::with_capacity(total_series);
+    for s in &universe.stocks_kospi200 {
+        names.insert(series_key(AssetType::Stock, &s.code), s.name.clone());
+    }
+    for s in &universe.stocks_kosdaq150 {
+        names.insert(series_key(AssetType::Stock, &s.code), s.name.clone());
+    }
+    for e in &universe.etfs {
+        names.insert(series_key(AssetType::Etf, &e.code), e.name.clone());
+    }
+    for i in &universe.indices {
+        names.insert(series_key(AssetType::Index, &i.code), i.name.clone());
+    }
 
     // 4. 1:1 발굴
     let t_disc = Instant::now();
@@ -438,7 +500,6 @@ async fn warmup_and_discover(
     stats.discovery_runs.fetch_add(1, Ordering::Relaxed);
     stats.pairs_total.store(result.len() as u64, Ordering::Relaxed);
 
-    // 5. 상태 저장
     {
         let mut s = pairs.write().await;
         s.pairs = result;
