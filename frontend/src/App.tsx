@@ -9,6 +9,7 @@ import { MarketPage } from './pages/market'
 import { LendingPage } from './pages/lending'
 import { StockArbitragePage } from './pages/stock-arbitrage'
 import { EtfArbitragePage } from './pages/etf-arbitrage'
+import { StatArbPage } from './pages/stat-arb'
 import type { NetworkMode } from './types/market'
 
 // dividends는 recharts/react-virtual 의존성이 무거워 lazy-load.
@@ -49,6 +50,7 @@ function AppLayout() {
             <Route path="/supply-demand" element={<StubPage label="수급" />} />
             <Route path="/stock-arbitrage" element={<StockArbitragePage />} />
             <Route path="/etf-arbitrage" element={<EtfArbitragePage />} />
+            <Route path="/stat-arb" element={<StatArbPage />} />
             <Route path="/dividends" element={<Suspense fallback={<div className="p-4 text-sm text-t3">로드 중…</div>}><DividendsPage /></Suspense>} />
           </Routes>
         </div>
