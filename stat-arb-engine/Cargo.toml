@@ -16,7 +16,7 @@ chrono = { version = "0.4", features = ["serde"] }
 reqwest = { version = "0.12", features = ["json", "native-tls"] }
 dotenvy = "0.15"
 # DB — Finance_Data PG (read-only). asyncpg/sqlx 둘 다 가능하지만 Rust 표준은 sqlx.
-sqlx = { version = "0.8", features = ["runtime-tokio", "tls-native-tls", "postgres", "chrono", "macros"] }
+sqlx = { version = "0.8", features = ["runtime-tokio", "tls-native-tls", "postgres", "chrono", "bigdecimal", "macros"] }
 # 수치 — Phase 2부터 본격 사용. Phase 1에선 선언만.
 ndarray = "0.16"
 # 빠른 lock-free 맵 (in-memory bar 캐시)
