@@ -5,12 +5,13 @@
 
 mod data;
 mod discovery;
+mod groups;
 mod holidays;
 mod phase;
 mod stats;
 mod universe;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
@@ -30,6 +31,7 @@ use tracing_subscriber::EnvFilter;
 
 use data::bars::{series_key, AssetType, SeriesCache};
 use discovery::PairResult;
+use groups::Group;
 
 const PORT: u16 = 8300;
 
@@ -58,11 +60,20 @@ pub struct PairsState {
     pub last_run_duration_ms: u64,
 }
 
+/// 자동 생성된 도메인 그룹 + id → Group 룩업.
+#[derive(Default)]
+pub struct GroupsState {
+    pub groups: Vec<Group>,
+    pub by_id: HashMap<String, usize>, // id → groups index
+    pub last_run_ms: i64,
+}
+
 #[derive(Clone)]
 struct AppState {
     pg: Option<PgPool>,
     cache: SeriesCache,
     pairs: Arc<RwLock<PairsState>>,
+    groups: Arc<RwLock<GroupsState>>,
     stats: Arc<EngineStats>,
 }
 
@@ -87,6 +98,7 @@ struct StatsResp {
     realtime_fetches: u64,
     cache_series: usize,
     cache_bars_total: usize,
+    groups_total: usize,
 }
 
 async fn health(State(state): State<AppState>) -> Json<Health> {
@@ -118,6 +130,7 @@ async fn debug_stats(State(state): State<AppState>) -> Json<StatsResp> {
         .iter()
         .map(|e| e.bars_30s.len() + e.bars_1m.len() + e.bars_1d.len())
         .sum();
+    let groups_total = state.groups.read().await.groups.len();
     Json(StatsResp {
         uptime_secs: uptime,
         phase: phase::current().to_string(),
@@ -129,6 +142,7 @@ async fn debug_stats(State(state): State<AppState>) -> Json<StatsResp> {
         realtime_fetches: state.stats.realtime_fetches.load(Ordering::Relaxed),
         cache_series,
         cache_bars_total,
+        groups_total,
     })
 }
 
@@ -137,6 +151,9 @@ struct PairsQuery {
     /// 반환할 최대 페어 수. 디폴트 100.
     #[serde(default = "default_limit")]
     limit: usize,
+    /// 도메인 그룹 id 필터 (예: `index:KOSPI200`, `sector:화학`, `etf:069500`).
+    /// 멤버 둘 다 그룹에 속하는 페어만 반환.
+    group: Option<String>,
 }
 
 fn default_limit() -> usize {
@@ -149,18 +166,97 @@ struct PairsResp {
     returned: usize,
     last_run_ms: i64,
     last_run_duration_ms: u64,
+    /// 그룹 필터링 후 매칭된 페어 수 (필터 없으면 total과 동일).
+    filtered: usize,
     pairs: Vec<PairResult>,
 }
 
 async fn list_pairs(State(state): State<AppState>, Query(q): Query<PairsQuery>) -> Json<PairsResp> {
     let s = state.pairs.read().await;
-    let returned = s.pairs.iter().take(q.limit).cloned().collect::<Vec<_>>();
+    let group_members: Option<HashSet<String>> = if let Some(gid) = q.group.as_ref() {
+        let gs = state.groups.read().await;
+        gs.by_id
+            .get(gid)
+            .and_then(|i| gs.groups.get(*i))
+            .map(|g| g.members.iter().cloned().collect())
+    } else {
+        None
+    };
+
+    let filtered: Vec<PairResult> = match &group_members {
+        Some(members) => s
+            .pairs
+            .iter()
+            .filter(|p| members.contains(&p.left_key) && members.contains(&p.right_key))
+            .cloned()
+            .collect(),
+        None => s.pairs.clone(),
+    };
+
+    let returned = filtered.iter().take(q.limit).cloned().collect::<Vec<_>>();
     Json(PairsResp {
         total: s.pairs.len(),
         returned: returned.len(),
         last_run_ms: s.last_run_ms,
         last_run_duration_ms: s.last_run_duration_ms,
+        filtered: filtered.len(),
         pairs: returned,
+    })
+}
+
+#[derive(Deserialize)]
+struct GroupsQuery {
+    /// kind 필터 (index/sector/etf). 미지정 시 전체.
+    kind: Option<String>,
+    /// members 배열을 응답에 포함할지 (디폴트 false — 리스트 페이지 가벼움).
+    #[serde(default)]
+    with_members: bool,
+}
+
+#[derive(Serialize)]
+struct GroupSummary {
+    id: String,
+    name: String,
+    kind: String,
+    member_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    members: Option<Vec<String>>,
+}
+
+#[derive(Serialize)]
+struct GroupsResp {
+    total: usize,
+    last_run_ms: i64,
+    groups: Vec<GroupSummary>,
+}
+
+async fn list_groups(
+    State(state): State<AppState>,
+    Query(q): Query<GroupsQuery>,
+) -> Json<GroupsResp> {
+    let s = state.groups.read().await;
+    let mut out: Vec<GroupSummary> = s
+        .groups
+        .iter()
+        .filter(|g| q.kind.as_deref().map_or(true, |k| g.kind.as_str() == k))
+        .map(|g| GroupSummary {
+            id: g.id.clone(),
+            name: g.name.clone(),
+            kind: g.kind.as_str().to_string(),
+            member_count: g.member_count,
+            members: if q.with_members {
+                Some(g.members.clone())
+            } else {
+                None
+            },
+        })
+        .collect();
+    // index → sector → etf 순, 각 종류 안에선 멤버 많은 순.
+    out.sort_by(|a, b| a.kind.cmp(&b.kind).then(b.member_count.cmp(&a.member_count)));
+    Json(GroupsResp {
+        total: out.len(),
+        last_run_ms: s.last_run_ms,
+        groups: out,
     })
 }
 
@@ -201,13 +297,16 @@ async fn main() {
 
     let cache = data::bars::new_cache();
     let pairs = Arc::new(RwLock::new(PairsState::default()));
+    let groups_state = Arc::new(RwLock::new(GroupsState::default()));
 
-    // 백그라운드: universe 워밍업 + 1:1 발굴. 서버는 즉시 응답 가능.
+    // 백그라운드: 그룹 자동 생성 + universe 워밍업 + 1:1 발굴. 서버는 즉시 응답 가능.
     if let Some(pool) = pg.clone() {
         let cache_clone = cache.clone();
         let pairs_clone = pairs.clone();
+        let groups_clone = groups_state.clone();
         let stats_clone = engine_stats.clone();
         tokio::spawn(async move {
+            load_groups(&pool, &groups_clone, &stats_clone).await;
             warmup_and_discover(&pool, &cache_clone, &pairs_clone, &stats_clone).await;
         });
     }
@@ -216,6 +315,7 @@ async fn main() {
         pg,
         cache,
         pairs,
+        groups: groups_state,
         stats: engine_stats.clone(),
     };
 
@@ -228,6 +328,7 @@ async fn main() {
         .route("/health", get(health))
         .route("/debug/stats", get(debug_stats))
         .route("/pairs", get(list_pairs))
+        .route("/groups", get(list_groups))
         .layer(cors)
         .with_state(app_state);
 
@@ -244,8 +345,40 @@ async fn main() {
         .expect("server error");
 }
 
+/// 도메인 그룹 (index/sector/etf) 자동 생성. PG 3 쿼리 (try_join).
+async fn load_groups(
+    pool: &PgPool,
+    groups: &Arc<RwLock<GroupsState>>,
+    stats: &Arc<EngineStats>,
+) {
+    let t = Instant::now();
+    match groups::load_all_groups(pool).await {
+        Ok(all) => {
+            stats.pg_queries.fetch_add(3, Ordering::Relaxed);
+            let by_id: HashMap<String, usize> = all
+                .iter()
+                .enumerate()
+                .map(|(i, g)| (g.id.clone(), i))
+                .collect();
+            let n = all.len();
+            let now_ms = chrono::Utc::now().timestamp_millis();
+            {
+                let mut s = groups.write().await;
+                s.groups = all;
+                s.by_id = by_id;
+                s.last_run_ms = now_ms;
+            }
+            info!(
+                "[groups] 완료 — {} 그룹, {:.1}초",
+                n,
+                t.elapsed().as_secs_f64()
+            );
+        }
+        Err(e) => warn!("[groups] 로딩 실패: {e}"),
+    }
+}
+
 /// universe 워밍업 + 1:1 발굴.
-/// PR3: KOSPI200 구성종목 일봉 90일.
 async fn warmup_and_discover(
     pool: &PgPool,
     cache: &SeriesCache,
