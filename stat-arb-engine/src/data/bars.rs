@@ -584,6 +584,38 @@ pub async fn load_index_intraday_batch(
     Ok(out)
 }
 
+/// N개 raw bar를 1개 집계 bar로. OHLCV: open=첫것, high=max, low=min, close=마지막, vol=합.
+/// `multiplier` 가 raw 개수보다 크면 빈 Vec 반환. 완전한 chunk만 사용 (chunks_exact).
+pub fn aggregate(bars: &[Bar], multiplier: usize) -> Vec<Bar> {
+    if multiplier == 0 || bars.len() < multiplier {
+        return Vec::new();
+    }
+    bars.chunks_exact(multiplier)
+        .map(|chunk| {
+            let mut high = f64::NEG_INFINITY;
+            let mut low = f64::INFINITY;
+            let mut volume = 0i64;
+            for b in chunk {
+                if b.high > high {
+                    high = b.high;
+                }
+                if b.low < low {
+                    low = b.low;
+                }
+                volume += b.volume;
+            }
+            Bar {
+                ts: chunk[0].ts,
+                open: chunk[0].open,
+                high,
+                low,
+                close: chunk[chunk.len() - 1].close,
+                volume,
+            }
+        })
+        .collect()
+}
+
 /// 기존 bars 벡터의 마지막 ts 이후의 *새 bars*만 끝에 append.
 /// `new`는 ASC 정렬되어 있다고 가정.
 /// 반환: 실제 추가된 bar 개수.

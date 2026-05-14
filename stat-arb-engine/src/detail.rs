@@ -4,7 +4,7 @@
 
 use serde::Serialize;
 
-use crate::data::bars::{AssetSeries, Bar, Timeframe};
+use crate::data::bars::{aggregate, AssetSeries, Bar, Timeframe};
 use crate::stats;
 
 /// timeframe 1개 통계량 (1d, 1m 별로 각각).
@@ -80,18 +80,17 @@ fn intersect_by_ts(a: &[Bar], b: &[Bar]) -> (Vec<f64>, Vec<f64>, Vec<i64>) {
     (a_close, b_close, ts)
 }
 
-/// timeframe 한 가지에 대한 통계만 계산 (시계열은 일봉만 별도로).
-fn timeframe_stat(
+/// 두 bar 시리즈를 받아 timestamp 교집합 + 통계 계산.
+/// raw 시계열 (30s/1m/1d) 과 집계 시계열 (5m/30m/1h/1w/1mo) 둘 다 동일 시그니처로.
+fn timeframe_stat_from_bars(
     label: &'static str,
-    left: &AssetSeries,
-    right: &AssetSeries,
-    tf: Timeframe,
+    left_bars: &[Bar],
+    right_bars: &[Bar],
 ) -> Option<TimeframeStat> {
-    let (x, y, _ts) = intersect_by_ts(left.bars(tf), right.bars(tf));
+    let (x, y, _ts) = intersect_by_ts(left_bars, right_bars);
     if x.len() < 30 {
         return None;
     }
-    // 로그수익률 correlation (사전 신뢰도 표시용).
     let x_ret: Vec<f64> = (1..x.len())
         .map(|i| if x[i - 1] > 0.0 && x[i] > 0.0 { (x[i] / x[i - 1]).ln() } else { 0.0 })
         .collect();
@@ -115,6 +114,29 @@ fn timeframe_stat(
         corr,
         z_score: z,
     })
+}
+
+/// raw timeframe (캐시에서 그대로) 통계.
+fn timeframe_stat_raw(
+    label: &'static str,
+    left: &AssetSeries,
+    right: &AssetSeries,
+    tf: Timeframe,
+) -> Option<TimeframeStat> {
+    timeframe_stat_from_bars(label, left.bars(tf), right.bars(tf))
+}
+
+/// 집계 timeframe — 양쪽 시리즈를 base에서 N-bar 집계 후 통계.
+fn timeframe_stat_aggregated(
+    label: &'static str,
+    left: &AssetSeries,
+    right: &AssetSeries,
+    base: Timeframe,
+    multiplier: usize,
+) -> Option<TimeframeStat> {
+    let left_agg = aggregate(left.bars(base), multiplier);
+    let right_agg = aggregate(right.bars(base), multiplier);
+    timeframe_stat_from_bars(label, &left_agg, &right_agg)
 }
 
 fn histogram(values: &[f64], n_bins: usize) -> Vec<HistBin> {
@@ -191,16 +213,41 @@ pub fn build_pair_detail(
 
     let hist = histogram(resid, 30);
 
-    // timeframes 별 통계 (1d 는 이미 위에서 계산했지만 깔끔히 다시)
+    // 8 timeframe 통계 — raw 3개 + 집계 5개. 데이터 부족 시 자연 None.
+    //
+    // raw: 30s(4/27~), 1m(1/2~4/24), 1d(1년)
+    // 집계: 5m/30m/1h = bars_1m × N (sample 풍부)
+    //       1w/1mo = bars_1d × N
+    //
+    // 단위 해석 (half_life 단위 = 그 timeframe의 단위):
+    //   30s hl=120 → 120×30s = 1시간
+    //   1m hl=60 → 60분 = 1시간
+    //   5m hl=12 → 60분 = 1시간
+    //   1d hl=3 → 3일
+    //   1w hl=2 → 2주
     let mut timeframes: Vec<TimeframeStat> = Vec::new();
-    if let Some(s) = timeframe_stat("1d", left, right, Timeframe::Day1) {
+    if let Some(s) = timeframe_stat_raw("30s", left, right, Timeframe::Sec30) {
         timeframes.push(s);
     }
-    if let Some(s) = timeframe_stat("1m", left, right, Timeframe::Min1) {
+    if let Some(s) = timeframe_stat_raw("1m", left, right, Timeframe::Min1) {
         timeframes.push(s);
     }
-    // 30s 는 universe 워밍업에 안 들어옴 — 결과 빈 vec.
-    if let Some(s) = timeframe_stat("30s", left, right, Timeframe::Sec30) {
+    if let Some(s) = timeframe_stat_aggregated("5m", left, right, Timeframe::Min1, 5) {
+        timeframes.push(s);
+    }
+    if let Some(s) = timeframe_stat_aggregated("30m", left, right, Timeframe::Min1, 30) {
+        timeframes.push(s);
+    }
+    if let Some(s) = timeframe_stat_aggregated("1h", left, right, Timeframe::Min1, 60) {
+        timeframes.push(s);
+    }
+    if let Some(s) = timeframe_stat_raw("1d", left, right, Timeframe::Day1) {
+        timeframes.push(s);
+    }
+    if let Some(s) = timeframe_stat_aggregated("1w", left, right, Timeframe::Day1, 5) {
+        timeframes.push(s);
+    }
+    if let Some(s) = timeframe_stat_aggregated("1mo", left, right, Timeframe::Day1, 21) {
         timeframes.push(s);
     }
 
