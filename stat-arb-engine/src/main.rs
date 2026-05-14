@@ -4,6 +4,7 @@
 //! 자세한 설계는 ../stat-arb-engine.md 참조.
 
 mod data;
+mod detail;
 mod discovery;
 mod groups;
 mod holidays;
@@ -17,7 +18,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use axum::extract::{Query, State};
-use axum::http::Method;
+use axum::http::{Method, StatusCode};
+use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
@@ -37,8 +39,13 @@ const PORT: u16 = 8300;
 
 /// 일봉 워밍업 길이 (캘린더일). 1년 ≈ 252영업일 = 365캘린더일.
 const WARMUP_DAYS_DAILY: i32 = 365;
-/// 1분봉 워밍업 길이 (캘린더일). 너무 길면 메모리 큼 — 14일치면 약 영업일 10일 = 3,900 bar/종목.
-const WARMUP_DAYS_1M: i32 = 14;
+/// 1분봉 워밍업 길이 (캘린더일). PG에 4/24까지만 있음 — 더 길게 잡아 raw 가용분 다 가져오기.
+/// 4개월치 (~120일) 면 전체 1분봉 raw 커버.
+const WARMUP_DAYS_1M: i32 = 130;
+/// 30초봉 워밍업 길이 (캘린더일). 30초봉은 종목당 일 780 bar로 큼 —
+/// 5일이면 영업일 ~3-4일치 (종목당 ~2.3k bar), 469 종목 batch 1쿼리 = ~1M row.
+/// 더 길게 잡고 싶으면 batch chunk 분할 필요. 분봉 정책은 stat-arb-engine.md §12 참조.
+const WARMUP_DAYS_30S: i32 = 5;
 
 /// 통계량 재계산 cron 주기. 10분 — 분봉 한두 개 들어오는 단위.
 /// 환경변수 `STATARB_RECOMPUTE_SECS` 로 오버라이드 (시연/테스트용).
@@ -240,6 +247,62 @@ struct GroupsResp {
     groups: Vec<GroupSummary>,
 }
 
+#[derive(Deserialize)]
+struct PairDetailQuery {
+    /// 좌변 series_key (예: S:005930, E:069500, I:K2G01P)
+    left: String,
+    right: String,
+}
+
+async fn pair_detail(
+    State(state): State<AppState>,
+    Query(q): Query<PairDetailQuery>,
+) -> Response {
+    let left = match state.cache.get(&q.left) {
+        Some(v) => v,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": format!("left key not in cache: {}", q.left)})),
+            )
+                .into_response();
+        }
+    };
+    let right = match state.cache.get(&q.right) {
+        Some(v) => v,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": format!("right key not in cache: {}", q.right)})),
+            )
+                .into_response();
+        }
+    };
+    // 종목명 룩업 — pairs.names 에 들어있음
+    let (left_name, right_name) = {
+        let s = state.pairs.read().await;
+        (
+            s.names.get(&q.left).cloned().unwrap_or_else(|| q.left.clone()),
+            s.names.get(&q.right).cloned().unwrap_or_else(|| q.right.clone()),
+        )
+    };
+    match detail::build_pair_detail(
+        q.left.clone(),
+        q.right.clone(),
+        left_name,
+        right_name,
+        &left,
+        &right,
+    ) {
+        Some(d) => Json(d).into_response(),
+        None => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(serde_json::json!({"error": "데이터 부족 (일봉 30개 미만 또는 OLS 실패)"})),
+        )
+            .into_response(),
+    }
+}
+
 async fn list_groups(
     State(state): State<AppState>,
     Query(q): Query<GroupsQuery>,
@@ -346,6 +409,7 @@ async fn main() {
         .route("/health", get(health))
         .route("/debug/stats", get(debug_stats))
         .route("/pairs", get(list_pairs))
+        .route("/pairs/detail", get(pair_detail))
         .route("/groups", get(list_groups))
         .layer(cors)
         .with_state(app_state);
@@ -487,6 +551,7 @@ async fn warmup_and_discover(
         AssetType::Stock,
         WARMUP_DAYS_DAILY,
         WARMUP_DAYS_1M,
+        WARMUP_DAYS_30S,
     )
     .await
     .unwrap_or_else(|e| {
@@ -501,6 +566,7 @@ async fn warmup_and_discover(
         AssetType::Etf,
         WARMUP_DAYS_DAILY,
         WARMUP_DAYS_1M,
+        WARMUP_DAYS_30S,
     )
     .await
     .unwrap_or_else(|e| {
@@ -514,6 +580,7 @@ async fn warmup_and_discover(
         &index_codes,
         WARMUP_DAYS_DAILY,
         WARMUP_DAYS_1M,
+        WARMUP_DAYS_30S,
     )
     .await
     .unwrap_or_else(|e| {
@@ -523,7 +590,7 @@ async fn warmup_and_discover(
 
     let total_series = stock_n + etf_n + idx_n;
     let total_bars = stock_b + etf_b + idx_b;
-    stats.pg_queries.fetch_add(6, Ordering::Relaxed); // 3자산군 × 2 (daily+1m)
+    stats.pg_queries.fetch_add(9, Ordering::Relaxed); // 3자산군 × 3 (daily+1m+30s)
     info!(
         "[warmup] Stock {}series/{}b · ETF {}/{}  · Index {}/{}  = total {}/{} ({:.1}초)",
         stock_n,

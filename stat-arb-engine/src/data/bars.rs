@@ -584,16 +584,18 @@ pub async fn load_index_intraday_batch(
     Ok(out)
 }
 
-/// 지수 universe 워밍업 — 일봉 + 1분봉 batch.
+/// 지수 universe 워밍업 — 일봉 + 1분봉 + 30초봉 batch. 분봉 정책은 §12 참조.
 pub async fn warmup_universe_indices_batch(
     pool: &PgPool,
     cache: &SeriesCache,
     codes: &[String],
     days_daily: i32,
     days_1m: i32,
+    days_30s: i32,
 ) -> Result<(usize, usize), sqlx::Error> {
     let daily = load_index_daily_batch(pool, codes, days_daily).await?;
     let m1 = load_index_intraday_batch(pool, codes, 60, days_1m).await?;
+    let s30 = load_index_intraday_batch(pool, codes, 30, days_30s).await?;
 
     let mut total_bars = 0usize;
     let mut series_count = 0usize;
@@ -601,7 +603,8 @@ pub async fn warmup_universe_indices_batch(
     for code in codes {
         let bars_1d = daily.get(code).cloned().unwrap_or_default();
         let bars_1m = m1.get(code).cloned().unwrap_or_default();
-        let n = bars_1d.len() + bars_1m.len();
+        let bars_30s = s30.get(code).cloned().unwrap_or_default();
+        let n = bars_1d.len() + bars_1m.len() + bars_30s.len();
         if n == 0 {
             continue;
         }
@@ -610,7 +613,7 @@ pub async fn warmup_universe_indices_batch(
         let series = AssetSeries {
             code: code.clone(),
             asset_type: AssetType::Index,
-            bars_30s: Vec::new(),
+            bars_30s,
             bars_1m,
             bars_1d,
             last_updated: now_ms,
@@ -621,7 +624,13 @@ pub async fn warmup_universe_indices_batch(
 }
 
 /// universe 전체를 batch 쿼리로 워밍업해서 캐시에 저장. asset_type은 호출자가 부여.
-/// 일봉 + 1분봉. 30초봉은 양이 너무 많아 PR4a에선 skip (PR4b+에서 필요 시).
+///
+/// **분봉 정책 — stat-arb-engine.md §12 참조**:
+/// Finance_Data DB는 시점 기준 분기 (2026-04-24까지 1분봉, 04-27부터 30초봉).
+/// 합치지 않고 *raw 그대로*:
+///   - `bars_30s`  : 30초봉 raw (4/27~, days_30s 일치)
+///   - `bars_1m`   : 1분봉 raw (1/2~4/24, days_1m 일치) — 시간 지나면 자연 fade out
+///   - `bars_1d`   : 일봉 raw (days_daily 일치)
 ///
 /// 반환: (insert된 series 수, bar 총합)
 pub async fn warmup_universe_stocks_batch(
@@ -631,9 +640,11 @@ pub async fn warmup_universe_stocks_batch(
     asset_type: AssetType,
     days_daily: i32,
     days_1m: i32,
+    days_30s: i32,
 ) -> Result<(usize, usize), sqlx::Error> {
     let daily = load_stock_daily_batch(pool, codes, days_daily).await?;
     let m1 = load_stock_intraday_batch(pool, codes, 60, days_1m).await?;
+    let s30 = load_stock_intraday_batch(pool, codes, 30, days_30s).await?;
 
     let mut total_bars = 0usize;
     let mut series_count = 0usize;
@@ -641,7 +652,8 @@ pub async fn warmup_universe_stocks_batch(
     for code in codes {
         let bars_1d = daily.get(code).cloned().unwrap_or_default();
         let bars_1m = m1.get(code).cloned().unwrap_or_default();
-        let n = bars_1d.len() + bars_1m.len();
+        let bars_30s = s30.get(code).cloned().unwrap_or_default();
+        let n = bars_1d.len() + bars_1m.len() + bars_30s.len();
         if n == 0 {
             continue;
         }
@@ -650,7 +662,7 @@ pub async fn warmup_universe_stocks_batch(
         let series = AssetSeries {
             code: code.clone(),
             asset_type,
-            bars_30s: Vec::new(),
+            bars_30s,
             bars_1m,
             bars_1d,
             last_updated: now_ms,
