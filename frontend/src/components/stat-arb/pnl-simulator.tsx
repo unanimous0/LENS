@@ -3,6 +3,8 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { keyToCode } from '@/lib/stat-arb-keys'
 import type { PairDetail } from '@/types/stat-arb'
 
+import { PositionEntryModal } from './position-entry-modal'
+
 /**
  * 통합 PnL 시뮬레이터 — 통계차익 + 대여수익.
  *
@@ -47,6 +49,10 @@ export function PnlSimulator({
   const [buyPrice, setBuyPrice] = useState(0)
   // 사용자가 매수가를 직접 수정했는지. true면 자동 갱신 중단.
   const manualEdit = useRef(false)
+
+  // 포지션 등록 모달
+  const [modalOpen, setModalOpen] = useState(false)
+  const [savedToast, setSavedToast] = useState<string | null>(null)
 
   // 실시간 매수 leg 가격 들어오면 자동으로 매수가 채움 (manual 진입 전까지).
   useEffect(() => {
@@ -229,6 +235,51 @@ export function PnlSimulator({
         ※ 통계차익은 *완전 회귀 가정*. 실제론 보유기간 내 부분 회귀일 수도. β와 z의 부호로
         방향만 추정 — 실 매매 전 사용자 검토 필수.
       </div>
+
+      {/* 진입 기록 버튼 */}
+      <div className="mt-3 flex items-center justify-between gap-2">
+        {savedToast ? (
+          <span className="text-[11px] text-accent">{savedToast}</span>
+        ) : (
+          <span className="text-[10px] text-t4">실거래 후 위 입력값으로 포지션 기록 가능</span>
+        )}
+        <button
+          type="button"
+          onClick={() => setModalOpen(true)}
+          disabled={!stat1d}
+          className="rounded-sm bg-accent/20 px-3 py-1.5 text-xs text-accent hover:bg-accent/30 disabled:opacity-50"
+        >
+          이 조합으로 진입 기록
+        </button>
+      </div>
+
+      {stat1d && (
+        <PositionEntryModal
+          open={modalOpen}
+          onClose={() => setModalOpen(false)}
+          detail={detail}
+          prefill={{
+            buyRight,
+            rightQty: qty,
+            buyPrice,
+            sellPrice: buyRight ? livePrices.left : livePrices.right,
+            lendOutBuy: lendOut,
+            buyLoanRate: calc.buyRate,
+            entryZ: z,
+            entryStats: {
+              alpha: stat1d.alpha,
+              beta: stat1d.hedge_ratio,
+              half_life: stat1d.half_life,
+              adf: stat1d.adf_tstat,
+              r2: stat1d.r_squared,
+            },
+          }}
+          onSaved={(id) => {
+            setSavedToast(`포지션 등록됨 (${id.slice(0, 8)}…)`)
+            setTimeout(() => setSavedToast(null), 4000)
+          }}
+        />
+      )}
     </div>
   )
 }
