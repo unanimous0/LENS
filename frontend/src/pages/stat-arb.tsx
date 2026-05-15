@@ -45,7 +45,7 @@ const KIND_LABELS: Record<string, string> = {
 }
 
 // 정렬 가능한 컬럼
-type SortKey = 'score' | 'z' | 'hl' | 'r2' | 'adf' | 'corr' | 'beta'
+type SortKey = 'score' | 'z' | 'hl' | 'r2' | 'adf' | 'corr' | 'beta' | 'loanrate'
 
 // 컬럼별 hover 설명
 const COL_TOOLTIPS: Record<SortKey | 'pair', string> = {
@@ -57,6 +57,13 @@ const COL_TOOLTIPS: Record<SortKey | 'pair', string> = {
   hl: 'Mean-reversion half-life (그 timeframe 단위, 1d 기준 일)',
   z: '현재 잔차 z-score — |z|≥2 진입 시그널',
   score: '발굴 점수 = -ADF × (1/hl) × |corr|',
+  loanrate: '대여요율 (left / right). ≥15% 강조 — 고요율 매수+송출 기회',
+}
+
+/** series_key (S:005930, E:069500, I:K2G01P) → 종목코드 추출 */
+function keyToCode(key: string): string {
+  const i = key.indexOf(':')
+  return i >= 0 ? key.slice(i + 1) : key
 }
 
 export function StatArbPage() {
@@ -73,8 +80,23 @@ export function StatArbPage() {
   const [search, setSearch] = useState<string>('')
   const [sortKey, setSortKey] = useState<SortKey>('score')
   const [sortAsc, setSortAsc] = useState<boolean>(false) // 기본 내림차순
+  const [loanRates, setLoanRates] = useState<Map<string, number>>(new Map())
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+
+  // 대여요율 1회 로딩 (변경 시 페이지 재진입으로 갱신)
+  useEffect(() => {
+    fetch('/api/loan-rates')
+      .then((r) => r.json())
+      .then((d: { items: Array<{ code: string; rate_pct: number }> }) => {
+        const m = new Map<string, number>()
+        for (const r of d.items) m.set(r.code, r.rate_pct)
+        setLoanRates(m)
+      })
+      .catch(() => {
+        /* fail-safe: 빈 Map */
+      })
+  }, [])
 
   // 그룹 1회 로딩
   useEffect(() => {
@@ -130,6 +152,13 @@ export function StatArbPage() {
       adf: (p) => p.adf_tstat,
       corr: (p) => Math.abs(p.corr),
       beta: (p) => p.hedge_ratio,
+      loanrate: (p) => {
+        // 페어의 max(L요율, R요율) — 한쪽만 있으면 그것만, 둘 다 없으면 -1
+        const l = loanRates.get(keyToCode(p.left_key))
+        const r = loanRates.get(keyToCode(p.right_key))
+        if (l == null && r == null) return -1
+        return Math.max(l ?? 0, r ?? 0)
+      },
     }
     const sorted = [...list].sort((a, b) => {
       const va = getter[sortKey](a)
@@ -137,7 +166,7 @@ export function StatArbPage() {
       return sortAsc ? va - vb : vb - va
     })
     return sorted
-  }, [pairs, search, sortKey, sortAsc])
+  }, [pairs, search, sortKey, sortAsc, loanRates])
 
   const sortClick = (k: SortKey) => {
     if (sortKey === k) setSortAsc(!sortAsc)
@@ -235,6 +264,9 @@ export function StatArbPage() {
               <SortableTh active={sortKey === 'z'} asc={sortAsc} onClick={() => sortClick('z')} title={COL_TOOLTIPS.z}>
                 z
               </SortableTh>
+              <SortableTh active={sortKey === 'loanrate'} asc={sortAsc} onClick={() => sortClick('loanrate')} title={COL_TOOLTIPS.loanrate}>
+                대여 L/R
+              </SortableTh>
               <SortableTh active={sortKey === 'score'} asc={sortAsc} onClick={() => sortClick('score')} title={COL_TOOLTIPS.score}>
                 score
               </SortableTh>
@@ -277,6 +309,12 @@ export function StatArbPage() {
                     {z >= 0 ? '+' : ''}
                     {z.toFixed(2)}
                   </td>
+                  <td className="px-3 py-2 text-right">
+                    <LoanRateCell
+                      lRate={loanRates.get(keyToCode(p.left_key))}
+                      rRate={loanRates.get(keyToCode(p.right_key))}
+                    />
+                  </td>
                   <td className="px-3 py-2 text-right text-t1">{p.score.toFixed(2)}</td>
                 </tr>
               )
@@ -293,6 +331,20 @@ export function StatArbPage() {
         )}
       </div>
     </div>
+  )
+}
+
+/** 대여요율 셀 — L / R 가로 표시. ≥15% 강조. 둘 다 없으면 '—'. */
+function LoanRateCell({ lRate, rRate }: { lRate?: number; rRate?: number }) {
+  if (lRate == null && rRate == null) return <span className="text-t4">—</span>
+  const cls = (r?: number) =>
+    r == null ? 'text-t4' : r >= 15 ? 'text-warning font-semibold' : 'text-t1'
+  return (
+    <span className="tabular-nums">
+      <span className={cls(lRate)}>{lRate != null ? `${lRate.toFixed(1)}%` : '—'}</span>
+      <span className="mx-1 text-t4">/</span>
+      <span className={cls(rRate)}>{rRate != null ? `${rRate.toFixed(1)}%` : '—'}</span>
+    </span>
   )
 }
 
