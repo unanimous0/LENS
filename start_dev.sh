@@ -53,8 +53,13 @@ echo "[백엔드] 시작 (포트 8100)..."
 BACKEND_PID=$!
 
 # Rust 실시간 서비스: 먼저 blocking으로 빌드 후 바이너리 실행
-echo "[실시간] Rust 서비스 빌드..."
-(cd realtime && cargo build --release --quiet)
+# 빌드 출력 (warning 다수)은 별도 로그로 — 화면엔 progress만. 실패 시만 마지막 줄 표시.
+echo "[실시간] Rust 서비스 빌드... (warning은 logs/realtime-build.log)"
+if ! (cd realtime && cargo build --release > "../logs/realtime-build.log.${LOG_DAY}" 2>&1); then
+    echo "[실시간] ❌ 빌드 실패 — 마지막 줄:"
+    tail -20 "logs/realtime-build.log.${LOG_DAY}"
+    exit 1
+fi
 echo "[실시간] Rust 서비스 시작 (포트 8200)..."
 (cd realtime && ./target/release/lens-realtime 2>&1 | tee -a "../logs/realtime.log.${LOG_DAY}") &
 REALTIME_PID=$!
@@ -70,14 +75,18 @@ done
 
 # 통계 차익 엔진: 빌드 후 실행 (선택 — 디렉토리 없으면 스킵)
 if [ -d stat-arb-engine ]; then
-    echo "[stat-arb] 통계 엔진 빌드..."
-    (cd stat-arb-engine && cargo build --release --quiet)
-    echo "[stat-arb] 시작 (포트 8300)..."
+    echo "[stat-arb] 통계 엔진 빌드... (warning은 logs/statarb-build.log)"
+    if ! (cd stat-arb-engine && cargo build --release > "../logs/statarb-build.log.${LOG_DAY}" 2>&1); then
+        echo "[stat-arb] ❌ 빌드 실패 — 마지막 줄:"
+        tail -20 "logs/statarb-build.log.${LOG_DAY}"
+        exit 1
+    fi
+    echo "[stat-arb] 시작 (포트 8300, 워밍업 약 3분)..."
     (cd stat-arb-engine && ./target/release/stat-arb-engine 2>&1 | tee -a "../logs/statarb.log.${LOG_DAY}") &
     STATARB_PID=$!
     for i in $(seq 1 20); do
         if curl -sf http://localhost:8300/health >/dev/null 2>&1; then
-            echo "[stat-arb] 준비됨"
+            echo "[stat-arb] 준비됨 (워밍업은 백그라운드 계속)"
             break
         fi
         sleep 0.5

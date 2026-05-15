@@ -101,3 +101,18 @@ cd backend && uvicorn main:app --host 0.0.0.0 --port 8100 --reload  # 백엔드
 ```
 
 **참고:** 테스트 프레임워크 미설정 (프론트: Vitest 없음, 백엔드: pytest 없음)
+
+## ⚠️ 작업 시간 제약 — LS API 충돌 회피
+
+Finance_Data 와 LENS realtime이 **같은 LS 계정 공유**. Finance_Data 측 정기 작업 시각 (KST 평일):
+
+| 시각 | 작업 | 비고 |
+|---|---|---|
+| **22:30** | 주식선물 당일 적재 (t8406, 약 10분) | historical 불가, 매일 필수 |
+| **23:00 ~ 24:00 (지연 시 24:30)** | 분봉 일배치 (종목/ETF/지수/지수선물) | 약 1~1.5시간 소요 |
+| 05:30 | daily_update (OHLCV/수급/배당/LENS export) | 약 1~3시간 |
+
+→ **22:30 ~ 24:30 (지연 마진 포함) 사이에는 `./start_dev.sh` 실행 금지**.
+LENS realtime이 LS WS에 연결하면 Finance_Data 백필이 5xx로 깨짐 (이전 사고 사례: 4/27 daily_update 충돌).
+
+상세 출처: `/home/una0/projects/Finance_Data/KOREA/DEVELOPMENT_LOG.md` 의 "5/14 cron 04:00 → 23:00 변경" 섹션.
