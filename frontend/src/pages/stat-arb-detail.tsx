@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 
 import { ResidualHistogram, SpreadChart, ZScoreChart } from '@/components/stat-arb/charts'
+import { PnlSimulator } from '@/components/stat-arb/pnl-simulator'
 import { TimeframeTable } from '@/components/stat-arb/timeframe-table'
 import type { PairDetail } from '@/types/stat-arb'
 
@@ -10,8 +11,23 @@ const KPI_TF = '1d' // KPI 카드는 일봉 기준
 export function StatArbDetailPage() {
   const { left, right } = useParams<{ left: string; right: string }>()
   const [detail, setDetail] = useState<PairDetail | null>(null)
+  const [loanRates, setLoanRates] = useState<Map<string, number>>(new Map())
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+
+  // 대여요율 1회 로딩 (PnL 시뮬용)
+  useEffect(() => {
+    fetch('/api/loan-rates')
+      .then((r) => r.json())
+      .then((d: { items: Array<{ code: string; rate_pct: number }> }) => {
+        const m = new Map<string, number>()
+        for (const r of d.items) m.set(r.code, r.rate_pct)
+        setLoanRates(m)
+      })
+      .catch(() => {
+        /* fail-safe */
+      })
+  }, [])
 
   useEffect(() => {
     if (!left || !right) return
@@ -156,6 +172,9 @@ export function StatArbDetailPage() {
           </div>
         </div>
       </div>
+
+      {/* PnL 시뮬레이터 — 페이지 하단 전체 너비 */}
+      <PnlSimulator detail={detail} loanRates={loanRates} />
     </div>
   )
 }
