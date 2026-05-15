@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
+import { keyToCode } from '@/lib/stat-arb-keys'
+
 type Group = {
   id: string
   name: string
@@ -58,12 +60,6 @@ const COL_TOOLTIPS: Record<SortKey | 'pair', string> = {
   z: '현재 잔차 z-score — |z|≥2 진입 시그널',
   score: '발굴 점수 = -ADF × (1/hl) × |corr|',
   loanrate: '대여요율 (left / right). ≥15% 강조 — 고요율 매수+송출 기회',
-}
-
-/** series_key (S:005930, E:069500, I:K2G01P) → 종목코드 추출 */
-function keyToCode(key: string): string {
-  const i = key.indexOf(':')
-  return i >= 0 ? key.slice(i + 1) : key
 }
 
 export function StatArbPage() {

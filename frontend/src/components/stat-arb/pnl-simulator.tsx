@@ -1,16 +1,10 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
+import { keyToCode } from '@/lib/stat-arb-keys'
 import type { PairDetail } from '@/types/stat-arb'
 
-/** series_key (S:005930 등) → 종목코드 */
-function keyToCode(key: string): string {
-  const i = key.indexOf(':')
-  return i >= 0 ? key.slice(i + 1) : key
-}
-
 /**
- * 통합 PnL 시뮬레이터 — PR15a (2 레이어: 통계차익 + 대여수익).
- * 매도차익(베이시스)은 PR15b에서 추가.
+ * 통합 PnL 시뮬레이터 — 통계차익 + 대여수익.
  *
  * 가정 단순화:
  *  - 1:1 페어 (left/right 각 1 leg)
@@ -19,48 +13,61 @@ function keyToCode(key: string): string {
  *  - 통계차익 = 회귀 시 spread → 0 가정. 진입 spread × 수량 = PnL.
  *    (수량은 right 수량 기준, left 수량은 β·right로 자동)
  *  - 대여수익 = 매수 leg 명목금액 × (요율 / 100) × (보유일 / 365)
+ *
+ * PR15b: 실시간 가격 props 받아서 spread/z 계산 + 매수가 자동 디폴트.
+ * 사용자가 매수가를 직접 손대면 그 후로는 manual 모드로 전환 (자동 갱신 중단).
  */
 export function PnlSimulator({
   detail,
   loanRates,
+  livePrices,
+  liveZ,
+  liveSpread,
 }: {
   detail: PairDetail
   loanRates: Map<string, number>
+  livePrices: { left: number; right: number }
+  liveZ: number | null
+  liveSpread: number | null
 }) {
   const stat1d = detail.timeframes.find((t) => t.timeframe === '1d')
   const lastPoint = detail.spread_series[detail.spread_series.length - 1]
 
+  // 방향 판정 — liveZ가 있으면 우선
+  const z = liveZ ?? stat1d?.z_score ?? 0
+  const spread = liveSpread ?? lastPoint?.spread ?? 0
+  const buyRight = z < 0
+  // 매수 leg 현재가 (자동 디폴트용)
+  const livePriceForBuy = buyRight ? livePrices.right : livePrices.left
+
   // 사용자 입력
-  const [qty, setQty] = useState(100) // right leg 수량
+  const [qty, setQty] = useState(100)
   const [days, setDays] = useState(5)
   const [lendOut, setLendOut] = useState(true)
-  // 진입가 — 사용자가 직접 입력 (또는 자동 추정값을 디폴트로)
-  // PR15a 단순화: spread만 알면 PnL 계산 충분, 진입가는 *대여수익 명목금액*에만 필요.
-  // 디폴트로 spread 절댓값 × 10 (대충 추정) — 사용자가 수정.
-  const [buyPrice, setBuyPrice] = useState(() => {
-    const sp = lastPoint?.spread ?? 0
-    return Math.max(Math.round(Math.abs(sp) * 10), 10000)
-  })
+  const [buyPrice, setBuyPrice] = useState(0)
+  // 사용자가 매수가를 직접 수정했는지. true면 자동 갱신 중단.
+  const manualEdit = useRef(false)
+
+  // 실시간 매수 leg 가격 들어오면 자동으로 매수가 채움 (manual 진입 전까지).
+  useEffect(() => {
+    if (!manualEdit.current && livePriceForBuy > 0) {
+      setBuyPrice(livePriceForBuy)
+    }
+  }, [livePriceForBuy])
 
   const calc = useMemo(() => {
-    if (!stat1d || !lastPoint) return null
+    if (!stat1d) return null
     const beta = stat1d.hedge_ratio
-    const z = stat1d.z_score
-    const spread = lastPoint.spread
 
-    // 방향: z<0 → right 매수 / z>0 → right 매도
-    const buyRight = z < 0
     const buyCode = buyRight ? keyToCode(detail.right_key) : keyToCode(detail.left_key)
     const sellCode = buyRight ? keyToCode(detail.left_key) : keyToCode(detail.right_key)
     const buyName = buyRight ? detail.right_name : detail.left_name
     const sellName = buyRight ? detail.left_name : detail.right_name
 
     // ① 통계차익 — 회귀 시 spread → 0. 절댓값 × right 수량.
-    //    spread 단위는 잔차(원 단위). qty는 right 기준이라 spread × qty로 PnL 계산.
     const statPnL = Math.abs(spread) * qty
 
     // ② 대여수익 — 매수 leg 명목금액 × 요율 × 일수/365.
-    //    매수 leg가 right면 수량 = qty, 매수 leg가 left면 수량 = |β| × qty.
     const buyQty = buyRight ? qty : Math.abs(beta) * qty
     const notional = buyPrice * buyQty
     const buyRate = loanRates.get(buyCode) ?? 0
@@ -85,7 +92,7 @@ export function PnlSimulator({
       total,
       annualRate,
     }
-  }, [stat1d, lastPoint, qty, days, lendOut, buyPrice, loanRates, detail])
+  }, [stat1d, qty, days, lendOut, buyPrice, loanRates, detail, buyRight, z, spread])
 
   if (!calc) {
     return (
@@ -98,19 +105,19 @@ export function PnlSimulator({
   const fmtKRW = (v: number) =>
     `${v >= 0 ? '+' : ''}${Math.round(v).toLocaleString('ko-KR')}원`
 
+  const liveLabel = liveZ != null ? '실시간' : 'DB 마지막'
+
   return (
     <div className="panel p-3">
       <div className="mb-2 flex items-center justify-between">
         <span className="text-xs font-medium text-t1">통합 PnL 시뮬레이터</span>
-        <span className="text-[10px] text-t4">
-          PR15a — 통계차익 + 대여 (매도차익은 PR15b)
-        </span>
+        <span className="text-[10px] text-t4">통계차익 + 대여수익</span>
       </div>
 
       {/* 자동 추정된 방향 + 핵심 수치 */}
       <div className="mb-3 rounded-sm bg-bg-surface px-3 py-2 text-xs">
         <div className="text-t3">
-          진입 방향 (z={calc.z.toFixed(2)} 기준 자동):
+          진입 방향 (z={calc.z.toFixed(2)} · {liveLabel} 기준):
         </div>
         <div className="mt-0.5 text-t1">
           <span className="text-up">매수</span> {calc.buyName}{' '}
@@ -136,11 +143,30 @@ export function PnlSimulator({
           />
         </label>
         <label className="flex flex-col gap-1 text-xs">
-          <span className="text-t3">매수가 (명목금액용)</span>
+          <span className="flex items-center gap-1 text-t3">
+            매수가
+            {manualEdit.current ? (
+              <button
+                type="button"
+                onClick={() => {
+                  manualEdit.current = false
+                  if (livePriceForBuy > 0) setBuyPrice(livePriceForBuy)
+                }}
+                className="text-[10px] text-accent hover:underline"
+              >
+                자동 복귀
+              </button>
+            ) : (
+              <span className="text-[10px] text-accent">자동</span>
+            )}
+          </span>
           <input
             type="number"
             value={buyPrice}
-            onChange={(e) => setBuyPrice(Math.max(0, parseInt(e.target.value) || 0))}
+            onChange={(e) => {
+              manualEdit.current = true
+              setBuyPrice(Math.max(0, parseInt(e.target.value) || 0))
+            }}
             className="rounded-sm bg-bg-surface px-2 py-1 text-t1 focus:outline-none"
           />
         </label>
