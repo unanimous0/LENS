@@ -817,7 +817,9 @@ export function EtfArbitragePage() {
   // 차트/Orderbook 패널이 가리키는 ETF — 선택 또는 정렬 첫 행.
   // 이 한 종목에 대한 history/trades만 셀럭티브 구독해 page-level root selector 회피.
   const effectiveCode = selectedEtf ?? rows[0]?.code ?? null
-  const effectiveHistory = useMarketStore((s) => effectiveCode ? s.etfHistory[effectiveCode] ?? [] : [])
+  const effectiveHistory = useMarketStore((s) =>
+    effectiveCode ? (s.etfHistory[effectiveCode] ?? EMPTY_HISTORY) : EMPTY_HISTORY
+  )
   const effectiveTrades = useMarketStore((s) => effectiveCode ? s.etfTrades[effectiveCode] : undefined)
 
   // 5초 간격 시계열 누적. 페이지 mount 동안 동작, unmount해도 zustand history는 유지.
@@ -873,7 +875,7 @@ export function EtfArbitragePage() {
   const rowVirtualizer = useVirtualizer({
     count: vRows.length,
     getScrollElement: () => mainScrollRef.current,
-    estimateSize: (index) => vRows[index]?.kind === 'main' ? 32 : 360,
+    estimateSize: (index) => vRows[index]?.kind === 'main' ? 44 : 360,
     overscan: 20, // 마운트 직후 viewport 계산이 부정확할 때를 위한 여유 — 추가 12행 DOM, 영향 미미
     scrollMargin,
   })
@@ -1897,7 +1899,7 @@ const ArbRow = memo(function ArbRow({ etf, m, isSelected, onSelect, maxMissingFr
   return (
     <tr
       className={cn(
-        'border-b border-white/[0.04] hover:bg-[#1d1d1d] cursor-pointer',
+        'h-[44px] border-b border-white/[0.04] hover:bg-[#1d1d1d] cursor-pointer',
         isSelected ? 'bg-[#1d1d1d]' : 'bg-black',
       )}
       onClick={() => onSelect(etf.code)}
@@ -1905,7 +1907,7 @@ const ArbRow = memo(function ArbRow({ etf, m, isSelected, onSelect, maxMissingFr
     >
       <td className="pl-4 pr-3 py-[7px] sticky left-0 z-10" style={STICKY_INHERIT_BG}>
         <div className="text-[11px] text-white leading-none whitespace-nowrap">{etf.name}</div>
-        <div className="text-[9px] text-[#5a5a5e] leading-none mt-[2px] tabular-nums">{etf.code}</div>
+        <div className="text-[9px] text-[#8e8e93] leading-none mt-[2px] tabular-nums">{etf.code}</div>
       </td>
       <ArbC c="text-[#d1d1d6]">{m && m.tradeValue > 0 ? formatTradeValue(m.tradeValue) : '-'}</ArbC>
       <ArbC>{
@@ -1939,7 +1941,7 @@ const ArbRow = memo(function ArbRow({ etf, m, isSelected, onSelect, maxMissingFr
       <ArbC c={dim ? 'text-[#5a5a5e]' : (m && m.dividendN > 0 ? 'text-[#ff9f0a]' : 'text-[#5a5a5e]')}>{dim ? '—' : (m && m.dividendN > 0 ? m.dividendN : '-')}</ArbC>
       <ArbC c={dim ? 'text-[#5a5a5e]' : 'text-[#d1d1d6]'}>{dim ? '—' : (m ? m.appliedPct.toFixed(1) : '-')}</ArbC>
       <ArbC c={dim ? 'text-[#5a5a5e]' : 'text-[#d1d1d6]'}>{dim ? '—' : (m ? m.futuresCount : '-')}</ArbC>
-      <td className="px-2 py-[7px] text-center">{dim ? <span className="text-[9px] text-[#5a5a5e]">—</span> : <Sparkline history={history} />}</td>
+      <td className="px-2 py-[6px] text-center">{dim ? <span className="text-[9px] text-[#5a5a5e]">—</span> : <Sparkline history={history} height={30} />}</td>
     </tr>
   )
 })
@@ -1948,6 +1950,9 @@ const STICKY_INHERIT_BG = { backgroundColor: 'inherit' as const }
 // 누설 방지 — 향후 mutate 코드 들어오면 dev tool에 그 자리에서 잡힘.
 // (Set<string> 타입 유지: ExpandedPanel props 호환. has() 외 사용 의도 없음.)
 const EMPTY_SET: Set<string> = Object.freeze(new Set<string>()) as Set<string>
+// useSyncExternalStore 무한 루프 방지 — selector가 falsy/miss 시 *매번 새 빈 배열* 반환하면
+// React가 "변경됐다" 판단하고 무한 리렌더. 모듈 레벨 상수로 stable ref 보장.
+const EMPTY_HISTORY: readonly never[] = Object.freeze([]) as readonly never[]
 
 /** Sparkline — diffBp 시계열. signed 한 줄 라인 차트.
  * 색은 마지막 시점 부호로 결정 (양수=매수차 초록, 음수=매도차 빨강). */
