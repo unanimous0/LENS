@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
 type Group = {
@@ -44,6 +44,21 @@ const KIND_LABELS: Record<string, string> = {
   etf: 'ETF',
 }
 
+// 정렬 가능한 컬럼
+type SortKey = 'score' | 'z' | 'hl' | 'r2' | 'adf' | 'corr' | 'beta'
+
+// 컬럼별 hover 설명
+const COL_TOOLTIPS: Record<SortKey | 'pair', string> = {
+  pair: '좌변 ↔ 우변 자산 (right = α + β·left + ε)',
+  beta: 'Hedge ratio β (right/left 비율) — 음수면 short pair',
+  corr: '로그수익률 Pearson correlation — 사전 필터 (|r|>0.5)',
+  r2: 'OLS 결정계수 — 잔차가 얼마나 작은지 (≥0.9 강한 cointegration)',
+  adf: 'Augmented Dickey-Fuller t-stat — 잔차 stationarity (<-3 cointegration 통과)',
+  hl: 'Mean-reversion half-life (그 timeframe 단위, 1d 기준 일)',
+  z: '현재 잔차 z-score — |z|≥2 진입 시그널',
+  score: '발굴 점수 = -ADF × (1/hl) × |corr|',
+}
+
 export function StatArbPage() {
   const navigate = useNavigate()
   const [pairs, setPairs] = useState<Pair[]>([])
@@ -55,6 +70,9 @@ export function StatArbPage() {
   const [groups, setGroups] = useState<Group[]>([])
   const [groupFilter, setGroupFilter] = useState<string>('')
   const [kindFilter, setKindFilter] = useState<string>('')
+  const [search, setSearch] = useState<string>('')
+  const [sortKey, setSortKey] = useState<SortKey>('score')
+  const [sortAsc, setSortAsc] = useState<boolean>(false) // 기본 내림차순
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -70,7 +88,7 @@ export function StatArbPage() {
   const loadPairs = useCallback(() => {
     setLoading(true)
     setError(null)
-    const params = new URLSearchParams({ limit: '200' })
+    const params = new URLSearchParams({ limit: '500' })
     if (groupFilter) params.set('group', groupFilter)
     fetch(`/api/stat-arb/pairs?${params}`)
       .then((r) => r.json())
@@ -90,6 +108,44 @@ export function StatArbPage() {
   const lastRunStr = meta.last_run_ms
     ? new Date(meta.last_run_ms).toLocaleTimeString('ko-KR', { hour12: false })
     : '—'
+
+  // 검색 + 정렬 적용
+  const visiblePairs = useMemo(() => {
+    let list = pairs
+    if (search.trim()) {
+      const q = search.trim().toLowerCase()
+      list = list.filter(
+        (p) =>
+          p.left_name.toLowerCase().includes(q) ||
+          p.right_name.toLowerCase().includes(q) ||
+          p.left_key.toLowerCase().includes(q) ||
+          p.right_key.toLowerCase().includes(q)
+      )
+    }
+    const getter: Record<SortKey, (p: Pair) => number> = {
+      score: (p) => p.score,
+      z: (p) => Math.abs(p.z_score), // z는 절댓값 정렬이 직관적
+      hl: (p) => p.half_life,
+      r2: (p) => p.r_squared,
+      adf: (p) => p.adf_tstat,
+      corr: (p) => Math.abs(p.corr),
+      beta: (p) => p.hedge_ratio,
+    }
+    const sorted = [...list].sort((a, b) => {
+      const va = getter[sortKey](a)
+      const vb = getter[sortKey](b)
+      return sortAsc ? va - vb : vb - va
+    })
+    return sorted
+  }, [pairs, search, sortKey, sortAsc])
+
+  const sortClick = (k: SortKey) => {
+    if (sortKey === k) setSortAsc(!sortAsc)
+    else {
+      setSortKey(k)
+      setSortAsc(false) // 새 컬럼은 내림차순 시작
+    }
+  }
 
   return (
     <div className="flex flex-col gap-1 p-1">
@@ -126,9 +182,20 @@ export function StatArbPage() {
             ))}
           </select>
         </div>
+        <div className="flex items-center gap-2">
+          <span className="text-xs text-t3">검색</span>
+          <input
+            type="text"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="종목명 / 코드"
+            className="w-[200px] rounded-sm bg-bg-surface px-2 py-1 text-xs text-t1 placeholder:text-t4 focus:outline-none"
+          />
+        </div>
         <div className="ml-auto flex items-center gap-3 text-xs text-t3 tabular-nums">
           <span>
-            전체 {meta.total} / 필터 <span className="text-t1">{meta.filtered}</span>
+            전체 {meta.total} / 필터 {meta.filtered} / 표시{' '}
+            <span className="text-t1">{visiblePairs.length}</span>
           </span>
           <span>갱신 {lastRunStr}</span>
           <button
@@ -147,21 +214,39 @@ export function StatArbPage() {
           <thead className="sticky top-0 z-10 bg-bg-primary">
             <tr className="border-b border-bg-surface text-left text-t3">
               <th className="px-3 py-2 font-normal">#</th>
-              <th className="px-3 py-2 font-normal">페어</th>
-              <th className="px-3 py-2 text-right font-normal">β</th>
-              <th className="px-3 py-2 text-right font-normal">corr</th>
-              <th className="px-3 py-2 text-right font-normal">R²</th>
-              <th className="px-3 py-2 text-right font-normal">ADF</th>
-              <th className="px-3 py-2 text-right font-normal">half-life</th>
-              <th className="px-3 py-2 text-right font-normal">z</th>
-              <th className="px-3 py-2 text-right font-normal">score</th>
+              <th className="px-3 py-2 font-normal" title={COL_TOOLTIPS.pair}>
+                페어
+              </th>
+              <SortableTh active={sortKey === 'beta'} asc={sortAsc} onClick={() => sortClick('beta')} title={COL_TOOLTIPS.beta}>
+                β
+              </SortableTh>
+              <SortableTh active={sortKey === 'corr'} asc={sortAsc} onClick={() => sortClick('corr')} title={COL_TOOLTIPS.corr}>
+                corr
+              </SortableTh>
+              <SortableTh active={sortKey === 'r2'} asc={sortAsc} onClick={() => sortClick('r2')} title={COL_TOOLTIPS.r2}>
+                R²
+              </SortableTh>
+              <SortableTh active={sortKey === 'adf'} asc={sortAsc} onClick={() => sortClick('adf')} title={COL_TOOLTIPS.adf}>
+                ADF
+              </SortableTh>
+              <SortableTh active={sortKey === 'hl'} asc={sortAsc} onClick={() => sortClick('hl')} title={COL_TOOLTIPS.hl}>
+                half-life
+              </SortableTh>
+              <SortableTh active={sortKey === 'z'} asc={sortAsc} onClick={() => sortClick('z')} title={COL_TOOLTIPS.z}>
+                z
+              </SortableTh>
+              <SortableTh active={sortKey === 'score'} asc={sortAsc} onClick={() => sortClick('score')} title={COL_TOOLTIPS.score}>
+                score
+              </SortableTh>
             </tr>
           </thead>
           <tbody>
-            {pairs.map((p, i) => {
+            {visiblePairs.map((p, i) => {
               const z = p.z_score
               const zClass =
                 Math.abs(z) >= 2.5 ? 'text-warning font-semibold' : Math.abs(z) >= 1.5 ? 'text-t1' : 'text-t3'
+              const adfCls = p.adf_tstat <= -3 ? 'text-up' : 'text-t3'
+              const r2Cls = p.r_squared >= 0.9 ? 'text-up' : p.r_squared >= 0.6 ? 'text-t1' : 'text-t3'
               return (
                 <tr
                   key={`${p.left_key}-${p.right_key}`}
@@ -185,8 +270,8 @@ export function StatArbPage() {
                   </td>
                   <td className="px-3 py-2 text-right text-t1">{p.hedge_ratio.toFixed(3)}</td>
                   <td className="px-3 py-2 text-right text-t2">{p.corr.toFixed(2)}</td>
-                  <td className="px-3 py-2 text-right text-t2">{p.r_squared.toFixed(3)}</td>
-                  <td className="px-3 py-2 text-right text-t2">{p.adf_tstat.toFixed(2)}</td>
+                  <td className={`px-3 py-2 text-right ${r2Cls}`}>{p.r_squared.toFixed(3)}</td>
+                  <td className={`px-3 py-2 text-right ${adfCls}`}>{p.adf_tstat.toFixed(2)}</td>
                   <td className="px-3 py-2 text-right text-t2">{p.half_life.toFixed(1)}d</td>
                   <td className={`px-3 py-2 text-right ${zClass}`}>
                     {z >= 0 ? '+' : ''}
@@ -199,10 +284,42 @@ export function StatArbPage() {
           </tbody>
         </table>
         {error && <div className="p-3 text-xs text-down">{error}</div>}
-        {!error && pairs.length === 0 && !loading && (
-          <div className="p-3 text-xs text-t3">결과 없음 — 필터 조건 확인 또는 stat-arb-engine 미기동</div>
+        {!error && visiblePairs.length === 0 && !loading && (
+          <div className="p-3 text-xs text-t3">
+            {pairs.length === 0
+              ? '결과 없음 — 필터 조건 확인 또는 stat-arb-engine 미기동'
+              : '검색 매칭 없음'}
+          </div>
         )}
       </div>
     </div>
+  )
+}
+
+/** 정렬 가능한 컬럼 헤더. 활성 시 ▲/▼ 표시. */
+function SortableTh({
+  children,
+  active,
+  asc,
+  onClick,
+  title,
+}: {
+  children: React.ReactNode
+  active: boolean
+  asc: boolean
+  onClick: () => void
+  title?: string
+}) {
+  return (
+    <th
+      onClick={onClick}
+      title={title}
+      className={`cursor-pointer select-none px-3 py-2 text-right font-normal hover:text-t1 ${
+        active ? 'text-t1' : ''
+      }`}
+    >
+      {children}
+      {active && <span className="ml-1 text-[9px]">{asc ? '▲' : '▼'}</span>}
+    </th>
   )
 }
