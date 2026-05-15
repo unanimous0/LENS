@@ -88,6 +88,16 @@ pub struct LsApiFeed {
     /// 마지막 subscribe 완료 시각 (UNIX micros). idle timeout grace 윈도우 anchor.
     /// 재연결 직후 30초 동안은 데이터 없어도 idle 안 발동 (LS가 stream 시작 대기 시간).
     pub last_subscribe_us: Arc<AtomicU64>,
+    /// **stream별** last_data_us — idle 판정용. 공유 `last_data_us`는 외부 stats 대표값.
+    ///
+    /// 버그 fix (2026-05-15): 모든 stream이 공유 `last_data_us`를 쓰면 *stocks 한 stream이
+    /// 시끄러우면 다른 stream(inav/orderbook/futures)이 죽어도 idle 카운터가 reset되어
+    /// 영구 stale로 빠짐*. stream별 Arc 분리해서 *자기 데이터*에만 기반 idle 판정.
+    pub last_data_fixed_us: Arc<AtomicU64>,
+    pub last_data_futures_us: Arc<AtomicU64>,
+    pub last_data_stocks_us: Arc<AtomicU64>,
+    pub last_data_inav_us: Arc<AtomicU64>,
+    pub last_data_orderbook_us: Arc<AtomicU64>,
     /// t1102 fetch 성공한 코드 캐시 — 페이지 재진입 시 풀 재fetch 회피.
     /// SubscribeStocks 핸들러가 fetched 안 보내고 처음부터 다시 도는 11분 백로그 방지.
     /// 프로세스 수명 동안 유지 (재시작 시만 비움).
@@ -117,6 +127,7 @@ impl LsApiFeed {
         failed_stocks: Arc<DashMap<String, super::ls_rest::FailedT1102>>,
         etf_pdf_extra_codes: Vec<String>,
     ) -> Self {
+        let now = now_us();
         Self {
             app_key, app_secret, subscriptions,
             names: Arc::new(names),
@@ -125,7 +136,12 @@ impl LsApiFeed {
             kosdaq_codes: Arc::new(kosdaq_codes),
             stats,
             last_data_us,
-            last_subscribe_us: Arc::new(AtomicU64::new(now_us())),
+            last_subscribe_us: Arc::new(AtomicU64::new(now)),
+            last_data_fixed_us: Arc::new(AtomicU64::new(now)),
+            last_data_futures_us: Arc::new(AtomicU64::new(now)),
+            last_data_stocks_us: Arc::new(AtomicU64::new(now)),
+            last_data_inav_us: Arc::new(AtomicU64::new(now)),
+            last_data_orderbook_us: Arc::new(AtomicU64::new(now)),
             fetched_stocks,
             failed_stocks,
             etf_pdf_extra_codes,
@@ -348,6 +364,7 @@ impl MarketFeed for LsApiFeed {
             let stats = self.stats.clone();
             let last_data_us = self.last_data_us.clone();
             let last_subscribe_us = self.last_subscribe_us.clone();
+            let stream_data_us = self.last_data_fixed_us.clone();
 
             tokio::spawn(async move {
                 let mut attempt = 0u32;
@@ -358,7 +375,7 @@ impl MarketFeed for LsApiFeed {
                     if !crate::phase::wait_until_active(&cancel, &format!("fixed[{i}]")).await { return; }
                     let ticks_before = stats.tick_count.load(Ordering::Relaxed);
                     match run_single_connection(
-                        i, &app_key, &app_secret, &chunk, &names, &stock_codes, &futures_to_spot, &tx, &cancel, &last_data_us, &last_subscribe_us,
+                        i, &app_key, &app_secret, &chunk, &names, &stock_codes, &futures_to_spot, &tx, &cancel, &last_data_us, &last_subscribe_us, &stream_data_us,
                     ).await {
                         Ok(()) => return,
                         Err(e) => {
@@ -395,9 +412,14 @@ impl MarketFeed for LsApiFeed {
         let stats = self.stats.clone();
         let last_data_us = self.last_data_us.clone();
         let last_subscribe_us = self.last_subscribe_us.clone();
+        // stream별 last_data_us — idle 판정용 (stocks 트래픽에 reset 안 됨).
+        let last_data_futures = self.last_data_futures_us.clone();
+        let last_data_stocks = self.last_data_stocks_us.clone();
+        let last_data_inav = self.last_data_inav_us.clone();
+        let last_data_orderbook = self.last_data_orderbook_us.clone();
         spawn_futures_connections(
             &initial_futures, &app_key, &app_secret, &names, &stock_codes,
-            &futures_to_spot, &tx, &cancel, &futures_cancel, &stats, &last_data_us, &last_subscribe_us,
+            &futures_to_spot, &tx, &cancel, &futures_cancel, &stats, &last_data_us, &last_subscribe_us, &last_data_futures,
         );
 
         // 호가 전용 연결 (온디맨드)
@@ -458,7 +480,7 @@ impl MarketFeed for LsApiFeed {
                             futures_cancel = CancellationToken::new();
                             spawn_futures_connections(
                                 &new_futures, &app_key, &app_secret, &names, &stock_codes,
-                                &futures_to_spot, &tx, &cancel, &futures_cancel, &stats, &last_data_us, &last_subscribe_us,
+                                &futures_to_spot, &tx, &cancel, &futures_cancel, &stats, &last_data_us, &last_subscribe_us, &last_data_futures,
                             );
                         }
                         Some(SubCommand::Unsubscribe(_)) => {
@@ -494,7 +516,7 @@ impl MarketFeed for LsApiFeed {
                             stocks_cancel = CancellationToken::new();
                             spawn_stocks_connections(
                                 &stocks_subs, &app_key, &app_secret, &names, &stock_codes,
-                                &futures_to_spot, &tx, &cancel, &stocks_cancel, &stats, &last_data_us, &last_subscribe_us,
+                                &futures_to_spot, &tx, &cancel, &stocks_cancel, &stats, &last_data_us, &last_subscribe_us, &last_data_stocks,
                             );
 
                             // 신규 코드만 t1102 초기 fetch.
@@ -553,7 +575,7 @@ impl MarketFeed for LsApiFeed {
                                 stocks_cancel = CancellationToken::new();
                                 spawn_stocks_connections(
                                     &stocks_subs, &app_key, &app_secret, &names, &stock_codes,
-                                    &futures_to_spot, &tx, &cancel, &stocks_cancel, &stats, &last_data_us, &last_subscribe_us,
+                                    &futures_to_spot, &tx, &cancel, &stocks_cancel, &stats, &last_data_us, &last_subscribe_us, &last_data_stocks,
                                 );
                             }
                         }
@@ -612,7 +634,7 @@ impl MarketFeed for LsApiFeed {
                             inav_cancel = CancellationToken::new();
                             spawn_inav_connections(
                                 &inav_subs, &app_key, &app_secret, &names, &stock_codes,
-                                &futures_to_spot, &tx, &cancel, &inav_cancel, &stats, &last_data_us, &last_subscribe_us,
+                                &futures_to_spot, &tx, &cancel, &inav_cancel, &stats, &last_data_us, &last_subscribe_us, &last_data_inav,
                             );
                         }
                         Some(SubCommand::UnsubscribeInav(codes)) => {
@@ -640,7 +662,7 @@ impl MarketFeed for LsApiFeed {
                                 inav_cancel = CancellationToken::new();
                                 spawn_inav_connections(
                                     &inav_subs, &app_key, &app_secret, &names, &stock_codes,
-                                    &futures_to_spot, &tx, &cancel, &inav_cancel, &stats, &last_data_us, &last_subscribe_us,
+                                    &futures_to_spot, &tx, &cancel, &inav_cancel, &stats, &last_data_us, &last_subscribe_us, &last_data_inav,
                                 );
                             }
                         }
@@ -654,7 +676,7 @@ impl MarketFeed for LsApiFeed {
                             ob_cancel = CancellationToken::new();
                             spawn_orderbook_connection(
                                 &codes, &app_key, &app_secret, &names,
-                                &stock_codes, &futures_to_spot, &tx, &cancel, &ob_cancel, &stats, &last_data_us, &last_subscribe_us,
+                                &stock_codes, &futures_to_spot, &tx, &cancel, &ob_cancel, &stats, &last_data_us, &last_subscribe_us, &last_data_orderbook,
                             );
                         }
                         Some(SubCommand::UnsubscribeOrderbook) => {
@@ -689,6 +711,7 @@ fn spawn_futures_connections(
     stats: &Arc<Stats>,
     last_data_us: &Arc<AtomicU64>,
     last_subscribe_us: &Arc<AtomicU64>,
+    stream_data_us: &Arc<AtomicU64>,
 ) {
     let chunks: Vec<Vec<(String, String)>> = futures
         .chunks(MAX_SUBS_PER_CONNECTION).map(|c| c.to_vec()).collect();
@@ -705,6 +728,7 @@ fn spawn_futures_connections(
         let stats = stats.clone();
         let last_data_us = last_data_us.clone();
         let last_subscribe_us = last_subscribe_us.clone();
+        let stream_data_us = stream_data_us.clone();
 
         tokio::spawn(async move {
             let combined_cancel = CancellationToken::new();
@@ -727,7 +751,7 @@ fn spawn_futures_connections(
                 let conn_id = 100 + i; // 고정 그룹과 구분
                 let ticks_before = stats.tick_count.load(Ordering::Relaxed);
                 match run_single_connection(
-                    conn_id, &ak, &as_, &chunk, &n, &sc, &f2s, &tx, &combined_cancel, &last_data_us, &last_subscribe_us,
+                    conn_id, &ak, &as_, &chunk, &n, &sc, &f2s, &tx, &combined_cancel, &last_data_us, &last_subscribe_us, &stream_data_us,
                 ).await {
                     Ok(()) => return,
                     Err(e) => {
@@ -767,6 +791,7 @@ fn spawn_stocks_connections(
     stats: &Arc<Stats>,
     last_data_us: &Arc<AtomicU64>,
     last_subscribe_us: &Arc<AtomicU64>,
+    stream_data_us: &Arc<AtomicU64>,
 ) {
     let chunks: Vec<Vec<(String, String)>> = subs
         .chunks(MAX_SUBS_PER_CONNECTION).map(|c| c.to_vec()).collect();
@@ -783,6 +808,7 @@ fn spawn_stocks_connections(
         let stats = stats.clone();
         let last_data_us = last_data_us.clone();
         let last_subscribe_us = last_subscribe_us.clone();
+        let stream_data_us = stream_data_us.clone();
 
         tokio::spawn(async move {
             let combined_cancel = CancellationToken::new();
@@ -804,7 +830,7 @@ fn spawn_stocks_connections(
                 let conn_id = 200 + i;
                 let ticks_before = stats.tick_count.load(Ordering::Relaxed);
                 match run_single_connection(
-                    conn_id, &ak, &as_, &chunk, &n, &sc, &f2s, &tx, &combined_cancel, &last_data_us, &last_subscribe_us,
+                    conn_id, &ak, &as_, &chunk, &n, &sc, &f2s, &tx, &combined_cancel, &last_data_us, &last_subscribe_us, &stream_data_us,
                 ).await {
                     Ok(()) => return,
                     Err(e) => {
@@ -844,6 +870,7 @@ fn spawn_inav_connections(
     stats: &Arc<Stats>,
     last_data_us: &Arc<AtomicU64>,
     last_subscribe_us: &Arc<AtomicU64>,
+    stream_data_us: &Arc<AtomicU64>,
 ) {
     let chunks: Vec<Vec<(String, String)>> = subs
         .chunks(MAX_SUBS_PER_CONNECTION).map(|c| c.to_vec()).collect();
@@ -860,6 +887,7 @@ fn spawn_inav_connections(
         let stats = stats.clone();
         let last_data_us = last_data_us.clone();
         let last_subscribe_us = last_subscribe_us.clone();
+        let stream_data_us = stream_data_us.clone();
 
         tokio::spawn(async move {
             let combined_cancel = CancellationToken::new();
@@ -881,7 +909,7 @@ fn spawn_inav_connections(
                 let conn_id = 300 + i;
                 let ticks_before = stats.tick_count.load(Ordering::Relaxed);
                 match run_single_connection(
-                    conn_id, &ak, &as_, &chunk, &n, &sc, &f2s, &tx, &combined_cancel, &last_data_us, &last_subscribe_us,
+                    conn_id, &ak, &as_, &chunk, &n, &sc, &f2s, &tx, &combined_cancel, &last_data_us, &last_subscribe_us, &stream_data_us,
                 ).await {
                     Ok(()) => return,
                     Err(e) => {
@@ -923,6 +951,7 @@ fn spawn_orderbook_connection(
     stats: &Arc<Stats>,
     last_data_us: &Arc<AtomicU64>,
     last_subscribe_us: &Arc<AtomicU64>,
+    stream_data_us: &Arc<AtomicU64>,
 ) {
     // 청크 분할 — 연결당 LS 한도(~200) 우회.
     let chunks: Vec<Vec<(String, String)>> = codes
@@ -944,6 +973,7 @@ fn spawn_orderbook_connection(
         let stats = stats.clone();
         let last_data_us = last_data_us.clone();
         let last_subscribe_us = last_subscribe_us.clone();
+        let stream_data_us = stream_data_us.clone();
 
         tokio::spawn(async move {
             let combined = CancellationToken::new();
@@ -964,7 +994,7 @@ fn spawn_orderbook_connection(
                 if !crate::phase::wait_until_active(&combined, &format!("orderbook[{conn_id}]")).await { return; }
                 let ticks_before = stats.tick_count.load(Ordering::Relaxed);
                 match run_single_connection(
-                    conn_id, &ak, &as_, &chunk_codes, &n, &sc, &f2s, &tx, &combined, &last_data_us, &last_subscribe_us,
+                    conn_id, &ak, &as_, &chunk_codes, &n, &sc, &f2s, &tx, &combined, &last_data_us, &last_subscribe_us, &stream_data_us,
                 ).await {
                     Ok(()) => return,
                     Err(e) => {
@@ -1004,6 +1034,9 @@ async fn run_single_connection(
     cancel: &CancellationToken,
     last_data_us: &Arc<AtomicU64>,
     last_subscribe_us: &Arc<AtomicU64>,
+    // stream별 last_data — idle 판정 전용 (stocks tick으로 reset 안 됨).
+    // last_data_us(공유) 는 외부 stats 대표값, 양쪽 모두 갱신.
+    stream_data_us: &Arc<AtomicU64>,
 ) -> Result<(), String> {
     // 토큰 발급 — 프로세스 캐시 사용 (23h TTL). 매 재연결마다 LS에 새 토큰
     // 요청 보내면 abuse heuristic 트리거 가능성 있어 캐시로 회피.
@@ -1044,12 +1077,16 @@ async fn run_single_connection(
             msg = read.next() => {
                 match msg {
                     Some(Ok(tungstenite::Message::Text(text))) => {
-                        last_data_us.store(now_us(), Ordering::Relaxed);
+                        let now = now_us();
+                        last_data_us.store(now, Ordering::Relaxed);   // 공유 (stats)
+                        stream_data_us.store(now, Ordering::Relaxed); // stream별 (idle)
                         handle_tick(&text, tx, names, stock_codes, futures_to_spot).await;
                     }
                     Some(Ok(tungstenite::Message::Binary(data))) => {
                         if let Ok(text) = String::from_utf8(data.to_vec()) {
-                            last_data_us.store(now_us(), Ordering::Relaxed);
+                            let now = now_us();
+                            last_data_us.store(now, Ordering::Relaxed);
+                            stream_data_us.store(now, Ordering::Relaxed);
                             handle_tick(&text, tx, names, stock_codes, futures_to_spot).await;
                         }
                     }
@@ -1068,7 +1105,9 @@ async fn run_single_connection(
             _ = tokio::time::sleep(poll_interval) => {
                 // 장 시간 외엔 idle 판정 안 함 (밤새 재접속 spam 방지)
                 if !is_market_hours() { continue; }
-                let last_data = last_data_us.load(Ordering::Relaxed);
+                // idle 판정은 **stream_data_us** 기반 — 같은 stream에 데이터 안 오면 idle.
+                // 공유 last_data_us는 다른 stream(stocks) 트래픽에 reset되어 못 씀.
+                let last_data = stream_data_us.load(Ordering::Relaxed);
                 let last_sub = last_subscribe_us.load(Ordering::Relaxed);
                 let recent = last_data.max(last_sub);
                 let elapsed_us = now_us().saturating_sub(recent);
