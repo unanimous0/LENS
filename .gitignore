@@ -30,6 +30,10 @@ npm-debug.log*
 # anchored: 루트 data/만 — 하위 모듈의 src/data/ (예: stat-arb-engine) 는 영향 없음.
 /data/
 
+# SQLite 사용자 데이터 (대여요율 + 향후 포지션). 사용자별 상태라 git tracking X.
+backend/data/*.db
+backend/data/*.db-journal
+
 # Rust
 realtime/target/
 realtime/vendor/
