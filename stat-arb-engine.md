@@ -331,38 +331,32 @@ POST   /api/groups                     사용자 정의 그룹
 - **stale**: `보유일 > half-life × 2 && 회귀 < 50%`
 - **청산권장**: `|현재 z| < 0.3`
 
-## 10. PR 단위 분해
+## 10. PR 분해 — Phase 큰 그림
 
-> 16개 PR, 순수 작업일 약 15~21일 (이슈/디버깅 별도)
+세부 진행/완료 내역은 `git log --oneline`. 여기는 *현 위치 + 남은 방향*만.
 
-### Phase 1 — 인프라 (1~2일)
-1. **`stat-arb-engine` skeleton** (port 8300, axum, `/health`, `/debug/stats`). LS 토큰/phase/holidays는 자체 보유 (lens-common 미루기)
+- **Phase 1** — 인프라 ✅ (PR1)
+- **Phase 2** — 통계 엔진 ✅ (PR2~10): PG batch + 증분 갱신 + 1:1 발굴 + 도메인 그룹 + cron + 페어 상세 API + timeframe spectrum
+- **Phase 3** — 발굴 화면 (진행 중)
+  - PR11 ✅ backend proxy + 페어 테이블 v0
+  - **PR12 🔜 페어 상세 페이지** — 다음. KPI/Timeframe 테이블/스프레드·z 차트/히스토그램
+  - PR13 화면 보강 (정렬/검색/UX/즐겨찾기)
+- **Phase 4** — 보조 데이터
+  - PR14 대여요율 입력 + CSV import → 스크리너 컬럼 통합
+  - PR15 통합 PnL 시뮬레이터 (통계차익 + 대여 + 매도차 레이어)
+- **Phase 5** — 포지션 추적
+  - PR16 SQLite 스키마 + 포지션 CRUD + 등록 폼 (페어 상세에서 prefill)
+  - PR17 포지션 리스트 + 자동 라벨링 + z 산점도
+  - PR18 포지션 상세 (차트 + leg + 통계 변화 + 시그널)
+  - PR19 청산 기록 + 확정 PnL
+- **Phase 6** — 후속 정리
+  - PR20 `lens-common` workspace crate (worktree1 머지 후, realtime + stat-arb-engine 공유 모듈)
 
-### Phase 2 — 통계 엔진 (5~7일)
-2. **과거 데이터 로딩** (Finance_Data PG → in-memory bars, 30s/1m/1d) + realtime 스냅샷 동기화
-3. **1:1 페어 발굴** (사전 필터 + OLS + ADF cointegration + half-life)
-4. **도메인 그룹 자동 생성** (ETF/지수/섹터/테마/사용자/상관)
-5. **M:N 발굴 트랙 A**: Dense PCA → Sparse CCA → Johansen
-6. **M:N 발굴 트랙 B**: Sparse PCA + cluster 잔차 페어
-7. **3 timeframe 동시 계산 + 최적 timeframe 자동 선택**
-
-### Phase 3 — 발굴 화면 (3~4일)
-8. **프론트 `/stat-arb` v1**: 자산군 토글 + 그룹 필터 + 스크리너 테이블 + 출처 뱃지
-9. **페어 상세 패널**: 스프레드 차트 + z-score 시계열 + 히스토그램 + 3 timeframe 미니차트
-10. **수동 조립 모드**: leg 입력 UI + 즉시 검증
-
-### Phase 4 — 보조 데이터 (2~3일)
-11. **대여요율** 입력/저장 + CSV import. 베이시스 store 재사용 → 스크리너 컬럼 통합
-12. **통합 PnL 시뮬레이터**: 통계차익 + 대여 + 매도차 레이어
-
-### Phase 5 — 포지션 추적 (4~5일)
-13. **SQLite 스키마** + 포지션 CRUD API + 등록 폼 (발굴 화면에서 prefill)
-14. **포지션 리스트** + 자동 라벨링 + 산점도
-15. **포지션 상세**: 차트 3종 + leg 테이블 + 통계량 변화 + 시그널 패널
-16. **청산 기록** + 확정 PnL
-
-### Phase 6 — 정리 (worktree1 머지 후)
-17. **`lens-common` workspace crate 추출**: realtime + stat-arb-engine 공유 모듈 통합 (LS 토큰, phase, holidays)
+### 향후 후보 (스코프 외 — 우선순위 별도)
+- M:N 발굴 — Sparse CCA + Johansen + Sparse PCA cluster
+- 발굴 자체에 다중 timeframe (현재는 일봉 + 상세만 다중)
+- 수동 조립 모드 (`POST /pairs/validate`)
+- realtime 스냅샷 동기화 (현재는 PG 분봉만)
 
 ## 11. 통계 알고리즘 노트
 

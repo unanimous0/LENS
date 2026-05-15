@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>차트 비교 — recharts vs lightweight-charts</title>
+<style>
+  :root {
+    --bg-base: #000; --bg-primary: #111; --bg-surface: #1c1c1e;
+    --t1: #fff; --t2: #d1d1d6; --t3: #8e8e93; --t4: #636366;
+    --accent: #34c759; --up: #34c759; --down: #ff3b30; --warning: #ff9f0a; --blue: #0a84ff;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 16px; background: var(--bg-base); color: var(--t1);
+         font-family: Inter, -apple-system, "Pretendard", sans-serif; font-size: 13px; }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  h2 { font-size: 14px; color: var(--accent); margin: 16px 0 8px; padding-bottom: 4px;
+       border-bottom: 1px solid var(--bg-surface); }
+  h3 { font-size: 12px; color: var(--t2); margin: 12px 0 6px; font-weight: 500; }
+  p.note { color: var(--t3); font-size: 12px; margin: 0 0 16px; }
+  .row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px; }
+  .panel { background: var(--bg-primary); padding: 12px; border-radius: 4px; }
+  .chart { height: 280px; }
+  .meta { display: flex; gap: 12px; font-size: 11px; color: var(--t3); margin-bottom: 8px;
+          font-variant-numeric: tabular-nums; }
+  .meta b { color: var(--t1); font-weight: 500; }
+  .legend-warn { color: var(--warning); }
+</style>
+
+<!-- React + Recharts (UMD) for recharts side -->
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/prop-types@15/prop-types.min.js"></script>
+<script crossorigin src="https://unpkg.com/recharts@2.13.3/umd/Recharts.js"></script>
+
+<!-- lightweight-charts (TradingView) — vanilla -->
+<script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
+
+<!-- Babel for inline JSX -->
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+
+<body>
+
+<h1>차트 라이브러리 비교 — recharts vs lightweight-charts</h1>
+<p class="note">
+  시뮬레이션 데이터: 250 영업일치 일봉 페어 잔차 (AR(1), half-life ≈ 3.5일) + 최근 30일 강한 음의 drift.
+  실제 stat-arb-engine `/pairs/detail` 응답 구조 그대로 (spread_series, z, histogram).
+</p>
+
+<div class="meta">
+  <span>n=<b>250</b></span>
+  <span>β=<b>+2.58</b></span>
+  <span>R²=<b>0.93</b></span>
+  <span>ADF=<b>-4.99</b></span>
+  <span>half-life=<b>3.4일</b></span>
+  <span class="legend-warn">현재 z=<b>-3.52</b></span>
+</div>
+
+<!-- 데이터 inline (JS 가서 두 라이브러리 모두 사용) -->
+<script>
+  // === 시뮬레이션 데이터 (페이지 로딩 시 한 번 생성) ===
+  // 재현 가능한 seed
+  let _seed = 42;
+  function rand() {
+    _seed = (_seed * 1664525 + 1013904223) >>> 0;
+    return _seed / 4294967296;
+  }
+  function gauss() { // Box-Muller
+    const u = Math.max(rand(), 1e-9);
+    const v = rand();
+    return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+  }
+
+  const N = 250;
+  const phi = 0.82; // AR(1) — half-life ≈ ln2 / -ln(phi) ≈ 3.5
+  const sigma = 1500;
+
+  // 잔차 시계열
+  const resid = [0];
+  for (let i = 1; i < N; i++) {
+    resid.push(phi * resid[i - 1] + gauss() * sigma);
+  }
+  // 최근 30일 음의 drift (강한 다이버전스)
+  for (let i = N - 30; i < N; i++) {
+    resid[i] -= 250 * (i - (N - 30));
+  }
+
+  // z-score 계산 (population stddev)
+  const mean = resid.reduce((a, b) => a + b, 0) / N;
+  const variance = resid.reduce((a, b) => a + (b - mean) ** 2, 0) / N;
+  const std = Math.sqrt(variance);
+  const zs = resid.map((r) => (r - mean) / std);
+
+  // timestamp 생성 (영업일만, 주말 skip) — 1년 전부터
+  const today = new Date();
+  today.setHours(15, 30, 0, 0);
+  const tsArr = [];
+  {
+    const d = new Date(today);
+    let i = 0;
+    while (tsArr.length < N) {
+      const dow = d.getDay();
+      if (dow !== 0 && dow !== 6) tsArr.unshift(Math.floor(d.getTime() / 1000));
+      d.setDate(d.getDate() - 1);
+      i++;
+      if (i > 500) break;
+    }
+  }
+
+  // 히스토그램 (30 bin)
+  const minR = Math.min(...resid), maxR = Math.max(...resid);
+  const nBins = 30;
+  const w = (maxR - minR) / nBins;
+  const hist = Array.from({ length: nBins }, (_, i) => ({
+    center: minR + w * (i + 0.5),
+    count: 0,
+  }));
+  resid.forEach((r) => {
+    let idx = Math.floor((r - minR) / w);
+    if (idx < 0) idx = 0;
+    if (idx >= nBins) idx = nBins - 1;
+    hist[idx].count++;
+  });
+
+  // recharts 용 데이터 (object array)
+  const dataSpread = tsArr.map((t, i) => ({
+    ts: t,
+    spread: resid[i],
+    z: zs[i],
+    dateStr: new Date(t * 1000).toISOString().slice(5, 10),
+  }));
+
+  // lightweight-charts 용 데이터 (line series)
+  const lwSpread = dataSpread.map((d) => ({ time: d.ts, value: d.spread }));
+  const lwZ = dataSpread.map((d) => ({ time: d.ts, value: d.z }));
+
+  // 현재(마지막) 값
+  const currentZ = zs[N - 1];
+  const currentSpread = resid[N - 1];
+</script>
+
+<!-- ============== recharts side ============== -->
+<h2>1. recharts (React, SVG 기반 — LENS dividends 페이지 사용중)</h2>
+
+<div class="row">
+  <div class="panel">
+    <h3>스프레드 시계열 (잔차)</h3>
+    <div id="recharts-spread" class="chart"></div>
+  </div>
+  <div class="panel">
+    <h3>z-score 시계열 + ±1·±2 밴드</h3>
+    <div id="recharts-zscore" class="chart"></div>
+  </div>
+</div>
+<div class="row">
+  <div class="panel">
+    <h3>잔차 히스토그램 + 현재 위치</h3>
+    <div id="recharts-hist" class="chart"></div>
+  </div>
+  <div class="panel" style="background:#0d0d0d;">
+    <h3 style="color:var(--t3);">[참고]</h3>
+    <p style="font-size:11px; color:var(--t3); line-height:1.6;">
+      recharts는 React 컴포넌트 기반 SVG 차트. ResponsiveContainer로 컨테이너 폭에 자동 맞춤.
+      hover 툴팁, ReferenceLine으로 밴드 점선, ReferenceDot로 현재점 마킹 표준 제공.
+      LENS의 다른 페이지(dividends)와 동일 스타일로 통일 가능.
+    </p>
+  </div>
+</div>
+
+<script type="text/babel">
+  const { ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip,
+          ReferenceLine, ReferenceDot, BarChart, Bar, Cell } = Recharts;
+
+  const axisCommon = { stroke: '#636366', fontSize: 10, tick: { fill: '#8e8e93' } };
+
+  function SpreadChart() {
+    return (
+      <ResponsiveContainer width="100%" height="100%">
+        <LineChart data={dataSpread} margin={{ top: 8, right: 16, left: 0, bottom: 4 }}>
+          <CartesianGrid stroke="#1c1c1e" />
+          <XAxis dataKey="dateStr" interval={Math.floor(N/8)} {...axisCommon} />
+          <YAxis {...axisCommon} />
+          <Tooltip
+            contentStyle={{ background: '#1c1c1e', border: 'none', fontSize: 11 }}
+            labelStyle={{ color: '#d1d1d6' }}
+            formatter={(v) => v.toFixed(0)}
+          />
+          <ReferenceLine y={0} stroke="#636366" strokeDasharray="2 2" />
+          <Line type="monotone" dataKey="spread" stroke="#0a84ff" strokeWidth={1.5} dot={false} />
+          <ReferenceDot x={dataSpread[N-1].dateStr} y={currentSpread} r={4} fill="#ff9f0a" stroke="none" />
+        </LineChart>
+      </ResponsiveContainer>
+    );
+  }
+
+  function ZChart() {
+    return (
+      <ResponsiveContainer width="100%" height="100%">
+        <LineChart data={dataSpread} margin={{ top: 8, right: 16, left: 0, bottom: 4 }}>
+          <CartesianGrid stroke="#1c1c1e" />
+          <XAxis dataKey="dateStr" interval={Math.floor(N/8)} {...axisCommon} />
+          <YAxis domain={[-4, 4]} {...axisCommon} />
+          <Tooltip
+            contentStyle={{ background: '#1c1c1e', border: 'none', fontSize: 11 }}
+            labelStyle={{ color: '#d1d1d6' }}
+            formatter={(v) => v.toFixed(2)}
+          />
+          <ReferenceLine y={2} stroke="#ff9f0a" strokeDasharray="4 2" />
+          <ReferenceLine y={-2} stroke="#ff9f0a" strokeDasharray="4 2" />
+          <ReferenceLine y={1} stroke="#636366" strokeDasharray="2 2" />
+          <ReferenceLine y={-1} stroke="#636366" strokeDasharray="2 2" />
+          <ReferenceLine y={0} stroke="#8e8e93" />
+          <Line type="monotone" dataKey="z" stroke="#34c759" strokeWidth={1.5} dot={false} />
+          <ReferenceDot x={dataSpread[N-1].dateStr} y={currentZ} r={5} fill="#ff3b30" stroke="none" />
+        </LineChart>
+      </ResponsiveContainer>
+    );
+  }
+
+  function HistChart() {
+    const currentBin = hist.findIndex((b) => currentSpread <= b.center + w/2);
+    return (
+      <ResponsiveContainer width="100%" height="100%">
+        <BarChart data={hist} margin={{ top: 8, right: 16, left: 0, bottom: 4 }}>
+          <CartesianGrid stroke="#1c1c1e" />
+          <XAxis dataKey="center" tickFormatter={(v) => Math.round(v)} {...axisCommon} />
+          <YAxis {...axisCommon} />
+          <Tooltip
+            contentStyle={{ background: '#1c1c1e', border: 'none', fontSize: 11 }}
+            formatter={(v, _, p) => [v, '빈도']}
+            labelFormatter={(v) => `잔차 ≈ ${Math.round(v)}`}
+          />
+          <Bar dataKey="count">
+            {hist.map((_, i) => (
+              <Cell key={i} fill={i === currentBin ? '#ff3b30' : '#0a84ff'} />
+            ))}
+          </Bar>
+        </BarChart>
+      </ResponsiveContainer>
+    );
+  }
+
+  function Mount(id, El) {
+    ReactDOM.createRoot(document.getElementById(id)).render(<El />);
+  }
+  Mount('recharts-spread', SpreadChart);
+  Mount('recharts-zscore', ZChart);
+  Mount('recharts-hist', HistChart);
+</script>
+
+
+<!-- ============== lightweight-charts side ============== -->
+<h2>2. lightweight-charts (TradingView, Canvas — 대량 점 빠름)</h2>
+
+<div class="row">
+  <div class="panel">
+    <h3>스프레드 시계열 (잔차)</h3>
+    <div id="lw-spread" class="chart"></div>
+  </div>
+  <div class="panel">
+    <h3>z-score 시계열 + ±1·±2 밴드</h3>
+    <div id="lw-zscore" class="chart"></div>
+  </div>
+</div>
+<div class="row">
+  <div class="panel">
+    <h3>잔차 히스토그램 (Histogram series)</h3>
+    <div id="lw-hist" class="chart"></div>
+  </div>
+  <div class="panel" style="background:#0d0d0d;">
+    <h3 style="color:var(--t3);">[참고]</h3>
+    <p style="font-size:11px; color:var(--t3); line-height:1.6;">
+      lightweight-charts는 Canvas 기반. 휠 스크롤 줌/팬이 매우 부드러움 — 수만 점도 60fps.
+      ±밴드는 별도 LineSeries로 점선. 현재점 마킹은 PriceLine으로 가능.
+      트레이딩뷰 스타일 — LENS 다른 페이지와 시각 어울리지 않을 수도 있음.
+    </p>
+  </div>
+</div>
+
+<script>
+  const lwOpts = {
+    layout: { background: { color: '#111' }, textColor: '#8e8e93', fontSize: 10 },
+    grid: { vertLines: { color: '#1c1c1e' }, horzLines: { color: '#1c1c1e' } },
+    rightPriceScale: { borderColor: '#1c1c1e' },
+    timeScale: { borderColor: '#1c1c1e', timeVisible: false, secondsVisible: false },
+    crosshair: { mode: 1 },
+  };
+
+  // Spread chart
+  (() => {
+    const chart = LightweightCharts.createChart(document.getElementById('lw-spread'), lwOpts);
+    const s = chart.addLineSeries({ color: '#0a84ff', lineWidth: 2 });
+    s.setData(lwSpread);
+    s.createPriceLine({ price: 0, color: '#636366', lineStyle: 2, axisLabelVisible: false });
+    s.createPriceLine({ price: currentSpread, color: '#ff9f0a',
+                        title: `현재 ${Math.round(currentSpread)}`, axisLabelVisible: true });
+    chart.timeScale().fitContent();
+  })();
+
+  // Z chart
+  (() => {
+    const chart = LightweightCharts.createChart(document.getElementById('lw-zscore'), lwOpts);
+    const s = chart.addLineSeries({ color: '#34c759', lineWidth: 2 });
+    s.setData(lwZ);
+    [-2, -1, 0, 1, 2].forEach((y) => {
+      s.createPriceLine({
+        price: y,
+        color: Math.abs(y) === 2 ? '#ff9f0a' : Math.abs(y) === 1 ? '#636366' : '#8e8e93',
+        lineStyle: Math.abs(y) === 0 ? 0 : 2,
+        axisLabelVisible: false,
+        title: y === 0 ? '' : `±${Math.abs(y)}σ`,
+      });
+    });
+    s.createPriceLine({ price: currentZ, color: '#ff3b30',
+                        title: `현재 ${currentZ.toFixed(2)}`, axisLabelVisible: true });
+    chart.timeScale().fitContent();
+  })();
+
+  // Histogram — Histogram series는 시간축 base. center 값을 인덱스로 변환.
+  (() => {
+    const chart = LightweightCharts.createChart(document.getElementById('lw-hist'), {
+      ...lwOpts,
+      timeScale: { ...lwOpts.timeScale, timeVisible: false },
+    });
+    const s = chart.addHistogramSeries({ color: '#0a84ff' });
+    const baseT = 1700000000;
+    const currentBin = hist.findIndex((b) => currentSpread <= b.center + w/2);
+    s.setData(hist.map((b, i) => ({
+      time: baseT + i * 86400,
+      value: b.count,
+      color: i === currentBin ? '#ff3b30' : '#0a84ff',
+    })));
+    chart.timeScale().fitContent();
+  })();
+</script>
+
+<hr style="border-color:#1c1c1e; margin-top:24px;">
+<p class="note">
+  실제 LENS 환경에서는 stat-arb-engine `/pairs/detail` 응답을 그대로 사용.
+  recharts는 LENS 다른 차트와 일관, lightweight-charts는 트레이딩뷰 스타일 + 대량 점에서 빠름.
+</p>
+
+</body>
+</html>

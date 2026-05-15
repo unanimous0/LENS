@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 
 type Group = {
   id: string
@@ -44,6 +45,7 @@ const KIND_LABELS: Record<string, string> = {
 }
 
 export function StatArbPage() {
+  const navigate = useNavigate()
   const [pairs, setPairs] = useState<Pair[]>([])
   const [meta, setMeta] = useState<Pick<PairsResp, 'total' | 'filtered' | 'last_run_ms'>>({
     total: 0,
@@ -163,7 +165,12 @@ export function StatArbPage() {
               return (
                 <tr
                   key={`${p.left_key}-${p.right_key}`}
-                  className="border-b border-bg-surface/50 hover:bg-bg-surface/40"
+                  onClick={() =>
+                    navigate(
+                      `/stat-arb/pair/${encodeURIComponent(p.left_key)}/${encodeURIComponent(p.right_key)}`
+                    )
+                  }
+                  className="cursor-pointer border-b border-bg-surface/50 hover:bg-bg-surface/40"
                 >
                   <td className="px-3 py-2 text-t4">{i + 1}</td>
                   <td className="px-3 py-2">
