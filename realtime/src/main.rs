@@ -397,6 +397,42 @@ async fn main() {
         permanent_codes: Arc::new(StdRwLock::new(std::collections::HashSet::new())),
     };
 
+    // Startup polling — realtime 단독 재시작 시 backend의 active 포지션 leg를
+    // 가져와 permanent_codes 초기화. backend가 평소엔 변경 시점에 push하지만,
+    // realtime이 backend보다 늦게 시작되거나 둘 다 재시작되면 push 받기 전 공백.
+    // 그 공백을 polling으로 메움. backend 안 떠있으면 5초 × 12회 = 1분 retry 후 give up.
+    {
+        let bg_state = state.clone();
+        tokio::spawn(async move {
+            let client = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(2))
+                .build()
+                .expect("reqwest client");
+            for attempt in 1..=12u32 {
+                tokio::time::sleep(std::time::Duration::from_secs(if attempt == 1 { 1 } else { 5 })).await;
+                let resp = client
+                    .get("http://localhost:8100/api/positions/active-leg-codes")
+                    .send()
+                    .await;
+                let Ok(r) = resp else { continue };
+                if !r.status().is_success() { continue }
+                let Ok(body) = r.json::<serde_json::Value>().await else { continue };
+                let codes: Vec<String> = body
+                    .get("codes")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                    .unwrap_or_default();
+                let (added, removed, total) = apply_permanent_set(&bg_state, codes);
+                info!(
+                    "Startup polling: synced permanent set from backend on attempt {} — set={} (+{} -{})",
+                    attempt, total, added, removed
+                );
+                return;
+            }
+            warn!("Startup polling: backend unreachable after 12 attempts — permanent set stays empty. backend가 다음 변경 시점에 push할 때 회복.");
+        });
+    }
+
     // 스냅샷 캐시 stale watcher.
     // LS가 5분+ 침묵 시 broadcaster.cache가 옛 가격을 stale 상태로 보유 →
     // 재접속 클라이언트가 받은 스냅샷이 "지금 가격"인 양 표시되는 문제 방지.
@@ -956,16 +992,11 @@ async fn unsubscribe_stocks(
     Json(serde_json::json!({"status": "ok", "unsubscribed": count}))
 }
 
-/// Backend가 영구 sub set을 통째로 replace. 활성 포지션 leg 코드 등.
-/// 현재 set과 diff 계산해서 SubscribeStocks/UnsubscribeStocks 발사 (ref-count + warm-down에 위임).
-/// 페이지 mount/unmount와 무관하게 영구 효과 — client_subs 추적 안 함(헤더 없음).
-async fn permanent_stocks(
-    State(state): State<AppState>,
-    Json(req): Json<SubRequest>,
-) -> Json<serde_json::Value> {
+/// 영구 sub set을 통째로 replace — REST 핸들러와 startup polling이 공유.
+/// 반환: (added 수, removed 수, 새 set 크기).
+fn apply_permanent_set(state: &AppState, codes: Vec<String>) -> (usize, usize, usize) {
     use std::collections::HashSet;
-    let new_set: HashSet<String> = req.codes.iter().cloned().collect();
-    // write lock 한 번에 diff + replace — 동시 호출 시 lost-update 방지
+    let new_set: HashSet<String> = codes.into_iter().collect();
     let (added, removed): (Vec<String>, Vec<String>) = {
         let mut cur = state.permanent_codes.write().unwrap();
         let added: Vec<String> = new_set.iter().filter(|c| !cur.contains(*c)).cloned().collect();
@@ -973,7 +1004,6 @@ async fn permanent_stocks(
         *cur = new_set.clone();
         (added, removed)
     };
-
     let tx = state.sub_tx.read().unwrap();
     if !added.is_empty() {
         let _ = tx.send(SubCommand::SubscribeStocks(added.clone()));
@@ -981,15 +1011,23 @@ async fn permanent_stocks(
     if !removed.is_empty() {
         let _ = tx.send(SubCommand::UnsubscribeStocks(removed.clone()));
     }
-    info!(
-        "REST permanent-stocks: set={} (+{} -{})",
-        new_set.len(), added.len(), removed.len()
-    );
+    (added.len(), removed.len(), new_set.len())
+}
+
+/// Backend가 영구 sub set을 통째로 replace. 활성 포지션 leg 코드 등.
+/// 현재 set과 diff 계산해서 SubscribeStocks/UnsubscribeStocks 발사 (ref-count + warm-down에 위임).
+/// 페이지 mount/unmount와 무관하게 영구 효과 — client_subs 추적 안 함(헤더 없음).
+async fn permanent_stocks(
+    State(state): State<AppState>,
+    Json(req): Json<SubRequest>,
+) -> Json<serde_json::Value> {
+    let (added, removed, total) = apply_permanent_set(&state, req.codes);
+    info!("REST permanent-stocks: set={} (+{} -{})", total, added, removed);
     Json(serde_json::json!({
         "status": "ok",
-        "total": new_set.len(),
-        "added": added.len(),
-        "removed": removed.len(),
+        "total": total,
+        "added": added,
+        "removed": removed,
     }))
 }
 

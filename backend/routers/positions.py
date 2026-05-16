@@ -93,6 +93,14 @@ async def list_positions(status: str | None = None) -> dict:
     return {"count": len(items), "items": items}
 
 
+@router.get("/active-leg-codes")
+async def get_active_leg_codes() -> dict:
+    """활성(open) 포지션의 leg 종목 코드만 반환. realtime startup polling용."""
+    await _ensure()
+    codes = await positions.active_leg_codes()
+    return {"codes": codes}
+
+
 @router.post("")
 async def create_position(body: PositionCreate) -> dict:
     await _ensure()
