@@ -499,6 +499,36 @@ raw로 *메모리에 보관하지 않고* 동적 집계 함수로:
 - *1분봉 데이터 활용 frequency 줄어듦*: 시간 지날수록 1분봉 raw가 점점 오래됨. 어느 시점에 `bars_1m` 자체를 *제거하거나 보관만* 결정 필요. 운영 1년 후 재검토.
 - *30초봉 메모리*: 종목당 일 ~780 bar, 14일치 = 약 11k bar. 469 종목이면 약 5.1M bar. f64×6 + i64 = 56 bytes 기준 ~285MB. 캐시 사이즈 운영 모니터링 필요.
 
+### 12.8 수정주가 (액면분할·병합 spike 회피)
+
+**왜**: raw close 시계열에 분할 spike가 들어가면 OLS의 잔차에 거대한 outlier 발생 →
+hedge_ratio 추정 망가짐 + ADF t-stat 무력화 + half-life 계산 의미 없음. 분할 1건이
+페어 발굴 결과 전체를 오염시킬 수 있음 (분할 종목이 leg에 포함된 모든 페어).
+
+**Finance_Data 측 변경 (2026-05-16 적용)**: 주식 4년치 수정주가 적재 완료. 매일 04:30
+cron이 sujung=Y + gap > 15% 자동 감지 + adj_factor UPDATE. 평상시 LS 호출 0.
+
+**LENS 측 쿼리 매핑**:
+
+| 자산군 | 일봉 | 분봉 (30초/1분 등 모두) |
+|---|---|---|
+| **주식** | `SELECT adj_close FROM ohlcv_daily` | `SELECT close FROM ohlcv_intraday_adjusted` |
+| **ETF** | (분할 사례 거의 없음 — `adj_close` 사용 안전) | (동일) |
+| **선물** | `futures_ohlcv_daily` raw | `futures_ohlcv_intraday` raw |
+| **지수** | `index_ohlcv_daily` raw | `index_ohlcv_intraday` raw |
+
+선물·지수는 분할 개념 없어 raw 그대로. 주식만 교체.
+
+**ohlcv_intraday_adjusted**는 view라 *테이블명만 바꾸면 됨* (스키마 동일). `raw_close`
+컬럼 별도 노출 (원본 비교용). `volume`은 raw 유지 (수량 자체는 분할 무관 데이터).
+
+**영향 위치** (`stat-arb-engine/src/data/bars.rs`):
+- 라인 153 / 432: `FROM ohlcv_daily` + `close_price` → `adj_close`
+- 라인 184 / 474: `FROM ohlcv_intraday` → `FROM ohlcv_intraday_adjusted`
+
+**영향 종목 확인 쿼리**: `SELECT * FROM corporate_actions WHERE event_date > '2026-01-01'`
+(LS일렉트릭 4/13 1:5 분할, 신성이엔지 5/15 10:1 병합 등).
+
 ## 13. 외부 연동
 
 - **베이시스**: `stock-arbitrage` 페이지 실시간 베이시스 store 재사용 → 스크리너 컬럼 + 포지션 상세 "매도차 가능성" 표시

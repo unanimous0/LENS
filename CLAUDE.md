@@ -78,6 +78,7 @@ CSS 변수는 `globals.css`의 `@theme inline`에 정의. Tailwind 클래스로 
 - 프로젝트 전반에 걸쳐 **최적화와 속도를 중시**할 것. 불필요한 반복 순회, DataFrame concat 반복, 중복 연산 등을 피하고 효율적인 자료구조와 알고리즘을 선택한다.
 - 대량 데이터 처리 시 pandas 외에 더 적합한 도구(polars, numpy, 순수 Python 등)가 있다면 적극 검토한다. 단, 소규모 데이터에서 체감 차이 없이 의존성만 늘리는 도입은 지양.
 - **LS API 의문 시 절차** — 새 기능 만들거나 기존 동작 수정할 때 LS API의 호출법/필드/제한 등에 의문이 생기면 **반드시 `docs/ls_api_guide/ls_api_full.md`를 먼저 grep**. 365개 TR 전부 Request/Response 예시 포함. 답이 없을 때만 PDF 별도 다운로드. "안 되는 거였구나" 뻘짓 방지의 단일 진실원. 사용 예: `grep -A 50 "^### t1302 " docs/ls_api_guide/ls_api_full.md`. 가이드 누락 25개 TR 목록은 같은 파일 상단 섹션 참조. 갱신: `python3 scripts/scrape_ls_api_guide.py` (월 1회 권장).
+- **Finance_Data 시계열 조회 시 수정주가 사용 필수** — raw close는 액면분할·병합 시 spike 발생 → OLS/ADF/회귀 모델 무력화. **주식 일봉은 `adj_close` 컬럼, 주식 분봉(30초·1분 등 모두 포함)은 `ohlcv_intraday_adjusted` view**. 선물·지수는 분할 없으니 raw 그대로. 영향 종목 확인: `SELECT * FROM corporate_actions WHERE event_date > '2026-01-01'`. Finance_Data 측 매일 04:30 자동 갱신. 상세는 `stat-arb-engine.md §12.8`.
 
 ## 코드 컨벤션
 
