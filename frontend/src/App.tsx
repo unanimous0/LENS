@@ -14,6 +14,7 @@ import { StatArbDetailPage } from './pages/stat-arb-detail'
 import { StatArbLayout } from './pages/stat-arb-layout'
 import { LoanRatesPage } from './pages/loan-rates'
 import { StatArbPositionsPage } from './pages/stat-arb-positions'
+import { StatArbPositionDetailPage } from './pages/stat-arb-position-detail'
 import type { NetworkMode } from './types/market'
 
 // dividends는 recharts/react-virtual 의존성이 무거워 lazy-load.
@@ -61,6 +62,7 @@ function AppLayout() {
               <Route path="loan-rates" element={<LoanRatesPage />} />
             </Route>
             <Route path="/stat-arb/pair/:left/:right" element={<StatArbDetailPage />} />
+            <Route path="/stat-arb/positions/:id" element={<StatArbPositionDetailPage />} />
             <Route path="/dividends" element={<Suspense fallback={<div className="p-4 text-sm text-t3">로드 중…</div>}><DividendsPage /></Suspense>} />
           </Routes>
         </div>

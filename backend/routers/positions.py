@@ -103,3 +103,21 @@ async def delete_position(pos_id: str) -> dict:
     if not ok:
         raise HTTPException(404, f"position not found: {pos_id}")
     return {"deleted": True}
+
+
+class NoteUpdate(BaseModel):
+    note: str | None = None
+    label: str | None = None
+
+
+@router.patch("/{pos_id}")
+async def patch_position(pos_id: str, body: NoteUpdate) -> dict:
+    """note/label만 부분 업데이트 (PR18). 청산은 PR19에서 별도 endpoint."""
+    await _ensure()
+    ok = await positions.update_note(pos_id, body.note, body.label)
+    if not ok:
+        raise HTTPException(404, f"position not found or no change: {pos_id}")
+    detail = await positions.get_one(pos_id)
+    if not detail:
+        raise HTTPException(404, f"position not found after update: {pos_id}")
+    return detail

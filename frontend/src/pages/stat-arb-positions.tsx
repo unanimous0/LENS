@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 
 import { keyToCode } from '@/lib/stat-arb-keys'
 import {
@@ -18,6 +19,7 @@ function pairKey(left: string, right: string): string {
 }
 
 export function StatArbPositionsPage() {
+  const navigate = useNavigate()
   const [positions, setPositions] = useState<Position[]>([])
   const [pairMap, setPairMap] = useState<Map<string, PairRow>>(new Map())
   const [statusFilter, setStatusFilter] = useState<'open' | 'closed' | 'all'>('open')
@@ -143,7 +145,11 @@ export function StatArbPositionsPage() {
               const leftName = pair?.left_name ?? keyToCode(pos.left_key)
               const rightName = pair?.right_name ?? keyToCode(pos.right_key)
               return (
-                <tr key={pos.id} className="border-b border-bg-surface/40 hover:bg-bg-surface/50">
+                <tr
+                  key={pos.id}
+                  onClick={() => navigate(`/stat-arb/positions/${pos.id}`)}
+                  className="cursor-pointer border-b border-bg-surface/40 hover:bg-bg-surface/50"
+                >
                   <td className="px-3 py-2">
                     <div className="text-t1">
                       {leftName} <span className="text-t3">↔</span> {rightName}
@@ -187,7 +193,10 @@ export function StatArbPositionsPage() {
                   <td className="px-3 py-2 text-right">
                     <button
                       type="button"
-                      onClick={() => remove(pos.id)}
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        remove(pos.id)
+                      }}
                       className="text-[10px] text-t4 hover:text-down"
                     >
                       삭제

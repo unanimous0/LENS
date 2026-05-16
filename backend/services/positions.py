@@ -247,6 +247,31 @@ async def delete(pos_id: str) -> bool:
     return await asyncio.to_thread(_delete_sync, pos_id)
 
 
+def _update_note_sync(pos_id: str, note: str | None, label: str | None) -> bool:
+    """note / label 부분 업데이트. 둘 다 None이면 변경 없음 → False."""
+    if note is None and label is None:
+        return False
+    sets: list[str] = []
+    params: list = []
+    if note is not None:
+        sets.append("note = ?")
+        params.append(note)
+    if label is not None:
+        sets.append("label = ?")
+        params.append(label)
+    params.append(pos_id)
+    with _connect() as conn:
+        cur = conn.execute(
+            f"UPDATE positions SET {', '.join(sets)} WHERE id = ?", params
+        )
+        conn.commit()
+        return cur.rowcount > 0
+
+
+async def update_note(pos_id: str, note: str | None, label: str | None) -> bool:
+    return await asyncio.to_thread(_update_note_sync, pos_id, note, label)
+
+
 # ---------------------------------------------------------------------------
 # Validation helpers (router에서 사용)
 # ---------------------------------------------------------------------------

@@ -48,7 +48,14 @@ function useResize(ref: React.RefObject<HTMLDivElement>, chart: IChartApi | null
 // ---------------------------------------------------------------------------
 // 1. 스프레드 시계열
 // ---------------------------------------------------------------------------
-export function SpreadChart({ data }: { data: SpreadPoint[] }) {
+export function SpreadChart({
+  data,
+  entry,
+}: {
+  data: SpreadPoint[]
+  /** 포지션 상세에서 진입 시점·값 마킹용. 페어 상세에서는 미전달 */
+  entry?: { ts: number; spread: number } | null
+}) {
   const containerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
 
@@ -89,9 +96,29 @@ export function SpreadChart({ data }: { data: SpreadPoint[] }) {
         lineWidth: 1,
       })
     }
+    // 진입 마커 — 시계열 위 진입 시점 점 + price line
+    if (entry) {
+      series.createPriceLine({
+        price: entry.spread,
+        color: C.t2,
+        lineStyle: LineStyle.Dotted,
+        axisLabelVisible: true,
+        title: '진입',
+        lineWidth: 1,
+      })
+      series.setMarkers([
+        {
+          time: Math.floor(entry.ts / 1000) as never,
+          position: 'inBar',
+          color: C.t1,
+          shape: 'circle',
+          text: '진입',
+        },
+      ])
+    }
     chart.timeScale().fitContent()
     return () => chart.remove()
-  }, [data])
+  }, [data, entry])
 
   useResize(containerRef, chartRef.current)
 
@@ -101,7 +128,13 @@ export function SpreadChart({ data }: { data: SpreadPoint[] }) {
 // ---------------------------------------------------------------------------
 // 2. z-score 시계열 + ±1 / ±2 밴드
 // ---------------------------------------------------------------------------
-export function ZScoreChart({ data }: { data: SpreadPoint[] }) {
+export function ZScoreChart({
+  data,
+  entry,
+}: {
+  data: SpreadPoint[]
+  entry?: { ts: number; z: number } | null
+}) {
   const containerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
 
@@ -165,9 +198,29 @@ export function ZScoreChart({ data }: { data: SpreadPoint[] }) {
         lineWidth: 1,
       })
     }
+    // 진입 z 마킹
+    if (entry) {
+      series.createPriceLine({
+        price: entry.z,
+        color: C.t2,
+        lineStyle: LineStyle.Dotted,
+        axisLabelVisible: true,
+        title: '진입 z',
+        lineWidth: 1,
+      })
+      series.setMarkers([
+        {
+          time: Math.floor(entry.ts / 1000) as never,
+          position: 'inBar',
+          color: C.t1,
+          shape: 'circle',
+          text: '진입',
+        },
+      ])
+    }
     chart.timeScale().fitContent()
     return () => chart.remove()
-  }, [data])
+  }, [data, entry])
 
   useResize(containerRef, chartRef.current)
 
