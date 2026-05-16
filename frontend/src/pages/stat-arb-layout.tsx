@@ -13,6 +13,7 @@ export function StatArbLayout() {
         <SubTab to="/stat-arb" end>
           페어 발굴
         </SubTab>
+        <SubTab to="/stat-arb/positions">포지션</SubTab>
         <SubTab to="/stat-arb/loan-rates">대여요율</SubTab>
       </div>
       <Outlet />
