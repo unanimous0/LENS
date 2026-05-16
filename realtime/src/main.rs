@@ -11,7 +11,7 @@ use std::sync::{Arc, RwLock as StdRwLock};
 use std::time::Instant;
 
 use axum::extract::{Path, State};
-use axum::http::{Method, StatusCode};
+use axum::http::{HeaderMap, Method, StatusCode};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use dashmap::DashMap;
@@ -131,6 +131,11 @@ pub struct AppState {
     /// 모드 전환 시 lifecycle: ls_api 진입 시 그대로 사용, mock/internal에선 비어있음.
     pub fetched_stocks: Arc<DashMap<String, ()>>,
     pub failed_stocks: Arc<DashMap<String, feed::ls_rest::FailedT1102>>,
+    /// 다음 WebSocket client에 발급할 ID. WS 연결 시 1씩 증가.
+    pub next_client_id: Arc<AtomicU64>,
+    /// client_id → 그 client가 잡고 있는 종목 코드 집합 (subscribe-stocks).
+    /// WS disconnect 시 자동 cleanup으로 ref-count leak 방지. 헤더(X-LENS-Client-Id) 없으면 추적 안 함.
+    pub client_subs: Arc<DashMap<u64, dashmap::DashSet<String>>>,
 }
 
 /// Bridge에서 EtfTick의 0인 필드를 이전 캐시값으로 메우기 위한 stash.
@@ -383,6 +388,8 @@ async fn main() {
         etf_state: etf_state.clone(),
         fetched_stocks: fetched_stocks.clone(),
         failed_stocks: failed_stocks.clone(),
+        next_client_id: Arc::new(AtomicU64::new(1)),
+        client_subs: Arc::new(DashMap::new()),
     };
 
     // 스냅샷 캐시 stale watcher.
@@ -893,13 +900,27 @@ async fn unsubscribe(
     Json(serde_json::json!({"status": "ok", "unsubscribed": count}))
 }
 
+/// 헤더에서 X-LENS-Client-Id 파싱 (옵셔널). 없거나 파싱 실패면 None — legacy 호출 호환.
+fn extract_client_id(headers: &HeaderMap) -> Option<u64> {
+    headers
+        .get("x-lens-client-id")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse::<u64>().ok())
+}
+
 /// 주식/ETF 코드 누적 구독 (S3_/K3_). 선물 /subscribe와 격리된 그룹.
 async fn subscribe_stocks(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(req): Json<SubRequest>,
 ) -> Json<serde_json::Value> {
     let count = req.codes.len();
-    info!("REST subscribe-stocks: {} codes", count);
+    let cid = extract_client_id(&headers);
+    if let Some(id) = cid {
+        let entry = state.client_subs.entry(id).or_insert_with(dashmap::DashSet::new);
+        for c in &req.codes { entry.insert(c.clone()); }
+    }
+    info!("REST subscribe-stocks: {} codes (client={:?})", count, cid);
     let _ = state
         .sub_tx
         .read()
@@ -910,10 +931,17 @@ async fn subscribe_stocks(
 
 async fn unsubscribe_stocks(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(req): Json<SubRequest>,
 ) -> Json<serde_json::Value> {
     let count = req.codes.len();
-    info!("REST unsubscribe-stocks: {} codes", count);
+    let cid = extract_client_id(&headers);
+    if let Some(id) = cid {
+        if let Some(entry) = state.client_subs.get(&id) {
+            for c in &req.codes { entry.remove(c); }
+        }
+    }
+    info!("REST unsubscribe-stocks: {} codes (client={:?})", count, cid);
     let _ = state
         .sub_tx
         .read()

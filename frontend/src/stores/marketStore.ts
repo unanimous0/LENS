@@ -60,6 +60,11 @@ interface MarketState {
   feedState: FeedState
   feedAgeSec: number
   setFeedHealth: (state: FeedState, ageSec: number) => void
+  /** realtime이 발급한 client_id. WS 연결 시 hello 메시지로 받아 저장.
+   *  /realtime/subscribe-stocks 호출 시 X-LENS-Client-Id 헤더로 첨부 →
+   *  WS disconnect 시 서버가 ref-count 자동 cleanup (탭 강제 종료 leak 방지). */
+  clientId: number | null
+  setClientId: (id: number) => void
 }
 
 /** is_initial 틱은 이미 실시간 데이터가 있으면 무시 */
@@ -185,4 +190,6 @@ export const useMarketStore = create<MarketState>((set) => ({
   feedState: 'unknown',
   feedAgeSec: 0,
   setFeedHealth: (feedState, feedAgeSec) => set({ feedState, feedAgeSec }),
+  clientId: null,
+  setClientId: (id) => set({ clientId: id }),
 }))

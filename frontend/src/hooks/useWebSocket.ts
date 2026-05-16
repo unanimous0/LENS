@@ -68,6 +68,12 @@ export function useWebSocket() {
         else if (m.type === 'stock_tick') stockBuf[m.data.code] = m.data
         else if (m.type === 'futures_tick') futuresBuf[m.data.code] = m.data
         else if (m.type === 'orderbook_tick') obBuf[m.data.code] = m.data
+        else if (m.type === 'hello') {
+          // realtime이 발급한 client_id — subscribe-stocks 호출 시 헤더로 첨부.
+          if (typeof m.client_id === 'number') {
+            useMarketStore.getState().setClientId(m.client_id)
+          }
+        }
         else if (!warnedTypes.has(m.type)) {
           warnedTypes.add(m.type)
           console.warn('[useWebSocket] unhandled tick type:', m.type, '— register in marketStore + dispatchOne')

@@ -7,6 +7,7 @@ use axum::response::IntoResponse;
 use tokio::sync::broadcast;
 use tracing::{debug, info, warn};
 
+use crate::feed::SubCommand;
 use crate::ws::broadcast::Broadcaster;
 use crate::{AppState, Stats};
 
@@ -15,34 +16,47 @@ pub async fn ws_market(
     ws: WebSocketUpgrade,
     state: axum::extract::State<AppState>,
 ) -> impl IntoResponse {
+    let state_clone = state.0.clone();
     let bc = state.broadcaster.clone();
     let stats = state.stats.clone();
-    ws.on_upgrade(move |socket| handle_client(socket, bc, stats))
+    ws.on_upgrade(move |socket| handle_client(socket, bc, stats, state_clone))
 }
 
-async fn handle_client(mut socket: WebSocket, broadcaster: Arc<Broadcaster>, stats: Arc<Stats>) {
-    info!("WebSocket client connected");
+async fn handle_client(
+    mut socket: WebSocket,
+    broadcaster: Arc<Broadcaster>,
+    stats: Arc<Stats>,
+    state: AppState,
+) {
+    // 새 client에 unique id 발급. frontend가 hello 메시지로 받아서 subscribe-stocks
+    // 호출 시 X-LENS-Client-Id 헤더에 첨부 → disconnect 시 자동 cleanup.
+    let client_id = state.next_client_id.fetch_add(1, Ordering::Relaxed);
+    info!("WebSocket client connected (id={})", client_id);
 
-    // 프론트엔드가 보내는 "subscribe" 메시지 대기 (기존 Python 호환)
+    // hello 메시지 전송 (snapshot 전에 보내야 frontend가 client_id를 먼저 확보).
+    let hello = format!("{{\"type\":\"hello\",\"client_id\":{client_id}}}");
+    if socket.send(Message::Text(hello.into())).await.is_err() {
+        info!("WS client {} disconnected before hello flush", client_id);
+        return;
+    }
+
+    // 프론트엔드가 보내는 "subscribe" 메시지 대기 (기존 Python 호환). 옵셔널.
     if let Some(Ok(msg)) = socket.recv().await {
         if let Message::Text(text) = msg {
-            debug!("Client sent: {}", text);
+            debug!("Client {} sent: {}", client_id, text);
         }
     }
 
-    // Trade-off 결정: 이 순서는 "메시지 유실 없음, 중복 가능"을 택한 것.
-    //  - subscribe() 먼저 → snapshot() → rx 수신 루프.
-    //  - subscribe ~ snapshot 사이에 도착한 tick은 cache에도 반영되고 rx에도 쌓임 → 같은 종목이
-    //    snapshot과 rx로 두 번 전달될 수 있음.
-    //  - 프론트 store는 멱등(같은 값 덮어씀)이라 무해. 대안인 "snapshot → subscribe" 순서는
-    //    사이 tick이 유실되는데, 트레이딩 화면에선 유실이 중복보다 위험하므로 거부.
+    // Trade-off: "메시지 유실 없음, 중복 가능" 택함.
+    //  subscribe() 먼저 → snapshot() → rx 수신 루프.
+    //  cache snapshot과 rx 사이 도착 tick은 두 번 전달될 수 있으나, 프론트 store가 멱등이라 무해.
     let mut rx = broadcaster.subscribe();
     let snapshot = broadcaster.snapshot();
-    info!("Flushing snapshot to new client: {} messages", snapshot.len());
+    info!("Flushing snapshot to client {}: {} messages", client_id, snapshot.len());
     for json in snapshot {
-        // Utf8Bytes는 refcount 기반 — Message::Text가 직접 받음, 복제 없음.
         if socket.send(Message::Text(json)).await.is_err() {
-            info!("WebSocket client disconnected during snapshot flush");
+            info!("WS client {} disconnected during snapshot flush", client_id);
+            cleanup_client_subs(&state, client_id).await;
             return;
         }
     }
@@ -57,7 +71,7 @@ async fn handle_client(mut socket: WebSocket, broadcaster: Arc<Broadcaster>, sta
             }
             Err(broadcast::error::RecvError::Lagged(n)) => {
                 stats.ws_lag_total.fetch_add(n, Ordering::Relaxed);
-                warn!("Client lagged, skipped {} messages", n);
+                warn!("Client {} lagged, skipped {} messages", client_id, n);
             }
             Err(broadcast::error::RecvError::Closed) => {
                 break;
@@ -65,5 +79,21 @@ async fn handle_client(mut socket: WebSocket, broadcaster: Arc<Broadcaster>, sta
         }
     }
 
-    info!("WebSocket client disconnected");
+    info!("WebSocket client {} disconnected", client_id);
+    cleanup_client_subs(&state, client_id).await;
+}
+
+/// disconnect 시 client가 잡고 있던 코드들을 자동 unsubscribe.
+/// frontend가 정상 종료(unmount)면 이미 unsubscribe-stocks 호출되어 client_subs가 비어있음.
+/// 강제 종료(F5/탭 X 버튼)는 unsubscribe 호출 안 가서 여기서 정리.
+async fn cleanup_client_subs(state: &AppState, client_id: u64) {
+    let Some((_, subs)) = state.client_subs.remove(&client_id) else { return };
+    let codes: Vec<String> = subs.iter().map(|s| s.key().clone()).collect();
+    if codes.is_empty() { return }
+    info!("WS client {} disconnect cleanup: -{} codes", client_id, codes.len());
+    let _ = state
+        .sub_tx
+        .read()
+        .unwrap()
+        .send(SubCommand::UnsubscribeStocks(codes));
 }
