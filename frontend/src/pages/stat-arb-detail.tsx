@@ -4,7 +4,7 @@ import { Link, useParams } from 'react-router-dom'
 import { ResidualHistogram, SpreadChart, ZScoreChart } from '@/components/stat-arb/charts'
 import { PnlSimulator } from '@/components/stat-arb/pnl-simulator'
 import { TimeframeTable } from '@/components/stat-arb/timeframe-table'
-import { usePageSubscriptions } from '@/hooks/usePageSubscriptions'
+import { usePageStockSubscriptions } from '@/hooks/usePageStockSubscriptions'
 import { keyToCode, keyType } from '@/lib/stat-arb-keys'
 import { useMarketStore } from '@/stores/marketStore'
 import type { PairDetail } from '@/types/stat-arb'
@@ -42,14 +42,17 @@ export function StatArbDetailPage() {
 
   // 양쪽 leg LS realtime 구독 (mount/unmount 자동)
   const subCodes = useMemo(() => [leftCode, rightCode].filter(Boolean), [leftCode, rightCode])
-  usePageSubscriptions(subCodes)
+  usePageStockSubscriptions(subCodes)
 
-  // 실시간 tick lookup — S:주식, E:ETF (지수 'I:'는 일단 주식과 동일 처리, F:는 향후)
+  // 실시간 tick lookup — S:주식, E:ETF (지수 'I:'는 주식과 동일 처리, F:는 향후).
+  // ETF는 평일 장중 LS S3_/I5_ 스트림으로 etfTicks에 들어가지만, 장외/휴장 시
+  // t1102 initial fetch가 ETF도 StockTick으로 emit해서 stockTicks에 들어감.
+  // → ETF는 etfTicks 우선, 없으면 stockTicks fallback.
   const leftTick = useMarketStore((s) =>
-    leftType === 'E' ? s.etfTicks[leftCode] : s.stockTicks[leftCode]
+    leftType === 'E' ? s.etfTicks[leftCode] ?? s.stockTicks[leftCode] : s.stockTicks[leftCode]
   )
   const rightTick = useMarketStore((s) =>
-    rightType === 'E' ? s.etfTicks[rightCode] : s.stockTicks[rightCode]
+    rightType === 'E' ? s.etfTicks[rightCode] ?? s.stockTicks[rightCode] : s.stockTicks[rightCode]
   )
 
   // 대여요율 1회 로딩 (PnL 시뮬용)

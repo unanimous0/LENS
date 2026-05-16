@@ -3,7 +3,7 @@ import { Link, useParams } from 'react-router-dom'
 
 import { ResidualHistogram, SpreadChart, ZScoreChart } from '@/components/stat-arb/charts'
 import { PositionCloseModal } from '@/components/stat-arb/position-close-modal'
-import { usePageSubscriptions } from '@/hooks/usePageSubscriptions'
+import { usePageStockSubscriptions } from '@/hooks/usePageStockSubscriptions'
 import {
   LABEL_META,
   deriveLabel,
@@ -73,12 +73,13 @@ export function StatArbPositionDetailPage() {
   const leftType = position ? keyType(position.left_key) : 'unknown'
   const rightType = position ? keyType(position.right_key) : 'unknown'
   const subCodes = useMemo(() => [leftCode, rightCode].filter(Boolean), [leftCode, rightCode])
-  usePageSubscriptions(subCodes)
+  usePageStockSubscriptions(subCodes)
+  // ETF는 평일 etfTicks, 휴장/장외에는 t1102 fallback으로 stockTicks에 들어감.
   const leftTick = useMarketStore((s) =>
-    leftType === 'E' ? s.etfTicks[leftCode] : s.stockTicks[leftCode]
+    leftType === 'E' ? s.etfTicks[leftCode] ?? s.stockTicks[leftCode] : s.stockTicks[leftCode]
   )
   const rightTick = useMarketStore((s) =>
-    rightType === 'E' ? s.etfTicks[rightCode] : s.stockTicks[rightCode]
+    rightType === 'E' ? s.etfTicks[rightCode] ?? s.stockTicks[rightCode] : s.stockTicks[rightCode]
   )
 
   if (loading) return <div className="p-4 text-sm text-t3">로딩 중…</div>
