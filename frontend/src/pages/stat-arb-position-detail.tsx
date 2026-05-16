@@ -74,12 +74,12 @@ export function StatArbPositionDetailPage() {
   const rightType = position ? keyType(position.right_key) : 'unknown'
   const subCodes = useMemo(() => [leftCode, rightCode].filter(Boolean), [leftCode, rightCode])
   usePageStockSubscriptions(subCodes)
-  // ETF는 평일 etfTicks, 휴장/장외에는 t1102 fallback으로 stockTicks에 들어감.
+  // ETF는 etfTicks에서 lookup (realtime이 t1102 시점부터 EtfTick으로 분기 emit).
   const leftTick = useMarketStore((s) =>
-    leftType === 'E' ? s.etfTicks[leftCode] ?? s.stockTicks[leftCode] : s.stockTicks[leftCode]
+    leftType === 'E' ? s.etfTicks[leftCode] : s.stockTicks[leftCode]
   )
   const rightTick = useMarketStore((s) =>
-    rightType === 'E' ? s.etfTicks[rightCode] ?? s.stockTicks[rightCode] : s.stockTicks[rightCode]
+    rightType === 'E' ? s.etfTicks[rightCode] : s.stockTicks[rightCode]
   )
 
   if (loading) return <div className="p-4 text-sm text-t3">로딩 중…</div>

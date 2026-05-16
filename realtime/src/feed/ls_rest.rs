@@ -13,7 +13,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 use crate::model::message::WsMessage;
-use crate::model::tick::{StockTick, FuturesTick};
+use crate::model::tick::{EtfTick, StockTick, FuturesTick};
 use crate::Stats;
 
 /// LS OpenAPI 에러 메시지 분류.
@@ -300,6 +300,7 @@ pub async fn fetch_initial_prices(
     stats: &Arc<Stats>,
     fetched_stocks: Option<&Arc<DashMap<String, ()>>>,
     failed_stocks: Option<&Arc<DashMap<String, FailedT1102>>>,
+    etf_codes: Option<&Arc<HashSet<String>>>,
 ) {
     let token = match get_or_fetch_token(app_key, app_secret).await {
         Ok(t) => t,
@@ -340,8 +341,9 @@ pub async fn fetch_initial_prices(
     let stats2 = stats.clone();
     let fetched2 = fetched_stocks.cloned();
     let failed2 = failed_stocks.cloned();
+    let etf_codes2 = etf_codes.cloned();
     let h2 = tokio::spawn(async move {
-        fetch_stocks_initial(&token2, &spot_codes, &names2, &tx2, &cancel2, &stats2, fetched2.as_ref(), failed2.as_ref()).await
+        fetch_stocks_initial(&token2, &spot_codes, &names2, &tx2, &cancel2, &stats2, fetched2.as_ref(), failed2.as_ref(), etf_codes2.as_ref()).await
     });
 
     let (r1, r2) = tokio::join!(h1, h2);
@@ -448,6 +450,7 @@ pub async fn fetch_stocks_initial(
     stats: &Arc<Stats>,
     fetched: Option<&Arc<DashMap<String, ()>>>,
     failed: Option<&Arc<DashMap<String, FailedT1102>>>,
+    etf_codes: Option<&Arc<HashSet<String>>>,
 ) -> usize {
     let client = reqwest::Client::new();
     let mut count = 0;
@@ -498,59 +501,95 @@ pub async fn fetch_stocks_initial(
                 let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.6f").to_string();
                 let name = names.get(code.as_str()).cloned().unwrap_or_default();
 
+                // ETF 코드는 EtfTick으로 분기 — frontend etfTicks store에 들어가도록.
+                // 평일 LS WS S3_/I5_ 스트림은 동일 분기지만, t1102 단독 시점(휴장·시작 직후)에도
+                // 정확히 etfTicks에 들어가게 (PR15b의 frontend fallback 의존 해소).
+                let is_etf = etf_codes.map(|s| s.contains(code)).unwrap_or(false);
+
                 if value > 0 {
                     // 거래대금 있음 = 정상 emit. fetched 등록해서 다음 sweep skip.
                     stats.emit_value_pos.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     crate::volume_cache::record(code, value);
-                    let _ = tx.send(WsMessage::StockTick(StockTick {
-                        code: code.clone(), name,
-                        price,
-                        volume: 0,
-                        cum_volume: value * 1_000_000,
-                        timestamp: now, is_initial: true,
-                        high: if h > 0.0 { Some(h) } else { None },
-                        low: if l > 0.0 { Some(l) } else { None },
-                        prev_close: if pc > 0.0 { Some(pc) } else { None },
-                        last_trade_volume: None,  // t1102 스냅샷 — 체결 단위 정보 X
-                        trade_side: None,
-                        halted: is_halted(code),
-                        upper_limit: if uplmt > 0.0 { Some(uplmt) } else { None },
-                        lower_limit: if dnlmt > 0.0 { Some(dnlmt) } else { None },
-                        vi_active: is_vi_active(code),
-                        warning: is_warning(code),
-                        liquidation: is_liquidation(code),
-                        abnormal_rise,
-                        low_liquidity,
-                        under_management: is_under_management(code),
-                    })).await;
+                    if is_etf {
+                        // ETF: t1102 시점에 nav는 모름 (I5_ 스트림이 채움). price만 박음.
+                        let _ = tx.send(WsMessage::EtfTick(EtfTick {
+                            code: code.clone(), name,
+                            price,
+                            nav: 0.0,
+                            spread_bp: 0.0,
+                            spread_bid_bp: 0.0,
+                            spread_ask_bp: 0.0,
+                            volume: 0,
+                            timestamp: now,
+                            last_trade_volume: None,
+                            trade_side: None,
+                        })).await;
+                    } else {
+                        let _ = tx.send(WsMessage::StockTick(StockTick {
+                            code: code.clone(), name,
+                            price,
+                            volume: 0,
+                            cum_volume: value * 1_000_000,
+                            timestamp: now, is_initial: true,
+                            high: if h > 0.0 { Some(h) } else { None },
+                            low: if l > 0.0 { Some(l) } else { None },
+                            prev_close: if pc > 0.0 { Some(pc) } else { None },
+                            last_trade_volume: None,  // t1102 스냅샷 — 체결 단위 정보 X
+                            trade_side: None,
+                            halted: is_halted(code),
+                            upper_limit: if uplmt > 0.0 { Some(uplmt) } else { None },
+                            lower_limit: if dnlmt > 0.0 { Some(dnlmt) } else { None },
+                            vi_active: is_vi_active(code),
+                            warning: is_warning(code),
+                            liquidation: is_liquidation(code),
+                            abnormal_rise,
+                            low_liquidity,
+                            under_management: is_under_management(code),
+                        })).await;
+                    }
                     if let Some(set) = fetched { set.insert(code.clone(), ()); }
                     if let Some(fmap) = failed { fmap.remove(code); }
                     count += 1;
                 } else if pc > 0.0 {
-                    // 거래대금 0이지만 전일종가 있음 — prev_close만 보내 화면 폴백 표시 (price=0).
-                    // 핵심: fetched에 등록하지 않음 → retry worker가 거래 발생할 때까지 60초 cycle로 재시도,
-                    // 거래 발생 즉시 정상 가격(value>0)으로 갱신됨. 사용자가 "한참 0이다가 거래되면 갱신" 원하는 동작.
+                    // 거래대금 0이지만 전일종가 있음. 주식은 price=0 + prev_close=pc로 fallback 표시.
+                    // ETF는 prev_close 필드 없음 → price=pc로 박아 종가 표시.
+                    // 핵심: fetched에 등록하지 않음 → retry worker가 거래 발생할 때까지 60초 cycle로 재시도.
                     stats.emit_pc_only.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    let _ = tx.send(WsMessage::StockTick(StockTick {
-                        code: code.clone(), name,
-                        price: 0.0,
-                        volume: 0,
-                        cum_volume: 0,
-                        timestamp: now, is_initial: true,
-                        high: None, low: None,
-                        prev_close: Some(pc),
-                        last_trade_volume: None,
-                        trade_side: None,
-                        halted: is_halted(code),
-                        upper_limit: if uplmt > 0.0 { Some(uplmt) } else { None },
-                        lower_limit: if dnlmt > 0.0 { Some(dnlmt) } else { None },
-                        vi_active: is_vi_active(code),
-                        warning: is_warning(code),
-                        liquidation: is_liquidation(code),
-                        abnormal_rise,
-                        low_liquidity,
-                        under_management: is_under_management(code),
-                    })).await;
+                    if is_etf {
+                        let _ = tx.send(WsMessage::EtfTick(EtfTick {
+                            code: code.clone(), name,
+                            price: pc,  // 전일종가를 참고 가격으로
+                            nav: 0.0,
+                            spread_bp: 0.0,
+                            spread_bid_bp: 0.0,
+                            spread_ask_bp: 0.0,
+                            volume: 0,
+                            timestamp: now,
+                            last_trade_volume: None,
+                            trade_side: None,
+                        })).await;
+                    } else {
+                        let _ = tx.send(WsMessage::StockTick(StockTick {
+                            code: code.clone(), name,
+                            price: 0.0,
+                            volume: 0,
+                            cum_volume: 0,
+                            timestamp: now, is_initial: true,
+                            high: None, low: None,
+                            prev_close: Some(pc),
+                            last_trade_volume: None,
+                            trade_side: None,
+                            halted: is_halted(code),
+                            upper_limit: if uplmt > 0.0 { Some(uplmt) } else { None },
+                            lower_limit: if dnlmt > 0.0 { Some(dnlmt) } else { None },
+                            vi_active: is_vi_active(code),
+                            warning: is_warning(code),
+                            liquidation: is_liquidation(code),
+                            abnormal_rise,
+                            low_liquidity,
+                            under_management: is_under_management(code),
+                        })).await;
+                    }
                     if let Some(fmap) = failed {
                         let prev = fmap.get(code).map(|e| e.attempt_count).unwrap_or(0);
                         fmap.insert(code.clone(), FailedT1102 {

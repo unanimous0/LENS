@@ -99,6 +99,11 @@ struct MasterShared {
     /// 사용자가 ETF 페이지 진입 시 가격이 이미 fetched에 채워져 있어 즉시 표시.
     /// (ordered_stock_codes와 중복 코드는 자동 제외)
     etf_pdf_extra_codes: Vec<String>,
+    /// ETF 코드 set — `/api/etfs/pdf-all` 응답의 items key. t1102 emit 시
+    /// 분기 판단용 (ETF면 EtfTick, 아니면 StockTick). 평일 LS WS attach되면 S3_/I5_
+    /// 스트림이 자동 분기하지만, t1102 fetch 단독 시점(휴장/시작 직후)에도 정확히
+    /// etfTicks store에 들어가도록.
+    etf_codes: HashSet<String>,
 }
 
 /// 앱 공유 상태. 내부 변이 필드는 전부 Arc로 감싸 Clone 비용 최소화.
@@ -227,7 +232,7 @@ async fn main() {
     // ETF PDF extra 종목 — backend가 미가동이면 빈 Vec, 그 외엔 ETF + PDF stocks union의
     // master 미포함 코드만 추출해서 백그라운드 t1102 sweep 대상에 추가.
     let already_in_master: HashSet<String> = lm.stock_codes.clone();
-    let etf_pdf_extra_codes = load_etf_pdf_extra_codes(&already_in_master).await;
+    let (etf_pdf_extra_codes, etf_codes) = load_etf_pdf_extra_codes(&already_in_master).await;
 
     let shared = Arc::new(MasterShared {
         master_names: lm.names,
@@ -238,6 +243,7 @@ async fn main() {
         ordered_stock_codes: lm.ordered_stocks,
         ordered_front_futures: lm.ordered_front_futures,
         etf_pdf_extra_codes,
+        etf_codes,
     });
 
     let stats = Arc::new(Stats::default());
@@ -582,6 +588,7 @@ fn spawn_feed(
                 fetched_stocks.clone(),
                 failed_stocks.clone(),
                 shared.etf_pdf_extra_codes.clone(),
+                shared.etf_codes.clone(),
             );
             tokio::spawn(async move { feed.run(tx, sub_rx, cancel_c).await })
         }
@@ -840,7 +847,7 @@ fn load_futures_master() -> LoadedMaster {
 ///
 /// backend 미가동 / 응답 실패 시 빈 Vec 반환 (graceful degradation — fixed 마스터 250개로 폴백).
 /// 코드 형식 정규화: 'CASH' / 9자리 선물코드(KA*, KAM*) 제외, 6자리 영숫자만.
-async fn load_etf_pdf_extra_codes(already_in_master: &HashSet<String>) -> Vec<String> {
+async fn load_etf_pdf_extra_codes(already_in_master: &HashSet<String>) -> (Vec<String>, HashSet<String>) {
     let url = std::env::var("BACKEND_URL")
         .unwrap_or_else(|_| "http://localhost:8100".to_string());
     let endpoint = format!("{url}/api/etfs/pdf-all");
@@ -854,22 +861,23 @@ async fn load_etf_pdf_extra_codes(already_in_master: &HashSet<String>) -> Vec<St
         Ok(r) => r,
         Err(e) => {
             warn!("ETF PDF master fetch skipped — backend unreachable ({e}). 마스터 fallback.");
-            return Vec::new();
+            return (Vec::new(), HashSet::new());
         }
     };
     if !resp.status().is_success() {
         warn!("ETF PDF master fetch failed: status={} → fallback", resp.status());
-        return Vec::new();
+        return (Vec::new(), HashSet::new());
     }
     let body: serde_json::Value = match resp.json().await {
         Ok(v) => v,
         Err(e) => {
             warn!("ETF PDF master JSON parse failed: {e} → fallback");
-            return Vec::new();
+            return (Vec::new(), HashSet::new());
         }
     };
 
     let mut union: HashSet<String> = HashSet::new();
+    let mut etf_codes: HashSet<String> = HashSet::new();  // ETF 자체 코드만 따로 보존
     let mut etf_count = 0usize;
     let mut stock_count = 0usize;
     if let Some(items) = body.get("items").and_then(|v| v.as_object()) {
@@ -877,6 +885,7 @@ async fn load_etf_pdf_extra_codes(already_in_master: &HashSet<String>) -> Vec<St
             // ETF 자체 코드 (6자리 영숫자만 통과)
             if is_six_alnum(etf_code) {
                 union.insert(etf_code.clone());
+                etf_codes.insert(etf_code.clone());
                 etf_count += 1;
             }
             if let Some(stocks) = etf_obj.get("stocks").and_then(|v| v.as_array()) {
@@ -898,10 +907,10 @@ async fn load_etf_pdf_extra_codes(already_in_master: &HashSet<String>) -> Vec<St
         .collect();
 
     info!(
-        "ETF PDF master loaded: {etf_count} ETFs, {stock_count} PDF rows → {} extra codes (마스터 미포함)",
-        extra.len()
+        "ETF PDF master loaded: {etf_count} ETFs ({} unique codes), {stock_count} PDF rows → {} extra codes (마스터 미포함)",
+        etf_codes.len(), extra.len()
     );
-    extra
+    (extra, etf_codes)
 }
 
 /// 6자리 ASCII 영숫자 코드인지 (KRX 종목 표준 형식). 'CASH'/9자리 선물코드 등 배제.

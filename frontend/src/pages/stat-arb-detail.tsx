@@ -45,14 +45,12 @@ export function StatArbDetailPage() {
   usePageStockSubscriptions(subCodes)
 
   // 실시간 tick lookup — S:주식, E:ETF (지수 'I:'는 주식과 동일 처리, F:는 향후).
-  // ETF는 평일 장중 LS S3_/I5_ 스트림으로 etfTicks에 들어가지만, 장외/휴장 시
-  // t1102 initial fetch가 ETF도 StockTick으로 emit해서 stockTicks에 들어감.
-  // → ETF는 etfTicks 우선, 없으면 stockTicks fallback.
+  // realtime/ls_rest.rs가 t1102 시점부터 ETF는 EtfTick으로 분기 emit → etfTicks에 안전하게 들어감.
   const leftTick = useMarketStore((s) =>
-    leftType === 'E' ? s.etfTicks[leftCode] ?? s.stockTicks[leftCode] : s.stockTicks[leftCode]
+    leftType === 'E' ? s.etfTicks[leftCode] : s.stockTicks[leftCode]
   )
   const rightTick = useMarketStore((s) =>
-    rightType === 'E' ? s.etfTicks[rightCode] ?? s.stockTicks[rightCode] : s.stockTicks[rightCode]
+    rightType === 'E' ? s.etfTicks[rightCode] : s.stockTicks[rightCode]
   )
 
   // 대여요율 1회 로딩 (PnL 시뮬용)

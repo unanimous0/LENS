@@ -109,6 +109,10 @@ pub struct LsApiFeed {
     /// WS subscribe는 안 함 (KOSDAQ 분류 없어 S3_/K3_ 잘못 보낼 위험). 사용자가 ETF
     /// 페이지 진입 시 이미 fetched에 가격이 있어 SubscribeStocks 핸들러가 skip.
     pub etf_pdf_extra_codes: Vec<String>,
+    /// ETF 코드 set — t1102 emit 시 ETF면 EtfTick으로 분기 (아니면 StockTick).
+    /// 평일 LS WS S3_/I5_ 스트림이 와도 분기 동일하지만, 휴장·시작 직후 t1102 단독
+    /// 시점에도 정확히 etfTicks store에 들어가게.
+    pub etf_codes: Arc<HashSet<String>>,
 }
 
 impl LsApiFeed {
@@ -126,6 +130,7 @@ impl LsApiFeed {
         fetched_stocks: Arc<DashMap<String, ()>>,
         failed_stocks: Arc<DashMap<String, super::ls_rest::FailedT1102>>,
         etf_pdf_extra_codes: Vec<String>,
+        etf_codes: HashSet<String>,
     ) -> Self {
         let now = now_us();
         Self {
@@ -145,6 +150,7 @@ impl LsApiFeed {
             fetched_stocks,
             failed_stocks,
             etf_pdf_extra_codes,
+            etf_codes: Arc::new(etf_codes),
         }
     }
 }
@@ -177,9 +183,10 @@ impl MarketFeed for LsApiFeed {
             let stats = self.stats.clone();
             let fetched = self.fetched_stocks.clone();
             let failed = self.failed_stocks.clone();
+            let etf_codes_c = self.etf_codes.clone();
             tokio::spawn(async move {
                 super::ls_rest::fetch_initial_prices(
-                    &ak, &as_, &all_subs, &n, &sc, &f2s, &tx2, &cancel2, &stats, Some(&fetched), Some(&failed),
+                    &ak, &as_, &all_subs, &n, &sc, &f2s, &tx2, &cancel2, &stats, Some(&fetched), Some(&failed), Some(&etf_codes_c),
                 ).await;
             });
         }
@@ -198,6 +205,7 @@ impl MarketFeed for LsApiFeed {
             let stats = self.stats.clone();
             let fetched = self.fetched_stocks.clone();
             let failed = self.failed_stocks.clone();
+            let etf_codes_c = self.etf_codes.clone();
             tokio::spawn(async move {
                 // fixed sweep이 어느 정도 진행될 때까지 대기 (5초). 시작 시 토큰 fetch 경합 회피.
                 tokio::select! {
@@ -213,7 +221,7 @@ impl MarketFeed for LsApiFeed {
                 let names_h: HashMap<String, String> = (*n).clone();
                 super::ls_rest::fetch_stocks_initial(
                     &token, &extra, &names_h, &tx2, &cancel2, &stats,
-                    Some(&fetched), Some(&failed),
+                    Some(&fetched), Some(&failed), Some(&etf_codes_c),
                 ).await;
                 tracing::info!("ETF PDF sweep done");
             });
@@ -231,6 +239,7 @@ impl MarketFeed for LsApiFeed {
             let stats_w = self.stats.clone();
             let fetched = self.fetched_stocks.clone();
             let failed = self.failed_stocks.clone();
+            let etf_codes_w = self.etf_codes.clone();
             tokio::spawn(async move {
                 use std::time::Duration;
                 // 초기 fetch가 어느 정도 끝날 때까지 대기 (12분 내외).
@@ -256,7 +265,7 @@ impl MarketFeed for LsApiFeed {
                     let names_h: HashMap<String, String> = (*n).clone();
                     super::ls_rest::fetch_stocks_initial(
                         &token, &codes, &names_h, &tx_w, &cancel_w, &stats_w,
-                        Some(&fetched), Some(&failed),
+                        Some(&fetched), Some(&failed), Some(&etf_codes_w),
                     ).await;
                     let after = failed.len();
                     let recovered = before.saturating_sub(after);
@@ -328,6 +337,7 @@ impl MarketFeed for LsApiFeed {
             let stats = self.stats.clone();
             let fetched = self.fetched_stocks.clone();
             let failed = self.failed_stocks.clone();
+            let etf_codes_c = self.etf_codes.clone();
             tokio::spawn(async move {
                 loop {
                     let delay = next_daily_refresh_delay();
@@ -343,7 +353,7 @@ impl MarketFeed for LsApiFeed {
                     fetched.clear();  // 어제 캐시 stale → 비우고 처음부터
                     failed.clear();   // 새 일자 시작이라 이전 실패 list도 무효
                     super::ls_rest::fetch_initial_prices(
-                        &ak, &as_, &all_subs, &n, &sc, &f2s, &tx2, &cancel2, &stats, Some(&fetched), Some(&failed),
+                        &ak, &as_, &all_subs, &n, &sc, &f2s, &tx2, &cancel2, &stats, Some(&fetched), Some(&failed), Some(&etf_codes_c),
                     ).await;
                 }
             });
@@ -456,6 +466,8 @@ impl MarketFeed for LsApiFeed {
         // SubscribeStocks 핸들러용 fetched 캐시 (페이지 재진입 시 풀 재fetch 회피).
         let fetched_stocks = self.fetched_stocks.clone();
         let failed_stocks = self.failed_stocks.clone();
+        // ETF 분기용 — SubscribeStocks 동적 fetch와 PrioritizeStocks가 사용.
+        let etf_codes_run = self.etf_codes.clone();
         let mut current_inav: HashMap<String, u32> = HashMap::new();
 
         // 현재 활성화된 선물 코드 셋 (정렬된 키) — 같은 셋 재구독 요청 시 skip.
@@ -561,13 +573,14 @@ impl MarketFeed for LsApiFeed {
                                 let fetched = fetched_stocks.clone();
                                 let failed = failed_stocks.clone();
                                 let added_for_fetch = newly_added.clone();
+                                let etf_codes_c = etf_codes_run.clone();
                                 tokio::spawn(async move {
                                     let token = match super::ls_rest::get_or_fetch_token(&ak, &as_).await {
                                         Ok(t) => t,
                                         Err(e) => { warn!("SubscribeStocks t1102 token fail: {e}"); return; }
                                     };
                                     info!("SubscribeStocks t1102 fetch: {} codes (캐시 스킵 적용)", added_for_fetch.len());
-                                    super::ls_rest::fetch_stocks_initial(&token, &added_for_fetch, &n, &tx2, &cancel2, &stats2, Some(&fetched), Some(&failed)).await;
+                                    super::ls_rest::fetch_stocks_initial(&token, &added_for_fetch, &n, &tx2, &cancel2, &stats2, Some(&fetched), Some(&failed), Some(&etf_codes_c)).await;
                                 });
                             }
                         }
@@ -623,6 +636,7 @@ impl MarketFeed for LsApiFeed {
                             let stats2 = stats.clone();
                             let fetched = fetched_stocks.clone();
                             let failed = failed_stocks.clone();
+                            let etf_codes_c = etf_codes_run.clone();
                             tokio::spawn(async move {
                                 let token = match super::ls_rest::get_or_fetch_token(&ak, &as_).await {
                                     Ok(t) => t,
@@ -630,7 +644,7 @@ impl MarketFeed for LsApiFeed {
                                 };
                                 super::ls_rest::fetch_stocks_initial(
                                     &token, &to_fetch, &n, &tx2, &cancel2, &stats2,
-                                    Some(&fetched), Some(&failed),
+                                    Some(&fetched), Some(&failed), Some(&etf_codes_c),
                                 ).await;
                             });
                         }
