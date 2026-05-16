@@ -337,26 +337,32 @@ POST   /api/groups                     사용자 정의 그룹
 
 - **Phase 1** — 인프라 ✅ (PR1)
 - **Phase 2** — 통계 엔진 ✅ (PR2~10): PG batch + 증분 갱신 + 1:1 발굴 + 도메인 그룹 + cron + 페어 상세 API + timeframe spectrum
-- **Phase 3** — 발굴 화면 (진행 중)
+- **Phase 3** — 발굴 화면 ✅
   - PR11 ✅ backend proxy + 페어 테이블 v0
-  - **PR12 🔜 페어 상세 페이지** — 다음. KPI/Timeframe 테이블/스프레드·z 차트/히스토그램
-  - PR13 화면 보강 (정렬/검색/UX/즐겨찾기)
-- **Phase 4** — 보조 데이터
-  - PR14 대여요율 입력 + CSV import → 스크리너 컬럼 통합
-  - PR15 통합 PnL 시뮬레이터 (통계차익 + 대여 + 매도차 레이어)
-- **Phase 5** — 포지션 추적
-  - PR16 SQLite 스키마 + 포지션 CRUD + 등록 폼 (페어 상세에서 prefill)
-  - PR17 포지션 리스트 + 자동 라벨링 + z 산점도
-  - PR18 포지션 상세 (차트 + leg + 통계 변화 + 시그널)
-  - PR19 청산 기록 + 확정 PnL
+  - PR12 ✅ 페어 상세 페이지 (KPI/Timeframe 테이블/스프레드·z 차트/히스토그램, lightweight-charts)
+  - PR13 ✅ 화면 보강 (정렬/검색/tooltip)
+- **Phase 4** — 보조 데이터 ✅
+  - PR14 ✅ 대여요율 입력 + CSV import → 스크리너 컬럼 통합 (`/stat-arb/loan-rates` sub-tab)
+  - PR15a ✅ PnL 시뮬레이터 — 통계차익 + 대여 레이어
+  - PR15b ✅ 페어 상세에 실시간 가격/spread/z + 시뮬레이터 매수가 자동 디폴트
+    - 매도차(베이시스) 레이어는 미구현 — 통계차익 페어 대상이 주식/ETF만이라 현 단계 불필요.
+      선물 페어 발굴 추가 시 별 PR.
+- **Phase 5** — 포지션 추적 ✅
+  - PR16 ✅ SQLite 스키마 (positions/legs/loans/snapshots) + CRUD + 등록 모달 (페어 상세에서 prefill)
+  - PR17 ✅ 포지션 리스트 + 자동 라벨링 (수렴/발산/stale/청산권장, 부호 반전도 청산권장) + z 산점도 (SVG)
+  - PR18 ✅ 포지션 상세 — 진입 마커 차트 + 실시간 leg PnL + 통계량 변화 + 시그널(예상 청산일) + 메모/라벨 PATCH
+  - PR19 ✅ 청산 기록 — leg.exit_price + loans.ended_at + status='closed'. partial close 미지원
 - **Phase 6** — 후속 정리
   - PR20 `lens-common` workspace crate (worktree1 머지 후, realtime + stat-arb-engine 공유 모듈)
 
 ### 향후 후보 (스코프 외 — 우선순위 별도)
+- ETF 실시간 구독 활성화 — 현재 realtime auto-subscribe는 273 stocks + 273 futures만. 통계차익 페어 70%가 ETF인데 ETF 페이지 미마운트 상태에선 etfTicks 비어 있음 → 페어 상세에서 ETF leg "—" 표시. realtime의 /subscribe 핸들러가 ETF 코드를 LS API S3_ 등에 어떻게 라우팅하는지 확인 후 결정 (장중 검증).
+- **PnL 시뮬레이터 UX 개선** — 라벨/순서/설명 단순화. 데이터 없는 토요일에는 추측 디자인이라 평일 장중 보고 평가 후 정비.
 - M:N 발굴 — Sparse CCA + Johansen + Sparse PCA cluster
 - 발굴 자체에 다중 timeframe (현재는 일봉 + 상세만 다중)
 - 수동 조립 모드 (`POST /pairs/validate`)
 - realtime 스냅샷 동기화 (현재는 PG 분봉만)
+- 매도차(베이시스) 레이어 — 선물 페어 발굴 추가 시 PnL 시뮬에 합산
 
 ## 11. 통계 알고리즘 노트
 
