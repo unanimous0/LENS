@@ -449,6 +449,10 @@ impl MarketFeed for LsApiFeed {
         // 만료된 warm-down 타이머가 self-signal로 보내는 채널 (코드 리스트).
         let (drop_tx, mut drop_rx) = mpsc::unbounded_channel::<Vec<String>>();
 
+        // iNAV 그룹도 동일 패턴 (I5_ 스트림). stocks와 별도 채널·맵.
+        let mut pending_inav_drops: HashMap<String, tokio::task::JoinHandle<()>> = HashMap::new();
+        let (drop_inav_tx, mut drop_inav_rx) = mpsc::unbounded_channel::<Vec<String>>();
+
         // SubscribeStocks 핸들러용 fetched 캐시 (페이지 재진입 시 풀 재fetch 회피).
         let fetched_stocks = self.fetched_stocks.clone();
         let failed_stocks = self.failed_stocks.clone();
@@ -632,10 +636,18 @@ impl MarketFeed for LsApiFeed {
                         }
                         Some(SubCommand::SubscribeInav(codes)) => {
                             let mut newly_added: Vec<String> = Vec::new();
+                            let mut warm_resumed: usize = 0;
                             for c in &codes {
+                                let was_pending = pending_inav_drops.remove(c).map(|h| { h.abort(); true }).unwrap_or(false);
                                 let count = current_inav.entry(c.clone()).or_insert(0);
+                                let was_zero = *count == 0;
                                 *count += 1;
-                                if *count == 1 { newly_added.push(c.clone()); }
+                                if was_zero {
+                                    if was_pending { warm_resumed += 1; } else { newly_added.push(c.clone()); }
+                                }
+                            }
+                            if warm_resumed > 0 {
+                                info!("SubscribeInav: {} warm-down resumed (no LS reconnect)", warm_resumed);
                             }
                             if newly_added.is_empty() {
                                 info!("SubscribeInav: +{} (refcount only)", codes.len());
@@ -657,33 +669,27 @@ impl MarketFeed for LsApiFeed {
                             );
                         }
                         Some(SubCommand::UnsubscribeInav(codes)) => {
-                            let mut actually_dropped: Vec<String> = Vec::new();
+                            // ref-count -1. 0 도달 코드는 warm-down 타이머 등록 후 만료 시 drop_inav_rx로 처리.
+                            let mut to_warm: Vec<String> = Vec::new();
                             for c in &codes {
                                 if let Some(count) = current_inav.get_mut(c) {
                                     *count = count.saturating_sub(1);
-                                    if *count == 0 { actually_dropped.push(c.clone()); }
+                                    if *count == 0 { to_warm.push(c.clone()); }
                                 }
                             }
-                            for c in &actually_dropped { current_inav.remove(c); }
-                            if actually_dropped.is_empty() { continue; }
-
-                            inav_cancel.cancel();
-                            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-
-                            if current_inav.is_empty() {
-                                info!("UnsubscribeInav: -{} (refcount→0 for {}), set empty", codes.len(), actually_dropped.len());
-                                inav_cancel = CancellationToken::new();
-                            } else {
-                                let inav_subs: Vec<(String, String)> = current_inav.keys()
-                                    .map(|code| ("I5_".to_string(), code.clone()))
-                                    .collect();
-                                info!("UnsubscribeInav: -{} (refcount→0 for {}, {} remain)", codes.len(), actually_dropped.len(), current_inav.len());
-                                inav_cancel = CancellationToken::new();
-                                spawn_inav_connections(
-                                    &inav_subs, &app_key, &app_secret, &names, &stock_codes,
-                                    &futures_to_spot, &tx, &cancel, &inav_cancel, &stats, &last_data_us, &last_subscribe_us, &last_data_inav,
-                                );
+                            if to_warm.is_empty() { continue; }
+                            for code in &to_warm {
+                                if let Some(h) = pending_inav_drops.remove(code) { h.abort(); }
+                                let code_clone = code.clone();
+                                let drop_tx_clone = drop_inav_tx.clone();
+                                let warm = warm_down_secs;
+                                let handle = tokio::spawn(async move {
+                                    tokio::time::sleep(std::time::Duration::from_secs(warm)).await;
+                                    let _ = drop_tx_clone.send(vec![code_clone]);
+                                });
+                                pending_inav_drops.insert(code.clone(), handle);
                             }
+                            info!("UnsubscribeInav: -{} codes scheduled warm-down ({}s, {} pending total)", to_warm.len(), warm_down_secs, pending_inav_drops.len());
                         }
                         Some(SubCommand::SubscribeOrderbook { codes }) => {
                             // 기존 호가 연결 종료
@@ -703,6 +709,34 @@ impl MarketFeed for LsApiFeed {
                             ob_cancel.cancel();
                         }
                         None => break,
+                    }
+                }
+                Some(expired) = drop_inav_rx.recv() => {
+                    // iNAV warm-down 만료 — stocks와 동일 패턴
+                    let mut actually_dropped: Vec<String> = Vec::new();
+                    for c in &expired {
+                        pending_inav_drops.remove(c);
+                        if current_inav.get(c).copied().unwrap_or(0) == 0 {
+                            current_inav.remove(c);
+                            actually_dropped.push(c.clone());
+                        }
+                    }
+                    if actually_dropped.is_empty() { continue; }
+                    inav_cancel.cancel();
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    if current_inav.is_empty() {
+                        info!("Inav warm-down expired: -{} codes (set empty)", actually_dropped.len());
+                        inav_cancel = CancellationToken::new();
+                    } else {
+                        let inav_subs: Vec<(String, String)> = current_inav.keys()
+                            .map(|code| ("I5_".to_string(), code.clone()))
+                            .collect();
+                        info!("Inav warm-down expired: -{} codes ({} unique remain)", actually_dropped.len(), current_inav.len());
+                        inav_cancel = CancellationToken::new();
+                        spawn_inav_connections(
+                            &inav_subs, &app_key, &app_secret, &names, &stock_codes,
+                            &futures_to_spot, &tx, &cancel, &inav_cancel, &stats, &last_data_us, &last_subscribe_us, &last_data_inav,
+                        );
                     }
                 }
                 Some(expired) = drop_rx.recv() => {
@@ -744,8 +778,9 @@ impl MarketFeed for LsApiFeed {
                     ob_cancel.cancel();
                     stocks_cancel.cancel();
                     inav_cancel.cancel();
-                    // 모든 pending warm-down 타이머 정리
+                    // 모든 pending warm-down 타이머 정리 (stocks + inav)
                     for (_, h) in pending_drops.drain() { h.abort(); }
+                    for (_, h) in pending_inav_drops.drain() { h.abort(); }
                     return;
                 }
             }
