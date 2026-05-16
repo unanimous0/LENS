@@ -437,6 +437,18 @@ impl MarketFeed for LsApiFeed {
         // 동적 ETF iNAV 그룹 (I5_) — 거래소 발행 NAV.
         let mut inav_cancel = CancellationToken::new();
 
+        // Warm-down — UnsubscribeStocks로 ref-count가 0 도달해도 즉시 LS WS를 떼지 않고
+        // N초 대기. 그 사이 같은 코드 재구독 시 LS 연결 유지 (재호출 비용 회피).
+        // 페어 상세 ↔ 페어 리스트 같은 짧은 왕복, 멀티탭 시나리오에서 churn 방지.
+        let warm_down_secs: u64 = std::env::var("REALTIME_WARM_DOWN_SECS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(60);
+        info!("Stocks subscription warm-down: {}s (env REALTIME_WARM_DOWN_SECS to override)", warm_down_secs);
+        let mut pending_drops: HashMap<String, tokio::task::JoinHandle<()>> = HashMap::new();
+        // 만료된 warm-down 타이머가 self-signal로 보내는 채널 (코드 리스트).
+        let (drop_tx, mut drop_rx) = mpsc::unbounded_channel::<Vec<String>>();
+
         // SubscribeStocks 핸들러용 fetched 캐시 (페이지 재진입 시 풀 재fetch 회피).
         let fetched_stocks = self.fetched_stocks.clone();
         let failed_stocks = self.failed_stocks.clone();
@@ -488,11 +500,26 @@ impl MarketFeed for LsApiFeed {
                         }
                         Some(SubCommand::SubscribeStocks(codes)) => {
                             // ref-count: 처음 보는 코드만 LS WS subscribe 신규 spawn 트리거.
+                            // warm-down 중인 코드(ref==0이지만 pending_drops에 타이머 있음)는
+                            // 타이머만 취소하면 LS 연결 그대로 → reconnect 불필요.
                             let mut newly_added: Vec<String> = Vec::new();
+                            let mut warm_resumed: usize = 0;
                             for c in &codes {
+                                let was_pending = pending_drops.remove(c).map(|h| { h.abort(); true }).unwrap_or(false);
                                 let count = current_stocks.entry(c.clone()).or_insert(0);
+                                let was_zero = *count == 0;
                                 *count += 1;
-                                if *count == 1 { newly_added.push(c.clone()); }
+                                if was_zero {
+                                    if was_pending {
+                                        // LS WS는 살아있음. count만 0→1 복귀.
+                                        warm_resumed += 1;
+                                    } else {
+                                        newly_added.push(c.clone());
+                                    }
+                                }
+                            }
+                            if warm_resumed > 0 {
+                                info!("SubscribeStocks: {} warm-down resumed (no LS reconnect)", warm_resumed);
                             }
                             if newly_added.is_empty() {
                                 info!("SubscribeStocks: +{} (refcount only, no new code)", codes.len());
@@ -541,43 +568,35 @@ impl MarketFeed for LsApiFeed {
                             }
                         }
                         Some(SubCommand::UnsubscribeStocks(codes)) => {
-                            // ref-count: 0 도달 시만 실제로 LS WS unsubscribe (코드를 keys()에서 제거).
-                            // 다른 페이지가 같은 코드 보고 있으면 그대로 유지.
-                            let mut actually_dropped: Vec<String> = Vec::new();
+                            // ref-count -1. 0 도달 코드는 *즉시 떼지 않고* warm-down 타이머 등록.
+                            // 타이머 만료 시 drop_rx로 self-signal → 그제야 LS WS 해제.
+                            let mut to_warm: Vec<String> = Vec::new();
                             for c in &codes {
                                 if let Some(count) = current_stocks.get_mut(c) {
                                     *count = count.saturating_sub(1);
                                     if *count == 0 {
-                                        actually_dropped.push(c.clone());
+                                        to_warm.push(c.clone());
                                     }
                                 }
                             }
-                            for c in &actually_dropped { current_stocks.remove(c); }
-                            if actually_dropped.is_empty() {
-                                // 다른 구독자가 남아있어 실제 코드는 안 빠짐.
+                            if to_warm.is_empty() {
+                                // 다른 구독자가 남아있어 ref==0 도달한 코드 없음
                                 continue;
                             }
-
-                            stocks_cancel.cancel();
-                            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-
-                            if current_stocks.is_empty() {
-                                info!("UnsubscribeStocks: -{} (refcount→0 for {}), set empty", codes.len(), actually_dropped.len());
-                                stocks_cancel = CancellationToken::new();
-                            } else {
-                                let stocks_subs: Vec<(String, String)> = current_stocks.keys()
-                                    .flat_map(|code| {
-                                        let tr = if kosdaq_codes.contains(code) { "K3_" } else { "S3_" };
-                                        [(tr.to_string(), code.clone()), ("VI_".to_string(), code.clone())]
-                                    })
-                                    .collect();
-                                info!("UnsubscribeStocks: -{} (refcount→0 for {}, {} unique remain)", codes.len(), actually_dropped.len(), current_stocks.len());
-                                stocks_cancel = CancellationToken::new();
-                                spawn_stocks_connections(
-                                    &stocks_subs, &app_key, &app_secret, &names, &stock_codes,
-                                    &futures_to_spot, &tx, &cancel, &stocks_cancel, &stats, &last_data_us, &last_subscribe_us, &last_data_stocks,
-                                );
+                            for code in &to_warm {
+                                // 혹시 이전 타이머 잔존하면 (이상 케이스) 취소 후 새로 등록
+                                if let Some(h) = pending_drops.remove(code) { h.abort(); }
+                                let code_clone = code.clone();
+                                let drop_tx_clone = drop_tx.clone();
+                                let warm = warm_down_secs;
+                                let handle = tokio::spawn(async move {
+                                    tokio::time::sleep(std::time::Duration::from_secs(warm)).await;
+                                    let _ = drop_tx_clone.send(vec![code_clone]);
+                                });
+                                pending_drops.insert(code.clone(), handle);
                             }
+                            info!("UnsubscribeStocks: -{} codes scheduled warm-down ({}s, {} pending total)", to_warm.len(), warm_down_secs, pending_drops.len());
+                            // LS WS reconnect 안 함 — 타이머 만료 후 drop_rx 분기에서 처리.
                         }
                         Some(SubCommand::PrioritizeStocks(codes)) => {
                             // ETF 클릭 우선화 — fetched 안 된 코드를 즉시 별도 task로 fetch.
@@ -686,11 +705,47 @@ impl MarketFeed for LsApiFeed {
                         None => break,
                     }
                 }
+                Some(expired) = drop_rx.recv() => {
+                    // Warm-down 만료 — pending_drops에서 제거하고 ref가 여전히 0이면 실제 LS WS 해제.
+                    // 만료 직전 SubscribeStocks가 들어와 abort된 타이머는 여기까지 안 옴.
+                    let mut actually_dropped: Vec<String> = Vec::new();
+                    for c in &expired {
+                        pending_drops.remove(c);
+                        if current_stocks.get(c).copied().unwrap_or(0) == 0 {
+                            current_stocks.remove(c);
+                            actually_dropped.push(c.clone());
+                        }
+                    }
+                    if actually_dropped.is_empty() {
+                        continue;
+                    }
+                    stocks_cancel.cancel();
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    if current_stocks.is_empty() {
+                        info!("Warm-down expired: -{} codes (set empty)", actually_dropped.len());
+                        stocks_cancel = CancellationToken::new();
+                    } else {
+                        let stocks_subs: Vec<(String, String)> = current_stocks.keys()
+                            .flat_map(|code| {
+                                let tr = if kosdaq_codes.contains(code) { "K3_" } else { "S3_" };
+                                [(tr.to_string(), code.clone()), ("VI_".to_string(), code.clone())]
+                            })
+                            .collect();
+                        info!("Warm-down expired: -{} codes ({} unique remain)", actually_dropped.len(), current_stocks.len());
+                        stocks_cancel = CancellationToken::new();
+                        spawn_stocks_connections(
+                            &stocks_subs, &app_key, &app_secret, &names, &stock_codes,
+                            &futures_to_spot, &tx, &cancel, &stocks_cancel, &stats, &last_data_us, &last_subscribe_us, &last_data_stocks,
+                        );
+                    }
+                }
                 _ = cancel.cancelled() => {
                     futures_cancel.cancel();
                     ob_cancel.cancel();
                     stocks_cancel.cancel();
                     inav_cancel.cancel();
+                    // 모든 pending warm-down 타이머 정리
+                    for (_, h) in pending_drops.drain() { h.abort(); }
                     return;
                 }
             }
