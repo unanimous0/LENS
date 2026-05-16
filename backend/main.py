@@ -33,3 +33,13 @@ for module_name in ("arbitrage", "borrowing", "dividends", "etfs", "health", "le
         app.include_router(module.router, prefix="/api")
     except Exception as e:  # noqa: BLE001
         logger.warning("Router '%s' load skipped: %s", module_name, e)
+
+
+@app.on_event("startup")
+async def _sync_permanent_subs_on_startup() -> None:
+    """LENS 시작 시 active 포지션 leg를 realtime의 영구 sub로 동기화."""
+    try:
+        from routers.positions import _sync_realtime
+        await _sync_realtime()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("startup permanent-sub sync skipped: %s", e)

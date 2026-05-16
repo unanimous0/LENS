@@ -335,6 +335,24 @@ async def close(pos_id: str, leg_exits: dict[int, float], note: str | None) -> s
     return await asyncio.to_thread(_close_sync, pos_id, leg_exits, note)
 
 
+def _active_leg_codes_sync() -> list[str]:
+    """활성(open) 포지션의 모든 leg 종목 코드 (중복 제거). realtime 영구 sub용."""
+    with _connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT DISTINCT l.code
+            FROM position_legs l
+            JOIN positions p ON p.id = l.position_id
+            WHERE p.status = 'open'
+            """
+        ).fetchall()
+        return [r["code"] for r in rows]
+
+
+async def active_leg_codes() -> list[str]:
+    return await asyncio.to_thread(_active_leg_codes_sync)
+
+
 # ---------------------------------------------------------------------------
 # Validation helpers (router에서 사용)
 # ---------------------------------------------------------------------------

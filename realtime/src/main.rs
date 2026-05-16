@@ -136,6 +136,10 @@ pub struct AppState {
     /// client_id → 그 client가 잡고 있는 종목 코드 집합 (subscribe-stocks).
     /// WS disconnect 시 자동 cleanup으로 ref-count leak 방지. 헤더(X-LENS-Client-Id) 없으면 추적 안 함.
     pub client_subs: Arc<DashMap<u64, dashmap::DashSet<String>>>,
+    /// Backend가 영구 sub 의도를 표명한 코드 (active 포지션의 leg 등).
+    /// POST /permanent-stocks가 set 전체를 replace. diff로 SubscribeStocks/UnsubscribeStocks 발사.
+    /// 페이지 mount/unmount와 무관하게 ref-count 영구 +1 효과.
+    pub permanent_codes: Arc<StdRwLock<std::collections::HashSet<String>>>,
 }
 
 /// Bridge에서 EtfTick의 0인 필드를 이전 캐시값으로 메우기 위한 stash.
@@ -390,6 +394,7 @@ async fn main() {
         failed_stocks: failed_stocks.clone(),
         next_client_id: Arc::new(AtomicU64::new(1)),
         client_subs: Arc::new(DashMap::new()),
+        permanent_codes: Arc::new(StdRwLock::new(std::collections::HashSet::new())),
     };
 
     // 스냅샷 캐시 stale watcher.
@@ -436,6 +441,7 @@ async fn main() {
         .route("/unsubscribe", post(unsubscribe))
         .route("/subscribe-stocks", post(subscribe_stocks))
         .route("/unsubscribe-stocks", post(unsubscribe_stocks))
+        .route("/permanent-stocks", post(permanent_stocks))
         .route("/prioritize-stocks", post(prioritize_stocks))
         .route("/subscribe-inav", post(subscribe_inav))
         .route("/unsubscribe-inav", post(unsubscribe_inav))
@@ -948,6 +954,43 @@ async fn unsubscribe_stocks(
         .unwrap()
         .send(SubCommand::UnsubscribeStocks(req.codes));
     Json(serde_json::json!({"status": "ok", "unsubscribed": count}))
+}
+
+/// Backend가 영구 sub set을 통째로 replace. 활성 포지션 leg 코드 등.
+/// 현재 set과 diff 계산해서 SubscribeStocks/UnsubscribeStocks 발사 (ref-count + warm-down에 위임).
+/// 페이지 mount/unmount와 무관하게 영구 효과 — client_subs 추적 안 함(헤더 없음).
+async fn permanent_stocks(
+    State(state): State<AppState>,
+    Json(req): Json<SubRequest>,
+) -> Json<serde_json::Value> {
+    use std::collections::HashSet;
+    let new_set: HashSet<String> = req.codes.iter().cloned().collect();
+    // write lock 한 번에 diff + replace — 동시 호출 시 lost-update 방지
+    let (added, removed): (Vec<String>, Vec<String>) = {
+        let mut cur = state.permanent_codes.write().unwrap();
+        let added: Vec<String> = new_set.iter().filter(|c| !cur.contains(*c)).cloned().collect();
+        let removed: Vec<String> = cur.iter().filter(|c| !new_set.contains(*c)).cloned().collect();
+        *cur = new_set.clone();
+        (added, removed)
+    };
+
+    let tx = state.sub_tx.read().unwrap();
+    if !added.is_empty() {
+        let _ = tx.send(SubCommand::SubscribeStocks(added.clone()));
+    }
+    if !removed.is_empty() {
+        let _ = tx.send(SubCommand::UnsubscribeStocks(removed.clone()));
+    }
+    info!(
+        "REST permanent-stocks: set={} (+{} -{})",
+        new_set.len(), added.len(), removed.len()
+    );
+    Json(serde_json::json!({
+        "status": "ok",
+        "total": new_set.len(),
+        "added": added.len(),
+        "removed": removed.len(),
+    }))
 }
 
 /// 우선 fetch — 사용자 ETF 클릭 시 그 PDF 종목들 즉시 보충.
