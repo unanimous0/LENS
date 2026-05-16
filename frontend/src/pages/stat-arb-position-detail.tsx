@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 
 import { ResidualHistogram, SpreadChart, ZScoreChart } from '@/components/stat-arb/charts'
+import { PositionCloseModal } from '@/components/stat-arb/position-close-modal'
 import { usePageSubscriptions } from '@/hooks/usePageSubscriptions'
 import {
   LABEL_META,
@@ -39,6 +40,7 @@ export function StatArbPositionDetailPage() {
   const [savingNote, setSavingNote] = useState(false)
   const [noteDraft, setNoteDraft] = useState('')
   const [labelDraft, setLabelDraft] = useState('')
+  const [closeModalOpen, setCloseModalOpen] = useState(false)
 
   // 포지션 + 페어 상세 병렬 로딩
   useEffect(() => {
@@ -124,27 +126,38 @@ export function StatArbPositionDetailPage() {
       ? rightLeg.entry_price - entryAlpha - entryBeta * leftLeg.entry_price
       : null
 
-  // 정밀 평가손익 — 양쪽 leg 실시간 가격 기반
+  // 정밀 평가손익 — 청산되면 exit_price 우선, 아니면 실시간 가격
+  const isClosed = position.status === 'closed'
+  const leftMarkPrice = leftLeg?.exit_price ?? leftPrice
+  const rightMarkPrice = rightLeg?.exit_price ?? rightPrice
   const leftPnL =
-    leftLeg && leftPrice > 0 ? (leftPrice - leftLeg.entry_price) * leftLeg.side * leftLeg.qty : null
+    leftLeg && leftMarkPrice > 0
+      ? (leftMarkPrice - leftLeg.entry_price) * leftLeg.side * leftLeg.qty
+      : null
   const rightPnL =
-    rightLeg && rightPrice > 0
-      ? (rightPrice - rightLeg.entry_price) * rightLeg.side * rightLeg.qty
+    rightLeg && rightMarkPrice > 0
+      ? (rightMarkPrice - rightLeg.entry_price) * rightLeg.side * rightLeg.qty
       : null
   const markPnL = leftPnL != null && rightPnL != null ? leftPnL + rightPnL : null
   const loanPnL = estimateLoanPnL(position)
   const totalPnL = (markPnL ?? 0) + loanPnL
 
-  // 자동 라벨
+  // 자동 라벨 — closed는 라벨 안 보여줌 (별도 "청산" 뱃지가 명확)
   const halfLife = entry.half_life ?? stat1d?.half_life ?? null
-  const label = deriveLabel(position, currentZ, halfLife)
-  const labelMeta = LABEL_META[label]
+  const label = !isClosed ? deriveLabel(position, currentZ, halfLife) : null
+  const labelMeta = label ? LABEL_META[label] : null
   const regress = regressionPct(position.entry_z, currentZ)
   const days = holdDays(position.opened_at)
 
-  // 예상 청산 도달일 — half-life × log2(|currentZ|/0.3)
+  // 예상 청산 도달일 — half-life × log2(|currentZ|/0.3). closed면 의미 없음.
   let projectedExitDays: number | null = null
-  if (halfLife && halfLife > 0 && currentZ != null && Math.abs(currentZ) > 0.3) {
+  if (
+    !isClosed &&
+    halfLife &&
+    halfLife > 0 &&
+    currentZ != null &&
+    Math.abs(currentZ) > 0.3
+  ) {
     projectedExitDays = halfLife * (Math.log(Math.abs(currentZ) / 0.3) / Math.log(2))
   }
 
@@ -177,13 +190,30 @@ export function StatArbPositionDetailPage() {
           <span className="text-sm font-medium text-t1">
             {detail.left_name} ↔ {detail.right_name}
           </span>
-          <span className={`rounded-sm px-2 py-0.5 text-[10px] ${labelMeta.cls}`}>
-            {labelMeta.ko}
-          </span>
+          {labelMeta && (
+            <span className={`rounded-sm px-2 py-0.5 text-[10px] ${labelMeta.cls}`}>
+              {labelMeta.ko}
+            </span>
+          )}
+          {isClosed && (
+            <span className="rounded-sm bg-t4/15 px-2 py-0.5 text-[10px] text-t3">청산</span>
+          )}
           <span className="text-[10px] text-t4">
             {new Date(position.opened_at).toLocaleString('ko-KR')} 진입 · {days}d 보유
+            {isClosed && position.closed_at && (
+              <> · {new Date(position.closed_at).toLocaleString('ko-KR')} 청산</>
+            )}
           </span>
         </div>
+        {!isClosed && (
+          <button
+            type="button"
+            onClick={() => setCloseModalOpen(true)}
+            className="rounded-sm bg-down/20 px-3 py-1 text-xs text-down hover:bg-down/30"
+          >
+            청산 기록
+          </button>
+        )}
         <span className={`text-sm font-semibold tabular-nums ${pnlCls(totalPnL)}`}>
           {fmtPnL(totalPnL)}
         </span>
@@ -201,9 +231,11 @@ export function StatArbPositionDetailPage() {
         />
         <Kpi label="회귀" value={regress != null ? `${regress.toFixed(0)}%` : '—'} />
         <Kpi
-          label="예상 청산"
+          label={isClosed ? '확정 보유' : '예상 청산'}
           value={
-            projectedExitDays != null
+            isClosed
+              ? `${days}d`
+              : projectedExitDays != null
               ? `${projectedExitDays.toFixed(1)}d 후`
               : Math.abs(currentZ ?? 0) <= 0.3
               ? '도달 (|z|<0.3)'
@@ -274,7 +306,10 @@ export function StatArbPositionDetailPage() {
             <tbody>
               {legs.map((l) => {
                 const tick = l.code === leftCode ? leftTick : rightTick
-                const price = tick?.price ?? 0
+                const livePrice = tick?.price ?? 0
+                // 청산되어 exit_price 있으면 확정값, 아니면 실시간
+                const price = l.exit_price ?? livePrice
+                const isFixed = l.exit_price != null
                 const pnl =
                   price > 0 ? (price - l.entry_price) * l.side * l.qty : null
                 const chg = price > 0 ? ((price - l.entry_price) / l.entry_price) * 100 : null
@@ -293,6 +328,7 @@ export function StatArbPositionDetailPage() {
                     <td className="py-1 text-right text-t2">{l.entry_price.toLocaleString()}</td>
                     <td className="py-1 text-right text-t1">
                       {price > 0 ? price.toLocaleString() : '—'}
+                      {isFixed && <span className="ml-1 text-[10px] text-t4">청산</span>}
                       {chg != null && (
                         <span
                           className={`ml-1 text-[10px] ${
@@ -407,6 +443,17 @@ export function StatArbPositionDetailPage() {
           </label>
         </div>
       </div>
+
+      {/* 청산 모달 */}
+      <PositionCloseModal
+        open={closeModalOpen}
+        onClose={() => setCloseModalOpen(false)}
+        position={position}
+        livePriceByLegId={Object.fromEntries(
+          legs.map((l) => [l.id, l.code === leftCode ? leftPrice : rightPrice])
+        )}
+        onClosed={(updated) => setPosition(updated)}
+      />
     </div>
   )
 }

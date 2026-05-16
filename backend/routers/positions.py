@@ -112,7 +112,7 @@ class NoteUpdate(BaseModel):
 
 @router.patch("/{pos_id}")
 async def patch_position(pos_id: str, body: NoteUpdate) -> dict:
-    """note/label만 부분 업데이트 (PR18). 청산은 PR19에서 별도 endpoint."""
+    """note/label만 부분 업데이트 (PR18). 청산은 별도 endpoint."""
     await _ensure()
     ok = await positions.update_note(pos_id, body.note, body.label)
     if not ok:
@@ -120,4 +120,30 @@ async def patch_position(pos_id: str, body: NoteUpdate) -> dict:
     detail = await positions.get_one(pos_id)
     if not detail:
         raise HTTPException(404, f"position not found after update: {pos_id}")
+    return detail
+
+
+class LegExit(BaseModel):
+    leg_id: int
+    exit_price: float = Field(..., gt=0)
+
+
+class PositionClose(BaseModel):
+    legs: list[LegExit] = Field(..., min_length=1)
+    note: str | None = None
+
+
+@router.post("/{pos_id}/close")
+async def close_position(pos_id: str, body: PositionClose) -> dict:
+    """포지션 청산 — leg별 exit_price 박고 status='closed' 전환.
+    미종료 대여(position_loans)도 ended_at = now로 종료.
+    """
+    await _ensure()
+    leg_exits = {it.leg_id: it.exit_price for it in body.legs}
+    err = await positions.close(pos_id, leg_exits, body.note)
+    if err:
+        raise HTTPException(400, err)
+    detail = await positions.get_one(pos_id)
+    if not detail:
+        raise HTTPException(500, "closed but not retrievable")
     return detail

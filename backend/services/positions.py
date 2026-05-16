@@ -272,6 +272,69 @@ async def update_note(pos_id: str, note: str | None, label: str | None) -> bool:
     return await asyncio.to_thread(_update_note_sync, pos_id, note, label)
 
 
+def _close_sync(pos_id: str, leg_exits: dict[int, float], note: str | None) -> str:
+    """포지션 청산 트랜잭션. leg_exits: {leg_id: exit_price}.
+
+    - position.status='closed', closed_at=now
+    - 각 leg.exit_price 업데이트
+    - 미종료 position_loans.ended_at=now
+    - note 비어있지 않으면 기존 note에 합치지 않고 *덮어쓰기* (단순화)
+
+    반환: 에러 메시지 (성공이면 빈 문자열).
+    """
+    now = _now_ms()
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT id, status FROM positions WHERE id = ?", (pos_id,)
+        ).fetchone()
+        if not row:
+            return f"position not found: {pos_id}"
+        if row["status"] != "open":
+            return f"position already closed: {pos_id}"
+
+        # leg 검증 — 모든 leg가 정확히 한 번 청산 (partial close 미지원: stat-arb-engine.md §2 #11)
+        leg_rows = conn.execute(
+            "SELECT id FROM position_legs WHERE position_id = ?", (pos_id,)
+        ).fetchall()
+        valid_ids = {r["id"] for r in leg_rows}
+        if set(leg_exits.keys()) != valid_ids:
+            return (
+                f"all legs must be closed in one shot (no partial close). "
+                f"expected leg ids {sorted(valid_ids)}, got {sorted(leg_exits.keys())}"
+            )
+
+        # leg.exit_price 업데이트
+        for lid, price in leg_exits.items():
+            conn.execute(
+                "UPDATE position_legs SET exit_price = ? WHERE id = ? AND position_id = ?",
+                (price, lid, pos_id),
+            )
+
+        # 미종료 loans 종료 처리
+        conn.execute(
+            "UPDATE position_loans SET ended_at = ? WHERE position_id = ? AND ended_at IS NULL",
+            (now, pos_id),
+        )
+
+        # positions 헤더
+        if note is not None:
+            conn.execute(
+                "UPDATE positions SET status='closed', closed_at=?, note=? WHERE id=?",
+                (now, note, pos_id),
+            )
+        else:
+            conn.execute(
+                "UPDATE positions SET status='closed', closed_at=? WHERE id=?",
+                (now, pos_id),
+            )
+        conn.commit()
+    return ""
+
+
+async def close(pos_id: str, leg_exits: dict[int, float], note: str | None) -> str:
+    return await asyncio.to_thread(_close_sync, pos_id, leg_exits, note)
+
+
 # ---------------------------------------------------------------------------
 # Validation helpers (router에서 사용)
 # ---------------------------------------------------------------------------
