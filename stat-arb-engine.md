@@ -356,8 +356,8 @@ POST   /api/groups                     사용자 정의 그룹
   - PR20 `lens-common` workspace crate (worktree1 머지 후, realtime + stat-arb-engine 공유 모듈)
 
 ### 향후 후보 (스코프 외 — 우선순위 별도)
-- ETF 실시간 구독 활성화 — 현재 realtime auto-subscribe는 273 stocks + 273 futures만. 통계차익 페어 70%가 ETF인데 ETF 페이지 미마운트 상태에선 etfTicks 비어 있음 → 페어 상세에서 ETF leg "—" 표시. realtime의 /subscribe 핸들러가 ETF 코드를 LS API S3_ 등에 어떻게 라우팅하는지 확인 후 결정 (장중 검증).
-- **PnL 시뮬레이터 UX 개선** — 라벨/순서/설명 단순화. 데이터 없는 토요일에는 추측 디자인이라 평일 장중 보고 평가 후 정비.
+- **PnL 시뮬레이터 UX 개선** — 라벨/순서/설명 단순화. 평일 장중 실데이터 보고 평가 후 정비.
+- **bars.rs 수정주가 컬럼 교체** — 4 라인 (153/432/184/474), §12.8 매핑대로. 페어 재계산 + 분할 종목 페어 정상화 검증.
 - M:N 발굴 — Sparse CCA + Johansen + Sparse PCA cluster
 - 발굴 자체에 다중 timeframe (현재는 일봉 + 상세만 다중)
 - 수동 조립 모드 (`POST /pairs/validate`)
