@@ -4,67 +4,94 @@
 
 ```
 LENS/
-├── frontend/                              # Vite + React
-│   ├── vite.config.ts                     # Vite 설정 (프록시, 경로 별칭)
+├── frontend/                              # Vite + React (port 3100)
+│   ├── vite.config.ts                     # Vite 설정 (/api→8100, /ws→8200)
 │   ├── index.html                         # 엔트리 HTML (Inter + Pretendard)
 │   ├── src/
 │   │   ├── main.tsx                       # React 엔트리
 │   │   ├── App.tsx                        # BrowserRouter + Routes + WebSocket 초기화
 │   │   ├── globals.css                    # 테마 (CSS 변수, Tailwind @theme)
 │   │   ├── lib/utils.ts                   # cn() 유틸리티
-│   │   ├── types/market.ts                # ETFTick, FuturesTick 등 공통 타입
-│   │   ├── stores/marketStore.ts          # Zustand (시세, 네트워크 상태)
-│   │   ├── hooks/useWebSocket.ts          # WebSocket 연결 + 자동 재연결
+│   │   ├── types/market.ts                # ETFTick, FuturesTick, StockTick 등 공통 타입
+│   │   ├── stores/marketStore.ts          # Zustand (시세, 종목 상태 플래그 sticky 머지)
+│   │   ├── hooks/
+│   │   │   ├── useWebSocket.ts            # Rust 8200 WS 연결 + 자동 재연결
+│   │   │   ├── useFeedHealth.ts           # 피드 상태/지연 모니터
+│   │   │   ├── usePageSubscriptions.ts    # ETF 페이지 구독
+│   │   │   ├── usePageStockSubscriptions.ts  # 종목 단위 구독
+│   │   │   ├── usePageInavSubscriptions.ts   # ETF iNAV 구독
+│   │   │   └── usePageOrderbookBulk.ts    # 호가창 일괄 구독
 │   │   ├── components/
+│   │   │   ├── copy-button.tsx
+│   │   │   ├── OrderbookModal.tsx         # 호가창 모달
 │   │   │   └── layout/
 │   │   │       ├── top-nav.tsx            # 상단 탭 네비게이션
-│   │   │       └── network-toggle.tsx     # 내부망/외부망/Mock 전환
+│   │   │       └── network-toggle.tsx     # 내부망/외부망/Mock 전환 (Rust 8200으로 모드 POST)
 │   │   └── pages/
-│   │       ├── dashboard.tsx              # 메인 대시보드 (샘플 데이터)
-│   │       ├── market.tsx                 # 실시간 시세 (WebSocket 연동)
+│   │       ├── dashboard.tsx              # 메인 대시보드
+│   │       ├── market.tsx                 # 실시간 시세
 │   │       ├── lending.tsx                # 대차 페이지 (서브탭 컨테이너)
 │   │       ├── borrowing.tsx              # 차입 (비용 분석 + Rollover)
 │   │       ├── lending-availability.tsx   # 대여가능확인
-│   │       └── repayment-check.tsx        # 상환가능확인
+│   │       ├── repayment-check.tsx        # 상환가능확인
+│   │       ├── dividends.tsx              # 배당 화면
+│   │       ├── stock-arbitrage.tsx        # 종목차익 (베이시스 모니터링)
+│   │       └── etf-arbitrage.tsx          # ETF 차익 (NAV/iNAV/괴리 + 호가창)
 │
-├── backend/                               # FastAPI
-│   ├── main.py                            # 앱 엔트리 (lifespan, CORS, 라우터)
+├── backend/                               # FastAPI (port 8100) — 파일 분석 + 정적 REST
+│   ├── main.py                            # 앱 엔트리 (CORS, 라우터 자동 등록)
 │   ├── core/
-│   │   ├── config.py                      # 환경 설정 (pydantic-settings)
-│   │   ├── database.py                    # PostgreSQL async 연결
-│   │   ├── app_state.py                   # AppState (어댑터 관리, 스트리밍)
-│   │   └── data/
-│   │       ├── adapter.py                 # MarketDataAdapter ABC + NetworkMode
-│   │       └── mock_adapter.py            # Mock 시세 생성기
+│   │   ├── config.py                      # 환경 설정 (DATABASE_URL, DATABASE_URL_KOREA)
+│   │   └── database.py                    # engine (LENS) + korea_engine (Finance_Data, peer 인증, read-only)
 │   ├── routers/
+│   │   ├── arbitrage.py                   # GET /api/arbitrage/master (주식선물 마스터)
 │   │   ├── borrowing.py                   # POST /api/borrowing/analyze
+│   │   ├── dividends.py                   # 배당 (Phase 1: data/dividends_mock.json)
+│   │   ├── etfs.py                        # ETF 마스터/PDF (Finance_Data DB 조회, 60s 캐시)
 │   │   ├── health.py                      # GET /api/health
 │   │   ├── lending.py                     # POST /api/lending/calculate
-│   │   ├── repayment.py                   # POST /api/repayment/calculate, /api/repayment/lenders
-│   │   ├── market.py                      # GET/POST /api/network/mode, /api/etf/list, /api/basis
-│   │   └── ws.py                          # WebSocket /ws/market
-│   ├── models/
-│   │   ├── market.py                      # ETFTick, FuturesTick, BasisData
-│   │   └── portfolio.py                   # Position, PortfolioGreeks, ScenarioPnL
-│   ├── schemas/
-│   │   ├── lending.py                     # LendingResponse, StockResult, FundBreakdown
-│   │   └── repayment.py                   # RepaymentResponse, RepaymentMatch, StockSummary
+│   │   └── repayment.py                   # POST /api/repayment/calculate, /api/repayment/lenders
+│   ├── models/                            # 데이터 모델 (market, portfolio)
+│   ├── schemas/                           # Pydantic 응답 스키마 (lending, repayment)
 │   └── services/
-│       ├── file_resolver.py               # 폴더 내 파일 자동 탐색 (패턴 매칭, NFC/NFD 정규화)
+│       ├── file_resolver.py               # 폴더 내 파일 자동 탐색 (NFC/NFD 정규화)
 │       ├── excel_reader.py                # 엑셀 읽기 (openpyxl → xlrd → xlwings fallback)
-│       ├── stock_code.py                  # 종목코드 정규화 (6자리/A접두/ISIN → 표준 6자리)
-│       ├── borrowing_calculator.py        # 차입 비용 분석 + Rollover 관리
-│       ├── lending_parser.py              # 대여가능 개별 파일 파싱 (5개 파일)
+│       ├── stock_code.py                  # 종목코드 정규화 (6자리/A접두/ISIN → 6자리)
+│       ├── borrowing_calculator.py        # 차입 비용 분석 + Rollover
+│       ├── lending_parser.py              # 대여가능 개별 파일 파싱
 │       ├── lending_calculator.py          # 대여가능 산출 로직
 │       ├── repayment_parser.py            # 상환가능 엑셀 파싱 (오피스 + 예탁원)
-│       └── repayment_calculator.py        # 상환가능 매칭 로직 + 필터
+│       ├── repayment_calculator.py        # 상환가능 매칭 로직
+│       ├── futures_master.py              # 주식선물 마스터 (data/futures_master.json)
+│       └── dividend_estimator.py          # 배당 추정
 │
-├── features.md                            # 구현된 기능 상세
-├── architecture.md                        # 프로젝트 구조, 아키텍처
-├── data/                                  # 엑셀 데이터 파일
-├── start_dev.sh                           # 개발 서버 실행 스크립트
+├── realtime/                              # Rust 실시간 서비스 (port 8200) — 시세 + WS
+│   ├── Cargo.toml                         # axum, tokio, dashmap, tokio-tungstenite, reqwest
+│   ├── src/
+│   │   ├── main.rs                        # 부트스트랩, HTTP/WS 라우터
+│   │   ├── phase.rs                       # 시장 시간(개장/장중/장마감) 게이팅
+│   │   ├── holidays.rs                    # KRX 휴장일 (data/krx_holidays.json)
+│   │   ├── volume_cache.rs                # 일중 누적 거래량 캐시
+│   │   ├── feed/                          # 데이터 피드 어댑터
+│   │   │   ├── mod.rs                     # MarketFeed trait + 구독 명령
+│   │   │   ├── mock.rs                    # MockFeed (개발용)
+│   │   │   ├── ls_api.rs                  # LS증권 OpenAPI WebSocket (S3_/K3_/VI_)
+│   │   │   ├── ls_rest.rs                 # LS REST 폴러 (t1102/t1404/t1405 등 종목 상태)
+│   │   │   └── internal.rs                # 내부망 사내 서버 WS
+│   │   ├── model/                         # 도메인 모델
+│   │   │   ├── tick.rs                    # StockTick (가격 + halted/vi_active/warning 등 상태 플래그)
+│   │   │   ├── message.rs                 # WsMessage (브로드캐스트 페이로드)
+│   │   │   └── internal.rs                # 내부망 메시지 파싱
+│   │   └── ws/                            # WebSocket 서버 (프론트 브로드캐스트)
+│   │       ├── handler.rs                 # 클라이언트별 구독 처리
+│   │       └── broadcast.rs               # 채널 라우팅
+│
+├── docs/ls_api_guide/ls_api_full.md       # LS API 365개 TR 자동 추출본 (Request/Response)
+├── scripts/scrape_ls_api_guide.py         # 가이드 추출기 (월 1회 권장)
+├── data/                                  # 정적 데이터 (futures_master.json, krx_holidays.json, dividends_mock.json)
+├── start_dev.sh                           # 3개 서비스 한번에 실행 + FEED_MODE 자동 감지
 ├── docker-compose.yml
-└── .env
+└── .env                                   # DATABASE_URL_KOREA, LS_APP_KEY 등
 ```
 
 ## 데이터 소스 전략
@@ -73,12 +100,19 @@ LENS/
 
 | 환경 | 데이터 출처 |
 |------|------------|
-| 외부망 | HTS API, 주식 프로그램 API, 자체 PostgreSQL DB |
-| 내부망 | 한국거래소 데이터를 수신하는 회사 서버 |
+| 외부망 (`ls_api`) | LS증권 OpenAPI (WS + REST), 자체 PostgreSQL DB, Finance_Data DB |
+| 내부망 (`internal`) | 회사 사내 거래소 수신 서버 (WS, `10.21.1.208:41001`) |
+| 개발 (`mock`) | Rust 측 모의 틱 생성기 |
 
-- `MarketDataAdapter` ABC 인터페이스로 추상화
-- 프론트엔드 NetworkToggle로 런타임 전환 (내부망/외부망/Mock)
-- 기존 다른 프로젝트의 PostgreSQL DB를 연결해서 사용 가능
+- 실시간 피드 추상화는 **Rust `MarketFeed` trait** (`realtime/src/feed/mod.rs`)이 담당. Python 측 옛 `MarketDataAdapter` ABC는 제거됨.
+- 모드 전환: 프론트엔드 NetworkToggle → Rust 8200으로 모드 POST → 현재 피드 구독 해제 후 새 어댑터로 재구독. 프론트 WS 연결은 유지.
+- `start_dev.sh`가 환경에 따라 `FEED_MODE`를 자동 결정 (TCP 도달 / `.env` LS_APP_KEY / fallback).
+
+### ETF 마스터/PDF — 엑셀 → Finance_Data DB 전환 완료 (2026-05)
+
+ETF 마스터(creation_unit, 운용사, underlying_index 등)와 PDF(구성종목 수량+현금)는 **Finance_Data의 `etf_master_daily` + `etf_portfolio_daily`** 두 테이블에서 매일 새벽 5:30 KST 인포맥스 API로 적재 (5일 슬라이딩 윈도우 FIFO). LENS는 `routers/etfs.py`가 60초 캐시로 최신 snapshot 조회. 옛 `data/etf_info.xlsx` 의존은 제거됨.
+
+차익 가능 판정: `tracking_multiple`/`replication` + 종목명 키워드(레버리지/인버스/회사채/혼합/커버드콜/리츠 등). 현재 631 ETF 중 430 차익가능 / 201 비차익.
 
 ### 시계열 데이터 (백테스팅용) — Finance_Data 프로젝트와 분담
 

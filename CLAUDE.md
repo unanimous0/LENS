@@ -10,11 +10,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 | 구분 | 기술 |
 |------|------|
-| 프론트엔드 | Vite + React 19 + TypeScript + Tailwind CSS v4 |
+| 프론트엔드 (3100) | Vite + React 19 + TypeScript + Tailwind CSS v4 |
 | 상태관리 | Zustand |
-| 백엔드 | FastAPI (Python) |
-| 실시간 데이터 | WebSocket (FastAPI ↔ React) |
-| DB | PostgreSQL (asyncpg) + Redis |
+| 백엔드 REST (8100) | FastAPI (Python) — 파일 분석, 마스터/배당 등 정적 API. 실시간은 담당 X |
+| 실시간 서비스 (8200) | Rust (axum + tokio) — 시세 수신/계산/WebSocket 브로드캐스트 전담 |
+| 프론트 WS | Rust 8200 ↔ React (Vite `/ws` 프록시) |
+| DB | PostgreSQL (asyncpg) — 자체 DB + Finance_Data DB (read-only, peer 인증) |
 | 배포 | Docker Compose |
 
 ## 상세 문서
@@ -80,21 +81,30 @@ CSS 변수는 `globals.css`의 `@theme inline`에 정의. Tailwind 클래스로 
 ## 코드 컨벤션
 
 - 프론트엔드 import alias: `@/*` → `frontend/src/*` (예: `@/lib/utils`, `@/stores/marketStore`)
-- 백엔드 API 라우터: 모든 라우터는 `/api` prefix로 `main.py`에 등록 (WebSocket은 `/ws` prefix)
+- 백엔드 API 라우터: 모든 라우터는 `/api` prefix로 `main.py`에 등록. **WebSocket은 FastAPI가 아니라 Rust 서비스(8200)가 담당** — 백엔드에 `ws.py` 없음
 - 유틸리티: `cn()` — clsx + tailwind-merge 조합 (`@/lib/utils`)
-- 상태관리: Zustand store (`@/stores/marketStore`) — 실시간 데이터, 네트워크 모드
-- 실시간 데이터: `useWebSocket()` 훅이 App 레벨에서 한 번만 연결
+- 상태관리: Zustand store (`@/stores/marketStore`) — 실시간 시세, 네트워크 모드, 종목 상태 플래그(halted/VI/경고 등) sticky 머지
+- 실시간 데이터: `useWebSocket()` 훅이 App 레벨에서 한 번만 연결 (Rust 8200으로). 페이지별 구독은 `usePage*Subscriptions` 훅
+- Finance_Data DB는 **read-only로만 사용** — `korea_async_session` 경유, SELECT만 (코드 차원 약속). 쓰기는 Finance_Data 프로젝트 측 책임
 
 ## 개발 환경
 
-- 프론트엔드: **3100** / 백엔드: **8100** / Vite 프록시: `/api` → `localhost:8100`, `/ws` → `ws://localhost:8100`
-- Node.js v20 (nvm 사용)
+- 포트: 프론트 **3100** / FastAPI **8100** / Rust 실시간 **8200**
+- Vite 프록시 (`vite.config.ts`): `/api` → `localhost:8100`, `/ws` → `localhost:8200`, `/realtime/*` → `localhost:8200` (prefix 제거 후 전달)
+- Node.js v20 (nvm) / Rust (cargo) / Python (uvicorn)
+- `start_dev.sh`는 3개 서비스를 한꺼번에 띄우고 `FEED_MODE` 자동 감지:
+  1. 내부망 WS 서버(`10.21.1.208:41001`) TCP 도달 가능 → `internal`
+  2. `.env`에 `LS_APP_KEY` 존재 → `ls_api` (외부망)
+  3. 그 외 → `mock`
+  환경변수 `FEED_MODE=mock` 등으로 수동 오버라이드 가능. 장 외 시간에는 ls_api 모드에서 대부분 no_data → 미리보기는 mock 권장.
 
 ```bash
-./start_dev.sh                              # 전체 서버 실행
-cd frontend && npx vite                     # 프론트 개발 서버
-cd frontend && npx tsc --noEmit             # 타입 체크
-cd backend && uvicorn main:app --host 0.0.0.0 --port 8100 --reload  # 백엔드
+./start_dev.sh                                                       # 전체 (uvicorn + cargo + vite)
+cd frontend && npx vite                                              # 프론트만
+cd frontend && npx tsc --noEmit                                      # 타입 체크
+cd frontend && npm run lint                                          # ESLint
+cd backend && uvicorn main:app --host 0.0.0.0 --port 8100 --reload   # FastAPI만
+cd realtime && cargo build --release && ./target/release/lens-realtime  # Rust 실시간만
 ```
 
-**참고:** 테스트 프레임워크 미설정 (프론트: Vitest 없음, 백엔드: pytest 없음)
+**참고:** 테스트 프레임워크 미설정 (프론트: Vitest 없음, 백엔드: pytest 없음, Rust: 단위 테스트 정의 없음)

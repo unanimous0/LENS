@@ -55,6 +55,20 @@ BACKEND_PID=$!
 # Rust 실시간 서비스: 먼저 blocking으로 빌드 후 바이너리 실행
 echo "[실시간] Rust 서비스 빌드..."
 (cd realtime && cargo build --release --quiet)
+
+# backend(8100) 준비 대기 — realtime startup의 3개 fetch
+#   (LP matrix-config / risk-params / ETF PDF 구독 union: load_etf_pdf_extra_codes)
+# 가 backend 미가동 시 0으로 떨어지는 것 방지. cargo build 캐시되면 realtime이
+# uvicorn startup보다 빨라 이 가드가 없으면 LP 매트릭스가 빈 상태로 뜸. (최대 30초)
+echo "[실시간] backend(8100) 준비 대기..."
+for i in $(seq 1 60); do
+    if curl -sf http://localhost:8100/api/health >/dev/null 2>&1; then
+        echo "[실시간] backend 준비됨"
+        break
+    fi
+    sleep 0.5
+done
+
 echo "[실시간] Rust 서비스 시작 (포트 8200)..."
 (cd realtime && ./target/release/lens-realtime 2>&1 | tee -a "../logs/realtime.log.${LOG_DAY}") &
 REALTIME_PID=$!

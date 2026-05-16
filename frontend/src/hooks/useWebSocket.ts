@@ -1,5 +1,6 @@
 import { useEffect } from 'react'
 import { useMarketStore } from '../stores/marketStore'
+import { useLpStore } from '../stores/lpStore'
 
 export function useWebSocket() {
   useEffect(() => {
@@ -68,6 +69,9 @@ export function useWebSocket() {
         else if (m.type === 'stock_tick') stockBuf[m.data.code] = m.data
         else if (m.type === 'futures_tick') futuresBuf[m.data.code] = m.data
         else if (m.type === 'orderbook_tick') obBuf[m.data.code] = m.data
+        // LP 매트릭스 — Rust가 200ms throttle로 보내므로 rAF 묶지 않고 즉시 store 반영
+        else if (m.type === 'fair_value_matrix') useLpStore.getState().setMatrix(m.data)
+        else if (m.type === 'book_risk') useLpStore.getState().setBookRisk(m.data)
         else if (!warnedTypes.has(m.type)) {
           warnedTypes.add(m.type)
           console.warn('[useWebSocket] unhandled tick type:', m.type, '— register in marketStore + dispatchOne')

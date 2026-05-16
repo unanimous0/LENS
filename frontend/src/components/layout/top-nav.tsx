@@ -12,6 +12,7 @@ const tabs = [
   { label: "수급", href: "/supply-demand" },
   { label: "종목차익", href: "/stock-arbitrage" },
   { label: "ETF", href: "/etf-arbitrage" },
+  { label: "LP 매트릭스", href: "/lp-matrix" },
   { label: "배당", href: "/dividends" },
 ]
 
