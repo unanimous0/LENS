@@ -36,6 +36,17 @@ for module_name in ("arbitrage", "borrowing", "dividends", "etfs", "health", "le
 
 
 @app.on_event("startup")
+async def _ensure_schemas_on_startup() -> None:
+    """SQLite 스키마 보장 — 라우터의 lazy _ensure는 안전망 (uvicorn reload race 회피)."""
+    for module_name in ("positions", "loan_rates"):
+        try:
+            module = __import__(f"services.{module_name}", fromlist=["ensure_schema"])
+            await module.ensure_schema()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("startup schema ensure %s skipped: %s", module_name, e)
+
+
+@app.on_event("startup")
 async def _sync_permanent_subs_on_startup() -> None:
     """LENS 시작 시 LP 매트릭스 타겟 + active 포지션 leg를 realtime 영구 sub로 동기화.
 
