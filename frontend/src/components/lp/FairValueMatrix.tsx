@@ -46,7 +46,7 @@ export function FairValueMatrix() {
             ))}
             {!matrix && (
               <tr>
-                <td colSpan={6} className="text-center py-8 text-t4 text-xs">
+                <td colSpan={HEDGE_ROUTE_COLUMNS.length + 1} className="text-center py-8 text-t4 text-xs">
                   매트릭스 대기 중... (백엔드 risk-params/matrix-config fetch 후 ~수초)
                 </td>
               </tr>

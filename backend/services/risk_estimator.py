@@ -19,6 +19,7 @@ LP 의미:
 from __future__ import annotations
 
 import asyncio
+import bisect
 import time
 from datetime import date, timedelta
 from typing import Optional
@@ -100,8 +101,8 @@ async def _fetch_stock_returns(
         for i, d in enumerate(dates):
             if d not in close_by_time:
                 continue
-            # 이전 거래일 close — sorted_times에서 d 직전
-            idx = next((j for j, sd in enumerate(sorted_times) if sd >= d), len(sorted_times))
+            # 이전 거래일 close — sorted_times에서 d 직전 (bisect_left로 O(log n))
+            idx = bisect.bisect_left(sorted_times, d)
             if idx == 0:
                 continue
             prev_close = close_by_time[sorted_times[idx - 1]]
