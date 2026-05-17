@@ -83,17 +83,31 @@ async fn handle_client(
     cleanup_client_subs(&state, client_id).await;
 }
 
-/// disconnect 시 client가 잡고 있던 코드들을 자동 unsubscribe.
-/// frontend가 정상 종료(unmount)면 이미 unsubscribe-stocks 호출되어 client_subs가 비어있음.
-/// 강제 종료(F5/탭 X 버튼)는 unsubscribe 호출 안 가서 여기서 정리.
+/// disconnect 시 client가 잡고 있던 stocks/inav 코드들을 자동 unsubscribe.
+/// frontend 정상 unmount면 이미 명시 unsubscribe로 비어있음. 강제 종료(F5/X) 케이스 안전망.
 async fn cleanup_client_subs(state: &AppState, client_id: u64) {
-    let Some((_, subs)) = state.client_subs.remove(&client_id) else { return };
-    let codes: Vec<String> = subs.iter().map(|s| s.key().clone()).collect();
-    if codes.is_empty() { return }
-    info!("WS client {} disconnect cleanup: -{} codes", client_id, codes.len());
-    let _ = state
-        .sub_tx
-        .read()
-        .unwrap()
-        .send(SubCommand::UnsubscribeStocks(codes));
+    // stocks
+    if let Some((_, subs)) = state.client_subs.remove(&client_id) {
+        let codes: Vec<String> = subs.iter().map(|s| s.key().clone()).collect();
+        if !codes.is_empty() {
+            info!("WS client {} disconnect cleanup stocks: -{} codes", client_id, codes.len());
+            let _ = state
+                .sub_tx
+                .read()
+                .unwrap()
+                .send(SubCommand::UnsubscribeStocks(codes));
+        }
+    }
+    // inav
+    if let Some((_, subs)) = state.client_subs_inav.remove(&client_id) {
+        let codes: Vec<String> = subs.iter().map(|s| s.key().clone()).collect();
+        if !codes.is_empty() {
+            info!("WS client {} disconnect cleanup inav: -{} codes", client_id, codes.len());
+            let _ = state
+                .sub_tx
+                .read()
+                .unwrap()
+                .send(SubCommand::UnsubscribeInav(codes));
+        }
+    }
 }

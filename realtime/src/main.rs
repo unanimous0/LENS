@@ -143,6 +143,9 @@ pub struct AppState {
     /// client_id → 그 client가 잡고 있는 종목 코드 집합 (subscribe-stocks).
     /// WS disconnect 시 자동 cleanup으로 ref-count leak 방지. 헤더(X-LENS-Client-Id) 없으면 추적 안 함.
     pub client_subs: Arc<DashMap<u64, dashmap::DashSet<String>>>,
+    /// subscribe-inav 용 — stocks와 별개 채널이라 cleanup 분리.
+    /// 같은 client_id 키 공유, 동일한 disconnect cleanup에서 둘 다 정리.
+    pub client_subs_inav: Arc<DashMap<u64, dashmap::DashSet<String>>>,
     /// Backend가 영구 sub 의도를 표명한 코드 (active 포지션의 leg 등).
     /// POST /permanent-stocks가 set 전체를 replace. diff로 SubscribeStocks/UnsubscribeStocks 발사.
     /// 페이지 mount/unmount와 무관하게 ref-count 영구 +1 효과.
@@ -431,6 +434,7 @@ async fn main() {
         failed_stocks: failed_stocks.clone(),
         next_client_id: Arc::new(AtomicU64::new(1)),
         client_subs: Arc::new(DashMap::new()),
+        client_subs_inav: Arc::new(DashMap::new()),
         permanent_codes: Arc::new(StdRwLock::new(std::collections::HashSet::new())),
     };
 
@@ -1088,22 +1092,36 @@ async fn prioritize_stocks(
 }
 
 /// ETF iNAV 누적 구독 (I5_) — 거래소 발행 NAV stream.
+/// subscribe-stocks와 동일하게 X-LENS-Client-Id 헤더 추적 — disconnect 시 자동 cleanup.
 async fn subscribe_inav(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(req): Json<SubRequest>,
 ) -> Json<serde_json::Value> {
     let count = req.codes.len();
-    info!("REST subscribe-inav: {} codes", count);
+    let cid = extract_client_id(&headers);
+    if let Some(id) = cid {
+        let entry = state.client_subs_inav.entry(id).or_insert_with(dashmap::DashSet::new);
+        for c in &req.codes { entry.insert(c.clone()); }
+    }
+    info!("REST subscribe-inav: {} codes (client={:?})", count, cid);
     let _ = state.sub_tx.read().unwrap().send(SubCommand::SubscribeInav(req.codes));
     Json(serde_json::json!({"status": "ok", "subscribed": count}))
 }
 
 async fn unsubscribe_inav(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(req): Json<SubRequest>,
 ) -> Json<serde_json::Value> {
     let count = req.codes.len();
-    info!("REST unsubscribe-inav: {} codes", count);
+    let cid = extract_client_id(&headers);
+    if let Some(id) = cid {
+        if let Some(entry) = state.client_subs_inav.get(&id) {
+            for c in &req.codes { entry.remove(c); }
+        }
+    }
+    info!("REST unsubscribe-inav: {} codes (client={:?})", count, cid);
     let _ = state.sub_tx.read().unwrap().send(SubCommand::UnsubscribeInav(req.codes));
     Json(serde_json::json!({"status": "ok", "unsubscribed": count}))
 }
