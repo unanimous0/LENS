@@ -10,7 +10,6 @@
 """
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import Literal
 
@@ -18,7 +17,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from services import positions
-from services.permanent_sub import sync_full_set
+from services.permanent_sub import schedule_sync
 
 router = APIRouter(prefix="/positions", tags=["positions"])
 
@@ -34,11 +33,8 @@ async def _ensure() -> None:
         _initialized = True
 
 
-async def _sync_realtime() -> None:
-    """포지션 변경 후 realtime 영구 sub set 동기화.
-    실제 union 계산은 services.permanent_sub.sync_full_set에 위임 (LP 매트릭스 타겟도 같이 push).
-    """
-    await sync_full_set()
+# 포지션 변경 핸들러는 schedule_sync()로 fire-and-forget 발사.
+# 실제 union 계산 + retry + task ref 관리는 services.permanent_sub에 위임.
 
 
 # ---------------------------------------------------------------------------
@@ -104,7 +100,7 @@ async def create_position(body: PositionCreate) -> dict:
     detail = await positions.get_one(pos_id)
     if detail is None:
         raise HTTPException(500, "created but not retrievable")
-    asyncio.create_task(_sync_realtime())
+    schedule_sync()
     return detail
 
 
@@ -123,7 +119,7 @@ async def delete_position(pos_id: str) -> dict:
     ok = await positions.delete(pos_id)
     if not ok:
         raise HTTPException(404, f"position not found: {pos_id}")
-    asyncio.create_task(_sync_realtime())
+    schedule_sync()
     return {"deleted": True}
 
 
@@ -168,5 +164,5 @@ async def close_position(pos_id: str, body: PositionClose) -> dict:
     detail = await positions.get_one(pos_id)
     if not detail:
         raise HTTPException(500, "closed but not retrievable")
-    asyncio.create_task(_sync_realtime())
+    schedule_sync()
     return detail
