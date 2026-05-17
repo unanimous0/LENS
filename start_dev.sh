@@ -60,6 +60,20 @@ if ! (cd realtime && cargo build --release > "../logs/realtime-build.log.${LOG_D
     tail -20 "logs/realtime-build.log.${LOG_DAY}"
     exit 1
 fi
+
+# backend(8100) 준비 대기 — realtime startup의 fetch
+#   (LP matrix-config / risk-params / ETF PDF 구독 union: load_etf_pdf_extra_codes /
+#    positions active-leg-codes polling) 가 backend 미가동 시 0으로 떨어지는 것 방지.
+# cargo build 캐시되면 realtime이 uvicorn startup보다 빨라 이 가드 없으면 LP 매트릭스가
+# 빈 상태로 뜨고 Tier 1 permanent sub 회복도 누락. (최대 30초)
+echo "[실시간] backend(8100) 준비 대기..."
+for i in $(seq 1 60); do
+    if curl -sf http://localhost:8100/api/health >/dev/null 2>&1; then
+        echo "[실시간] backend 준비됨"
+        break
+    fi
+    sleep 0.5
+done
 echo "[실시간] Rust 서비스 시작 (포트 8200)..."
 (cd realtime && ./target/release/lens-realtime 2>&1 | tee -a "../logs/realtime.log.${LOG_DAY}") &
 REALTIME_PID=$!

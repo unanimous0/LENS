@@ -84,28 +84,30 @@ async def _load_from_db() -> None:
     두 테이블의 MAX(snapshot_date) 중 작은 값을 공통 기준일로 사용 → 정합성 보장.
     """
     async with korea_async_session() as session:
-        # 두 테이블 각자의 MAX를 한 번에 받아 최소값으로 잠재 불일치 회피
-        result = await session.execute(text(
-            "SELECT "
-            "(SELECT MAX(snapshot_date) FROM etf_master_daily) AS m, "
-            "(SELECT MAX(snapshot_date) FROM etf_portfolio_daily) AS p"
-        ))
-        row = result.first()
-        m_date, p_date = (row.m, row.p) if row else (None, None)
-        if m_date is None or p_date is None:
-            raise RuntimeError("etf_master_daily/etf_portfolio_daily 둘 다 데이터 필요")
-        # 더 보수적인 (작은) 쪽 채택
-        latest_date = min(m_date, p_date)
+        # 마스터/PDF는 Finance_Data 적재 타이밍이 어긋날 수 있어 (예: 마스터 5/16,
+        # PDF 5/15) 각 테이블의 MAX(snapshot_date)를 독립 조회. 마스터 날짜로 PDF를
+        # 필터링하면 PDF 0 rows가 되어 매트릭스/차익 전체가 공백이 됨.
+        master_date = (await session.execute(text(
+            "SELECT MAX(snapshot_date) FROM etf_master_daily"
+        ))).scalar()
+        if master_date is None:
+            raise RuntimeError("etf_master_daily에 데이터 없음")
+        pdf_date = (await session.execute(text(
+            "SELECT MAX(snapshot_date) FROM etf_portfolio_daily"
+        ))).scalar()
+        if pdf_date is None:
+            raise RuntimeError("etf_portfolio_daily에 데이터 없음")
 
         master_rows = (await session.execute(text(
             "SELECT etf_code, kr_name, creation_unit, tracking_multiple, replication "
             "FROM etf_master_daily WHERE snapshot_date = :d"
-        ), {"d": latest_date})).all()
+        ), {"d": master_date})).all()
 
+        # PDF (현금 + 종목 모두) — PDF 자체 최신 날짜 사용
         pdf_rows = (await session.execute(text(
             "SELECT etf_code, component_code, component_name, shares, is_cash "
             "FROM etf_portfolio_daily WHERE snapshot_date = :d"
-        ), {"d": latest_date})).all()
+        ), {"d": pdf_date})).all()
 
     # 마스터 dict
     etfs: dict[str, dict] = {}
@@ -121,8 +123,9 @@ async def _load_from_db() -> None:
         }
 
     # PDF dict: 종목은 stocks 배열, 현금은 cash 필드 (음수 가능)
+    # as_of/snapshot_date는 PDF 기준 (fair value 계산의 핵심이 PDF라서).
     pdfs: dict[str, dict] = {}
-    snap_iso = latest_date.isoformat() if latest_date else None
+    snap_iso = pdf_date.isoformat() if pdf_date else None
     for r in pdf_rows:
         etf_code = _norm_code(r.etf_code)
         if not etf_code:

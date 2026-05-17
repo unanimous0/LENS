@@ -13,6 +13,7 @@ const tabs = [
   { label: "종목차익", href: "/stock-arbitrage" },
   { label: "ETF", href: "/etf-arbitrage" },
   { label: "통계차익", href: "/stat-arb" },
+  { label: "LP 매트릭스", href: "/lp-matrix" },
   { label: "배당", href: "/dividends" },
 ]
 

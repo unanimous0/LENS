@@ -1,3 +1,4 @@
+mod calc;
 mod feed;
 mod holidays;
 mod model;
@@ -28,6 +29,7 @@ use feed::{MarketFeed, SubCommand};
 use model::message::WsMessage;
 use ws::broadcast::Broadcaster;
 use ws::handler::ws_market;
+use calc::scheduler::{spawn_workers, MatrixState};
 
 const PORT: u16 = 8200;
 /// 브로드캐스트 링버퍼 크기. batch envelope 도입 후 송출 빈도 ~5/sec로 평탄화 →
@@ -165,6 +167,9 @@ fn msg_pending_key(msg: &WsMessage) -> String {
         WsMessage::FuturesTick(t) => format!("futures_tick:{}", t.code),
         WsMessage::EtfTick(t) => format!("etf_tick:{}", t.code),
         WsMessage::OrderbookTick(t) => format!("orderbook_tick:{}", t.code),
+        // LP 매트릭스·북 리스크는 각각 단일 인스턴스 — 고정 key로 dedup.
+        WsMessage::FairValueMatrix(_) => "fair_value_matrix".to_string(),
+        WsMessage::BookRisk(_) => "book_risk".to_string(),
     }
 }
 
@@ -175,6 +180,9 @@ fn msg_cache_key(msg: &WsMessage) -> Option<String> {
         WsMessage::FuturesTick(t) => Some(format!("futures_tick:{}", t.code)),
         WsMessage::EtfTick(t) => Some(format!("etf_tick:{}", t.code)),
         WsMessage::OrderbookTick(_) => None,
+        // 매트릭스·북 리스크는 캐시 — 신규 클라이언트 연결 시 즉시 보여주기 위해.
+        WsMessage::FairValueMatrix(_) => Some("fair_value_matrix".to_string()),
+        WsMessage::BookRisk(_) => Some("book_risk".to_string()),
     }
 }
 
@@ -276,6 +284,17 @@ async fn main() {
     let stats_bridge = stats.clone();
     let prev_close_map = stock_prev_close.clone();
     let etf_state_map = etf_state.clone();
+
+    // ─── LP 매트릭스 워커 ────────────────────────────────────────────────
+    // startup에 backend(/api/lp/matrix-config + risk-params + positions + cost-inputs) fetch.
+    // 200ms throttle로 fair_value_matrix + book_risk를 bridge tx에 발행 → envelope에 자동 묶임.
+    // 가격은 bridge 안에서 sync로 dispatch (lock-free DashMap insert).
+    let matrix_state = Arc::new(MatrixState::new());
+    let fastapi_base = std::env::var("LENS_API_URL")
+        .unwrap_or_else(|_| "http://localhost:8100".to_string());
+    spawn_workers(matrix_state.clone(), tx.clone(), fastapi_base);
+    let matrix_for_bridge = matrix_state.clone();
+
     // Bridge: rx에서 WsMessage 받아 backfill → pending 버퍼에 (code별 dedup) → 150ms마다
     // 일괄 직렬화 + 캐시 갱신 + batch envelope 한 번 broadcast.
     //
@@ -300,6 +319,8 @@ async fn main() {
             tokio::select! {
                 maybe_msg = rx.recv() => {
                     let Some(mut msg) = maybe_msg else { break };
+                    // LP 매트릭스 — 가격 dictionary 갱신 (sync, lock-free)
+                    matrix_for_bridge.handle_tick(&msg);
                     // StockTick prev_close 백필
                     if let WsMessage::StockTick(ref mut t) = msg {
                         match t.prev_close {
