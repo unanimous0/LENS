@@ -7,11 +7,19 @@ export interface ETFTick {
   spread_bid_bp: number
   spread_ask_bp: number
   volume: number
+  /** 당일 누적 거래량 (S3_의 value × 백만 또는 t1102 value). ETF 페이지 거래대금 표시용. */
+  cum_volume: number
   timestamp: string
+  /** 전일 종가 — 변화율 계산용. t1102 초기에서만 발행, bridge가 sticky 보존. */
+  prev_close?: number
   /** 그 체결의 단일 수량 (LS S3_/K3_의 cvolume). 누적 volume과 별개. 초기 fetch / I5_(NAV-only)는 미발행. */
   last_trade_volume?: number
   /** 매수/매도 구분 (+1 매수, -1 매도). LS cgubun. 모르는 케이스 미발행. */
   trade_side?: 1 | -1
+  /** 매매정지 (t1405). ETF도 정지 가능. */
+  halted?: boolean
+  /** VI 발동 상태 (VI_ stream). ETF도 VI 발동 가능. */
+  vi_active?: boolean
 }
 
 export interface StockTick {

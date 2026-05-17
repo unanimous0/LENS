@@ -389,9 +389,13 @@ impl InternalFeed {
                 spread_bid_bp: round2(spread_bid_bp),
                 spread_ask_bp: round2(spread_ask_bp),
                 volume,
+                cum_volume: 0,  // 내부망 stream에 누적 거래량 매핑 미구현
                 timestamp,
+                prev_close: None,
                 last_trade_volume: None,  // 내부망 stream에 cgubun/cvolume 매핑 미구현
                 trade_side: None,
+                halted: false,
+                vi_active: false,
             });
             let _ = tx.send(msg).await;
         } else {

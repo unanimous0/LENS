@@ -149,10 +149,17 @@ pub struct AppState {
     pub permanent_codes: Arc<StdRwLock<std::collections::HashSet<String>>>,
 }
 
-/// Bridge에서 EtfTick의 0인 필드를 이전 캐시값으로 메우기 위한 stash.
+/// Bridge에서 EtfTick의 0/None 필드를 이전 캐시값으로 메우기 위한 stash.
 /// 모듈 레벨로 노출 — AppState에서 공유.
+/// halted/vi_active는 매 emit이 현재 상태를 직접 읽으므로 백필 불필요.
 #[derive(Default, Clone, Copy)]
-pub struct EtfStateBridge { pub price: f64, pub nav: f64, pub volume: u64 }
+pub struct EtfStateBridge {
+    pub price: f64,
+    pub nav: f64,
+    pub volume: u64,
+    pub cum_volume: u64,
+    pub prev_close: Option<f64>,
+}
 
 fn now_us() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -332,12 +339,15 @@ async fn main() {
                             }
                         }
                     }
-                    // EtfTick 필드 백필
+                    // EtfTick 필드 백필 — S3_(체결: price/volume/cum_volume) + I5_(NAV) +
+                    // t1102(prev_close 1회) 세 source가 같은 캐시 키 덮어쓰므로 sticky 필드 보존.
                     if let WsMessage::EtfTick(ref mut t) = msg {
                         let mut prev = etf_state_map.entry(t.code.clone()).or_default();
                         if t.price > 0.0 { prev.price = t.price; } else { t.price = prev.price; }
                         if t.nav > 0.0 { prev.nav = t.nav; } else { t.nav = prev.nav; }
                         if t.volume > 0 { prev.volume = t.volume; } else { t.volume = prev.volume; }
+                        if t.cum_volume > 0 { prev.cum_volume = t.cum_volume; } else { t.cum_volume = prev.cum_volume; }
+                        if t.prev_close.is_some() { prev.prev_close = t.prev_close; } else { t.prev_close = prev.prev_close; }
                     }
                     let key = msg_pending_key(&msg);
                     pending.insert(key, msg);

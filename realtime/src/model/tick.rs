@@ -14,7 +14,13 @@ pub struct EtfTick {
     /// (매도1호가 - NAV) / NAV × 10000
     pub spread_ask_bp: f64,
     pub volume: u64,
+    /// 당일 누적 거래량 (S3_의 `value` × 백만 또는 t1102의 value). ETF 페이지에서 거래대금 표시용.
+    /// StockTick과 동일 단위. live S3_가 0을 보내면 bridge가 이전 값으로 백필.
+    pub cum_volume: u64,
     pub timestamp: String,
+    /// 전일 종가 (변화율 계산용). t1102 초기에서만 채워짐 — S3_/I5_는 None. bridge가 sticky 보존.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prev_close: Option<f64>,
     /// 그 체결의 단일 수량 (LS S3_/K3_의 `cvolume`). 누적 volume과 별개.
     /// 실시간 체결 stream에서만 채워짐. 초기 fetch / nav-only(I5_) 메시지는 None.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -22,6 +28,12 @@ pub struct EtfTick {
     /// 그 체결의 매수/매도 구분 (+1 매수 / -1 매도). LS S3_/K3_의 `cgubun`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub trade_side: Option<i8>,
+    /// 매매정지 (t1405). 모든 emit에서 현재 상태 읽음 — 백필 불필요.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub halted: bool,
+    /// VI 발동 상태 (VI_ stream). 모든 emit에서 현재 상태 읽음 — 백필 불필요.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub vi_active: bool,
 }
 
 /// 주식 틱 (일반 주식 체결)
