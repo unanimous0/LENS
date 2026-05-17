@@ -76,8 +76,11 @@ async def _fetch_stock_returns(
     earliest = dates[0] - timedelta(days=10)
     latest = dates[-1]
 
+    # adj_close — 액면분할/병합 소급 조정된 종가. raw close_price를 쓰면 분할일에 spike
+    # (예: 100만→10만) 발생해 OLS β·잔차 σ 무력화. Finance_Data 04:30 매일 갱신.
+    # 지수(index_ohlcv_daily)는 분할 없어 raw 그대로 OK. 출처: CLAUDE.md Finance_Data 룰.
     rows = (await session.execute(text(
-        "SELECT stock_code, time, close_price FROM ohlcv_daily "
+        "SELECT stock_code, time, adj_close FROM ohlcv_daily "
         "WHERE stock_code = ANY(:codes) AND time BETWEEN :s AND :e "
         "ORDER BY stock_code, time"
     ), {"codes": stock_codes, "s": earliest, "e": latest})).all()
@@ -85,7 +88,7 @@ async def _fetch_stock_returns(
     series_by_code: dict[str, list[tuple[date, float]]] = {}
     for r in rows:
         series_by_code.setdefault(r.stock_code, []).append(
-            (r.time, float(r.close_price))
+            (r.time, float(r.adj_close))
         )
 
     out: dict[str, np.ndarray] = {}
