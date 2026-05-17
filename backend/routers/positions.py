@@ -14,17 +14,15 @@ import asyncio
 import logging
 from typing import Literal
 
-import httpx
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from services import positions
+from services.permanent_sub import sync_full_set
 
 router = APIRouter(prefix="/positions", tags=["positions"])
 
 logger = logging.getLogger("uvicorn.error")
-
-REALTIME_URL = "http://localhost:8200"
 
 _initialized = False
 
@@ -37,16 +35,10 @@ async def _ensure() -> None:
 
 
 async def _sync_realtime() -> None:
-    """현재 active 포지션 leg를 realtime의 영구 sub set으로 push.
-    실패 시 로그만 — realtime은 다음 호출(다른 포지션 변경)에서 회복.
+    """포지션 변경 후 realtime 영구 sub set 동기화.
+    실제 union 계산은 services.permanent_sub.sync_full_set에 위임 (LP 매트릭스 타겟도 같이 push).
     """
-    try:
-        codes = await positions.active_leg_codes()
-        async with httpx.AsyncClient(timeout=2.0) as client:
-            await client.post(f"{REALTIME_URL}/permanent-stocks", json={"codes": codes})
-        logger.info("permanent-stocks synced to realtime: %d codes", len(codes))
-    except Exception as e:  # noqa: BLE001
-        logger.warning("permanent-stocks sync failed: %s", e)
+    await sync_full_set()
 
 
 # ---------------------------------------------------------------------------

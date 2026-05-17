@@ -37,9 +37,13 @@ for module_name in ("arbitrage", "borrowing", "dividends", "etfs", "health", "le
 
 @app.on_event("startup")
 async def _sync_permanent_subs_on_startup() -> None:
-    """LENS 시작 시 active 포지션 leg를 realtime의 영구 sub로 동기화."""
+    """LENS 시작 시 LP 매트릭스 타겟 + active 포지션 leg를 realtime 영구 sub로 동기화.
+
+    LP 매트릭스가 fair_value 계산에 필요한 가격을 받으려면 PDF 구성종목 + 매칭 선물이
+    LS WS sub되어 있어야 함. 사용자가 ETF 페이지를 열지 않아도 *항상* sub되도록 startup에 push.
+    """
     try:
-        from routers.positions import _sync_realtime
-        await _sync_realtime()
+        from services.permanent_sub import sync_full_set
+        await sync_full_set()
     except Exception as e:  # noqa: BLE001
         logger.warning("startup permanent-sub sync skipped: %s", e)
