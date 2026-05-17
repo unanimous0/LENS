@@ -1,4 +1,4 @@
-import { useLpStore } from '@/stores/lpStore'
+import { useLpStore, type CorporateActionToday } from '@/stores/lpStore'
 import { HEDGE_ROUTE_COLUMNS } from '@/types/lp'
 import type { EtfFairValueSnapshot, FairValueCell } from '@/types/lp'
 import { FreshnessBadge } from './FreshnessBadge'
@@ -14,6 +14,7 @@ import { cn } from '@/lib/utils'
  */
 export function FairValueMatrix() {
   const matrix = useLpStore((s) => s.matrix)
+  const corpActions = useLpStore((s) => s.corporateActionsToday)
 
   return (
     <div className="bg-bg-primary">
@@ -23,6 +24,7 @@ export function FairValueMatrix() {
           200ms throttle · ETF × 헤지경로 (Level 2 raw · Level 3 net · 신선도)
         </div>
       </div>
+      {corpActions.length > 0 && <CorporateActionBanner items={corpActions} />}
       <div className="overflow-x-auto">
         <table className="w-full text-[12px]">
           <thead className="text-t3 text-[11px]">
@@ -52,6 +54,25 @@ export function FairValueMatrix() {
           </tbody>
         </table>
       </div>
+    </div>
+  )
+}
+
+/**
+ * 분할/병합 당일 PDF qty 갱신 latency로 NAV 일시 왜곡 가능 → 사용자 인지용 배너.
+ * 실시간 raw 가격은 이미 분할 후 가격이라 정상이지만, PDF 구성종목 qty가 Finance_Data
+ * daily refresh(04:30)에서 분할 반영이 누락되면 basket NAV가 신/구 mix로 잘못 계산됨.
+ * 분할 빈도가 매우 낮으므로 빨간 박스보다 노란 정보성 배너로 충분.
+ */
+function CorporateActionBanner({ items }: { items: CorporateActionToday[] }) {
+  const preview = items.slice(0, 4).map((it) => it.stock_code).join(', ')
+  return (
+    <div className="px-3 py-1.5 bg-warning/10 border-b border-bg-base text-[11px] text-warning flex items-center gap-2">
+      <span className="font-medium">⚠ 오늘 가격조정 이벤트 {items.length}건</span>
+      <span className="text-warning/80 tabular-nums">
+        {preview}{items.length > 4 ? ` +${items.length - 4}` : ''}
+      </span>
+      <span className="text-t4 ml-auto">PDF qty 갱신 latency로 NAV 일시 왜곡 가능</span>
     </div>
   )
 }

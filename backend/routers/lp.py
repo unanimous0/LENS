@@ -153,3 +153,37 @@ async def get_risk_params_route(refresh: bool = False):
     Rust 실시간 서비스가 startup에 1회 fetch (Task #4).
     """
     return await get_risk_params(force_refresh=refresh)
+
+
+@router.get("/corporate-actions-today")
+async def get_corporate_actions_today():
+    """오늘(KST) 발생 corporate action 종목 목록.
+
+    매트릭스 상단 배너 — 분할 당일 PDF qty 갱신 latency로 NAV가 일시적으로 잘못 보일
+    수 있어 사용자에게 인지시킴. price_factor != 1 만 (배당·소속변경 등 무영향 제외).
+
+    응답: {as_of, count, items: [{stock_code, event_type, price_factor, description}]}
+    """
+    from datetime import date
+    from sqlalchemy import text
+    from core.database import korea_async_session
+
+    today = date.today()
+    async with korea_async_session() as session:
+        rows = (await session.execute(text(
+            "SELECT stock_code, event_type, price_factor, description "
+            "FROM corporate_actions "
+            "WHERE event_date = :d AND price_factor IS NOT NULL AND price_factor != 1 "
+            "ORDER BY stock_code"
+        ), {"d": today})).all()
+
+    items = [
+        {
+            "stock_code": r.stock_code,
+            "event_type": r.event_type,
+            "price_factor": float(r.price_factor),
+            "description": r.description,
+        }
+        for r in rows
+    ]
+    return {"as_of": today.isoformat(), "count": len(items), "items": items}
