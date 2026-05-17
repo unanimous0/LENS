@@ -38,6 +38,10 @@ def _connect() -> sqlite3.Connection:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB_FILE)
     conn.row_factory = sqlite3.Row
+    # 같은 DB 파일을 positions도 쓰므로 동시 쓰기 시 'database is locked' 회피.
+    # WAL + busy_timeout=5s. positions._connect와 동일 정책.
+    conn.execute("PRAGMA journal_mode = WAL")
+    conn.execute("PRAGMA busy_timeout = 5000")
     return conn
 
 
