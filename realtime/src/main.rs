@@ -1244,6 +1244,9 @@ async fn debug_stats(State(state): State<AppState>) -> Json<serde_json::Value> {
         // LS feed → bridge mpsc 채널 full로 drop된 틱 수. 0이 정상.
         // 누적되면 bridge가 못 따라잡거나 broadcast/serialize 핫 path가 느린 신호.
         "tx_dropped": crate::feed::ls_api::TX_DROPPED.load(Ordering::Relaxed),
+        // LP 매트릭스 워커 → bridge mpsc try_send 실패. 0이 정상.
+        // 누적되면 "매트릭스 왜 멈춤?" 디버깅 첫 지표 (silent drop 방지).
+        "matrix_tx_dropped": crate::calc::scheduler::MATRIX_TX_DROPPED.load(Ordering::Relaxed),
         "feed_mode": mode,
         "feed_state": feed_state,
         "feed_age_sec": age_sec,

@@ -10,6 +10,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use dashmap::DashMap;
@@ -17,6 +18,11 @@ use serde::Deserialize;
 use tokio::sync::{mpsc, RwLock};
 use tokio::time::{interval, MissedTickBehavior};
 use tracing::{info, warn};
+
+/// LP 매트릭스 워커 → bridge mpsc try_send 실패 누적.
+/// 정상 운영 0. 누적되면 "매트릭스가 왜 안 갱신됨?" 디버깅 첫 지표.
+/// `/debug/stats::matrix_tx_dropped` 노출.
+pub static MATRIX_TX_DROPPED: AtomicU64 = AtomicU64::new(0);
 
 use crate::model::lp::{
     DeskBook, EtfFairValueSnapshot, FairValueCell, FairValueMatrixSnapshot, HedgeRoute,
@@ -150,14 +156,18 @@ impl MatrixState {
             snapshots: etf_snaps,
             timestamp: now_iso.clone(),
         };
-        let _ = tx.try_send(WsMessage::FairValueMatrix(matrix_snap));
+        if tx.try_send(WsMessage::FairValueMatrix(matrix_snap)).is_err() {
+            MATRIX_TX_DROPPED.fetch_add(1, Ordering::Relaxed);
+        }
 
         // ─── Book risk ──────────────────────────────────────────────────
         let risk = self.risk_cache.get().await;
         let book = self.book.read().await.clone();
         let book_risk_snap =
             compute_book_risk(&book, &prices_snapshot, risk.as_deref(), &now_iso);
-        let _ = tx.try_send(WsMessage::BookRisk(book_risk_snap));
+        if tx.try_send(WsMessage::BookRisk(book_risk_snap)).is_err() {
+            MATRIX_TX_DROPPED.fetch_add(1, Ordering::Relaxed);
+        }
     }
 
     fn snapshot_prices(&self) -> PriceMap {
