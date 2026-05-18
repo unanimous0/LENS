@@ -10,6 +10,9 @@ const HISTORY_INTERVAL_MS = 5000  // 5초 간격
 const HISTORY_MAX_POINTS = 120    // 10분치
 const TOP_N_CHART = 7
 
+// 백엔드 _classify_etf() 분류. 사용자 토글 필터링에 사용.
+export type EtfType = 'derivative' | 'bond' | 'sector' | 'index' | 'other'
+
 type EtfMaster = {
   code: string
   name: string
@@ -19,6 +22,8 @@ type EtfMaster = {
   // 차익 거래 대상 여부. false면 fNAV/실집행/차익BP 컬럼 무의미 (레버리지/인버스/채권/혼합 등).
   // 백엔드 _is_arbitrable() 분류. 누락 시 true 폴백 (구 응답 호환).
   arbitrable: boolean
+  // 백엔드 _classify_etf() 분류. 누락 시 'other' 폴백.
+  type?: EtfType
 }
 
 type PdfStock = { code: string; name: string; qty: number }
@@ -481,6 +486,43 @@ export function EtfArbitragePage() {
   })
   useEffect(() => { localStorage.setItem('etf.arbMode', arbMode) }, [arbMode])
 
+  // 표시 ETF 개수 제한 — LS API 동시 WS 한도 회피 + 화면 효율.
+  // 디폴트 100. '전체'는 거래량 폭주 종목 한 번에 sub해서 LS 연결 끊김 위험.
+  const [subLimit, setSubLimit] = useState<number | 'all'>(() => {
+    const saved = localStorage.getItem('etf.subLimit')
+    if (saved === 'all') return 'all'
+    const n = saved ? parseInt(saved, 10) : NaN
+    return [50, 100, 200, 300].includes(n) ? n : 100
+  })
+  useEffect(() => {
+    localStorage.setItem('etf.subLimit', subLimit === 'all' ? 'all' : String(subLimit))
+  }, [subLimit])
+
+  // 표시 ETF 유형 — backend _classify_etf() 결과로 필터. 디폴트 섹터형만.
+  // 복수 선택 가능. 전체 버튼으로 5종 토글.
+  const [subTypes, setSubTypes] = useState<Set<EtfType>>(() => {
+    try {
+      const saved = localStorage.getItem('etf.subTypes')
+      if (saved) {
+        const arr = JSON.parse(saved) as EtfType[]
+        if (Array.isArray(arr) && arr.length > 0) return new Set(arr)
+      }
+    } catch { /* ignore */ }
+    return new Set<EtfType>(['sector'])
+  })
+  useEffect(() => {
+    localStorage.setItem('etf.subTypes', JSON.stringify([...subTypes]))
+  }, [subTypes])
+
+  // 거래량 desc 재정렬 트리거 — 30초마다 increment.
+  // 라이브 cum_volume 변화로 상위 N 진입/이탈 종목이 sub 목록에 자동 반영.
+  // 90~110위 변동은 ref-count + warm-down 60s가 흡수 (LS reconnect 없음).
+  const [sortTick, setSortTick] = useState(0)
+  useEffect(() => {
+    const id = setInterval(() => setSortTick((t) => t + 1), 30_000)
+    return () => clearInterval(id)
+  }, [])
+
   // 호가 기준 — ETF 매수/매도 시 어느 호가를 사용할지.
   const [quoteMode, setQuoteMode] = useState<QuoteMode>(() => {
     const saved = localStorage.getItem('etf.quoteMode')
@@ -572,6 +614,7 @@ export function EtfArbitragePage() {
         const masterItems: EtfMaster[] = (mEtf.items ?? []).map((e: EtfMaster) => ({
           ...e,
           arbitrable: e.arbitrable ?? true,
+          type: e.type ?? 'other',
         }))
         setMaster(masterItems)
         setLoadedAt(mEtf.loaded_at)
@@ -613,29 +656,36 @@ export function EtfArbitragePage() {
     return m
   }, [futuresMaster])
 
-  // 주식/ETF + 선물 front 코드 구독.
-  // ETF 거래량 desc 정렬해서 큰 ETF의 PDF 종목들이 먼저 fetch되도록.
-  // localStorage 캐시(이전 세션 cum_volume)에 의존 — 첫 mount 후 30초 안에 누적되어 다음 mount부터 효과.
-  // 선물은 ls_api 모드에선 fixed group의 auto_spread로 front 월물 자동 구독되지만, mock에서는
-  // 명시적으로 subscribe-stocks에 A+7 코드 포함시켜야 mock이 futures tick 생성.
-  const stockSubscriptionCodes = useMemo(() => {
-    if (!pdfs || !master) return [] as string[]
-    // ETF 거래량 캐시 — localStorage에 30초마다 저장됨 (아래 useEffect).
-    const etfVolCache: Record<string, number> = (() => {
+  // 표시·구독 대상 ETF — type 필터 + 거래량 desc 정렬 + limit slice.
+  // master 자체는 원본 유지 (cache 저장은 전체 ETF 대상). visibleMaster가 모든 화면·sub의 source.
+  // 라이브 cum_volume 우선, localStorage 캐시 fallback. 30초 tick으로 자동 재계산 → 거래량 폭주 ETF 자동 진입.
+  // useMarketStore.getState()를 useMemo 안에서 호출 — reactive 아닌 snapshot. tick으로만 갱신.
+  const visibleMaster = useMemo<EtfMaster[]>(() => {
+    if (!master) return []
+    void sortTick // dep 트리거
+    const filtered = master.filter((e) => subTypes.has(e.type ?? 'other'))
+    const cache: Record<string, number> = (() => {
       try {
         const raw = localStorage.getItem('etf.volumeCache.v1')
         return raw ? (JSON.parse(raw) as Record<string, number>) : {}
       } catch { return {} }
     })()
-    // ETF 거래량 desc 정렬. 캐시 없는 ETF는 0 → 마지막. 동일값은 stable order.
-    const sortedEtfs = [...master].sort((a, b) => {
-      const va = etfVolCache[a.code] ?? 0
-      const vb = etfVolCache[b.code] ?? 0
-      return vb - va
-    })
+    const live = useMarketStore.getState()
+    const volOf = (code: string): number => {
+      const lv = live.etfTicks[code]?.cum_volume ?? live.stockTicks[code]?.cum_volume ?? 0
+      return lv > 0 ? lv : (cache[code] ?? 0)
+    }
+    const sorted = [...filtered].sort((a, b) => volOf(b.code) - volOf(a.code))
+    return subLimit === 'all' ? sorted : sorted.slice(0, subLimit)
+  }, [master, subTypes, subLimit, sortTick])
+
+  // 주식/ETF + 선물 front 코드 구독.
+  // 선물은 ls_api 모드에선 fixed group의 auto_spread로 front 월물 자동 구독되지만, mock에서는
+  // 명시적으로 subscribe-stocks에 A+7 코드 포함시켜야 mock이 futures tick 생성.
+  const stockSubscriptionCodes = useMemo(() => {
+    if (!pdfs) return [] as string[]
     const all = new Set<string>()
-    // ETF 단위로 묶음 추가 — Set이라 중복 종목 자동 dedup, 첫 등장 ETF의 우선순위 적용.
-    for (const etf of sortedEtfs) {
+    for (const etf of visibleMaster) {
       all.add(etf.code)
       const pdf = pdfs[etf.code]
       if (!pdf) continue
@@ -646,7 +696,7 @@ export function EtfArbitragePage() {
       }
     }
     return Array.from(all)
-  }, [master, pdfs, futuresByBase])
+  }, [visibleMaster, pdfs, futuresByBase])
 
   usePageStockSubscriptions(stockSubscriptionCodes)
 
@@ -670,12 +720,12 @@ export function EtfArbitragePage() {
     return () => clearInterval(id)
   }, [master])
 
-  // ETF iNAV 구독 (I5_) — 거래소 발행 실시간 NAV.
-  const inavCodes = useMemo(() => master?.map((e) => e.code) ?? [], [master])
+  // ETF iNAV 구독 (I5_) — 거래소 발행 실시간 NAV. visibleMaster 기준 (sub 한도 통일).
+  const inavCodes = useMemo(() => visibleMaster.map((e) => e.code), [visibleMaster])
   usePageInavSubscriptions(inavCodes)
 
-  // ETF 호가 일괄 구독 — 4모드 가격 (own/opp/mid)에 필요. 마스터에서 ETF 코드만.
-  const etfCodesForOrderbook = useMemo(() => master?.map((e) => e.code) ?? [], [master])
+  // ETF 호가 일괄 구독 — 4모드 가격 (own/opp/mid)에 필요. visibleMaster 기준.
+  const etfCodesForOrderbook = useMemo(() => visibleMaster.map((e) => e.code), [visibleMaster])
   usePageOrderbookBulk(etfCodesForOrderbook)
 
   // ETF별 메트릭 계산 — 두 단계로 분리해서 excluded 토글 응답 최적화.
@@ -724,7 +774,7 @@ export function EtfArbitragePage() {
 
 
   const naturalRows = useMemo(() => {
-    if (!master) return [] as EtfMaster[]
+    if (!visibleMaster.length) return [] as EtfMaster[]
     // 텍스트 정렬은 오름차순, 그 외 (수치)는 내림차순.
     // 모든 sort는 "강도(strength) 내림차순". 매수는 음수 클수록 강하므로 -buyBp.
     // 괴리 컬럼들도 매수가 강한 ETF가 위에 오게 하려면 별도 처리하나, 여기선 기본 signed 값 그대로
@@ -768,9 +818,9 @@ export function EtfArbitragePage() {
       if (!isArbSort) return 0
       return m && m.arbitrable === false ? 1 : 0
     }
-    // ETF row 필터 (검색어 + 절댓값 기반 임계 통과만)
+    // ETF row 필터 (검색어 + 절댓값 기반 임계 통과만). visibleMaster 기준 (type+limit 적용된 list).
     const q = searchQuery.trim().toLowerCase()
-    const filtered = master.filter((etf) => {
+    const filtered = visibleMaster.filter((etf) => {
       // 검색어: 종목명 또는 코드에 substring 매칭 (case-insensitive). metric 무관.
       if (q && !etf.code.toLowerCase().includes(q) && !etf.name.toLowerCase().includes(q)) return false
       const m = metricsByCode[etf.code]
@@ -798,7 +848,7 @@ export function EtfArbitragePage() {
       return (vb - va) * (sortAsc ? -1 : 1)
     })
     return sorted
-  }, [master, metricsByCode, sortKey, sortAsc, minDiffBp, minTradeProfit, searchQuery])
+  }, [visibleMaster, metricsByCode, sortKey, sortAsc, minDiffBp, minTradeProfit, searchQuery])
 
   // 펼침 패널 열린 동안 행 순서 freeze (사용 토글로 metric이 바뀌어도 row 위치 안 흔들리게).
   // 닫히면 자연 정렬로 복귀, sortKey 바꾸면 새로 정렬 + 재freeze.
@@ -913,6 +963,15 @@ export function EtfArbitragePage() {
 
   return (
     <div className="flex flex-col gap-1 p-1">
+      {/* 표시·유형 토글 — sub 범위 제어 (LS API 동시 WS 한도 회피). */}
+      <SubScopeToggles
+        subLimit={subLimit}
+        setSubLimit={setSubLimit}
+        subTypes={subTypes}
+        setSubTypes={setSubTypes}
+        masterCount={master?.length ?? 0}
+        visibleCount={visibleMaster.length}
+      />
       {/* 필터 패널 */}
       {(() => {
         const activeCount =
@@ -2353,3 +2412,104 @@ const PriceNavChart = memo(function PriceNavChart({
     </div>
   )
 })
+
+
+const TYPE_LABEL: Record<EtfType, string> = {
+  sector: '섹터형',
+  index: '지수형',
+  derivative: '파생형',
+  bond: '채권형',
+  other: '기타',
+}
+const TYPE_ORDER: EtfType[] = ['sector', 'index', 'derivative', 'bond', 'other']
+const LIMIT_OPTIONS: (number | 'all')[] = [50, 100, 200, 300, 'all']
+
+/**
+ * ETF 페이지 sub 범위 토글 — 표시 개수 + 유형 필터.
+ * LS API 동시 WS 한도 회피 + 사용자 워크플로 (섹터/지수형 + 상위 100) 최적화.
+ *
+ * 디폴트: 100 + 섹터형. 전체 클릭 시 LS 끊김 위험 경고.
+ * 30초마다 cum_volume 기준 재정렬 (sortTick 외부 state) → 거래량 폭주 종목 자동 진입.
+ */
+function SubScopeToggles({
+  subLimit, setSubLimit,
+  subTypes, setSubTypes,
+  masterCount, visibleCount,
+}: {
+  subLimit: number | 'all'
+  setSubLimit: (v: number | 'all') => void
+  subTypes: Set<EtfType>
+  setSubTypes: (s: Set<EtfType>) => void
+  masterCount: number
+  visibleCount: number
+}) {
+  const allTypesActive = subTypes.size === TYPE_ORDER.length
+  const toggleType = (t: EtfType) => {
+    const next = new Set(subTypes)
+    if (next.has(t)) next.delete(t)
+    else next.add(t)
+    // 최소 1개는 활성 — 모두 끄려는 동작은 무시 (의미 없음)
+    if (next.size === 0) return
+    setSubTypes(next)
+  }
+  const toggleAll = () => {
+    setSubTypes(allTypesActive ? new Set<EtfType>(['sector']) : new Set<EtfType>(TYPE_ORDER))
+  }
+  return (
+    <div className="panel px-3 py-2 flex flex-col gap-1.5">
+      <div className="flex items-center gap-3 flex-wrap text-[11px]">
+        <span className="text-t3 w-10">표시</span>
+        {LIMIT_OPTIONS.map((n) => (
+          <button
+            key={String(n)}
+            onClick={() => setSubLimit(n)}
+            className={cn(
+              'px-2 py-0.5 rounded tabular-nums transition-colors',
+              subLimit === n
+                ? 'bg-accent text-bg-base font-medium'
+                : 'bg-bg-surface text-t3 hover:text-t1'
+            )}
+          >
+            {n === 'all' ? '전체' : n}
+          </button>
+        ))}
+        <span className="ml-auto text-[10px] text-t4 tabular-nums">
+          {visibleCount} / {masterCount} ETF
+        </span>
+      </div>
+      <div className="flex items-center gap-3 flex-wrap text-[11px]">
+        <span className="text-t3 w-10">유형</span>
+        {TYPE_ORDER.map((t) => (
+          <button
+            key={t}
+            onClick={() => toggleType(t)}
+            className={cn(
+              'px-2 py-0.5 rounded transition-colors',
+              subTypes.has(t)
+                ? 'bg-accent text-bg-base font-medium'
+                : 'bg-bg-surface text-t3 hover:text-t1'
+            )}
+          >
+            {TYPE_LABEL[t]}
+          </button>
+        ))}
+        <button
+          onClick={toggleAll}
+          className={cn(
+            'px-2 py-0.5 rounded border transition-colors',
+            allTypesActive
+              ? 'border-accent text-accent'
+              : 'border-bg-surface text-t3 hover:text-t1 hover:border-t4'
+          )}
+        >
+          전체
+        </button>
+        {subLimit === 'all' && (
+          <span className="ml-auto text-[10px] text-down tabular-nums">
+            ⚠ 전체 sub는 LS 연결 끊김 위험
+          </span>
+        )}
+      </div>
+    </div>
+  )
+}

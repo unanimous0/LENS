@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from typing import Optional
 
@@ -19,6 +20,8 @@ from sqlalchemy import text
 
 from core.database import korea_async_session
 from services.stock_code import normalize_stock_code as _norm_code
+
+logger = logging.getLogger("uvicorn.error")
 
 router = APIRouter(prefix="/etfs", tags=["etfs"])
 
@@ -47,6 +50,78 @@ def _is_arbitrable(name: Optional[str], tracking_multiple: Optional[str], replic
     if any(k in n for k in _NON_ARBITRABLE_NAME_KEYWORDS):
         return False
     return True
+
+
+# 해외 ETF — 마스터에서 *완전 제외*. ETF 페이지·LP 매트릭스 모두 국내형만 대상.
+# 키워드는 kr_name 부분문자열 매칭. 환헤지 표기 "(H)"도 해외 추종 신호.
+_OVERSEAS_KEYWORDS = (
+    "미국", "US", "나스닥", "NASDAQ", "S&P", "SP500", "S&P500",
+    "차이나", "China", "CSI", "항셍", "Hang Seng", "HK", "홍콩",
+    "일본", "Japan", "닛케이", "Nikkei",
+    "유럽", "Europe", "EURO", "유로",
+    "글로벌", "Global", "World", "선진국",
+    "베트남", "Vietnam", "인도", "India",
+    "신흥국", "EM", "대만", "Taiwan",
+    "호주", "캐나다", "브라질", "멕시코",
+    "(H)",  # 환헤지 표기
+)
+
+
+def _is_overseas(name: Optional[str]) -> bool:
+    """해외 추종 ETF면 True. 키워드 매칭 — 룰 조정은 _OVERSEAS_KEYWORDS만 변경."""
+    n = name or ""
+    return any(k in n for k in _OVERSEAS_KEYWORDS)
+
+
+# 유형 분류 — 우선순위 단일 분류. 위에서부터 첫 매치되는 유형이 그 ETF의 type.
+# 사용자 워크플로 (주식선물 헤지 가능 여부): 섹터형/지수형이 핵심.
+_DERIVATIVE_KEYWORDS = (
+    "레버리지", "인버스", "곱버스", "2X", "2x", "3X", "3x", "-1X",
+    "선물", "커버드콜",
+)
+_BOND_KEYWORDS = (
+    "채권", "국고채", "통안채", "회사채", "단기자금", "MMF",
+    "KOFR", "KOFIA", "국채", "단기채", "장기채", "물가채", "신용채",
+)
+_SECTOR_KEYWORDS = (
+    # 산업/테마 ETF
+    "반도체", "자동차", "은행", "건설", "헬스케어", "바이오", "제약",
+    "게임", "K-pop", "K팝", "화장품", "식품", "운송", "통신",
+    "보험", "증권", "조선", "철강", "화학", "리츠", "부동산",
+    "5G", "AI", "메타버스", "전기차", "배터리", "그린", "우주",
+    "방산", "항공", "미디어", "유틸리티", "소재", "디지털",
+    "클라우드", "데이터", "인공지능", "ESG", "K-뉴딜", "뉴딜",
+    "수소", "탄소", "친환경",
+    "금융", "고배당", "에너지", "전력", "원자력", "휴머노이드",
+    "성장", "가치", "퀄리티", "모멘텀",  # 팩터 ETF
+    "TOP10",  # 섹터 ETF가 자주 사용 — derivative 다음 우선이므로 sector로 잡음
+)
+_INDEX_KEYWORDS = (
+    # 광범위 시장 지수 — *정확한 지수명*만. 짧은 토큰("코스피"/"200")은 섹터 ETF
+    # 이름에도 흔히 들어가서 false positive 위험. 우선순위가 sector 다음이라
+    # 섹터 키워드 매칭 안 되는 *순수 지수 추종* ETF만 여기 들어옴.
+    "코스피200", "KOSPI200", "코스닥150", "KOSDAQ150",
+    "KRX 300", "KRX300", "KOSPI100", "코스피100",
+    "종합주가",
+)
+
+
+def _classify_etf(name: Optional[str]) -> str:
+    """ETF 유형 분류 — derivative/bond/sector/index/other 중 하나.
+
+    우선순위: 파생 > 채권 > 섹터 > 지수 > 기타.
+    파생 1순위인 이유: "TIGER 반도체 인버스 2X"는 섹터 키워드 있어도 본질은 파생.
+    """
+    n = name or ""
+    if any(k in n for k in _DERIVATIVE_KEYWORDS):
+        return "derivative"
+    if any(k in n for k in _BOND_KEYWORDS):
+        return "bond"
+    if any(k in n for k in _SECTOR_KEYWORDS):
+        return "sector"
+    if any(k in n for k in _INDEX_KEYWORDS):
+        return "index"
+    return "other"
 
 
 class _Cache:
@@ -109,27 +184,35 @@ async def _load_from_db() -> None:
             "FROM etf_portfolio_daily WHERE snapshot_date = :d"
         ), {"d": pdf_date})).all()
 
-    # 마스터 dict
+    # 마스터 dict — 해외 ETF는 *완전 제외* (LP 매트릭스/ETF 페이지 모두 국내형만).
     etfs: dict[str, dict] = {}
+    excluded_overseas = 0
     for r in master_rows:
         code = _norm_code(r.etf_code)
         if not code:
+            continue
+        if _is_overseas(r.kr_name):
+            excluded_overseas += 1
             continue
         etfs[code] = {
             "code": code,
             "name": r.kr_name or "",
             "cu_unit": r.creation_unit,
             "arbitrable": _is_arbitrable(r.kr_name, r.tracking_multiple, r.replication),
+            "type": _classify_etf(r.kr_name),
         }
 
     # PDF dict: 종목은 stocks 배열, 현금은 cash 필드 (음수 가능)
     # as_of/snapshot_date는 PDF 기준 (fair value 계산의 핵심이 PDF라서).
+    # 해외 ETF는 etfs dict에 없으므로 PDF도 자동 skip — LP 매트릭스의 etf_pdf_extra 종목 union에서도 빠짐.
     pdfs: dict[str, dict] = {}
     snap_iso = pdf_date.isoformat() if pdf_date else None
     for r in pdf_rows:
         etf_code = _norm_code(r.etf_code)
         if not etf_code:
             continue
+        if etf_code not in etfs:
+            continue  # 해외 ETF 제외
         bucket = pdfs.setdefault(etf_code, {"as_of": snap_iso, "stocks": [], "cash": 0})
         if r.is_cash:
             bucket["cash"] = int(r.shares or 0)
@@ -145,6 +228,10 @@ async def _load_from_db() -> None:
     _cache.snapshot_date = snap_iso
     _cache.fetched_at = time.monotonic()
     _cache.loaded_at = snap_iso
+    logger.info(
+        "ETF 마스터 로드: 국내 %d개 (해외 %d개 제외), PDF %d개",
+        len(etfs), excluded_overseas, len(pdfs),
+    )
 
 
 @router.get("")
