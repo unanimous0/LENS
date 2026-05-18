@@ -83,7 +83,7 @@ async def list_positions(status: str | None = None) -> dict:
 
 @router.get("/active-leg-codes")
 async def get_active_leg_codes() -> dict:
-    """활성(open) 포지션의 leg 종목 코드만 반환. realtime startup polling용."""
+    """활성(open) 포지션의 leg 종목 코드만 반환. 단독 디버깅용 (deprecated for realtime polling)."""
     await _ensure()
     codes = await positions.active_leg_codes()
     return {"codes": codes}

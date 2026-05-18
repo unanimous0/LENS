@@ -451,8 +451,10 @@ async fn main() {
                 .expect("reqwest client");
             for attempt in 1..=12u32 {
                 tokio::time::sleep(std::time::Duration::from_secs(if attempt == 1 { 1 } else { 5 })).await;
+                // /api/permanent-codes — LP 매트릭스 타겟 + 활성 포지션 leg union.
+                // backend startup이 realtime 깨기 전에 끝나 push 실패해도 여기서 회복.
                 let resp = client
-                    .get("http://localhost:8100/api/positions/active-leg-codes")
+                    .get("http://localhost:8100/api/permanent-codes")
                     .send()
                     .await;
                 let Ok(r) = resp else { continue };
