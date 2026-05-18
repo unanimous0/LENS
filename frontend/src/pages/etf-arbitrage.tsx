@@ -963,16 +963,7 @@ export function EtfArbitragePage() {
 
   return (
     <div className="flex flex-col gap-1 p-1">
-      {/* 표시·유형 토글 — sub 범위 제어 (LS API 동시 WS 한도 회피). */}
-      <SubScopeToggles
-        subLimit={subLimit}
-        setSubLimit={setSubLimit}
-        subTypes={subTypes}
-        setSubTypes={setSubTypes}
-        masterCount={master?.length ?? 0}
-        visibleCount={visibleMaster.length}
-      />
-      {/* 필터 패널 */}
+      {/* 필터 패널 — sub 범위 토글(표시·유형) + 임계 필터 + 검색 통합 */}
       {(() => {
         const activeCount =
           (minFuturesVolume > 0 ? 1 : 0) +
@@ -983,6 +974,15 @@ export function EtfArbitragePage() {
         }
         return (
           <div className="panel px-3 py-2 flex flex-col gap-2">
+            {/* sub 범위 토글 — 항상 표시 (filter open/close와 무관). LS WS 한도 회피. */}
+            <SubScopeToggles
+              subLimit={subLimit}
+              setSubLimit={setSubLimit}
+              subTypes={subTypes}
+              setSubTypes={setSubTypes}
+              masterCount={master?.length ?? 0}
+              visibleCount={visibleMaster.length}
+            />
             <div className="flex items-center gap-2 text-[11px] text-t3">
               <button
                 onClick={() => setFilterOpen((v) => !v)}
@@ -2456,7 +2456,7 @@ function SubScopeToggles({
     setSubTypes(allTypesActive ? new Set<EtfType>(['sector']) : new Set<EtfType>(TYPE_ORDER))
   }
   return (
-    <div className="panel px-3 py-2 flex flex-col gap-1.5">
+    <div className="flex flex-col gap-1.5 pb-1 border-b border-bg-base/50">
       <div className="flex items-center gap-3 flex-wrap text-[11px]">
         <span className="text-t3 w-10">표시</span>
         {LIMIT_OPTIONS.map((n) => (
