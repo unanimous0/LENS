@@ -19,6 +19,7 @@ LP 의미:
 from __future__ import annotations
 
 import asyncio
+import bisect
 import time
 from datetime import date, timedelta
 from typing import Optional
@@ -76,8 +77,11 @@ async def _fetch_stock_returns(
     earliest = dates[0] - timedelta(days=10)
     latest = dates[-1]
 
+    # adj_close — 액면분할/병합 소급 조정된 종가. raw close_price를 쓰면 분할일에 spike
+    # (예: 100만→10만) 발생해 OLS β·잔차 σ 무력화. Finance_Data 04:30 매일 갱신.
+    # 지수(index_ohlcv_daily)는 분할 없어 raw 그대로 OK. 출처: CLAUDE.md Finance_Data 룰.
     rows = (await session.execute(text(
-        "SELECT stock_code, time, close_price FROM ohlcv_daily "
+        "SELECT stock_code, time, adj_close FROM ohlcv_daily "
         "WHERE stock_code = ANY(:codes) AND time BETWEEN :s AND :e "
         "ORDER BY stock_code, time"
     ), {"codes": stock_codes, "s": earliest, "e": latest})).all()
@@ -85,7 +89,7 @@ async def _fetch_stock_returns(
     series_by_code: dict[str, list[tuple[date, float]]] = {}
     for r in rows:
         series_by_code.setdefault(r.stock_code, []).append(
-            (r.time, float(r.close_price))
+            (r.time, float(r.adj_close))
         )
 
     out: dict[str, np.ndarray] = {}
@@ -97,8 +101,8 @@ async def _fetch_stock_returns(
         for i, d in enumerate(dates):
             if d not in close_by_time:
                 continue
-            # 이전 거래일 close — sorted_times에서 d 직전
-            idx = next((j for j, sd in enumerate(sorted_times) if sd >= d), len(sorted_times))
+            # 이전 거래일 close — sorted_times에서 d 직전 (bisect_left로 O(log n))
+            idx = bisect.bisect_left(sorted_times, d)
             if idx == 0:
                 continue
             prev_close = close_by_time[sorted_times[idx - 1]]
@@ -158,9 +162,15 @@ def _ledoit_wolf_shrinkage(
     S = (X.T @ X) / T
     F = np.diag(np.diag(S))
 
-    # π̂ 벡터화 — outer products. 메모리: T × n² × 8 bytes
-    outers = X[:, :, None] * X[:, None, :]  # (T, n, n)
-    pi_mat = ((outers - S) ** 2).mean(axis=0)
+    # π̂_ij = (1/T) Σ_t (X_ti X_tj − S_ij)² 의 닫힌형 전개.
+    #   (X_ti X_tj − S_ij)² = (X_ti X_tj)² − 2 S_ij (X_ti X_tj) + S_ij²
+    #   Σ_t (X_ti X_tj)² = Σ_t X_ti² X_tj² = (X² .T @ X²)_ij
+    #   (1/T) Σ_t X_ti X_tj = S_ij  (X는 평균 0)
+    # ⇒ π̂_ij = (X² .T @ X²)_ij / T − S_ij²
+    # 메모리: 옛 (T,n,n) outers → 새 (T,n) X_sq + (n,n) 곱. n=500 시 120MB → 0.24MB.
+    # 수학적 등가성 float64 precision 내 검증됨.
+    X_sq = X * X
+    pi_mat = (X_sq.T @ X_sq) / T - S * S
     pi = float(pi_mat.sum())
     rho = float(np.diag(pi_mat).sum())
 

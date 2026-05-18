@@ -10,6 +10,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use dashmap::DashMap;
@@ -18,8 +19,13 @@ use tokio::sync::{mpsc, RwLock};
 use tokio::time::{interval, MissedTickBehavior};
 use tracing::{info, warn};
 
+/// LP 매트릭스 워커 → bridge mpsc try_send 실패 누적.
+/// 정상 운영 0. 누적되면 "매트릭스가 왜 안 갱신됨?" 디버깅 첫 지표.
+/// `/debug/stats::matrix_tx_dropped` 노출.
+pub static MATRIX_TX_DROPPED: AtomicU64 = AtomicU64::new(0);
+
 use crate::model::lp::{
-    DeskBook, EtfFairValueSnapshot, FairValueCell, FairValueMatrixSnapshot, HedgeRoute,
+    DeskBook, EtfFairValueSnapshot, FairValueCell, FairValueMatrixSnapshot,
 };
 use crate::model::message::WsMessage;
 
@@ -150,14 +156,18 @@ impl MatrixState {
             snapshots: etf_snaps,
             timestamp: now_iso.clone(),
         };
-        let _ = tx.try_send(WsMessage::FairValueMatrix(matrix_snap));
+        if tx.try_send(WsMessage::FairValueMatrix(matrix_snap)).is_err() {
+            MATRIX_TX_DROPPED.fetch_add(1, Ordering::Relaxed);
+        }
 
         // ─── Book risk ──────────────────────────────────────────────────
         let risk = self.risk_cache.get().await;
         let book = self.book.read().await.clone();
         let book_risk_snap =
             compute_book_risk(&book, &prices_snapshot, risk.as_deref(), &now_iso);
-        let _ = tx.try_send(WsMessage::BookRisk(book_risk_snap));
+        if tx.try_send(WsMessage::BookRisk(book_risk_snap)).is_err() {
+            MATRIX_TX_DROPPED.fetch_add(1, Ordering::Relaxed);
+        }
     }
 
     fn snapshot_prices(&self) -> PriceMap {
@@ -259,7 +269,9 @@ fn pick_best<F: Fn(&FairValueCell) -> f64>(
     cells
         .iter()
         .enumerate()
-        .filter(|(_, c)| c.usable)
+        // usable + 유한 metric만 후보. NaN이 첫 인자면 reduce가 그대로 best로 굳을 수 있어
+        // 사전에 차단 (Equal로 fallback해도 max 못 갱신해서 결과는 같지만 코드 의도 명확).
+        .filter(|(_, c)| c.usable && metric(c).is_finite())
         .reduce(|best, cur| {
             let cmp = metric(cur.1)
                 .partial_cmp(&metric(best.1))
@@ -312,6 +324,8 @@ pub fn spawn_workers(
         let fb = fastapi_base;
         tokio::spawn(async move {
             let mut tick = interval(Duration::from_secs(5));
+            // Skip: HTTP fetch가 5초보다 오래 걸리면 backlog 누적 안 되게 다음 cycle은 skip.
+            tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
             loop {
                 tick.tick().await;
                 if st.etfs.read().await.is_empty() {
@@ -343,6 +357,3 @@ fn current_ms() -> u64 {
         .unwrap_or(0)
 }
 
-// 사용 안 하지만 _ allow — HedgeRoute가 reverse index 등에 미래 사용 자리.
-#[allow(unused_imports)]
-use HedgeRoute as _UnusedHedgeRouteMarker;

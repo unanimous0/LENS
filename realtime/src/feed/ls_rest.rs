@@ -511,7 +511,7 @@ pub async fn fetch_stocks_initial(
                     stats.emit_value_pos.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     crate::volume_cache::record(code, value);
                     if is_etf {
-                        // ETF: t1102 시점에 nav는 모름 (I5_ 스트림이 채움). price만 박음.
+                        // ETF: t1102 시점에 nav는 모름 (I5_ 스트림이 채움). price + cum_volume + prev_close 박음.
                         let _ = tx.send(WsMessage::EtfTick(EtfTick {
                             code: code.clone(), name,
                             price,
@@ -520,9 +520,13 @@ pub async fn fetch_stocks_initial(
                             spread_bid_bp: 0.0,
                             spread_ask_bp: 0.0,
                             volume: 0,
+                            cum_volume: value * 1_000_000,
                             timestamp: now,
+                            prev_close: if pc > 0.0 { Some(pc) } else { None },
                             last_trade_volume: None,
                             trade_side: None,
+                            halted: is_halted(code),
+                            vi_active: is_vi_active(code),
                         })).await;
                     } else {
                         let _ = tx.send(WsMessage::StockTick(StockTick {
@@ -564,9 +568,13 @@ pub async fn fetch_stocks_initial(
                             spread_bid_bp: 0.0,
                             spread_ask_bp: 0.0,
                             volume: 0,
+                            cum_volume: 0,  // pc_only는 미거래 — cum_volume 0
                             timestamp: now,
+                            prev_close: Some(pc),
                             last_trade_volume: None,
                             trade_side: None,
+                            halted: is_halted(code),
+                            vi_active: is_vi_active(code),
                         })).await;
                     } else {
                         let _ = tx.send(WsMessage::StockTick(StockTick {

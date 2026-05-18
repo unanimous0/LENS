@@ -298,7 +298,9 @@ function computeMetric(
   const askNavBp = navRef > 0 && ask1 > 0 ? ((ask1 - navRef) / navRef) * 10000 : 0
   const bidNavBp = navRef > 0 && bid1 > 0 ? ((bid1 - navRef) / navRef) * 10000 : 0
 
-  const tradeValue = stockTicks[code]?.cum_volume ?? 0
+  // ETF의 cum_volume은 EtfTick에 (main 머지 후 t1102 ETF 분기). stockTicks fallback은
+  // 머지 전 호환용 — 점진적으로 제거 가능.
+  const tradeValue = etfTicks[code]?.cum_volume ?? stockTicks[code]?.cum_volume ?? 0
 
   return {
     diffBp,
@@ -315,7 +317,7 @@ function computeMetric(
     appliedPct: rNAV_total > 0 ? (appliedFutValue / rNAV_total) * 100 : 0,
     futuresCount,
     etfPrice: lastPrice,
-    etfPrevClose: stockTicks[code]?.prev_close ?? 0,
+    etfPrevClose: etfTicks[code]?.prev_close ?? stockTicks[code]?.prev_close ?? 0,
     tradeValue,
     priceNavBp: Math.abs(priceNavBp) > 1000 ? 0 : priceNavBp,
     askNavBp: Math.abs(askNavBp) > 1000 ? 0 : askNavBp,
@@ -657,7 +659,7 @@ export function EtfArbitragePage() {
       const s = useMarketStore.getState()
       const cache: Record<string, number> = {}
       for (const etf of master) {
-        const v = s.stockTicks[etf.code]?.cum_volume ?? 0
+        const v = s.etfTicks[etf.code]?.cum_volume ?? s.stockTicks[etf.code]?.cum_volume ?? 0
         if (v > 0) cache[etf.code] = v
       }
       if (Object.keys(cache).length > 0) {

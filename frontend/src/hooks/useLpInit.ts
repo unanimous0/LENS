@@ -20,5 +20,11 @@ export function useLpInit() {
       .then((r) => r.json())
       .then((c) => useLpStore.getState().setCostInputs(c))
       .catch(() => {})
+    fetch('/api/lp/corporate-actions-today')
+      .then((r) => r.json())
+      .then((d) =>
+        useLpStore.getState().setCorporateActionsToday(d.items || [])
+      )
+      .catch(() => {})
   }, [])
 }

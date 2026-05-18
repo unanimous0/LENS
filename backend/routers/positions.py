@@ -10,21 +10,18 @@
 """
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import Literal
 
-import httpx
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from services import positions
+from services.permanent_sub import schedule_sync
 
 router = APIRouter(prefix="/positions", tags=["positions"])
 
 logger = logging.getLogger("uvicorn.error")
-
-REALTIME_URL = "http://localhost:8200"
 
 _initialized = False
 
@@ -36,17 +33,8 @@ async def _ensure() -> None:
         _initialized = True
 
 
-async def _sync_realtime() -> None:
-    """현재 active 포지션 leg를 realtime의 영구 sub set으로 push.
-    실패 시 로그만 — realtime은 다음 호출(다른 포지션 변경)에서 회복.
-    """
-    try:
-        codes = await positions.active_leg_codes()
-        async with httpx.AsyncClient(timeout=2.0) as client:
-            await client.post(f"{REALTIME_URL}/permanent-stocks", json={"codes": codes})
-        logger.info("permanent-stocks synced to realtime: %d codes", len(codes))
-    except Exception as e:  # noqa: BLE001
-        logger.warning("permanent-stocks sync failed: %s", e)
+# 포지션 변경 핸들러는 schedule_sync()로 fire-and-forget 발사.
+# 실제 union 계산 + retry + task ref 관리는 services.permanent_sub에 위임.
 
 
 # ---------------------------------------------------------------------------
@@ -95,7 +83,7 @@ async def list_positions(status: str | None = None) -> dict:
 
 @router.get("/active-leg-codes")
 async def get_active_leg_codes() -> dict:
-    """활성(open) 포지션의 leg 종목 코드만 반환. realtime startup polling용."""
+    """활성(open) 포지션의 leg 종목 코드만 반환. 단독 디버깅용 (deprecated for realtime polling)."""
     await _ensure()
     codes = await positions.active_leg_codes()
     return {"codes": codes}
@@ -112,7 +100,7 @@ async def create_position(body: PositionCreate) -> dict:
     detail = await positions.get_one(pos_id)
     if detail is None:
         raise HTTPException(500, "created but not retrievable")
-    asyncio.create_task(_sync_realtime())
+    schedule_sync()
     return detail
 
 
@@ -131,7 +119,7 @@ async def delete_position(pos_id: str) -> dict:
     ok = await positions.delete(pos_id)
     if not ok:
         raise HTTPException(404, f"position not found: {pos_id}")
-    asyncio.create_task(_sync_realtime())
+    schedule_sync()
     return {"deleted": True}
 
 
@@ -176,5 +164,5 @@ async def close_position(pos_id: str, body: PositionClose) -> dict:
     detail = await positions.get_one(pos_id)
     if not detail:
         raise HTTPException(500, "closed but not retrievable")
-    asyncio.create_task(_sync_realtime())
+    schedule_sync()
     return detail

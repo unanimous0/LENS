@@ -156,14 +156,15 @@ mod tests {
     #[test]
     fn stale_input_marks_unusable() {
         let etf = dummy_etf();
-        let now = 1_000_000_u64;
+        let now = 5_000_000_u64;
         let mut prices: PriceMap = HashMap::new();
-        // BBB가 임계(60s) 이상 stale
+        // BBB가 임계(1h = 3_600_000ms) 이상 stale — 시스템이 가격 신호를 못 받는 케이스.
+        // 한국 주식 정상 종목이 1h 동안 한 번도 체결 안 되는 건 드물어 LS WS 끊김 신호.
         prices.insert("AAA".into(), PriceWithAge { price: 5_000.0, updated_at_ms: now - 100 });
-        prices.insert("BBB".into(), PriceWithAge { price: 10_000.0, updated_at_ms: now - 70_000 });
+        prices.insert("BBB".into(), PriceWithAge { price: 10_000.0, updated_at_ms: now - 3_700_000 });
 
         let cell = compute_pdf_basket(&etf, 50.0, &prices, &dummy_cost(), now);
         assert!(!cell.usable);
-        assert_eq!(cell.inputs_age_ms, 70_000);
+        assert_eq!(cell.inputs_age_ms, 3_700_000);
     }
 }

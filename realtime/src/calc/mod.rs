@@ -118,8 +118,16 @@ pub fn apply_level3_costs(fair_value: f64, cost: &CostInputs) -> (f64, f64) {
 }
 
 /// 신선도 임계 — 입력 데이터가 이 시간보다 오래되면 셀 usable=false.
-/// 첫 빌드는 1분. 다음 빌드에서 ETF별 / 경로별 정책 분기 가능.
-pub const STALE_THRESHOLD_MS: u32 = 60_000;
+///
+/// 의미: *시스템이 가격 신호를 못 받고 있는지* 감지용 (가격 자체의 유효성 아님).
+/// 한국 주식은 체결 안 되면 마지막 체결가 = 현재가라 *오래된 가격도 유효*. pc_only는
+/// price=0으로 emit되어 handle_tick에서 자동 차단되므로 prices에 들어가는 값은
+/// 모두 당일 체결가.
+///
+/// 1시간 = 정상 종목이 한 번도 체결 안 될 시간은 드묾. 1시간 동안 어떤 가격도 안 옴
+/// = LS WS 끊김 / realtime 다운 / 종목 자체 정지 (정지는 halted 플래그 별도) 등 신호.
+/// 다음 빌드에서 ETF별 / 종목 유동성별 가변 가능.
+pub const STALE_THRESHOLD_MS: u32 = 3_600_000;
 
 #[cfg(test)]
 mod tests {

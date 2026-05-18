@@ -35,7 +35,12 @@ def _connect() -> sqlite3.Connection:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB_FILE)
     conn.row_factory = sqlite3.Row
-    # FK 활성화 — 같은 conn 안에서만 유효
+    # PRAGMA는 connection scope — 매번 적용.
+    # WAL: 같은 DB 파일을 loan_rates도 쓰므로 동시 쓰기 시 'database is locked' 회피.
+    # busy_timeout: WAL이어도 짧은 잠금 충돌 가능 (체크포인트 등) → 5초 대기.
+    # foreign_keys: positions↔legs/loans/snapshots CASCADE에 필수.
+    conn.execute("PRAGMA journal_mode = WAL")
+    conn.execute("PRAGMA busy_timeout = 5000")
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
 
@@ -284,6 +289,9 @@ def _close_sync(pos_id: str, leg_exits: dict[int, float], note: str | None) -> s
     """
     now = _now_ms()
     with _connect() as conn:
+        # BEGIN IMMEDIATE — close idempotency. 두 client가 동시 close 호출 시
+        # 둘 다 status='open' 본 후 둘 다 UPDATE 발생 방지. WAL + busy_timeout과 조합.
+        conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
             "SELECT id, status FROM positions WHERE id = ?", (pos_id,)
         ).fetchone()

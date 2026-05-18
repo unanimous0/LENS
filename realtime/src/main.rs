@@ -143,16 +143,26 @@ pub struct AppState {
     /// client_id → 그 client가 잡고 있는 종목 코드 집합 (subscribe-stocks).
     /// WS disconnect 시 자동 cleanup으로 ref-count leak 방지. 헤더(X-LENS-Client-Id) 없으면 추적 안 함.
     pub client_subs: Arc<DashMap<u64, dashmap::DashSet<String>>>,
+    /// subscribe-inav 용 — stocks와 별개 채널이라 cleanup 분리.
+    /// 같은 client_id 키 공유, 동일한 disconnect cleanup에서 둘 다 정리.
+    pub client_subs_inav: Arc<DashMap<u64, dashmap::DashSet<String>>>,
     /// Backend가 영구 sub 의도를 표명한 코드 (active 포지션의 leg 등).
     /// POST /permanent-stocks가 set 전체를 replace. diff로 SubscribeStocks/UnsubscribeStocks 발사.
     /// 페이지 mount/unmount와 무관하게 ref-count 영구 +1 효과.
     pub permanent_codes: Arc<StdRwLock<std::collections::HashSet<String>>>,
 }
 
-/// Bridge에서 EtfTick의 0인 필드를 이전 캐시값으로 메우기 위한 stash.
+/// Bridge에서 EtfTick의 0/None 필드를 이전 캐시값으로 메우기 위한 stash.
 /// 모듈 레벨로 노출 — AppState에서 공유.
+/// halted/vi_active는 매 emit이 현재 상태를 직접 읽으므로 백필 불필요.
 #[derive(Default, Clone, Copy)]
-pub struct EtfStateBridge { pub price: f64, pub nav: f64, pub volume: u64 }
+pub struct EtfStateBridge {
+    pub price: f64,
+    pub nav: f64,
+    pub volume: u64,
+    pub cum_volume: u64,
+    pub prev_close: Option<f64>,
+}
 
 fn now_us() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -332,12 +342,15 @@ async fn main() {
                             }
                         }
                     }
-                    // EtfTick 필드 백필
+                    // EtfTick 필드 백필 — S3_(체결: price/volume/cum_volume) + I5_(NAV) +
+                    // t1102(prev_close 1회) 세 source가 같은 캐시 키 덮어쓰므로 sticky 필드 보존.
                     if let WsMessage::EtfTick(ref mut t) = msg {
                         let mut prev = etf_state_map.entry(t.code.clone()).or_default();
                         if t.price > 0.0 { prev.price = t.price; } else { t.price = prev.price; }
                         if t.nav > 0.0 { prev.nav = t.nav; } else { t.nav = prev.nav; }
                         if t.volume > 0 { prev.volume = t.volume; } else { t.volume = prev.volume; }
+                        if t.cum_volume > 0 { prev.cum_volume = t.cum_volume; } else { t.cum_volume = prev.cum_volume; }
+                        if t.prev_close.is_some() { prev.prev_close = t.prev_close; } else { t.prev_close = prev.prev_close; }
                     }
                     let key = msg_pending_key(&msg);
                     pending.insert(key, msg);
@@ -421,6 +434,7 @@ async fn main() {
         failed_stocks: failed_stocks.clone(),
         next_client_id: Arc::new(AtomicU64::new(1)),
         client_subs: Arc::new(DashMap::new()),
+        client_subs_inav: Arc::new(DashMap::new()),
         permanent_codes: Arc::new(StdRwLock::new(std::collections::HashSet::new())),
     };
 
@@ -437,8 +451,10 @@ async fn main() {
                 .expect("reqwest client");
             for attempt in 1..=12u32 {
                 tokio::time::sleep(std::time::Duration::from_secs(if attempt == 1 { 1 } else { 5 })).await;
+                // /api/permanent-codes — LP 매트릭스 타겟 + 활성 포지션 leg union.
+                // backend startup이 realtime 깨기 전에 끝나 push 실패해도 여기서 회복.
                 let resp = client
-                    .get("http://localhost:8100/api/positions/active-leg-codes")
+                    .get("http://localhost:8100/api/permanent-codes")
                     .send()
                     .await;
                 let Ok(r) = resp else { continue };
@@ -1078,22 +1094,36 @@ async fn prioritize_stocks(
 }
 
 /// ETF iNAV 누적 구독 (I5_) — 거래소 발행 NAV stream.
+/// subscribe-stocks와 동일하게 X-LENS-Client-Id 헤더 추적 — disconnect 시 자동 cleanup.
 async fn subscribe_inav(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(req): Json<SubRequest>,
 ) -> Json<serde_json::Value> {
     let count = req.codes.len();
-    info!("REST subscribe-inav: {} codes", count);
+    let cid = extract_client_id(&headers);
+    if let Some(id) = cid {
+        let entry = state.client_subs_inav.entry(id).or_insert_with(dashmap::DashSet::new);
+        for c in &req.codes { entry.insert(c.clone()); }
+    }
+    info!("REST subscribe-inav: {} codes (client={:?})", count, cid);
     let _ = state.sub_tx.read().unwrap().send(SubCommand::SubscribeInav(req.codes));
     Json(serde_json::json!({"status": "ok", "subscribed": count}))
 }
 
 async fn unsubscribe_inav(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(req): Json<SubRequest>,
 ) -> Json<serde_json::Value> {
     let count = req.codes.len();
-    info!("REST unsubscribe-inav: {} codes", count);
+    let cid = extract_client_id(&headers);
+    if let Some(id) = cid {
+        if let Some(entry) = state.client_subs_inav.get(&id) {
+            for c in &req.codes { entry.remove(c); }
+        }
+    }
+    info!("REST unsubscribe-inav: {} codes (client={:?})", count, cid);
     let _ = state.sub_tx.read().unwrap().send(SubCommand::UnsubscribeInav(req.codes));
     Json(serde_json::json!({"status": "ok", "unsubscribed": count}))
 }
@@ -1244,6 +1274,9 @@ async fn debug_stats(State(state): State<AppState>) -> Json<serde_json::Value> {
         // LS feed → bridge mpsc 채널 full로 drop된 틱 수. 0이 정상.
         // 누적되면 bridge가 못 따라잡거나 broadcast/serialize 핫 path가 느린 신호.
         "tx_dropped": crate::feed::ls_api::TX_DROPPED.load(Ordering::Relaxed),
+        // LP 매트릭스 워커 → bridge mpsc try_send 실패. 0이 정상.
+        // 누적되면 "매트릭스 왜 멈춤?" 디버깅 첫 지표 (silent drop 방지).
+        "matrix_tx_dropped": crate::calc::scheduler::MATRIX_TX_DROPPED.load(Ordering::Relaxed),
         "feed_mode": mode,
         "feed_state": feed_state,
         "feed_age_sec": age_sec,

@@ -1287,13 +1287,18 @@ async fn handle_tick(
                     under_management: super::ls_rest::is_under_management(tr_key),
                 }));
             } else {
-                // ETF S3_ 체결 → price/volume + cvolume/trade_side. nav는 I5_ 스트림이 채움 (bridge merge로 보존).
+                // ETF S3_ 체결 → price/volume + cvolume/trade_side + cum_volume.
+                // nav/prev_close는 다른 source가 채움 (bridge merge로 sticky 보존).
                 try_send_tick(tx, WsMessage::EtfTick(EtfTick {
                     code: tr_key.into(), name: name.into(),
                     price, nav: 0.0, spread_bp: 0.0,
-                    spread_bid_bp: 0.0, spread_ask_bp: 0.0, volume, timestamp: now,
+                    spread_bid_bp: 0.0, spread_ask_bp: 0.0,
+                    volume, cum_volume: value * 1_000_000, timestamp: now,
+                    prev_close: None,
                     last_trade_volume: if cvolume > 0 { Some(cvolume) } else { None },
                     trade_side,
+                    halted: super::ls_rest::is_halted(tr_key),
+                    vi_active: super::ls_rest::is_vi_active(tr_key),
                 }));
             }
         }
@@ -1356,9 +1361,13 @@ async fn handle_tick(
                     nav: r2(nav),
                     spread_bp: 0.0, spread_bid_bp: 0.0, spread_ask_bp: 0.0,
                     volume: 0,
+                    cum_volume: 0,  // S3_/t1102가 채움
                     timestamp: now,
+                    prev_close: None,
                     last_trade_volume: None,  // I5_는 NAV-only stream
                     trade_side: None,
+                    halted: super::ls_rest::is_halted(tr_key),
+                    vi_active: super::ls_rest::is_vi_active(tr_key),
                 }));
             }
         }

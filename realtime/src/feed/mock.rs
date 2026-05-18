@@ -107,9 +107,13 @@ fn make_etf_tick(code: &str, price: f64, nav: f64, rng: &mut impl Rng) -> EtfTic
         spread_bp: round2((price - nav) / nav * 10000.0),
         spread_bid_bp: 0.0, spread_ask_bp: 0.0,
         volume: rng.random_range(1_000..50_000),
+        cum_volume: rng.random_range(100_000_000..50_000_000_000),
         timestamp: now,
+        prev_close: Some(round2(nav * 0.998)),
         last_trade_volume: Some(cvolume),
         trade_side: Some(side),
+        halted: false,
+        vi_active: false,
     }
 }
 
