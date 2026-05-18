@@ -2456,7 +2456,7 @@ function SubScopeToggles({
     setSubTypes(allTypesActive ? new Set<EtfType>(['sector']) : new Set<EtfType>(TYPE_ORDER))
   }
   return (
-    <div className="flex flex-col gap-1.5 pb-1 border-b border-bg-base/50">
+    <div className="flex flex-col gap-1.5 -mx-3 -mt-2 mb-1 px-3 py-2 bg-bg-surface/40 border-b border-bg-base">
       <div className="flex items-center gap-3 flex-wrap text-[11px]">
         <span className="text-t3 w-10">표시</span>
         {LIMIT_OPTIONS.map((n) => (
