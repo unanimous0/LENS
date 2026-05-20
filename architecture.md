@@ -101,7 +101,7 @@ LENS/
 ├── data/                                  # 정적 데이터 (futures_master.json, krx_holidays.json, dividends_mock.json)
 ├── start_dev.sh                           # 3개 서비스 한번에 실행 + FEED_MODE 자동 감지
 ├── docker-compose.yml
-└── .env                                   # DATABASE_URL_KOREA, LS_APP_KEY 등
+└── .env                                   # DATABASE_URL_KOREA, LS_APP_KEY_A/B 등
 ```
 
 ## 데이터 소스 전략
@@ -116,7 +116,7 @@ LENS/
 
 - 실시간 피드 추상화는 **Rust `MarketFeed` trait** (`realtime/src/feed/mod.rs`)이 담당. Python 측 옛 `MarketDataAdapter` ABC는 제거됨.
 - 모드 전환: 프론트엔드 NetworkToggle → Rust 8200으로 모드 POST → 현재 피드 구독 해제 후 새 어댑터로 재구독. 프론트 WS 연결은 유지.
-- `start_dev.sh`가 환경에 따라 `FEED_MODE`를 자동 결정 (TCP 도달 / `.env` LS_APP_KEY / fallback).
+- `start_dev.sh`가 환경에 따라 `FEED_MODE`를 자동 결정 (TCP 도달 / `.env` LS_APP_KEY_A / fallback).
 
 ### ETF 마스터/PDF — 엑셀 → Finance_Data DB 전환 완료 (2026-05)
 

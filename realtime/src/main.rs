@@ -583,10 +583,9 @@ fn spawn_feed(
     let join = match mode {
         "ls_api" => {
             // Z+X 키 풀 초기화 (2026-05-20). WS는 항상 키A, REST는 시간대 보고 키A/B.
-            // 환경변수 LS_APP_KEY_A/_B 없으면 LS_APP_KEY로 fallback (하위 호환).
             let key_pool = crate::feed::ls_rest::KeyPool::from_env();
             if key_pool.key_a.is_empty() {
-                return Err("LS_APP_KEY (or LS_APP_KEY_A) not set".to_string());
+                return Err("LS_APP_KEY_A not set".to_string());
             }
             let app_key = key_pool.key_a.clone();   // WS는 키A 영구
             let app_secret = key_pool.secret_a.clone();

@@ -175,8 +175,6 @@ impl MarketFeed for LsApiFeed {
             let all_subs = self.subscriptions.clone();
             let tx2 = tx.clone();
             let cancel2 = cancel.clone();
-            let ak = self.app_key.clone();
-            let as_ = self.app_secret.clone();
             let n = self.names.clone();
             let sc = self.stock_codes.clone();
             let f2s = self.futures_to_spot.clone();
@@ -185,8 +183,7 @@ impl MarketFeed for LsApiFeed {
             let failed = self.failed_stocks.clone();
             let etf_codes_c = self.etf_codes.clone();
             tokio::spawn(async move {
-                // Z+X: 시간대 보고 REST 키 선택. _ak/_as_는 spawn된 worker 내부에서 안 씀.
-                let _ = (&ak, &as_);  // unused 경고 회피 (WS용으로만 모음)
+                // Z+X: REST 키는 시간대 보고 결정.
                 let (ak_r, as_r) = super::ls_rest::rest_credentials();
                 super::ls_rest::fetch_initial_prices(
                     &ak_r, &as_r, &all_subs, &n, &sc, &f2s, &tx2, &cancel2, &stats, Some(&fetched), Some(&failed), Some(&etf_codes_c),
@@ -200,8 +197,6 @@ impl MarketFeed for LsApiFeed {
         // fixed sweep과 약간 시간차 두고 시작 — 토큰 경합 + LS abuse 신호 회피.
         if !self.etf_pdf_extra_codes.is_empty() {
             let extra = self.etf_pdf_extra_codes.clone();
-            let ak = self.app_key.clone();
-            let as_ = self.app_secret.clone();
             let n = self.names.clone();
             let tx2 = tx.clone();
             let cancel2 = cancel.clone();
@@ -235,8 +230,6 @@ impl MarketFeed for LsApiFeed {
         // 초기 fetch 시 LS 5xx로 빠뜨린 코드들이 failed map에 쌓여있음 → 60초마다
         // 재시도해 점진적으로 보충. Sleep phase (장 외)엔 자동 idle.
         {
-            let ak = self.app_key.clone();
-            let as_ = self.app_secret.clone();
             let n = self.names.clone();
             let tx_w = tx.clone();
             let cancel_w = cancel.clone();
@@ -284,8 +277,6 @@ impl MarketFeed for LsApiFeed {
         // t1405 종목 상태 폴러 — 1시간 주기로 매매정지/투자경고/정리매매 set 모두 갱신.
         // 첫 fetch는 spawn 후 5초 (토큰/네트워크 안정화 대기). gubun=0.
         {
-            let ak = self.app_key.clone();
-            let as_ = self.app_secret.clone();
             let cancel_h = cancel.clone();
             tokio::spawn(async move {
                 use std::time::Duration;
@@ -335,8 +326,6 @@ impl MarketFeed for LsApiFeed {
             let all_subs = self.subscriptions.clone();
             let tx2 = tx.clone();
             let cancel2 = cancel.clone();
-            let ak = self.app_key.clone();
-            let as_ = self.app_secret.clone();
             let n = self.names.clone();
             let sc = self.stock_codes.clone();
             let f2s = self.futures_to_spot.clone();
@@ -572,8 +561,6 @@ impl MarketFeed for LsApiFeed {
 
                             // 신규 코드만 t1102 초기 fetch.
                             {
-                                let ak = app_key.clone();
-                                let as_ = app_secret.clone();
                                 let n = (*names).clone();
                                 let tx2 = tx.clone();
                                 let cancel2 = cancel.clone();
@@ -637,8 +624,6 @@ impl MarketFeed for LsApiFeed {
                                 continue;
                             }
                             info!("PrioritizeStocks: spawning fetch for {}/{} codes", to_fetch.len(), codes.len());
-                            let ak = app_key.clone();
-                            let as_ = app_secret.clone();
                             let n = (*names).clone();
                             let tx2 = tx.clone();
                             let cancel2 = cancel.clone();

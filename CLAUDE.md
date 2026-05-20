@@ -97,7 +97,7 @@ CSS 변수는 `globals.css`의 `@theme inline`에 정의. Tailwind 클래스로 
 - Node.js v20 (nvm) / Rust (cargo) / Python (uvicorn)
 - `start_dev.sh`는 서비스를 한꺼번에 띄우고 `FEED_MODE` 자동 감지:
   1. 내부망 WS 서버(`10.21.1.208:41001`) TCP 도달 가능 → `internal`
-  2. `.env`에 `LS_APP_KEY` 존재 → `ls_api` (외부망)
+  2. `.env`에 `LS_APP_KEY_A` 존재 → `ls_api` (외부망)
   3. 그 외 → `mock`
   환경변수 `FEED_MODE=mock` 등으로 수동 오버라이드 가능. 장 외 시간에는 ls_api 모드에서 대부분 no_data → 미리보기는 mock 권장.
 

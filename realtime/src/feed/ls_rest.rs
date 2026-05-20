@@ -66,20 +66,12 @@ pub struct KeyPool {
 }
 
 impl KeyPool {
-    /// 환경변수에서 읽기. LS_APP_KEY_A/B 없으면 LS_APP_KEY fallback (하위 호환).
+    /// 환경변수에서 읽기. LS_APP_KEY_A/B 필수.
     pub fn from_env() -> Self {
-        let key_a = std::env::var("LS_APP_KEY_A")
-            .or_else(|_| std::env::var("LS_APP_KEY"))
-            .unwrap_or_default();
-        let secret_a = std::env::var("LS_APP_SECRET_A")
-            .or_else(|_| std::env::var("LS_APP_SECRET"))
-            .unwrap_or_default();
-        let key_b = std::env::var("LS_APP_KEY_B")
-            .or_else(|_| std::env::var("LS_APP_KEY"))
-            .unwrap_or_default();
-        let secret_b = std::env::var("LS_APP_SECRET_B")
-            .or_else(|_| std::env::var("LS_APP_SECRET"))
-            .unwrap_or_default();
+        let key_a = std::env::var("LS_APP_KEY_A").unwrap_or_default();
+        let secret_a = std::env::var("LS_APP_SECRET_A").unwrap_or_default();
+        let key_b = std::env::var("LS_APP_KEY_B").unwrap_or_default();
+        let secret_b = std::env::var("LS_APP_SECRET_B").unwrap_or_default();
         Self { key_a, secret_a, key_b, secret_b }
     }
 }
@@ -114,8 +106,8 @@ pub fn rest_credentials() -> (String, String) {
     }
     // KeyPool 초기화 안 됨 (테스트/오류 케이스) — 환경변수 직접 fallback
     (
-        std::env::var("LS_APP_KEY").unwrap_or_default(),
-        std::env::var("LS_APP_SECRET").unwrap_or_default(),
+        std::env::var("LS_APP_KEY_A").unwrap_or_default(),
+        std::env::var("LS_APP_SECRET_A").unwrap_or_default(),
     )
 }
 

@@ -19,8 +19,8 @@ from urllib.parse import urlencode
 KST = timezone(timedelta(hours=9))
 DURATION = 100  # 30초간 수집
 
-APP_KEY = os.environ.get("LS_APP_KEY", "PSkI66GNNchK7vE2lteLggheyHcmazrd0K4L")
-APP_SECRET = os.environ.get("LS_APP_SECRET", "xFOSXokQUq94PE5GHaVGVmCNv4TLUChX")
+APP_KEY = os.environ.get("LS_APP_KEY_A", "")
+APP_SECRET = os.environ.get("LS_APP_SECRET_A", "")
 
 # 접속 URL: 반드시 /websocket (not /websocket/stock)
 WS_URL = "wss://openapi.ls-sec.co.kr:9443/websocket"

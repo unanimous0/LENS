@@ -32,9 +32,9 @@ for line in ENV_FILE.read_text().splitlines():
     if line and not line.startswith("#") and "=" in line:
         k, v = line.split("=", 1)
         env[k] = v
-APP_KEY = env.get("LS_APP_KEY", "")
-APP_SECRET = env.get("LS_APP_SECRET", "")
-assert APP_KEY and APP_SECRET, ".env의 LS_APP_KEY/SECRET 필요"
+APP_KEY = env.get("LS_APP_KEY_A", "")
+APP_SECRET = env.get("LS_APP_SECRET_A", "")
+assert APP_KEY and APP_SECRET, ".env의 LS_APP_KEY_A/SECRET_A 필요"
 
 def get_token():
     req = Request("https://openapi.ls-sec.co.kr:8080/oauth2/token",

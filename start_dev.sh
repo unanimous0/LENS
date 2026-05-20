@@ -28,7 +28,7 @@ nvm use --delete-prefix v20.20.2
 
 # FEED_MODE 자동 감지 (환경변수로 명시하면 그대로 사용)
 #   1. 내부망 WS 서버(10.21.1.208:41001) TCP 도달 가능 → internal
-#   2. .env에 LS_APP_KEY 존재 → ls_api (외부망)
+#   2. .env에 LS_APP_KEY_A 존재 → ls_api (외부망)
 #   3. 그 외 → mock
 INTERNAL_HOST="${INTERNAL_WS_HOST:-10.21.1.208}"
 INTERNAL_PORT="${INTERNAL_WS_PORT:-41001}"
@@ -36,7 +36,7 @@ if [ -z "$FEED_MODE" ]; then
     if timeout 1 bash -c "</dev/tcp/${INTERNAL_HOST}/${INTERNAL_PORT}" 2>/dev/null; then
         export FEED_MODE=internal
         echo "[자동감지] 내부망 접근 가능 (${INTERNAL_HOST}:${INTERNAL_PORT}) → FEED_MODE=internal"
-    elif grep -q '^LS_APP_KEY=.\+' .env 2>/dev/null; then
+    elif grep -q '^LS_APP_KEY_A=.\+' .env 2>/dev/null; then
         export FEED_MODE=ls_api
         echo "[자동감지] 외부망 키 존재 (.env) → FEED_MODE=ls_api"
     else
