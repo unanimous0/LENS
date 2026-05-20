@@ -869,6 +869,8 @@ async fn compute_group_mn_pairs(
 
     let mut out: HashMap<String, MPairResult> = HashMap::new();
     let mut attempted = 0_usize;
+    // 종류별 fail 이유 카운트 — PR-C2.1 진단 강화
+    let mut fail_by_kind_reason: HashMap<(String, &'static str), usize> = HashMap::new();
     for (gid, pca_r) in pca_map {
         attempted += 1;
         let Some((kind, name, members)) = group_info.get(gid) else { continue };
@@ -876,7 +878,7 @@ async fn compute_group_mn_pairs(
             GroupKind::Etf => MnSplitStrategy::EtfNatural,
             _ => MnSplitStrategy::Factor1Sign,
         };
-        if let Some(mp) = discovery::discover_mn_in_group(
+        match discovery::discover_mn_in_group(
             gid,
             name,
             strategy,
@@ -885,7 +887,23 @@ async fn compute_group_mn_pairs(
             cache,
             names,
         ) {
-            out.insert(gid.clone(), mp);
+            Ok(mp) => {
+                out.insert(gid.clone(), mp);
+            }
+            Err(reason) => {
+                *fail_by_kind_reason
+                    .entry((kind.as_str().to_string(), reason))
+                    .or_insert(0) += 1;
+            }
+        }
+    }
+    if !fail_by_kind_reason.is_empty() {
+        info!("[PR-C2 진단] fail 이유 분포 (종류별):");
+        let mut sorted: Vec<((String, &'static str), usize)> =
+            fail_by_kind_reason.into_iter().map(|(k, v)| (k, v)).collect();
+        sorted.sort_by(|a, b| b.1.cmp(&a.1));
+        for ((kind, reason), n) in sorted.iter().take(15) {
+            info!("  · {kind:14}: {n:4} × \"{reason}\"");
         }
     }
     info!(

@@ -518,7 +518,7 @@ pub fn discover_mn_in_group(
     candidate_pool: &[CandidateMember],
     cache: &SeriesCache,
     names: &std::collections::HashMap<String, String>,
-) -> Option<MPairResult> {
+) -> Result<MPairResult, &'static str> {
     const WEIGHT_THRESHOLD: f64 = 0.05;
     const MAX_LEGS: usize = 5;
     const MIN_TOTAL: usize = 3;
@@ -544,15 +544,19 @@ pub fn discover_mn_in_group(
     // ETF 그룹의 자연 분할은 m=1 (ETF 1개) vs n≥2 (보유주식)이 정상.
     // factor1 분할은 양변 각 2 이상 일반적. 통합 조건: 각 변 ≥ 1 + 합 ≥ 3.
     if x_keys.is_empty() || y_keys.is_empty() || (x_keys.len() + y_keys.len()) < 3 {
-        return None;
+        return Err("split: empty side or |x|+|y|<3");
     }
 
     // 길이 통일 — 모든 멤버가 MIN_SAMPLES 이상 가졌어야 candidate pool에 들어왔으므로 안전
     let target_len = MIN_SAMPLES;
     let (x_series, x_keys_kept) = build_standardized_returns(&x_keys, cache, target_len);
     let (y_series, y_keys_kept) = build_standardized_returns(&y_keys, cache, target_len);
-    if x_series.len() < 2 || y_series.len() < 2 {
-        return None;
+    // ETF Natural 분할은 X 측 1개도 정상. Factor1 분할은 양변 ≥ 2 권장.
+    if x_series.is_empty() || y_series.is_empty() {
+        return Err("standardize: empty side (cache miss or var=0)");
+    }
+    if x_series.len() + y_series.len() < 3 {
+        return Err("standardize: |x|+|y|<3 after cache filter");
     }
 
     let cca = find_sparse_cca_with_target(
@@ -561,7 +565,18 @@ pub fn discover_mn_in_group(
         MAX_LEGS,
         MIN_TOTAL,
         WEIGHT_THRESHOLD,
-    )?;
+    ).ok_or("sparse_cca: no c grid satisfied leg constraints")?;
+
+    // PMD-CCA는 X'X=I 가정 → cca.correlation이 [-sqrt(q), sqrt(q)] 범위 가능.
+    // 진짜 합성 시리즈 correlation은 별도 계산: corr(X·u, Y·v).
+    let t_ret = x_series[0].len();
+    let xu: Vec<f64> = (0..t_ret)
+        .map(|k| (0..x_series.len()).map(|i| cca.u[i] * x_series[i][k]).sum::<f64>())
+        .collect();
+    let yv: Vec<f64> = (0..t_ret)
+        .map(|k| (0..y_series.len()).map(|j| cca.v[j] * y_series[j][k]).sum::<f64>())
+        .collect();
+    let true_corr = crate::stats::pearson(&xu, &yv).unwrap_or(cca.correlation);
 
     // 선택된 leg 인덱스
     let x_sel: Vec<usize> = cca
@@ -583,7 +598,7 @@ pub fn discover_mn_in_group(
     let x_log_prices = log_closes_aligned(&x_keys_kept, cache, target_len + 1); // +1: returns가 차분 1번
     let y_log_prices = log_closes_aligned(&y_keys_kept, cache, target_len + 1);
     if x_log_prices.iter().any(|p| p.is_empty()) || y_log_prices.iter().any(|p| p.is_empty()) {
-        return None;
+        return Err("log_closes: aligned prices empty (data length mismatch)");
     }
 
     // 합성 log price — Σ w_i × log_close_i (선택된 leg만)
@@ -607,23 +622,29 @@ pub fn discover_mn_in_group(
         y_weight_sum += w.abs();
     }
     if !(x_weight_sum > 0.0) || !(y_weight_sum > 0.0) {
-        return None;
+        return Err("weight_sum: zero");
     }
 
     // OLS: y_combined = α + β × x_combined → 잔차 spread
-    let ols = crate::stats::ols(&x_combined, &y_combined)?;
+    let ols = crate::stats::ols(&x_combined, &y_combined).ok_or("ols: fail")?;
     if ols.r_squared < MIN_R_SQUARED {
-        return None;
+        return Err("ols: r²<0.5");
     }
-    let adf = crate::stats::adf_tstat(&ols.residuals)?;
+    let adf = crate::stats::adf_tstat(&ols.residuals).ok_or("adf: fail")?;
     if adf > ADF_CRIT {
-        return None;
+        return Err("adf: t-stat>-3 (not stationary)");
     }
-    let hl = crate::stats::half_life(&ols.residuals)?;
-    if !hl.is_finite() || hl < MIN_HALF_LIFE || hl > MAX_HALF_LIFE {
-        return None;
+    let hl = crate::stats::half_life(&ols.residuals).ok_or("hl: fail")?;
+    if !hl.is_finite() {
+        return Err("hl: non-finite");
     }
-    let z = crate::stats::current_z(&ols.residuals)?;
+    if hl < MIN_HALF_LIFE {
+        return Err("hl: <0.5d (too fast/noise)");
+    }
+    if hl > MAX_HALF_LIFE {
+        return Err("hl: >90d (too slow)");
+    }
+    let z = crate::stats::current_z(&ols.residuals).ok_or("z: fail")?;
 
     // legs 변환 (가중치 정규화 후 보존)
     let x_legs: Vec<MLeg> = x_sel
@@ -643,15 +664,15 @@ pub fn discover_mn_in_group(
         })
         .collect();
 
-    let score = (-adf) * (1.0 / hl) * cca.correlation.abs();
+    let score = (-adf) * (1.0 / hl) * true_corr.abs();
 
-    Some(MPairResult {
+    Ok(MPairResult {
         group_id: group_id.to_string(),
         group_name: group_name.to_string(),
         timeframe: "1d".into(),
         x_legs,
         y_legs,
-        cca_correlation: cca.correlation,
+        cca_correlation: true_corr,
         hedge_ratio: ols.beta,
         adf_tstat: adf,
         half_life: hl,
