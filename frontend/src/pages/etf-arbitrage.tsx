@@ -2455,6 +2455,20 @@ function SubScopeToggles({
   const toggleAll = () => {
     setSubTypes(allTypesActive ? new Set<EtfType>(['sector']) : new Set<EtfType>(TYPE_ORDER))
   }
+  // "전체" 클릭 시 명시적 확인 — Agent 4 점검에서 ETF 페이지 전체 sub는
+  // stock+inav+orderbook 3개 hook 동시 적용으로 conn 70+ → LS 한도 초과 거의 확정.
+  // 실수로 누르는 사고 방지 (디폴트는 100 + 섹터로 안전).
+  const handleLimitClick = (n: number | 'all') => {
+    if (n === 'all' && subLimit !== 'all') {
+      const ok = window.confirm(
+        '"전체" 표시는 약 4,000+ 코드를 한 번에 LS API에 sub합니다.\n\n' +
+        '동시 WS 연결 한도 초과로 *모든 페이지* 데이터 수신이 일시 끊길 수 있습니다.\n\n' +
+        '정말 진행하시겠습니까?'
+      )
+      if (!ok) return
+    }
+    setSubLimit(n)
+  }
   return (
     <div className="flex flex-col gap-1.5 pb-2 mb-1 border-b border-bg-base">
       <div className="flex items-center gap-3 flex-wrap text-[11px]">
@@ -2462,7 +2476,7 @@ function SubScopeToggles({
         {LIMIT_OPTIONS.map((n) => (
           <button
             key={String(n)}
-            onClick={() => setSubLimit(n)}
+            onClick={() => handleLimitClick(n)}
             className={cn(
               'px-2 py-0.5 rounded tabular-nums transition-colors',
               subLimit === n
