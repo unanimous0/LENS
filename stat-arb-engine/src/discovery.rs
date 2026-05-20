@@ -225,6 +225,8 @@ pub struct CandidateMember {
     pub key: String,
     /// Σ (loading² × explained_variance_ratio) over kept factors — communality 비슷한 지표.
     pub power: f64,
+    /// factor1 loading (부호 포함). PR-C2 양변 분할에 사용.
+    pub factor1_loading: f64,
 }
 
 /// 그룹 멤버 종가 시계열에 Dense PCA 적용.
@@ -298,10 +300,15 @@ pub fn compute_group_pca(
         }
     }
     power.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    let f1_loadings = &pca_r.loadings[0];
     let candidate_pool: Vec<CandidateMember> = power
         .into_iter()
         .take(pool_size)
-        .map(|(i, p)| CandidateMember { key: keys[i].clone(), power: p })
+        .map(|(i, p)| CandidateMember {
+            key: keys[i].clone(),
+            power: p,
+            factor1_loading: f1_loadings[i],
+        })
         .collect();
 
     Some(GroupPcaResult {
@@ -309,6 +316,349 @@ pub fn compute_group_pca(
         n_samples: pca_r.n_samples,
         factors,
         candidate_pool,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// PR-C2: M:N 발굴 — Sparse CCA + 양변 분할 + 합성 spread 검증
+// ---------------------------------------------------------------------------
+
+/// 양변 분할 전략. group_kind 따라 main.rs가 결정.
+#[derive(Debug, Clone, Copy)]
+pub enum MnSplitStrategy {
+    /// ETF 그룹: ETF 1개 ↔ 보유주식 다수. 자연 분할.
+    EtfNatural,
+    /// 그 외 (sector/index/etf_category): PCA factor1 부호로 분할.
+    Factor1Sign,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct MLeg {
+    pub key: String,
+    pub name: String,
+    /// L2 정규화 가중치 (CCA u 또는 v entry). 절댓값 0.05 이상만 leg로 인정.
+    pub weight: f64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct MPairResult {
+    pub group_id: String,
+    pub group_name: String,
+    pub timeframe: String,
+    pub x_legs: Vec<MLeg>,
+    pub y_legs: Vec<MLeg>,
+    /// CCA in-sample canonical correlation (u' K v).
+    pub cca_correlation: f64,
+    /// 합성 spread (log price) 회귀 hedge ratio.
+    pub hedge_ratio: f64,
+    pub adf_tstat: f64,
+    pub half_life: f64,
+    pub r_squared: f64,
+    pub z_score: f64,
+    pub sample_size: usize,
+    /// 발굴 점수 = -ADF × (1/hl) × |cca_correlation|.
+    pub score: f64,
+}
+
+/// candidate pool을 ETF / 주식 분할 (key prefix 기반).
+fn split_etf_natural(pool: &[CandidateMember]) -> (Vec<String>, Vec<String>) {
+    let mut etfs = Vec::new();
+    let mut stocks = Vec::new();
+    for m in pool {
+        if m.key.starts_with("E:") {
+            etfs.push(m.key.clone());
+        } else if m.key.starts_with("S:") {
+            stocks.push(m.key.clone());
+        }
+    }
+    (etfs, stocks)
+}
+
+/// candidate pool을 factor1 부호 분할.
+fn split_by_factor1(pool: &[CandidateMember]) -> (Vec<String>, Vec<String>) {
+    let mut pos = Vec::new();
+    let mut neg = Vec::new();
+    for m in pool {
+        if m.factor1_loading > 0.0 {
+            pos.push(m.key.clone());
+        } else if m.factor1_loading < 0.0 {
+            neg.push(m.key.clone());
+        }
+    }
+    (pos, neg)
+}
+
+/// 컬럼 z-score 표준화. 분산 0이면 None (해당 시리즈 제외 마커).
+fn standardize(v: &[f64]) -> Option<Vec<f64>> {
+    let n = v.len() as f64;
+    if n < 3.0 {
+        return None;
+    }
+    let m = v.iter().sum::<f64>() / n;
+    let var = v.iter().map(|x| (x - m).powi(2)).sum::<f64>() / (n - 1.0);
+    if !(var > 0.0) {
+        return None;
+    }
+    let sd = var.sqrt();
+    Some(v.iter().map(|x| (x - m) / sd).collect())
+}
+
+/// 멤버 key 목록 → (log returns 표준화 매트릭스, 살아남은 key 목록).
+/// 길이 통일은 호출자에서 (모든 변수가 같은 T 길이여야 sparse_cca 호출 가능).
+fn build_standardized_returns(
+    keys: &[String],
+    cache: &SeriesCache,
+    target_len: usize,
+) -> (Vec<Vec<f64>>, Vec<String>) {
+    let mut out_series = Vec::new();
+    let mut out_keys = Vec::new();
+    for key in keys {
+        let Some(entry) = cache.get(key) else { continue };
+        let Some(closes) = closes_daily(entry.value()) else { continue };
+        let rets = log_returns(&closes);
+        if rets.len() < target_len {
+            continue;
+        }
+        let trimmed = rets[rets.len() - target_len..].to_vec();
+        let Some(z) = standardize(&trimmed) else { continue };
+        out_series.push(z);
+        out_keys.push(key.clone());
+    }
+    (out_series, out_keys)
+}
+
+/// 멤버 key → log close prices. CCA로 선택된 leg에 대해 OLS 적용용.
+fn log_closes_aligned(
+    keys: &[String],
+    cache: &SeriesCache,
+    target_len: usize,
+) -> Vec<Vec<f64>> {
+    let mut out = Vec::new();
+    for key in keys {
+        let Some(entry) = cache.get(key) else {
+            out.push(Vec::new());
+            continue;
+        };
+        let Some(closes) = closes_daily(entry.value()) else {
+            out.push(Vec::new());
+            continue;
+        };
+        if closes.len() < target_len {
+            out.push(Vec::new());
+            continue;
+        }
+        let trimmed: Vec<f64> = closes[closes.len() - target_len..]
+            .iter()
+            .map(|p| if *p > 0.0 { p.ln() } else { 0.0 })
+            .collect();
+        out.push(trimmed);
+    }
+    out
+}
+
+/// Outer search — c1, c2 다이얼링으로 leg 수 목표 (≤5 + m+n≥3) 달성.
+/// 단순 grid 탐색: c = 1.2, 1.5, 2.0 시도 후 첫 적합 결과 채택.
+/// 더 정교한 binary search는 후속 PR에서 도입 가능.
+fn find_sparse_cca_with_target(
+    x: &[Vec<f64>],
+    y: &[Vec<f64>],
+    max_legs: usize,
+    min_total: usize,
+    weight_threshold: f64,
+) -> Option<crate::stats::SparseCcaResult> {
+    let p = x.len();
+    let q = y.len();
+    let sqrt_p = (p as f64).sqrt();
+    let sqrt_q = (q as f64).sqrt();
+
+    // c 값들을 작은 것부터 (더 sparse) → 큰 것 (덜 sparse) 순서로 시도.
+    // 첫 적합 결과 채택.
+    let c_grid = [1.2_f64, 1.5, 2.0, 2.5, 3.0];
+    for c in c_grid {
+        let c1 = c.min(sqrt_p);
+        let c2 = c.min(sqrt_q);
+        if c1 < 1.0 || c2 < 1.0 {
+            continue;
+        }
+        let Some(r) = crate::stats::sparse_cca(x, y, c1, c2, 50, 1e-5) else {
+            continue;
+        };
+        let n_x = r.u.iter().filter(|w| w.abs() > weight_threshold).count();
+        let n_y = r.v.iter().filter(|w| w.abs() > weight_threshold).count();
+        if n_x == 0 || n_y == 0 {
+            continue;
+        }
+        if n_x > max_legs || n_y > max_legs {
+            continue;
+        }
+        if n_x + n_y < min_total {
+            continue;
+        }
+        return Some(r);
+    }
+    None
+}
+
+/// 그룹에서 M:N 페어 1개 발굴. candidate_pool은 PR-B PCA 산출 결과.
+///
+/// 절차:
+///   1. strategy 따라 candidate pool 양변 분할
+///   2. log returns 표준화 매트릭스 구성, 길이 통일
+///   3. Sparse CCA — c 다이얼링으로 leg 수 목표 충족 결과 채택
+///   4. 선택된 leg의 *log close prices* multi-variate OLS → cointegration vector + 잔차
+///   5. 잔차에 ADF + half-life + z 검증
+///   6. 통과하면 MPairResult, 실패면 None
+///
+/// 한 그룹당 1 페어만 반환 (deflation 미지원, PR-C 후속에서 확장 가능).
+pub fn discover_mn_in_group(
+    group_id: &str,
+    group_name: &str,
+    strategy: MnSplitStrategy,
+    group_members: &[String],
+    candidate_pool: &[CandidateMember],
+    cache: &SeriesCache,
+    names: &std::collections::HashMap<String, String>,
+) -> Option<MPairResult> {
+    const WEIGHT_THRESHOLD: f64 = 0.05;
+    const MAX_LEGS: usize = 5;
+    const MIN_TOTAL: usize = 3;
+
+    let (x_keys, y_keys) = match strategy {
+        MnSplitStrategy::EtfNatural => {
+            // ETF는 PCA candidate_pool에서 자주 누락됨 (보유주식 평균이라 individual factor
+            // 적재가 분산). 그룹 멤버에서 직접 ETF 보장. 주식 측은 candidate_pool 활용.
+            let etfs: Vec<String> = group_members
+                .iter()
+                .filter(|k| k.starts_with("E:"))
+                .cloned()
+                .collect();
+            let stocks: Vec<String> = candidate_pool
+                .iter()
+                .filter(|m| m.key.starts_with("S:"))
+                .map(|m| m.key.clone())
+                .collect();
+            (etfs, stocks)
+        }
+        MnSplitStrategy::Factor1Sign => split_by_factor1(candidate_pool),
+    };
+    // ETF 그룹의 자연 분할은 m=1 (ETF 1개) vs n≥2 (보유주식)이 정상.
+    // factor1 분할은 양변 각 2 이상 일반적. 통합 조건: 각 변 ≥ 1 + 합 ≥ 3.
+    if x_keys.is_empty() || y_keys.is_empty() || (x_keys.len() + y_keys.len()) < 3 {
+        return None;
+    }
+
+    // 길이 통일 — 모든 멤버가 MIN_SAMPLES 이상 가졌어야 candidate pool에 들어왔으므로 안전
+    let target_len = MIN_SAMPLES;
+    let (x_series, x_keys_kept) = build_standardized_returns(&x_keys, cache, target_len);
+    let (y_series, y_keys_kept) = build_standardized_returns(&y_keys, cache, target_len);
+    if x_series.len() < 2 || y_series.len() < 2 {
+        return None;
+    }
+
+    let cca = find_sparse_cca_with_target(
+        &x_series,
+        &y_series,
+        MAX_LEGS,
+        MIN_TOTAL,
+        WEIGHT_THRESHOLD,
+    )?;
+
+    // 선택된 leg 인덱스
+    let x_sel: Vec<usize> = cca
+        .u
+        .iter()
+        .enumerate()
+        .filter(|(_, w)| w.abs() > WEIGHT_THRESHOLD)
+        .map(|(i, _)| i)
+        .collect();
+    let y_sel: Vec<usize> = cca
+        .v
+        .iter()
+        .enumerate()
+        .filter(|(_, w)| w.abs() > WEIGHT_THRESHOLD)
+        .map(|(i, _)| i)
+        .collect();
+
+    // log close prices (level) — OLS cointegration
+    let x_log_prices = log_closes_aligned(&x_keys_kept, cache, target_len + 1); // +1: returns가 차분 1번
+    let y_log_prices = log_closes_aligned(&y_keys_kept, cache, target_len + 1);
+    if x_log_prices.iter().any(|p| p.is_empty()) || y_log_prices.iter().any(|p| p.is_empty()) {
+        return None;
+    }
+
+    // 합성 log price — Σ w_i × log_close_i (선택된 leg만)
+    let t_price = target_len + 1;
+    let mut x_combined = vec![0.0_f64; t_price];
+    let mut x_weight_sum = 0.0;
+    for &i in &x_sel {
+        let w = cca.u[i];
+        for k in 0..t_price {
+            x_combined[k] += w * x_log_prices[i][k];
+        }
+        x_weight_sum += w.abs();
+    }
+    let mut y_combined = vec![0.0_f64; t_price];
+    let mut y_weight_sum = 0.0;
+    for &j in &y_sel {
+        let w = cca.v[j];
+        for k in 0..t_price {
+            y_combined[k] += w * y_log_prices[j][k];
+        }
+        y_weight_sum += w.abs();
+    }
+    if !(x_weight_sum > 0.0) || !(y_weight_sum > 0.0) {
+        return None;
+    }
+
+    // OLS: y_combined = α + β × x_combined → 잔차 spread
+    let ols = crate::stats::ols(&x_combined, &y_combined)?;
+    if ols.r_squared < MIN_R_SQUARED {
+        return None;
+    }
+    let adf = crate::stats::adf_tstat(&ols.residuals)?;
+    if adf > ADF_CRIT {
+        return None;
+    }
+    let hl = crate::stats::half_life(&ols.residuals)?;
+    if !hl.is_finite() || hl < MIN_HALF_LIFE || hl > MAX_HALF_LIFE {
+        return None;
+    }
+    let z = crate::stats::current_z(&ols.residuals)?;
+
+    // legs 변환 (가중치 정규화 후 보존)
+    let x_legs: Vec<MLeg> = x_sel
+        .iter()
+        .map(|&i| MLeg {
+            key: x_keys_kept[i].clone(),
+            name: names.get(&x_keys_kept[i]).cloned().unwrap_or_else(|| x_keys_kept[i].clone()),
+            weight: cca.u[i],
+        })
+        .collect();
+    let y_legs: Vec<MLeg> = y_sel
+        .iter()
+        .map(|&j| MLeg {
+            key: y_keys_kept[j].clone(),
+            name: names.get(&y_keys_kept[j]).cloned().unwrap_or_else(|| y_keys_kept[j].clone()),
+            weight: cca.v[j],
+        })
+        .collect();
+
+    let score = (-adf) * (1.0 / hl) * cca.correlation.abs();
+
+    Some(MPairResult {
+        group_id: group_id.to_string(),
+        group_name: group_name.to_string(),
+        timeframe: "1d".into(),
+        x_legs,
+        y_legs,
+        cca_correlation: cca.correlation,
+        hedge_ratio: ols.beta,
+        adf_tstat: adf,
+        half_life: hl,
+        r_squared: ols.r_squared,
+        z_score: z,
+        sample_size: t_price,
+        score,
     })
 }
 

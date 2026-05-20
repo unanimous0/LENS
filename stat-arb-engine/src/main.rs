@@ -32,8 +32,8 @@ use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
 use data::bars::{series_key, AssetType, SeriesCache};
-use discovery::{GroupPcaResult, PairResult};
-use groups::Group;
+use discovery::{GroupPcaResult, MPairResult, MnSplitStrategy, PairResult};
+use groups::{Group, GroupKind};
 
 const PORT: u16 = 8300;
 
@@ -106,6 +106,8 @@ pub struct GroupsState {
     pub pair_counts: HashMap<String, usize>,
     /// PR-B: 그룹 id → Dense PCA 결과. 멤버 ≥ PCA_MIN_MEMBERS 만 산출.
     pub pca: HashMap<String, GroupPcaResult>,
+    /// PR-C2: 그룹 id → M:N 발굴 페어 (그룹당 최대 1개). Sparse CCA + OLS+ADF 통과만.
+    pub mn_pairs: HashMap<String, MPairResult>,
 }
 
 #[derive(Clone)]
@@ -329,6 +331,75 @@ async fn pair_detail(
     }
 }
 
+/// PR-C2: 그룹의 M:N 발굴 페어 (있다면). 없으면 404.
+async fn group_mn_pair(
+    State(state): State<AppState>,
+    axum::extract::Path(group_id): axum::extract::Path<String>,
+) -> Response {
+    let s = state.groups.read().await;
+    match s.mn_pairs.get(&group_id) {
+        Some(r) => Json(r.clone()).into_response(),
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": format!("M:N 페어 없음: {group_id}")})),
+        )
+            .into_response(),
+    }
+}
+
+#[derive(Deserialize, Default)]
+struct MnPairsQuery {
+    /// score 내림차순 상위 N개. 디폴트 50.
+    #[serde(default = "default_mn_limit")]
+    limit: usize,
+    /// 그룹 종류 필터 (etf/sector/etc.). 미지정 시 전체.
+    kind: Option<String>,
+}
+
+fn default_mn_limit() -> usize {
+    50
+}
+
+#[derive(Serialize)]
+struct MnPairsResp {
+    total: usize,
+    returned: usize,
+    last_run_ms: i64,
+    pairs: Vec<MPairResult>,
+}
+
+/// PR-C2: 전체 M:N 페어 score 내림차순 리스트.
+async fn list_mn_pairs(
+    State(state): State<AppState>,
+    Query(q): Query<MnPairsQuery>,
+) -> Json<MnPairsResp> {
+    let gs = state.groups.read().await;
+    let mut pairs: Vec<MPairResult> = gs
+        .mn_pairs
+        .iter()
+        .filter(|(gid, _)| match &q.kind {
+            Some(k) => gs
+                .by_id
+                .get(*gid)
+                .and_then(|i| gs.groups.get(*i))
+                .map(|g| g.kind.as_str() == k)
+                .unwrap_or(false),
+            None => true,
+        })
+        .map(|(_, p)| p.clone())
+        .collect();
+    let total = pairs.len();
+    pairs.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    pairs.truncate(q.limit);
+    let returned = pairs.len();
+    Json(MnPairsResp {
+        total,
+        returned,
+        last_run_ms: gs.last_run_ms,
+        pairs,
+    })
+}
+
 /// PR-B: 그룹 한정 Dense PCA 결과 반환.
 /// 멤버 ≥ PCA_MIN_MEMBERS 그룹만 PCA 산출 — 외 그룹 요청 시 404.
 async fn group_pca(
@@ -471,6 +542,8 @@ async fn main() {
         .route("/pairs/detail", get(pair_detail))
         .route("/groups", get(list_groups))
         .route("/groups/{id}/pca", get(group_pca))
+        .route("/groups/{id}/mn-pair", get(group_mn_pair))
+        .route("/mn-pairs", get(list_mn_pairs))
         .layer(cors)
         .with_state(app_state);
 
@@ -691,10 +764,15 @@ async fn warmup_and_discover(
     let pca_map = compute_group_pcas(cache, groups).await;
     log_pca_diagnostics(&pca_map, groups).await;
 
+    // 7. PR-C2: Sparse CCA M:N 발굴 — PCA candidate pool 기반
+    let mn_map = compute_group_mn_pairs(&pca_map, cache, &names, groups).await;
+    log_mn_diagnostics(&mn_map, groups).await;
+
     {
         let mut s = groups.write().await;
         s.pair_counts = pair_counts;
         s.pca = pca_map;
+        s.mn_pairs = mn_map;
     }
 
     {
@@ -766,6 +844,122 @@ async fn compute_group_pcas(
         t.elapsed().as_secs_f64()
     );
     out
+}
+
+/// PR-C2: PCA candidate pool 가진 그룹들에 Sparse CCA M:N 발굴.
+/// 그룹당 1 페어 (deflation 미지원). 양변 분할 전략은 그룹 kind 따라:
+///   - etf 그룹: ETF↔보유주식 자연 분할
+///   - sector/index/etf_category: PCA factor1 부호 분할
+async fn compute_group_mn_pairs(
+    pca_map: &HashMap<String, GroupPcaResult>,
+    cache: &SeriesCache,
+    names: &HashMap<String, String>,
+    groups: &Arc<RwLock<GroupsState>>,
+) -> HashMap<String, MPairResult> {
+    let t = Instant::now();
+
+    // group_id → (kind, name, members) snapshot
+    let group_info: HashMap<String, (GroupKind, String, Vec<String>)> = {
+        let gs = groups.read().await;
+        gs.groups
+            .iter()
+            .map(|g| (g.id.clone(), (g.kind, g.name.clone(), g.members.clone())))
+            .collect()
+    };
+
+    let mut out: HashMap<String, MPairResult> = HashMap::new();
+    let mut attempted = 0_usize;
+    for (gid, pca_r) in pca_map {
+        attempted += 1;
+        let Some((kind, name, members)) = group_info.get(gid) else { continue };
+        let strategy = match kind {
+            GroupKind::Etf => MnSplitStrategy::EtfNatural,
+            _ => MnSplitStrategy::Factor1Sign,
+        };
+        if let Some(mp) = discovery::discover_mn_in_group(
+            gid,
+            name,
+            strategy,
+            members,
+            &pca_r.candidate_pool,
+            cache,
+            names,
+        ) {
+            out.insert(gid.clone(), mp);
+        }
+    }
+    info!(
+        "[PR-C2 M:N] {}/{} 그룹에서 M:N 페어 발굴 ({:.1}초)",
+        out.len(),
+        attempted,
+        t.elapsed().as_secs_f64()
+    );
+    out
+}
+
+/// PR-C2 진단 — 발굴 페어 수 종류별, score Top 5, leg 분포.
+async fn log_mn_diagnostics(
+    mn_map: &HashMap<String, MPairResult>,
+    groups: &Arc<RwLock<GroupsState>>,
+) {
+    if mn_map.is_empty() {
+        info!("[PR-C2 진단] M:N 발굴 페어 0개");
+        return;
+    }
+    let gs = groups.read().await;
+
+    // 종류별 카운트
+    let mut by_kind: HashMap<String, usize> = HashMap::new();
+    for gid in mn_map.keys() {
+        let kind = gs
+            .by_id
+            .get(gid)
+            .and_then(|i| gs.groups.get(*i))
+            .map(|g| g.kind.as_str().to_string())
+            .unwrap_or_else(|| "?".into());
+        *by_kind.entry(kind).or_insert(0) += 1;
+    }
+    info!("[PR-C2 진단] M:N 발굴 총 {} 페어", mn_map.len());
+    let mut kinds: Vec<&String> = by_kind.keys().collect();
+    kinds.sort();
+    for k in kinds {
+        info!("  · {k:14}: {} 페어", by_kind[k]);
+    }
+
+    // leg 분포
+    let mut leg_dist: HashMap<(usize, usize), usize> = HashMap::new();
+    for mp in mn_map.values() {
+        let key = (mp.x_legs.len(), mp.y_legs.len());
+        *leg_dist.entry(key).or_insert(0) += 1;
+    }
+    let mut leg_keys: Vec<((usize, usize), usize)> =
+        leg_dist.into_iter().map(|(k, v)| (k, v)).collect();
+    leg_keys.sort_by(|a, b| b.1.cmp(&a.1));
+    let dist_str: String = leg_keys
+        .iter()
+        .take(5)
+        .map(|((x, y), n)| format!("{x}:{y}={n}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    info!("[PR-C2 진단] leg 분포 Top5 — {dist_str}");
+
+    // score Top 5 페어
+    let mut ranked: Vec<&MPairResult> = mn_map.values().collect();
+    ranked.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    info!("[PR-C2 진단] score Top 5 페어:");
+    for mp in ranked.iter().take(5) {
+        info!(
+            "  · {:40} ({}:{}) corr={:.3} hl={:.1}d adf={:.2} z={:+.2} score={:.3}",
+            mp.group_id,
+            mp.x_legs.len(),
+            mp.y_legs.len(),
+            mp.cca_correlation,
+            mp.half_life,
+            mp.adf_tstat,
+            mp.z_score,
+            mp.score
+        );
+    }
 }
 
 /// PR-B 검증 로깅 — factor 1 평균 explained variance, candidate pool 분포.
