@@ -18,6 +18,9 @@ pub enum GroupKind {
     Index,
     Sector,
     Etf,
+    /// 같은 underlying_index 추종 ETF 묶음 (예: 코스피200 추종 ETF 19개).
+    /// ETF끼리의 페어 발굴용 — 한 카테고리 내 운용사 간 추적오차 차이가 시그널.
+    EtfCategory,
 }
 
 impl GroupKind {
@@ -26,6 +29,7 @@ impl GroupKind {
             GroupKind::Index => "index",
             GroupKind::Sector => "sector",
             GroupKind::Etf => "etf",
+            GroupKind::EtfCategory => "etf_category",
         }
     }
 }
@@ -176,17 +180,63 @@ pub async fn load_etf_groups(
     Ok(out)
 }
 
+/// 같은 underlying_index 추종 ETF끼리 묶기 (예: 코스피200 추종 ETF 19개).
+/// 멤버는 *ETF*만 (S:기초종목 X) — ETF 간 운용사·추적오차·괴리율 페어 발굴용.
+pub async fn load_etf_category_groups(
+    pool: &PgPool,
+    min_members: usize,
+) -> Result<Vec<Group>, sqlx::Error> {
+    let latest: Option<NaiveDate> = sqlx::query_scalar(
+        "SELECT MAX(snapshot_date) FROM etf_master_daily",
+    )
+    .fetch_one(pool)
+    .await?;
+    let Some(snap) = latest else {
+        return Ok(Vec::new());
+    };
+
+    // underlying_index NULL/공백 제외 — 채권·통화 등 카테고리 불명확한 ETF는 그룹화 의미 X.
+    let sql = "SELECT underlying_index, etf_code
+               FROM etf_master_daily
+               WHERE snapshot_date = $1
+                 AND underlying_index IS NOT NULL
+                 AND underlying_index != ''
+               ORDER BY underlying_index, etf_code";
+    let rows: Vec<(String, String)> = sqlx::query_as(sql).bind(snap).fetch_all(pool).await?;
+    let mut grouped: HashMap<String, Vec<String>> = HashMap::new();
+    for (idx_name, etf_code) in rows {
+        grouped.entry(idx_name).or_default().push(format!("E:{etf_code}"));
+    }
+    let mut out: Vec<Group> = grouped
+        .into_iter()
+        .filter(|(_, m)| m.len() >= min_members)
+        .map(|(name, members)| {
+            Group::new(
+                format!("etf_category:{name}"),
+                name.clone(),
+                GroupKind::EtfCategory,
+                members,
+            )
+        })
+        .collect();
+    out.sort_by(|a, b| b.member_count.cmp(&a.member_count));
+    Ok(out)
+}
+
 /// 모든 종류의 그룹을 한 번에 자동 생성.
 pub async fn load_all_groups(pool: &PgPool) -> Result<Vec<Group>, sqlx::Error> {
-    // 동시 3 쿼리 — 작은 쿼리들이라 PG 부담 없음.
-    let (idx, sec, etf) = tokio::try_join!(
+    // 동시 4 쿼리 — 작은 쿼리들이라 PG 부담 없음.
+    let (idx, sec, etf, etf_cat) = tokio::try_join!(
         load_index_groups(pool),
         load_sector_groups(pool, 3),
         load_etf_groups(pool, 5),
+        // 카테고리 그룹은 멤버 ≥ 3 (페어 평가에 최소 3 ETF 필요)
+        load_etf_category_groups(pool, 3),
     )?;
-    let mut all = Vec::with_capacity(idx.len() + sec.len() + etf.len());
+    let mut all = Vec::with_capacity(idx.len() + sec.len() + etf.len() + etf_cat.len());
     all.extend(idx);
     all.extend(sec);
     all.extend(etf);
+    all.extend(etf_cat);
     Ok(all)
 }

@@ -27,6 +27,12 @@ const MIN_SAMPLES: usize = 150;
 const MIN_HALF_LIFE: f64 = 3.0;
 const MAX_HALF_LIFE: f64 = 90.0;
 
+/// M:N 페어 한 쪽 최대 leg 수. stat-arb-engine.md §2 결정사항.
+/// PR-C (Sparse CCA) / PR-E (Sparse PCA) 진입 시 L1 sparsity 강도와 결과 leg 수 cap에 사용.
+/// PR-A 시점엔 1:1만 다루므로 미사용 — 상수 사전 정의로 의도 명시.
+#[allow(dead_code)]
+pub const MAX_LEGS_PER_SIDE: usize = 5;
+
 #[derive(Debug, Clone, Serialize)]
 pub struct PairResult {
     pub left_key: String,
@@ -173,5 +179,44 @@ pub fn discover_all_one_to_one(
     // score 내림차순.
     out.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
     tracing::info!("[discovery] 통과 페어 {} 개 (시리즈 {} 중)", out.len(), n_series);
+    out
+}
+
+/// 그룹 한정 1:1 발굴 — 그룹 멤버끼리만 페어 평가.
+/// PR-A 본 cron은 시장 전체 결과를 필터링해 그룹별 pair_count 산출 (저렴).
+/// 이 함수는 PR-B (Dense PCA) 진입 시 그룹별 series 매트릭스 구성의 *발판*.
+/// 향후 임계치 완화(min_corr↓) 시 동일 알고리즘으로 그룹별 재평가도 가능.
+#[allow(dead_code)]
+pub fn discover_within_group(
+    members: &[String],
+    cache: &SeriesCache,
+    names: &std::collections::HashMap<String, String>,
+) -> Vec<PairResult> {
+    let mut series_data: Vec<(String, Vec<f64>)> = Vec::with_capacity(members.len());
+    for key in members {
+        if let Some(entry) = cache.get(key) {
+            if let Some(closes) = closes_daily(entry.value()) {
+                series_data.push((key.clone(), closes));
+            }
+        }
+    }
+    let n = series_data.len();
+    if n < 2 {
+        return Vec::new();
+    }
+
+    let mut out: Vec<PairResult> = Vec::new();
+    for i in 0..n {
+        for j in (i + 1)..n {
+            let (a_key, a_closes) = &series_data[i];
+            let (b_key, b_closes) = &series_data[j];
+            let a_name = names.get(a_key).cloned().unwrap_or_else(|| a_key.clone());
+            let b_name = names.get(b_key).cloned().unwrap_or_else(|| b_key.clone());
+            if let Some(pair) = evaluate_pair(a_key, &a_name, a_closes, b_key, &b_name, b_closes) {
+                out.push(pair);
+            }
+        }
+    }
+    out.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
     out
 }

@@ -8,6 +8,8 @@ type Group = {
   name: string
   kind: string
   member_count: number
+  /// 그룹 한정 1:1 통과 페어 수. 발굴 cron 1회 이상 돈 후 채워짐. (PR-A)
+  pair_count?: number
 }
 
 type Pair = {
@@ -44,6 +46,7 @@ const KIND_LABELS: Record<string, string> = {
   index: '지수',
   sector: '섹터',
   etf: 'ETF',
+  etf_category: 'ETF 카테고리',
 }
 
 // 정렬 가능한 컬럼
@@ -190,6 +193,7 @@ export function StatArbPage() {
             <option value="index">지수</option>
             <option value="sector">섹터</option>
             <option value="etf">ETF</option>
+            <option value="etf_category">ETF 카테고리</option>
           </select>
         </div>
         <div className="flex items-center gap-2">
@@ -202,7 +206,8 @@ export function StatArbPage() {
             <option value="">— 필터 없음 (시장 전체) —</option>
             {filteredGroups.map((g) => (
               <option key={g.id} value={g.id}>
-                [{KIND_LABELS[g.kind] ?? g.kind}] {g.name} ({g.member_count})
+                [{KIND_LABELS[g.kind] ?? g.kind}] {g.name} (멤버 {g.member_count}
+                {g.pair_count !== undefined ? ` · 페어 ${g.pair_count}` : ''})
               </option>
             ))}
           </select>

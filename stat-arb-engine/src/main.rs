@@ -90,6 +90,9 @@ pub struct GroupsState {
     pub groups: Vec<Group>,
     pub by_id: HashMap<String, usize>, // id → groups index
     pub last_run_ms: i64,
+    /// 그룹 id → 그 그룹 멤버 한정 1:1 통과 페어 수.
+    /// 시장 전체 발굴 결과를 멤버 세트로 필터링해서 산출. PR-A 진단용.
+    pub pair_counts: HashMap<String, usize>,
 }
 
 #[derive(Clone)]
@@ -243,6 +246,9 @@ struct GroupSummary {
     name: String,
     kind: String,
     member_count: usize,
+    /// 그룹 한정 1:1 통과 페어 수. discovery 한 번도 안 돌면 None.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pair_count: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     members: Option<Vec<String>>,
 }
@@ -324,6 +330,7 @@ async fn list_groups(
             name: g.name.clone(),
             kind: g.kind.as_str().to_string(),
             member_count: g.member_count,
+            pair_count: s.pair_counts.get(&g.id).copied(),
             members: if q.with_members {
                 Some(g.members.clone())
             } else {
@@ -331,8 +338,12 @@ async fn list_groups(
             },
         })
         .collect();
-    // index → sector → etf 순, 각 종류 안에선 멤버 많은 순.
-    out.sort_by(|a, b| a.kind.cmp(&b.kind).then(b.member_count.cmp(&a.member_count)));
+    // 페어 풍부한 그룹 먼저 (정렬 우선 pair_count desc), 그 다음 종류, 멤버 많은 순.
+    out.sort_by(|a, b| {
+        b.pair_count.unwrap_or(0).cmp(&a.pair_count.unwrap_or(0))
+            .then(a.kind.cmp(&b.kind))
+            .then(b.member_count.cmp(&a.member_count))
+    });
     Json(GroupsResp {
         total: out.len(),
         last_run_ms: s.last_run_ms,
@@ -452,7 +463,7 @@ async fn spawn_recompute_loop(
 
     // 초기 1회 — full warmup. Sleep phase 여도 첫 데이터는 채워둠 (장 외 시간 시작 시 빈 화면 방지).
     load_groups(&pool, &groups, &stats).await;
-    warmup_and_discover(&pool, &cache, &pairs, &stats, UpdateMode::Full).await;
+    warmup_and_discover(&pool, &cache, &pairs, &groups, &stats, UpdateMode::Full).await;
 
     // 메인 루프 — 증분
     loop {
@@ -469,7 +480,7 @@ async fn spawn_recompute_loop(
             return;
         }
 
-        warmup_and_discover(&pool, &cache, &pairs, &stats, UpdateMode::Incremental).await;
+        warmup_and_discover(&pool, &cache, &pairs, &groups, &stats, UpdateMode::Incremental).await;
         stats.recompute_cycles.fetch_add(1, Ordering::Relaxed);
     }
 }
@@ -524,6 +535,7 @@ async fn warmup_and_discover(
     pool: &PgPool,
     cache: &SeriesCache,
     pairs: &Arc<RwLock<PairsState>>,
+    groups: &Arc<RwLock<GroupsState>>,
     stats: &Arc<EngineStats>,
     mode: UpdateMode,
 ) {
@@ -629,6 +641,14 @@ async fn warmup_and_discover(
     stats.discovery_runs.fetch_add(1, Ordering::Relaxed);
     stats.pairs_total.store(result.len() as u64, Ordering::Relaxed);
 
+    // 5. 그룹별 통과 페어 수 산출 + 진단 로깅 (PR-A 검증 포인트)
+    let pair_counts = compute_group_pair_counts(&result, groups).await;
+    log_group_diagnostics(&pair_counts, &result, groups).await;
+    {
+        let mut s = groups.write().await;
+        s.pair_counts = pair_counts;
+    }
+
     {
         let mut s = pairs.write().await;
         s.pairs = result;
@@ -641,6 +661,80 @@ async fn warmup_and_discover(
         "[전체] 완료 {:.1}초 (warmup + discovery)",
         t_total.elapsed().as_secs_f64()
     );
+}
+
+/// 시장 전체 1:1 통과 페어를 그룹 멤버 세트로 필터링해 그룹별 카운트 산출.
+/// 같은 페어가 여러 그룹에 속할 수 있음 (예: 삼성전자×하이닉스 = KOSPI200 + 반도체 sector + TIGER반도체ETF).
+/// 이 *중복*도 그룹의 가치 지표라 dedup 안 함.
+async fn compute_group_pair_counts(
+    pairs: &[PairResult],
+    groups: &Arc<RwLock<GroupsState>>,
+) -> HashMap<String, usize> {
+    let gs = groups.read().await;
+    let mut out: HashMap<String, usize> = HashMap::with_capacity(gs.groups.len());
+    for g in &gs.groups {
+        let members: HashSet<&String> = g.members.iter().collect();
+        let n = pairs
+            .iter()
+            .filter(|p| members.contains(&p.left_key) && members.contains(&p.right_key))
+            .count();
+        out.insert(g.id.clone(), n);
+    }
+    out
+}
+
+/// PR-A 검증 로깅 — 그룹 입력 품질 진단.
+/// 종류별 그룹 수, 통과 페어 분포, 빈 그룹 비율, 최상위 productive 그룹.
+async fn log_group_diagnostics(
+    pair_counts: &HashMap<String, usize>,
+    market_pairs: &[PairResult],
+    groups: &Arc<RwLock<GroupsState>>,
+) {
+    let gs = groups.read().await;
+    if gs.groups.is_empty() {
+        return;
+    }
+
+    // 종류별 집계
+    let mut by_kind: HashMap<String, (usize, usize, usize, usize)> = HashMap::new();
+    // (그룹 수, 빈 그룹 수, 평균 멤버, 평균 페어)
+    let mut kind_pair_sum: HashMap<String, usize> = HashMap::new();
+    let mut kind_member_sum: HashMap<String, usize> = HashMap::new();
+    for g in &gs.groups {
+        let kind = g.kind.as_str().to_string();
+        let n_pairs = pair_counts.get(&g.id).copied().unwrap_or(0);
+        let entry = by_kind.entry(kind.clone()).or_insert((0, 0, 0, 0));
+        entry.0 += 1;
+        if n_pairs == 0 {
+            entry.1 += 1;
+        }
+        *kind_member_sum.entry(kind.clone()).or_insert(0) += g.member_count;
+        *kind_pair_sum.entry(kind).or_insert(0) += n_pairs;
+    }
+
+    info!("[PR-A 진단] 그룹 입력 품질 — 총 {} 그룹, 시장 전체 통과 페어 {}", gs.groups.len(), market_pairs.len());
+    let mut kinds: Vec<&String> = by_kind.keys().collect();
+    kinds.sort();
+    for k in kinds {
+        let (n, empty, _, _) = by_kind[k];
+        let avg_member = kind_member_sum[k] as f64 / n as f64;
+        let avg_pair = kind_pair_sum[k] as f64 / n as f64;
+        info!(
+            "  · {k:14}: {n:3} 그룹 (빈 그룹 {empty:2}/{n}), 평균 멤버 {avg_member:6.1}, 평균 통과 페어 {avg_pair:6.1}"
+        );
+    }
+
+    // 최상위 productive 그룹 Top 10
+    let mut ranked: Vec<(&String, usize)> = pair_counts.iter().map(|(k, v)| (k, *v)).collect();
+    ranked.sort_by(|a, b| b.1.cmp(&a.1));
+    info!("[PR-A 진단] 페어 풍부 그룹 Top 10:");
+    for (id, n) in ranked.iter().take(10) {
+        if *n == 0 {
+            break;
+        }
+        let name = gs.by_id.get(*id).and_then(|i| gs.groups.get(*i)).map(|g| g.name.as_str()).unwrap_or("?");
+        info!("  · {id:40} ({name:20}) — {n} 페어");
+    }
 }
 
 async fn shutdown_signal(cancel: CancellationToken) {
