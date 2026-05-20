@@ -145,12 +145,14 @@ fn cutoff_ts(days: i32) -> chrono::DateTime<chrono::Utc> {
 }
 
 /// 주식/ETF 일봉. `days`일 전부터 오늘까지 ASC. (단일 종목)
+/// close는 adj_close 사용 — 액면분할 spike 회피 (OLS/ADF/half-life 정확도). open/high/low는
+/// raw 유지 (통계 계산에 안 씀, 차트 표시용 — close만 분할 보정으로 충분).
 pub async fn load_stock_daily(
     pool: &PgPool,
     code: &str,
     days: i32,
 ) -> Result<Vec<Bar>, sqlx::Error> {
-    let sql = "SELECT time, open_price, high_price, low_price, close_price, COALESCE(volume, 0)
+    let sql = "SELECT time, open_price, high_price, low_price, adj_close::INTEGER AS close_price, COALESCE(volume, 0)
                FROM ohlcv_daily
                WHERE stock_code = $1 AND time >= $2
                ORDER BY time ASC";
@@ -174,6 +176,8 @@ pub async fn load_stock_daily(
 }
 
 /// 주식/ETF 분봉. `interval_sec` = 30 또는 60. `days`일 전부터 오늘까지 ASC. (단일 종목)
+/// ohlcv_intraday_adjusted view — open/high/low/close 4 가격 모두 adj_factor 적용된 시리즈.
+/// 분할 종목 spike 회피. Finance_Data 매일 04:30 갱신.
 pub async fn load_stock_intraday(
     pool: &PgPool,
     code: &str,
@@ -181,7 +185,7 @@ pub async fn load_stock_intraday(
     days: i32,
 ) -> Result<Vec<Bar>, sqlx::Error> {
     let sql = "SELECT time, open, high, low, close, volume
-               FROM ohlcv_intraday
+               FROM ohlcv_intraday_adjusted
                WHERE stock_code = $1 AND interval_seconds = $2 AND time >= $3
                ORDER BY time ASC";
     let rows: Vec<(
@@ -429,7 +433,8 @@ pub async fn load_stock_daily_batch(
     if codes.is_empty() {
         return Ok(HashMap::new());
     }
-    let sql = "SELECT stock_code, time, open_price, high_price, low_price, close_price, COALESCE(volume, 0)
+    // close는 adj_close (분할 보정). open/high/low는 raw — 통계 계산에 안 씀.
+    let sql = "SELECT stock_code, time, open_price, high_price, low_price, adj_close::INTEGER AS close_price, COALESCE(volume, 0)
                FROM ohlcv_daily
                WHERE stock_code = ANY($1) AND time >= $2
                ORDER BY stock_code, time ASC";
@@ -470,8 +475,9 @@ pub async fn load_stock_intraday_batch(
     if codes.is_empty() {
         return Ok(HashMap::new());
     }
+    // ohlcv_intraday_adjusted view — 4 가격 adj_factor 적용된 시리즈.
     let sql = "SELECT stock_code, time, open, high, low, close, volume
-               FROM ohlcv_intraday
+               FROM ohlcv_intraday_adjusted
                WHERE stock_code = ANY($1) AND interval_seconds = $2 AND time >= $3
                ORDER BY stock_code, time ASC";
     let rows: Vec<(
