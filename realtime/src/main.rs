@@ -106,6 +106,9 @@ struct MasterShared {
     /// 스트림이 자동 분기하지만, t1102 fetch 단독 시점(휴장/시작 직후)에도 정확히
     /// etfTicks store에 들어가도록.
     etf_codes: HashSet<String>,
+    /// startup 시점 박제한 futures_master.json mtime — /debug/stats가 현재 디스크
+    /// mtime과 비교해 stale 감지. 만기일(매월 두 번째 목요일) 다음날 새벽 갱신.
+    futures_master_loaded_mtime_secs: u64,
 }
 
 /// 앱 공유 상태. 내부 변이 필드는 전부 Arc로 감싸 Clone 비용 최소화.
@@ -262,6 +265,7 @@ async fn main() {
         ordered_front_futures: lm.ordered_front_futures,
         etf_pdf_extra_codes,
         etf_codes,
+        futures_master_loaded_mtime_secs: lm.loaded_mtime_secs,
     });
 
     let stats = Arc::new(Stats::default());
@@ -791,6 +795,10 @@ struct LoadedMaster {
     ordered_stocks: Vec<String>,
     /// 원본 순서의 front 선물 코드. 근월 JC0 구독 순서용.
     ordered_front_futures: Vec<String>,
+    /// startup 시점에 박제한 futures_master.json 파일 mtime (UNIX secs).
+    /// 주식선물 만기(매월 *두 번째 목요일*) 다음날 새벽 Finance_Data가 파일 갱신 →
+    /// /debug/stats에서 현재 디스크 mtime과 비교해 stale 감지 (수동 재시작 알림용).
+    loaded_mtime_secs: u64,
 }
 
 fn load_futures_master() -> LoadedMaster {
@@ -801,9 +809,18 @@ fn load_futures_master() -> LoadedMaster {
         kosdaq_codes: HashSet::new(),
         ordered_stocks: Vec::new(),
         ordered_front_futures: Vec::new(),
+        loaded_mtime_secs: 0,
     };
 
     let master_path = std::path::Path::new("../data/futures_master.json");
+    // mtime 박제 — 이후 stats endpoint가 현재 디스크 mtime과 비교
+    if let Ok(meta) = std::fs::metadata(master_path) {
+        if let Ok(mtime) = meta.modified() {
+            if let Ok(dur) = mtime.duration_since(std::time::UNIX_EPOCH) {
+                m.loaded_mtime_secs = dur.as_secs();
+            }
+        }
+    }
     let data = match std::fs::read_to_string(master_path) {
         Ok(d) => d,
         Err(e) => {
@@ -1263,6 +1280,17 @@ async fn debug_stats(State(state): State<AppState>) -> Json<serde_json::Value> {
         *failed_by_kind.entry(entry.error_kind).or_insert(0) += 1;
     }
 
+    // futures_master.json stale 감지 — startup 박제 mtime vs 현재 디스크 mtime 비교.
+    // 만기(매월 두 번째 목요일) 다음날 새벽 Finance_Data가 파일 갱신 → realtime 재시작 필요.
+    let loaded_mtime = state.shared.futures_master_loaded_mtime_secs;
+    let current_mtime: u64 = std::fs::metadata("../data/futures_master.json")
+        .ok()
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let futures_master_stale = loaded_mtime > 0 && current_mtime > loaded_mtime;
+
     Json(serde_json::json!({
         "uptime_sec": uptime_s,
         "ticks_total": ticks,
@@ -1282,6 +1310,13 @@ async fn debug_stats(State(state): State<AppState>) -> Json<serde_json::Value> {
         "feed_age_sec": age_sec,
         "session": session,
         "is_market_hours": session == "open",
+        // 주식선물 만기(매월 두 번째 목요일) 갱신 감지. stale=true 시 realtime 재시작 권장
+        // (hot-reload 미지원). startup 1회 박제 + 현재 디스크 mtime 비교.
+        "futures_master": {
+            "loaded_mtime": loaded_mtime,
+            "current_mtime": current_mtime,
+            "stale": futures_master_stale,
+        },
         "serialize": {
             "calls": ser_calls,
             "total_ns": ser_ns,
