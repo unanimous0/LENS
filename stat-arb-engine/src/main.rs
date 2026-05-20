@@ -32,10 +32,21 @@ use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
 use data::bars::{series_key, AssetType, SeriesCache};
-use discovery::PairResult;
+use discovery::{GroupPcaResult, PairResult};
 use groups::Group;
 
 const PORT: u16 = 8300;
+
+/// PR-B Dense PCA — 멤버 이 이상인 그룹만 PCA 산출. 너무 작으면 (예: ETF 카테고리 3개)
+/// factor 모양 의미 없음. 큰 그룹은 PR-C Sparse CCA 후보 풀 추출용.
+const PCA_MIN_MEMBERS: usize = 10;
+/// 보관할 factor 수. 보통 3 factor면 80~90% explained variance.
+const PCA_N_FACTORS: usize = 3;
+/// candidate pool 크기. PR-C가 이 풀을 Sparse CCA 입력으로 양분. 5×5 페어 목표라
+/// 30이면 양쪽 ~15개씩 → 충분히 sparse 추출 여지.
+const PCA_POOL_SIZE: usize = 30;
+/// factor당 표시할 top loading 종목 수.
+const PCA_TOP_LOADINGS: usize = 10;
 
 /// 일봉 워밍업 길이 (캘린더일). 1년 ≈ 252영업일 = 365캘린더일.
 const WARMUP_DAYS_DAILY: i32 = 365;
@@ -93,6 +104,8 @@ pub struct GroupsState {
     /// 그룹 id → 그 그룹 멤버 한정 1:1 통과 페어 수.
     /// 시장 전체 발굴 결과를 멤버 세트로 필터링해서 산출. PR-A 진단용.
     pub pair_counts: HashMap<String, usize>,
+    /// PR-B: 그룹 id → Dense PCA 결과. 멤버 ≥ PCA_MIN_MEMBERS 만 산출.
+    pub pca: HashMap<String, GroupPcaResult>,
 }
 
 #[derive(Clone)]
@@ -316,6 +329,34 @@ async fn pair_detail(
     }
 }
 
+/// PR-B: 그룹 한정 Dense PCA 결과 반환.
+/// 멤버 ≥ PCA_MIN_MEMBERS 그룹만 PCA 산출 — 외 그룹 요청 시 404.
+async fn group_pca(
+    State(state): State<AppState>,
+    axum::extract::Path(group_id): axum::extract::Path<String>,
+) -> Response {
+    let s = state.groups.read().await;
+    match s.pca.get(&group_id) {
+        Some(r) => {
+            // 그룹 이름도 같이 — 프론트가 다시 /groups 안 부르고 헤더 표시 가능
+            let group_name = s.by_id.get(&group_id).and_then(|i| s.groups.get(*i)).map(|g| g.name.clone());
+            Json(serde_json::json!({
+                "group_id": group_id,
+                "group_name": group_name,
+                "result": r,
+            }))
+            .into_response()
+        }
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({
+                "error": format!("PCA 결과 없음 (멤버 < {PCA_MIN_MEMBERS} 또는 데이터 부족): {group_id}")
+            })),
+        )
+            .into_response(),
+    }
+}
+
 async fn list_groups(
     State(state): State<AppState>,
     Query(q): Query<GroupsQuery>,
@@ -429,6 +470,7 @@ async fn main() {
         .route("/pairs", get(list_pairs))
         .route("/pairs/detail", get(pair_detail))
         .route("/groups", get(list_groups))
+        .route("/groups/{id}/pca", get(group_pca))
         .layer(cors)
         .with_state(app_state);
 
@@ -644,9 +686,15 @@ async fn warmup_and_discover(
     // 5. 그룹별 통과 페어 수 산출 + 진단 로깅 (PR-A 검증 포인트)
     let pair_counts = compute_group_pair_counts(&result, groups).await;
     log_group_diagnostics(&pair_counts, &result, groups).await;
+
+    // 6. PR-B Dense PCA — 멤버 ≥ PCA_MIN_MEMBERS 그룹만 산출
+    let pca_map = compute_group_pcas(cache, groups).await;
+    log_pca_diagnostics(&pca_map, groups).await;
+
     {
         let mut s = groups.write().await;
         s.pair_counts = pair_counts;
+        s.pca = pca_map;
     }
 
     {
@@ -681,6 +729,87 @@ async fn compute_group_pair_counts(
         out.insert(g.id.clone(), n);
     }
     out
+}
+
+/// PR-B Dense PCA — 멤버 ≥ PCA_MIN_MEMBERS 그룹들에 대해 한 번씩 PCA 산출.
+/// 결과는 그룹 id → GroupPcaResult HashMap. 멤버 적거나 데이터 부족하면 entry 없음.
+async fn compute_group_pcas(
+    cache: &SeriesCache,
+    groups: &Arc<RwLock<GroupsState>>,
+) -> HashMap<String, GroupPcaResult> {
+    let t = Instant::now();
+    let group_snapshots: Vec<(String, Vec<String>)> = {
+        let gs = groups.read().await;
+        gs.groups
+            .iter()
+            .filter(|g| g.member_count >= PCA_MIN_MEMBERS)
+            .map(|g| (g.id.clone(), g.members.clone()))
+            .collect()
+    };
+
+    let mut out: HashMap<String, GroupPcaResult> = HashMap::with_capacity(group_snapshots.len());
+    for (gid, members) in &group_snapshots {
+        if let Some(r) = discovery::compute_group_pca(
+            members,
+            cache,
+            PCA_N_FACTORS,
+            PCA_POOL_SIZE,
+            PCA_TOP_LOADINGS,
+        ) {
+            out.insert(gid.clone(), r);
+        }
+    }
+    info!(
+        "[PR-B PCA] {}/{} 그룹 PCA 산출 완료 ({:.1}초)",
+        out.len(),
+        group_snapshots.len(),
+        t.elapsed().as_secs_f64()
+    );
+    out
+}
+
+/// PR-B 검증 로깅 — factor 1 평균 explained variance, candidate pool 분포.
+async fn log_pca_diagnostics(
+    pca_map: &HashMap<String, GroupPcaResult>,
+    groups: &Arc<RwLock<GroupsState>>,
+) {
+    if pca_map.is_empty() {
+        return;
+    }
+    let gs = groups.read().await;
+
+    // factor 1 explained variance 분포
+    let mut evr1: Vec<f64> = pca_map
+        .values()
+        .filter_map(|r| r.factors.first().map(|f| f.explained_variance_ratio))
+        .collect();
+    evr1.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    if evr1.is_empty() {
+        return;
+    }
+    let median = evr1[evr1.len() / 2];
+    let min = evr1[0];
+    let max = evr1[evr1.len() - 1];
+    info!(
+        "[PR-B 진단] factor1 설명력 — median {:.1}%, range [{:.1}%, {:.1}%] ({}개 그룹)",
+        median * 100.0,
+        min * 100.0,
+        max * 100.0,
+        evr1.len()
+    );
+
+    // factor1 설명력 Top 5 그룹 (잘 묶인 그룹 = 한 factor가 대부분 설명)
+    let mut ranked: Vec<(&String, f64)> = pca_map
+        .iter()
+        .filter_map(|(k, v)| v.factors.first().map(|f| (k, f.explained_variance_ratio)))
+        .collect();
+    ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    info!("[PR-B 진단] factor1 설명력 Top 5 (잘 응집된 그룹):");
+    for (id, evr) in ranked.iter().take(5) {
+        let name = gs.by_id.get(*id).and_then(|i| gs.groups.get(*i)).map(|g| g.name.as_str()).unwrap_or("?");
+        let members = pca_map.get(*id).map(|r| r.members_used.len()).unwrap_or(0);
+        info!("  · {id:40} ({name:20}) — factor1 {:.1}% / 멤버 {members}", evr * 100.0);
+    }
 }
 
 /// PR-A 검증 로깅 — 그룹 입력 품질 진단.

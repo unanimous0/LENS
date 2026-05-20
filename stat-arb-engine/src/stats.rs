@@ -1,7 +1,7 @@
-//! 통계 함수 — OLS, ADF, half-life, Pearson correlation.
+//! 통계 함수 — OLS, ADF, half-life, Pearson correlation, PCA.
 //!
 //! 외부 BLAS 없이 직접 구현 (n이 작은 단변수 회귀 위주라 ndarray보다 raw Vec/슬라이스가 빠름).
-//! 향후 PCA/Sparse CCA는 ndarray-linalg 도입 예정.
+//! PCA는 nalgebra의 SymmetricEigen 사용 — pure Rust, 시스템 LAPACK 불필요.
 
 /// 단변수 OLS 결과: `y = alpha + beta * x + ε`.
 #[derive(Debug, Clone)]
@@ -148,6 +148,103 @@ pub fn current_z(residuals: &[f64]) -> Option<f64> {
 }
 
 // ---------------------------------------------------------------------------
+// PCA (Dense)
+// ---------------------------------------------------------------------------
+
+/// PCA 결과 — eigenvalue 내림차순. loadings는 column-major (loadings[j][i] = i번째
+/// 변수의 j번째 factor 적재량). 호출자는 변수 인덱스와 입력 series 인덱스가 같다고 가정.
+#[derive(Debug, Clone)]
+pub struct PcaResult {
+    /// 고유값 내림차순. 길이 = N (변수 수).
+    pub eigenvalues: Vec<f64>,
+    /// factor당 설명력 비율 (eigenvalue / sum). 길이 = N. 합 = 1.
+    pub explained_variance_ratio: Vec<f64>,
+    /// loadings[factor_idx][var_idx] = 적재량. 외층 N(factor), 내층 N(변수).
+    pub loadings: Vec<Vec<f64>>,
+    /// 사용된 sample size (T 행 수).
+    pub n_samples: usize,
+}
+
+/// Dense PCA — 입력은 [변수1 시계열, 변수2 시계열, ...]. 각 시계열 길이 T 동일.
+/// 짧은 시리즈는 호출자가 align_tail로 맞춰서 전달.
+/// 1) 각 컬럼을 z-score 표준화 (변동성 편향 회피)
+/// 2) 공분산 = 표준화 후 X'X / (T-1) = 상관행렬
+/// 3) SymmetricEigen → 내림차순 정렬 → eigenvalues + eigenvectors
+/// 4) explained variance ratio = λ_i / Σλ
+///
+/// 실패 케이스: N<2, T<3, 분산 0인 컬럼 존재.
+pub fn pca(series: &[Vec<f64>]) -> Option<PcaResult> {
+    use nalgebra::{DMatrix, SymmetricEigen};
+
+    let n_vars = series.len();
+    if n_vars < 2 {
+        return None;
+    }
+    let t = series[0].len();
+    if t < 3 || series.iter().any(|s| s.len() != t) {
+        return None;
+    }
+    let t_f = t as f64;
+
+    // z-score 표준화. 분산 0이면 fail.
+    let mut z: Vec<Vec<f64>> = Vec::with_capacity(n_vars);
+    for col in series {
+        let mean = col.iter().sum::<f64>() / t_f;
+        let var = col.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / (t_f - 1.0);
+        if !(var > 0.0) {
+            return None;
+        }
+        let sd = var.sqrt();
+        z.push(col.iter().map(|v| (v - mean) / sd).collect());
+    }
+
+    // 상관행렬 R = (1/(T-1)) Z'Z. nalgebra DMatrix는 column-major.
+    // 변수가 컬럼이라 X = T×N, R = N×N.
+    let mut r = DMatrix::<f64>::zeros(n_vars, n_vars);
+    for i in 0..n_vars {
+        for j in i..n_vars {
+            let mut s = 0.0;
+            for k in 0..t {
+                s += z[i][k] * z[j][k];
+            }
+            let cov = s / (t_f - 1.0);
+            r[(i, j)] = cov;
+            r[(j, i)] = cov;
+        }
+    }
+
+    let eig = SymmetricEigen::new(r);
+    // nalgebra 고유값 정렬 보장 X → 내림차순 재정렬
+    let mut paired: Vec<(f64, usize)> = eig.eigenvalues.iter().enumerate().map(|(i, &v)| (v, i)).collect();
+    paired.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+
+    let sum: f64 = paired.iter().map(|(v, _)| v.max(0.0)).sum();
+    if !(sum > 0.0) {
+        return None;
+    }
+
+    let mut eigenvalues = Vec::with_capacity(n_vars);
+    let mut explained_variance_ratio = Vec::with_capacity(n_vars);
+    let mut loadings: Vec<Vec<f64>> = Vec::with_capacity(n_vars);
+
+    for (val, orig_idx) in &paired {
+        let v = val.max(0.0); // numerical noise 음수 클램프
+        eigenvalues.push(v);
+        explained_variance_ratio.push(v / sum);
+        // eigenvector — eig.eigenvectors는 column-major, *원래 인덱스* 컬럼.
+        let col = eig.eigenvectors.column(*orig_idx);
+        loadings.push((0..n_vars).map(|i| col[i]).collect());
+    }
+
+    Some(PcaResult {
+        eigenvalues,
+        explained_variance_ratio,
+        loadings,
+        n_samples: t,
+    })
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 #[cfg(test)]
@@ -183,5 +280,26 @@ mod tests {
         }
         let hl = half_life(&y).unwrap();
         assert!((hl - std::f64::consts::LN_2 / (1.0 - phi)).abs() < 0.05);
+    }
+
+    #[test]
+    fn pca_two_perfectly_correlated_series() {
+        // 두 시리즈가 동일 → standardize 후 첫 factor가 100% variance 흡수.
+        let a: Vec<f64> = (0..50).map(|i| (i as f64).sin()).collect();
+        let b = a.clone();
+        let r = pca(&[a, b]).unwrap();
+        assert_eq!(r.eigenvalues.len(), 2);
+        // 두 컬럼 z-score가 동일 → 공분산 행렬 [[1,1],[1,1]] → 고유값 2, 0
+        assert!((r.explained_variance_ratio[0] - 1.0).abs() < 1e-9);
+        assert!(r.explained_variance_ratio[1].abs() < 1e-9);
+    }
+
+    #[test]
+    fn pca_two_anticorrelated_series() {
+        // 정확히 반대 부호 → 여전히 첫 factor가 100%.
+        let a: Vec<f64> = (0..50).map(|i| (i as f64).sin()).collect();
+        let b: Vec<f64> = a.iter().map(|v| -v).collect();
+        let r = pca(&[a, b]).unwrap();
+        assert!((r.explained_variance_ratio[0] - 1.0).abs() < 1e-9);
     }
 }

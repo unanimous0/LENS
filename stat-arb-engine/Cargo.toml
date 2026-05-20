@@ -20,6 +20,9 @@ dotenvy = "0.15"
 sqlx = { version = "0.8", features = ["runtime-tokio", "tls-native-tls", "postgres", "chrono", "bigdecimal", "macros"] }
 # 수치 — Phase 2부터 본격 사용. Phase 1에선 선언만.
 ndarray = "0.16"
+# 선형대수 (PR-B Dense PCA): pure Rust. 시스템 LAPACK/BLAS 불필요 — 내부망 빌드 호환.
+# 200×200 공분산 SymmetricEigen ~ms 단위. ndarray-linalg 대신 선택.
+nalgebra = "0.33"
 # 빠른 lock-free 맵 (in-memory bar 캐시)
 dashmap = "6"
 

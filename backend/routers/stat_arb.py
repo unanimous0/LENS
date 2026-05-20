@@ -56,6 +56,12 @@ async def list_groups(
     return await _proxy_get("/groups", params)
 
 
+@router.get("/groups/{group_id}/pca")
+async def group_pca(group_id: str) -> dict:
+    """PR-B: 그룹 한정 Dense PCA 결과. 멤버 < 10이거나 데이터 부족이면 엔진이 404."""
+    return await _proxy_get(f"/groups/{group_id}/pca", {})
+
+
 @router.get("/health")
 async def health() -> dict:
     return await _proxy_get("/health", {})

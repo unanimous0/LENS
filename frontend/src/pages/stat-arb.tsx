@@ -12,6 +12,27 @@ type Group = {
   pair_count?: number
 }
 
+// PR-B: Dense PCA 그룹 결과
+type FactorLoading = { key: string; loading: number }
+type PcaFactor = {
+  factor_idx: number
+  eigenvalue: number
+  explained_variance_ratio: number
+  top_loadings: FactorLoading[]
+}
+type CandidateMember = { key: string; power: number }
+type GroupPcaResult = {
+  members_used: string[]
+  n_samples: number
+  factors: PcaFactor[]
+  candidate_pool: CandidateMember[]
+}
+type GroupPcaResp = {
+  group_id: string
+  group_name?: string
+  result: GroupPcaResult
+}
+
 type Pair = {
   left_key: string
   right_key: string
@@ -82,6 +103,10 @@ export function StatArbPage() {
   const [loanRates, setLoanRates] = useState<Map<string, number>>(new Map())
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // PR-B: 그룹 PCA — groupFilter 선택 시 fetch. 404 (작은 그룹/데이터 부족)면 null + reason.
+  const [pca, setPca] = useState<GroupPcaResp | null>(null)
+  const [pcaErr, setPcaErr] = useState<string | null>(null)
+  const [pcaOpen, setPcaOpen] = useState(false)
 
   // 대여요율 1회 로딩 (변경 시 페이지 재진입으로 갱신)
   useEffect(() => {
@@ -104,6 +129,28 @@ export function StatArbPage() {
       .then((d: GroupsResp) => setGroups(d.groups))
       .catch((e) => setError(`groups: ${String(e)}`))
   }, [])
+
+  // 그룹 선택 시 PCA fetch (PR-B). 미선택 또는 작은 그룹은 null.
+  useEffect(() => {
+    if (!groupFilter) {
+      setPca(null)
+      setPcaErr(null)
+      return
+    }
+    setPcaErr(null)
+    fetch(`/api/stat-arb/groups/${encodeURIComponent(groupFilter)}/pca`)
+      .then(async (r) => {
+        if (r.status === 404) {
+          setPca(null)
+          setPcaErr('PCA 미산출 (멤버 < 10 또는 데이터 부족)')
+          return null
+        }
+        if (!r.ok) throw new Error(`HTTP ${r.status}`)
+        return r.json() as Promise<GroupPcaResp>
+      })
+      .then((d) => { if (d) setPca(d) })
+      .catch((e) => { setPca(null); setPcaErr(String(e)) })
+  }, [groupFilter])
 
   // 페어 로딩
   const loadPairs = useCallback(() => {
@@ -237,6 +284,71 @@ export function StatArbPage() {
           </button>
         </div>
       </div>
+
+      {/* PR-B: 그룹 PCA 요약 패널 — 그룹 선택 시만 표시 */}
+      {groupFilter && (
+        <div className="panel p-3">
+          <div className="flex items-center justify-between text-xs">
+            <button
+              onClick={() => setPcaOpen((v) => !v)}
+              className="flex items-center gap-2 text-t2 hover:text-t1"
+            >
+              <span>{pcaOpen ? '▼' : '▶'}</span>
+              <span>PCA 요약</span>
+              {pca && (
+                <span className="text-t3 tabular-nums">
+                  · 멤버 {pca.result.members_used.length} · 샘플 {pca.result.n_samples}
+                </span>
+              )}
+            </button>
+            {pcaErr && <span className="text-t4">{pcaErr}</span>}
+          </div>
+          {pcaOpen && pca && (
+            <div className="mt-3 grid grid-cols-1 gap-3 lg:grid-cols-4">
+              {/* factor 1~3 카드 */}
+              {pca.result.factors.map((f) => (
+                <div key={f.factor_idx} className="rounded-sm bg-bg-surface/40 p-2 text-xs">
+                  <div className="mb-1 flex items-baseline justify-between">
+                    <span className="text-t2">factor {f.factor_idx + 1}</span>
+                    <span className="text-accent tabular-nums">
+                      {(f.explained_variance_ratio * 100).toFixed(1)}%
+                    </span>
+                  </div>
+                  <ul className="space-y-0.5 text-t3 tabular-nums">
+                    {f.top_loadings.slice(0, 6).map((l) => (
+                      <li key={l.key} className="flex items-center justify-between">
+                        <span className="truncate text-t2">{keyToCode(l.key)}</span>
+                        <span className={l.loading >= 0 ? 'text-up' : 'text-down'}>
+                          {l.loading >= 0 ? '+' : ''}
+                          {l.loading.toFixed(2)}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ))}
+              {/* candidate pool */}
+              <div className="rounded-sm bg-bg-surface/40 p-2 text-xs">
+                <div className="mb-1 flex items-baseline justify-between">
+                  <span className="text-t2">candidate pool</span>
+                  <span className="text-t3 tabular-nums">{pca.result.candidate_pool.length}</span>
+                </div>
+                <ul className="space-y-0.5 text-t3 tabular-nums">
+                  {pca.result.candidate_pool.slice(0, 6).map((c) => (
+                    <li key={c.key} className="flex items-center justify-between">
+                      <span className="truncate text-t2">{keyToCode(c.key)}</span>
+                      <span>{(c.power * 100).toFixed(1)}</span>
+                    </li>
+                  ))}
+                </ul>
+                <div className="mt-1 text-t4">
+                  Σ(loading² × evr). PR-C Sparse CCA 입력 풀.
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* 페어 테이블 */}
       <div className="panel overflow-x-auto">

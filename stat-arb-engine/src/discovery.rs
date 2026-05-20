@@ -182,6 +182,131 @@ pub fn discover_all_one_to_one(
     out
 }
 
+// ---------------------------------------------------------------------------
+// PR-B: Dense PCA pre-filter
+// ---------------------------------------------------------------------------
+
+/// 그룹별 PCA 결과 + candidate pool (총 explanatory power 상위 종목).
+/// PR-C (Sparse CCA)는 candidate_pool로 입력 변수 폭 줄임 (예: 반도체 164→30).
+#[derive(Debug, Clone, Serialize)]
+pub struct GroupPcaResult {
+    /// 그룹에서 PCA에 실제 들어간 멤버 (캐시 미존재/샘플 부족 자동 제외).
+    pub members_used: Vec<String>,
+    /// 사용된 영업일 샘플 수 (T).
+    pub n_samples: usize,
+    /// 상위 factor 표시. 보통 3 factor면 80~90% explained variance 흡수.
+    pub factors: Vec<GroupPcaFactor>,
+    /// 총 explanatory power 상위 종목 (factor별 loading² 합 내림차순).
+    pub candidate_pool: Vec<CandidateMember>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct GroupPcaFactor {
+    pub factor_idx: usize,
+    pub eigenvalue: f64,
+    pub explained_variance_ratio: f64,
+    /// 이 factor의 top loading 종목 (|loading| 내림차순, 상위 N개만).
+    pub top_loadings: Vec<FactorLoading>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct FactorLoading {
+    pub key: String,
+    pub loading: f64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CandidateMember {
+    pub key: String,
+    /// Σ (loading² × explained_variance_ratio) over kept factors — communality 비슷한 지표.
+    pub power: f64,
+}
+
+/// 그룹 멤버 종가 시계열에 Dense PCA 적용.
+/// 입력: 그룹 멤버 key 목록 + cache + 일봉 길이 정책 (MIN_SAMPLES 동일).
+/// 결과: 상위 `n_factors_keep` factor + 총 explanatory power top `pool_size` 종목.
+///
+/// 멤버가 적거나 데이터 부족하면 None.
+pub fn compute_group_pca(
+    members: &[String],
+    cache: &SeriesCache,
+    n_factors_keep: usize,
+    pool_size: usize,
+    top_loadings_per_factor: usize,
+) -> Option<GroupPcaResult> {
+    // 1. 멤버 일봉 종가 → 로그수익률
+    let mut keys: Vec<String> = Vec::new();
+    let mut series: Vec<Vec<f64>> = Vec::new();
+    for key in members {
+        let Some(entry) = cache.get(key) else { continue };
+        let Some(closes) = closes_daily(entry.value()) else { continue };
+        let rets = log_returns(&closes);
+        keys.push(key.clone());
+        series.push(rets);
+    }
+    if keys.len() < 3 {
+        // PCA 의미 있으려면 변수 ≥ 3
+        return None;
+    }
+
+    // 2. 시리즈 길이 통일 — 최소 길이로 right-align (가장 최근 데이터 보존)
+    let min_len = series.iter().map(|s| s.len()).min()?;
+    if min_len < MIN_SAMPLES {
+        return None;
+    }
+    for s in series.iter_mut() {
+        let start = s.len() - min_len;
+        s.drain(0..start);
+    }
+
+    // 3. PCA
+    let pca_r = crate::stats::pca(&series)?;
+    let n_vars = keys.len();
+    let n_keep = n_factors_keep.min(pca_r.eigenvalues.len());
+
+    // 4. factor별 top loading
+    let mut factors: Vec<GroupPcaFactor> = Vec::with_capacity(n_keep);
+    for f in 0..n_keep {
+        let loadings_f = &pca_r.loadings[f];
+        let mut pairs: Vec<(usize, f64)> = (0..n_vars).map(|i| (i, loadings_f[i])).collect();
+        pairs.sort_by(|a, b| b.1.abs().partial_cmp(&a.1.abs()).unwrap_or(std::cmp::Ordering::Equal));
+        let top: Vec<FactorLoading> = pairs
+            .into_iter()
+            .take(top_loadings_per_factor)
+            .map(|(i, l)| FactorLoading { key: keys[i].clone(), loading: l })
+            .collect();
+        factors.push(GroupPcaFactor {
+            factor_idx: f,
+            eigenvalue: pca_r.eigenvalues[f],
+            explained_variance_ratio: pca_r.explained_variance_ratio[f],
+            top_loadings: top,
+        });
+    }
+
+    // 5. candidate pool — 각 변수에 대해 Σ_kept (loading² × evr)
+    let mut power: Vec<(usize, f64)> = (0..n_vars).map(|i| (i, 0.0)).collect();
+    for f in 0..n_keep {
+        let evr = pca_r.explained_variance_ratio[f];
+        let loadings_f = &pca_r.loadings[f];
+        for i in 0..n_vars {
+            power[i].1 += loadings_f[i] * loadings_f[i] * evr;
+        }
+    }
+    power.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    let candidate_pool: Vec<CandidateMember> = power
+        .into_iter()
+        .take(pool_size)
+        .map(|(i, p)| CandidateMember { key: keys[i].clone(), power: p })
+        .collect();
+
+    Some(GroupPcaResult {
+        members_used: keys,
+        n_samples: pca_r.n_samples,
+        factors,
+        candidate_pool,
+    })
+}
+
 /// 그룹 한정 1:1 발굴 — 그룹 멤버끼리만 페어 평가.
 /// PR-A 본 cron은 시장 전체 결과를 필터링해 그룹별 pair_count 산출 (저렴).
 /// 이 함수는 PR-B (Dense PCA) 진입 시 그룹별 series 매트릭스 구성의 *발판*.
