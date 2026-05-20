@@ -360,12 +360,14 @@ POST   /api/groups                     사용자 정의 그룹
 
 ### 향후 후보 (스코프 외 — 우선순위 별도)
 - **PnL 시뮬레이터 UX 개선** — 라벨/순서/설명 단순화. 평일 장중 실데이터 보고 평가 후 정비.
-- **bars.rs 수정주가 컬럼 교체** — 4 라인 (153/432/184/474), §12.8 매핑대로. 페어 재계산 + 분할 종목 페어 정상화 검증.
-- M:N 발굴 — Sparse CCA + Johansen + Sparse PCA cluster
+- ✅ ~~**bars.rs 수정주가 컬럼 교체**~~ — A-1로 완료 (2026-05-20). close_price → adj_close,
+  ohlcv_intraday → ohlcv_intraday_adjusted view. 페어 통계량은 다음 cron cycle에 자동 재산출.
+- **M:N 발굴** — Sparse CCA + Johansen + Sparse PCA cluster (다음 진입 후보 1순위)
 - 발굴 자체에 다중 timeframe (현재는 일봉 + 상세만 다중)
 - 수동 조립 모드 (`POST /pairs/validate`)
 - realtime 스냅샷 동기화 (현재는 PG 분봉만)
 - 매도차(베이시스) 레이어 — 선물 페어 발굴 추가 시 PnL 시뮬에 합산
+- **2차 — 대여·주식선물 결합** (§1) — 통계차익 매수 포지션의 대여 송출 + 베이시스 낮으면 선물 매도차 수익 레이어 중첩
 
 ## 11. 통계 알고리즘 노트
 
