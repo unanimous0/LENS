@@ -272,6 +272,26 @@ WebSocket 실시간 구독 (전체 레퍼런스: [ls-api.md](ls-api.md)):
 - WebSocket 스트리밍은 TPS 제한 없음 (REST는 TR별 1~10 TPS)
 - 시뮬레이션 서버: `wss://openapi.ls-sec.co.kr:29443`
 
+#### Z+X 키 배분 (PR-16, 2026-05-20)
+
+LS 계정 2개 (아버지/와이프) → API 키 2개. 시간대 기반 자원 분배. memory: `reference_ls_key_allocation`.
+
+| 시간대 | 키A (아버지) | 키B (와이프) |
+|---|---|---|
+| 09:00 ~ 15:45 KST | LENS WS + 부족 시 REST | **LENS REST 추가** |
+| 15:50 ~ 익일 08:50 | LENS WS + REST | **Finance_Data 일배치** |
+
+구현 (`realtime/src/feed/ls_rest.rs`):
+- `KeyPool::from_env()` — `LS_APP_KEY_A`/`_B` (없으면 `LS_APP_KEY` fallback)
+- `is_lens_rest_window_now()` — 09:00~15:45 KST 판정
+- `rest_credentials()` — 시간대 보고 (key, secret) 반환. 모든 REST 호출 site가 이 helper 호출
+- WS는 `LsApiFeed.app_key` 영구 (키A) — 세션 점유형이라 한 키에 묶음
+- token cache: `HashMap<app_key, CachedToken>` (키별 분리)
+- 경계 5분 안전 마진 (FD는 15:50/08:50까지 작업 끝냄)
+
+진화 경로: LENS WS가 *한 키 한도* 침해 신호 (`/debug/stats.reconnect_count` 폭증)
+보이면 동적 확장 (WS도 두 키 분산). Z+X 코드의 키 풀 구조가 자연 확장 base.
+
 ### 내부망: 사내 거래소 데이터 수신 서버
 
 거래소(KRX)에서 직접 수신한 시세 데이터를 중계하는 사내 서버에 WebSocket으로 접속.
@@ -915,9 +935,12 @@ LENS/
 당일 사건: 빠른 frontend re-subscribe (HMR/멀티탭) + 내부 idle timeout 버그(`last_data_us` reset 누락 → 무한 재연결) 결합으로 LS-측 abuse heuristic 발동, 데이터 송신 중단. 5겹 방어 도입 (`commit 2d4b331` + 후속 race fix):
 
 1. **OAuth 토큰 캐시** (`ls_rest.rs::get_or_fetch_token`)
-   - 프로세스 단위 `OnceLock<TokioMutex<Option<CachedToken>>>` + 23h TTL
+   - 프로세스 단위 캐시 + 23h TTL
    - `fetch_initial_prices`와 `run_single_connection` 모두 같은 캐시 사용
    - 재연결 60회 → 토큰 요청 1회로 압축 (LS abuse 신호의 가장 큰 트리거 제거)
+   - **2026-05-20**: `Option<CachedToken>` → `HashMap<app_key, CachedToken>` (PR-16, Z+X 키 풀)
+     - 키별로 토큰 별도 캐시. 동일 키 재호출 시 같은 토큰 반환
+     - `invalidate_token_cache()`는 *모든 키* 일괄 무효화 (호출자가 키 추적 안 해도 안전)
 
 2. **Subscribe dedupe — 2겹 방어**
    - 프론트 (`stock-arbitrage.tsx`): `useRef<lastSubKey>`로 `(month, sorted-codes)` 동일하면 skip
