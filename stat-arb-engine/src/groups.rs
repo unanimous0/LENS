@@ -180,8 +180,24 @@ pub async fn load_etf_groups(
     Ok(out)
 }
 
-/// 같은 underlying_index 추종 ETF끼리 묶기 (예: 코스피200 추종 ETF 19개).
-/// 멤버는 *ETF*만 (S:기초종목 X) — ETF 간 운용사·추적오차·괴리율 페어 발굴용.
+/// underlying_index 문자열 → 우리가 보유한 지수 구성종목 테이블의 index_name 매핑.
+/// 현재 index_components 테이블엔 KOSPI200/KOSDAQ150 두 종류만 있음.
+/// 변종 표기 (코스피 200 선물지수, F-코스닥150 등)도 동일 구성종목 풀로 매핑.
+/// 매핑 불가 (코스피지수/KRX 300 등) → None, 그 카테고리는 ETF만으로 그룹 형성.
+fn underlying_to_index(s: &str) -> Option<&'static str> {
+    let n = s.replace(' ', "");
+    if n.contains("코스피200") {
+        return Some("KOSPI200");
+    }
+    if n.contains("코스닥150") {
+        return Some("KOSDAQ150");
+    }
+    None
+}
+
+/// 같은 underlying_index 추종 ETF끼리 묶기 + 그 underlying 지수의 구성종목도 합치기.
+/// PR-B.1: 기존 'ETF만 멤버'에서 'ETF + 지수 구성종목'으로 확장 — M:N에서 ETF m개 ↔ 주식 n개
+/// 형태 페어 발굴 가능. 매핑 불가 underlying은 ETF만으로 유지 (현재처럼).
 pub async fn load_etf_category_groups(
     pool: &PgPool,
     min_members: usize,
@@ -195,18 +211,60 @@ pub async fn load_etf_category_groups(
         return Ok(Vec::new());
     };
 
-    // underlying_index NULL/공백 제외 — 채권·통화 등 카테고리 불명확한 ETF는 그룹화 의미 X.
-    let sql = "SELECT underlying_index, etf_code
-               FROM etf_master_daily
-               WHERE snapshot_date = $1
-                 AND underlying_index IS NOT NULL
-                 AND underlying_index != ''
-               ORDER BY underlying_index, etf_code";
-    let rows: Vec<(String, String)> = sqlx::query_as(sql).bind(snap).fetch_all(pool).await?;
-    let mut grouped: HashMap<String, Vec<String>> = HashMap::new();
-    for (idx_name, etf_code) in rows {
-        grouped.entry(idx_name).or_default().push(format!("E:{etf_code}"));
+    // ETF underlying_index → etf_code 묶음
+    let etf_rows: Vec<(String, String)> = sqlx::query_as(
+        "SELECT underlying_index, etf_code
+         FROM etf_master_daily
+         WHERE snapshot_date = $1
+           AND underlying_index IS NOT NULL
+           AND underlying_index != ''
+         ORDER BY underlying_index, etf_code",
+    )
+    .bind(snap)
+    .fetch_all(pool)
+    .await?;
+
+    // 지수별 구성종목 (KOSPI200/KOSDAQ150 모두 미리 한 번에 로드)
+    let idx_rows: Vec<(String, String)> = sqlx::query_as(
+        "SELECT index_name, stock_code
+         FROM index_components
+         WHERE (end_date IS NULL OR end_date > current_date)
+           AND index_name IN ('KOSPI200', 'KOSDAQ150')",
+    )
+    .fetch_all(pool)
+    .await?;
+    let mut idx_members: HashMap<&'static str, Vec<String>> = HashMap::new();
+    for (idx_name, code) in idx_rows {
+        let k: &'static str = if idx_name == "KOSPI200" {
+            "KOSPI200"
+        } else if idx_name == "KOSDAQ150" {
+            "KOSDAQ150"
+        } else {
+            continue;
+        };
+        idx_members.entry(k).or_default().push(format!("S:{code}"));
     }
+
+    // 카테고리별 ETF + (매핑되면) 구성종목 합치기
+    let mut grouped: HashMap<String, Vec<String>> = HashMap::new();
+    for (idx_name, etf_code) in &etf_rows {
+        grouped.entry(idx_name.clone()).or_default().push(format!("E:{etf_code}"));
+    }
+    // 같은 underlying에 매핑되는 지수 구성종목 추가 (중복 카테고리는 멤버 dedup)
+    for (cat_name, members) in grouped.iter_mut() {
+        if let Some(idx_key) = underlying_to_index(cat_name) {
+            if let Some(idx_stocks) = idx_members.get(idx_key) {
+                // 멤버 set으로 변환 → dedup → 다시 vec
+                let mut seen: std::collections::HashSet<String> = members.iter().cloned().collect();
+                for s in idx_stocks {
+                    if seen.insert(s.clone()) {
+                        members.push(s.clone());
+                    }
+                }
+            }
+        }
+    }
+
     let mut out: Vec<Group> = grouped
         .into_iter()
         .filter(|(_, m)| m.len() >= min_members)

@@ -21,11 +21,16 @@ use crate::stats;
 //   ADF_CRIT      -2.89 → -3.0 — 5% → 약 1%~2% 유의수준 (보수적)
 //   MIN_HALF_LIFE 신규 3일      — 1일 미만은 데이터 끝점 우연 가능성
 //   MAX_HALF_LIFE 60 → 90      — 1년 데이터면 더 긴 회귀도 합리적
+//
+// PR-B.1 (PR-A 진단 결과 기반 완화):
+//   MIN_HALF_LIFE 3.0 → 0.5    — ETF 카테고리/짝 ETF 같은 빠른 수렴도 진짜 시그널
+//   MIN_R²        0.3 → 0.5    — 짧은 half-life 우연 거르기. R² 강화로 보완
 const MIN_CORR: f64 = 0.5;
 const ADF_CRIT: f64 = -3.0;
 const MIN_SAMPLES: usize = 150;
-const MIN_HALF_LIFE: f64 = 3.0;
+const MIN_HALF_LIFE: f64 = 0.5;
 const MAX_HALF_LIFE: f64 = 90.0;
+const MIN_R_SQUARED: f64 = 0.5;
 
 /// M:N 페어 한 쪽 최대 leg 수. stat-arb-engine.md §2 결정사항.
 /// PR-C (Sparse CCA) / PR-E (Sparse PCA) 진입 시 L1 sparsity 강도와 결과 leg 수 cap에 사용.
@@ -105,7 +110,7 @@ fn evaluate_pair(
 
     // 2. OLS: y = b, x = a → β = hedge ratio
     let r = stats::ols(&a, &b)?;
-    if r.r_squared < 0.3 {
+    if r.r_squared < MIN_R_SQUARED {
         // 잔차가 너무 큼 — cointegration 가능성 낮음
         return None;
     }
