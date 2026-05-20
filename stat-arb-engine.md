@@ -186,6 +186,9 @@ struct Group { id: String, name: String, group_type: GroupType, members: Vec<Str
 ```
 
 ### FastAPI 영속화 (SQLite `backend/data/lens.db`)
+
+**Connection 설정**: `_connect()`에서 PRAGMA journal_mode=WAL + busy_timeout=5000 적용 (PR-5). positions와 loan_rates가 같은 DB 파일 공유 — asyncio.to_thread 스레드풀 동시 호출 시 'database is locked' 회피. positions._close_sync 진입 시 BEGIN IMMEDIATE로 동시 close idempotency 보장.
+
 ```sql
 groups (
     id           TEXT PRIMARY KEY,

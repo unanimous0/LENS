@@ -47,10 +47,15 @@ LENS/
 │   │   ├── arbitrage.py                   # GET /api/arbitrage/master (주식선물 마스터)
 │   │   ├── borrowing.py                   # POST /api/borrowing/analyze
 │   │   ├── dividends.py                   # 배당 (Phase 1: data/dividends_mock.json)
-│   │   ├── etfs.py                        # ETF 마스터/PDF (Finance_Data DB 조회, 60s 캐시)
+│   │   ├── etfs.py                        # ETF 마스터/PDF + 해외 제외 + 유형 분류(_classify_etf)
 │   │   ├── health.py                      # GET /api/health
 │   │   ├── lending.py                     # POST /api/lending/calculate
-│   │   └── repayment.py                   # POST /api/repayment/calculate, /api/repayment/lenders
+│   │   ├── loan_rates.py                  # 대여요율 CRUD + CSV import (SQLite WAL)
+│   │   ├── lp.py                          # LP 매트릭스 config + risk-params + positions
+│   │   ├── permanent_sub.py               # GET /api/permanent-codes (LP+positions union)
+│   │   ├── positions.py                   # 포지션 CRUD + close (SQLite WAL)
+│   │   ├── repayment.py                   # POST /api/repayment/calculate, /api/repayment/lenders
+│   │   └── stat_arb.py                    # 통계 차익 proxy (→ stat-arb-engine 8300)
 │   ├── models/                            # 데이터 모델 (market, portfolio)
 │   ├── schemas/                           # Pydantic 응답 스키마 (lending, repayment)
 │   └── services/
@@ -63,6 +68,11 @@ LENS/
 │       ├── repayment_parser.py            # 상환가능 엑셀 파싱 (오피스 + 예탁원)
 │       ├── repayment_calculator.py        # 상환가능 매칭 로직
 │       ├── futures_master.py              # 주식선물 마스터 (data/futures_master.json)
+│       ├── pdf_futures_match.py           # PDF ∩ 주식선물 교집합 매핑
+│       ├── risk_estimator.py              # OLS 베타 + Ledoit-Wolf shrinkage (adj_close)
+│       ├── loan_rates.py                  # SQLite CRUD (positions와 같은 lens.db, WAL)
+│       ├── positions.py                   # 포지션 SQLite + BEGIN IMMEDIATE close idempotency
+│       ├── permanent_sub.py               # realtime /permanent-stocks push (LP+positions union)
 │       └── dividend_estimator.py          # 배당 추정
 │
 ├── realtime/                              # Rust 실시간 서비스 (port 8200) — 시세 + WS
@@ -112,7 +122,7 @@ LENS/
 
 ETF 마스터(creation_unit, 운용사, underlying_index 등)와 PDF(구성종목 수량+현금)는 **Finance_Data의 `etf_master_daily` + `etf_portfolio_daily`** 두 테이블에서 매일 새벽 5:30 KST 인포맥스 API로 적재 (5일 슬라이딩 윈도우 FIFO). LENS는 `routers/etfs.py`가 60초 캐시로 최신 snapshot 조회. 옛 `data/etf_info.xlsx` 의존은 제거됨.
 
-차익 가능 판정: `tracking_multiple`/`replication` + 종목명 키워드(레버리지/인버스/회사채/혼합/커버드콜/리츠 등). 현재 631 ETF 중 430 차익가능 / 201 비차익.
+차익 가능 판정: `tracking_multiple`/`replication` + 종목명 키워드(레버리지/인버스/회사채/혼합/커버드콜/리츠 등). 해외 ETF 제외 후 **국내 563 ETF** (`_OVERSEAS_KEYWORDS`: 미국/나스닥/S&P/차이나/일본/유럽/(H) 등 73개 제외) — 그중 차익 ~430 / 비차익 ~130.
 
 ### 시계열 데이터 (백테스팅용) — Finance_Data 프로젝트와 분담
 

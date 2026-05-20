@@ -868,6 +868,7 @@ LENS/
 
 - [x] **구독자 없을 때 직렬화 스킵**: `OrderbookTick` (캐시 없음) + `ws_clients == 0` 조합만 스킵. 캐시 대상 틱은 snapshot 복원을 위해 항상 직렬화. `ticks_skipped_no_subscribers` 카운터로 효과 관측.
 - [x] **과부하 모니터링 (`/debug/stats` 확장)**: `ws_clients`, `ws_lag_total` (broadcast Lagged 누적), `reconnect_count` (LS WS 재접속 총합), `fetch_failures.{no_data, http_5xx, tps, other}` 추가. 초기 fetch 실패율 분류는 `ls_rest.rs::classify_error`로 자동. 어제의 "205 failed" 같은 단일 경고가 이제 `warn!("t8402 failures: no_data=X http_5xx=Y tps=Z other=W")`로 분해돼 찍힘.
+- [x] **LP 매트릭스 스케줄러 (`calc/scheduler.rs`)**: 200ms throttle로 `FairValueMatrix`/`BookRisk` broadcast. `try_send` 실패 시 `MATRIX_TX_DROPPED` (`/debug/stats.matrix_tx_dropped`)에 카운트 — 일반 `tx_dropped`와 분리해서 "매트릭스 왜 멈췄나" 즉시 진단. `STALE_THRESHOLD_MS = 3_600_000` (1h): 한국 주식은 체결 안 되면 마지막 체결가 = 현재가라 *가격 stale*이 아닌 *시스템 신호 stale* (LS 끊김/realtime 다운) 감지용. pc_only(전일종가) 가격은 `handle_tick`이 `price > 0`만 박아 자동 차단.
 - [ ] **LpBookSnapshot 파싱 최소화** — **SKIP**. `OrderbookModal.tsx`가 10호가 전부 사용. 프런트 회귀 리스크가 절약보다 큼.
 - [ ] **String clone → `Arc<str>`** — **DEFER**. Blast radius 크고 (SymbolState 키 / `message.rs` 3개 struct / HashMap) 현 부하에서 `/debug/stats` serialize avg_ns가 측정 임계 아래. `serialize.avg_ns > 20μs` 관측되면 재검토.
 - [ ] **타임스탬프 캐싱** — **DEFER**. `Utc::now().format(...).to_string()`은 ~500ns + 1 alloc이지만 staleness 리스크가 있고 현 부하에선 체감 불가.
