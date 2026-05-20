@@ -55,6 +55,70 @@ const TOKEN_URL: &str = "https://openapi.ls-sec.co.kr:8080/oauth2/token";
 const T8402_URL: &str = "https://openapi.ls-sec.co.kr:8080/futureoption/market-data";
 const T1102_URL: &str = "https://openapi.ls-sec.co.kr:8080/stock/market-data";
 
+/// Z+X 키 풀 (2026-05-20). 두 LS 계정(아버지/와이프)의 키를 각 역할별로 분리.
+/// WS는 키A 영구. REST는 09:00~15:45 KST는 키B, 그 외는 키A.
+#[derive(Clone)]
+pub struct KeyPool {
+    pub key_a: String,    // 아버지 계좌 — LENS WS 영구
+    pub secret_a: String,
+    pub key_b: String,    // 와이프 계좌 — 09:00~15:45 LENS REST / 그외 FD
+    pub secret_b: String,
+}
+
+impl KeyPool {
+    /// 환경변수에서 읽기. LS_APP_KEY_A/B 없으면 LS_APP_KEY fallback (하위 호환).
+    pub fn from_env() -> Self {
+        let key_a = std::env::var("LS_APP_KEY_A")
+            .or_else(|_| std::env::var("LS_APP_KEY"))
+            .unwrap_or_default();
+        let secret_a = std::env::var("LS_APP_SECRET_A")
+            .or_else(|_| std::env::var("LS_APP_SECRET"))
+            .unwrap_or_default();
+        let key_b = std::env::var("LS_APP_KEY_B")
+            .or_else(|_| std::env::var("LS_APP_KEY"))
+            .unwrap_or_default();
+        let secret_b = std::env::var("LS_APP_SECRET_B")
+            .or_else(|_| std::env::var("LS_APP_SECRET"))
+            .unwrap_or_default();
+        Self { key_a, secret_a, key_b, secret_b }
+    }
+}
+
+static KEY_POOL: OnceLock<KeyPool> = OnceLock::new();
+
+pub fn init_key_pool(pool: KeyPool) {
+    let _ = KEY_POOL.set(pool);
+}
+
+fn key_pool() -> Option<&'static KeyPool> {
+    KEY_POOL.get()
+}
+
+/// 09:00~15:45 KST면 true — LENS가 키B로 REST 호출하는 시간대.
+/// 그 외는 키A 사용 (Finance_Data가 키B 점유 가능 시간대라 충돌 회피).
+pub fn is_lens_rest_window_now() -> bool {
+    use chrono::{Local, Timelike};
+    let now = Local::now();
+    let mins = (now.hour() * 60 + now.minute()) as i32;
+    (9 * 60) <= mins && mins < (15 * 60 + 45)
+}
+
+/// REST 호출 시점에 시간대 보고 (key, secret) 반환. Z+X 정책 단일 진실원.
+/// 호출자(ls_api.rs)는 이 helper만 사용하면 시간대 분기 자동.
+pub fn rest_credentials() -> (String, String) {
+    if let Some(p) = key_pool() {
+        if is_lens_rest_window_now() {
+            return (p.key_b.clone(), p.secret_b.clone());
+        }
+        return (p.key_a.clone(), p.secret_a.clone());
+    }
+    // KeyPool 초기화 안 됨 (테스트/오류 케이스) — 환경변수 직접 fallback
+    (
+        std::env::var("LS_APP_KEY").unwrap_or_default(),
+        std::env::var("LS_APP_SECRET").unwrap_or_default(),
+    )
+}
+
 /// LS OAuth 토큰 TTL — 실제 24시간이지만 1시간 마진 두고 23시간 후 갱신.
 /// 매 WS 재연결마다 토큰 받지 않게 프로세스 단위로 캐시.
 const TOKEN_TTL: Duration = Duration::from_secs(23 * 3600);
@@ -64,19 +128,22 @@ struct CachedToken {
     fetched_at: Instant,
 }
 
-static TOKEN_CACHE: OnceLock<TokioMutex<Option<CachedToken>>> = OnceLock::new();
+/// 토큰 캐시 — app_key 별로 별도 저장 (Z+X 키 배분, 2026-05-20).
+/// 키A (아버지 계좌) WS 영구 + 키B (와이프 계좌) 09:00~15:45 REST 추가 사용.
+/// 단일 OnceLock<TokioMutex<HashMap<app_key, CachedToken>>>.
+static TOKEN_CACHE: OnceLock<TokioMutex<HashMap<String, CachedToken>>> = OnceLock::new();
 
-fn token_cache() -> &'static TokioMutex<Option<CachedToken>> {
-    TOKEN_CACHE.get_or_init(|| TokioMutex::new(None))
+fn token_cache() -> &'static TokioMutex<HashMap<String, CachedToken>> {
+    TOKEN_CACHE.get_or_init(|| TokioMutex::new(HashMap::new()))
 }
 
 /// 캐시된 토큰을 반환. TTL 지났으면 새로 발급. 없거나 401 받았을 때
-/// `invalidate_token_cache()` 호출 후 재시도하면 됨.
+/// `invalidate_token_cache(app_key)` 호출 후 재시도하면 됨.
 pub async fn get_or_fetch_token(app_key: &str, app_secret: &str) -> Result<String, String> {
     let cache = token_cache();
     let mut guard = cache.lock().await;
 
-    if let Some(c) = guard.as_ref() {
+    if let Some(c) = guard.get(app_key) {
         if c.fetched_at.elapsed() < TOKEN_TTL {
             return Ok(c.token.clone());
         }
@@ -84,17 +151,25 @@ pub async fn get_or_fetch_token(app_key: &str, app_secret: &str) -> Result<Strin
 
     // 만료/없음 → 새로 발급
     let new_token = fetch_token(app_key, app_secret).await?;
-    info!("token cache: refreshed (was {})", if guard.is_some() { "expired" } else { "empty" });
-    *guard = Some(CachedToken { token: new_token.clone(), fetched_at: Instant::now() });
+    let was_present = guard.contains_key(app_key);
+    info!(
+        "token cache: refreshed key={}*** (was {})",
+        &app_key.chars().take(8).collect::<String>(),
+        if was_present { "expired" } else { "empty" }
+    );
+    guard.insert(app_key.to_string(), CachedToken { token: new_token.clone(), fetched_at: Instant::now() });
     Ok(new_token)
 }
 
-/// LS가 401 또는 토큰 무효 응답 줄 때 캐시 강제 무효화.
-/// fetch_t1102/t8402/t1405/t1404가 401/403 받으면 호출. 다음 get_or_fetch_token이
-/// 새 토큰 발급 → 폴러/sweep 다음 cycle부터 회복.
+/// LS가 401 또는 토큰 무효 응답 줄 때 캐시 강제 무효화 (전체).
+/// fetch_t1102/t8402/t1405/t1404가 401/403 받으면 호출. 호출자가 *어느 키*였는지
+/// 추적 안 해도 안전하게 모든 키 캐시 비움. 다음 get_or_fetch_token이 새 토큰 발급
+/// (필요한 키만). 401/403 발생 빈도 낮아 부담 작음.
 pub async fn invalidate_token_cache() {
-    *token_cache().lock().await = None;
-    info!("token cache: invalidated (401/403 received)");
+    let mut guard = token_cache().lock().await;
+    let n = guard.len();
+    guard.clear();
+    info!("token cache: invalidated all ({n} entries, 401/403 received)");
 }
 
 // ────────────────────────────────────────────────────────────────────────────

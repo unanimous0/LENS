@@ -582,10 +582,20 @@ fn spawn_feed(
 
     let join = match mode {
         "ls_api" => {
-            let app_key =
-                std::env::var("LS_APP_KEY").map_err(|_| "LS_APP_KEY not set".to_string())?;
-            let app_secret = std::env::var("LS_APP_SECRET")
-                .map_err(|_| "LS_APP_SECRET not set".to_string())?;
+            // Z+X 키 풀 초기화 (2026-05-20). WS는 항상 키A, REST는 시간대 보고 키A/B.
+            // 환경변수 LS_APP_KEY_A/_B 없으면 LS_APP_KEY로 fallback (하위 호환).
+            let key_pool = crate::feed::ls_rest::KeyPool::from_env();
+            if key_pool.key_a.is_empty() {
+                return Err("LS_APP_KEY (or LS_APP_KEY_A) not set".to_string());
+            }
+            let app_key = key_pool.key_a.clone();   // WS는 키A 영구
+            let app_secret = key_pool.secret_a.clone();
+            let key_b_present = !key_pool.key_b.is_empty() && key_pool.key_b != key_pool.key_a;
+            crate::feed::ls_rest::init_key_pool(key_pool);
+            info!(
+                "Z+X 키 풀: 키A(WS 영구) 활성 / 키B(09:00~15:45 REST) {}",
+                if key_b_present { "활성" } else { "미설정 — 키A로 fallback" }
+            );
 
             // 마스터 원본 순서대로 구독 — HashSet 순회는 비결정적이라
             // 실행마다 "어떤 종목이 먼저 뜨는지"가 달라져 디버깅이 어려움.

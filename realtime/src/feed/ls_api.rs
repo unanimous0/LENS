@@ -185,8 +185,11 @@ impl MarketFeed for LsApiFeed {
             let failed = self.failed_stocks.clone();
             let etf_codes_c = self.etf_codes.clone();
             tokio::spawn(async move {
+                // Z+X: 시간대 보고 REST 키 선택. _ak/_as_는 spawn된 worker 내부에서 안 씀.
+                let _ = (&ak, &as_);  // unused 경고 회피 (WS용으로만 모음)
+                let (ak_r, as_r) = super::ls_rest::rest_credentials();
                 super::ls_rest::fetch_initial_prices(
-                    &ak, &as_, &all_subs, &n, &sc, &f2s, &tx2, &cancel2, &stats, Some(&fetched), Some(&failed), Some(&etf_codes_c),
+                    &ak_r, &as_r, &all_subs, &n, &sc, &f2s, &tx2, &cancel2, &stats, Some(&fetched), Some(&failed), Some(&etf_codes_c),
                 ).await;
             });
         }
@@ -213,7 +216,8 @@ impl MarketFeed for LsApiFeed {
                     _ = cancel2.cancelled() => return,
                 }
                 if !crate::phase::wait_until_active(&cancel2, "etf-pdf-sweep").await { return; }
-                let token = match super::ls_rest::get_or_fetch_token(&ak, &as_).await {
+                let (ak_r, as_r) = super::ls_rest::rest_credentials();
+                                    let token = match super::ls_rest::get_or_fetch_token(&ak_r, &as_r).await {
                     Ok(t) => t,
                     Err(e) => { tracing::warn!("ETF PDF sweep: token fail: {e}"); return; }
                 };
@@ -256,7 +260,8 @@ impl MarketFeed for LsApiFeed {
                     }
                     let codes: Vec<String> = failed.iter().map(|e| e.key().clone()).collect();
                     if codes.is_empty() { continue; }
-                    let token = match super::ls_rest::get_or_fetch_token(&ak, &as_).await {
+                    let (ak_r, as_r) = super::ls_rest::rest_credentials();
+                                    let token = match super::ls_rest::get_or_fetch_token(&ak_r, &as_r).await {
                         Ok(t) => t,
                         Err(e) => { warn!("t1102 retry: token fail: {e}"); continue; }
                     };
@@ -290,7 +295,8 @@ impl MarketFeed for LsApiFeed {
                 }
                 loop {
                     if cancel_h.is_cancelled() { return; }
-                    let token = match super::ls_rest::get_or_fetch_token(&ak, &as_).await {
+                    let (ak_r, as_r) = super::ls_rest::rest_credentials();
+                                    let token = match super::ls_rest::get_or_fetch_token(&ak_r, &as_r).await {
                         Ok(t) => t,
                         Err(e) => {
                             warn!("t1405 poll: token fail: {e}");
@@ -352,8 +358,10 @@ impl MarketFeed for LsApiFeed {
                     info!("Daily refresh trigger ({}): fetch_initial_prices 재호출", now.format("%H:%M"));
                     fetched.clear();  // 어제 캐시 stale → 비우고 처음부터
                     failed.clear();   // 새 일자 시작이라 이전 실패 list도 무효
+                    // Z+X: REST 키는 시간대 보고 결정. daily refresh가 새벽이면 키A.
+                    let (ak_r, as_r) = super::ls_rest::rest_credentials();
                     super::ls_rest::fetch_initial_prices(
-                        &ak, &as_, &all_subs, &n, &sc, &f2s, &tx2, &cancel2, &stats, Some(&fetched), Some(&failed), Some(&etf_codes_c),
+                        &ak_r, &as_r, &all_subs, &n, &sc, &f2s, &tx2, &cancel2, &stats, Some(&fetched), Some(&failed), Some(&etf_codes_c),
                     ).await;
                 }
             });
@@ -575,7 +583,8 @@ impl MarketFeed for LsApiFeed {
                                 let added_for_fetch = newly_added.clone();
                                 let etf_codes_c = etf_codes_run.clone();
                                 tokio::spawn(async move {
-                                    let token = match super::ls_rest::get_or_fetch_token(&ak, &as_).await {
+                                    let (ak_r, as_r) = super::ls_rest::rest_credentials();
+                                    let token = match super::ls_rest::get_or_fetch_token(&ak_r, &as_r).await {
                                         Ok(t) => t,
                                         Err(e) => { warn!("SubscribeStocks t1102 token fail: {e}"); return; }
                                     };
@@ -638,7 +647,8 @@ impl MarketFeed for LsApiFeed {
                             let failed = failed_stocks.clone();
                             let etf_codes_c = etf_codes_run.clone();
                             tokio::spawn(async move {
-                                let token = match super::ls_rest::get_or_fetch_token(&ak, &as_).await {
+                                let (ak_r, as_r) = super::ls_rest::rest_credentials();
+                                    let token = match super::ls_rest::get_or_fetch_token(&ak_r, &as_r).await {
                                     Ok(t) => t,
                                     Err(e) => { warn!("PrioritizeStocks: token fail: {e}"); return; }
                                 };
