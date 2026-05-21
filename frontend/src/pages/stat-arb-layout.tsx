@@ -11,8 +11,9 @@ export function StatArbLayout() {
     <div className="flex flex-col gap-1 p-1">
       <div className="panel flex items-center gap-1 px-3 py-2">
         <SubTab to="/stat-arb" end>
-          페어 발굴
+          1:1 발굴
         </SubTab>
+        <SubTab to="/stat-arb/mn">M:N 발굴</SubTab>
         <SubTab to="/stat-arb/positions">포지션</SubTab>
         <SubTab to="/stat-arb/loan-rates">대여요율</SubTab>
       </div>

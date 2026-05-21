@@ -10,6 +10,7 @@ import { LendingPage } from './pages/lending'
 import { StockArbitragePage } from './pages/stock-arbitrage'
 import { EtfArbitragePage } from './pages/etf-arbitrage'
 import { StatArbPage } from './pages/stat-arb'
+import { StatArbMnPage } from './pages/stat-arb-mn'
 import { StatArbDetailPage } from './pages/stat-arb-detail'
 import { StatArbLayout } from './pages/stat-arb-layout'
 import { LoanRatesPage } from './pages/loan-rates'
@@ -59,6 +60,7 @@ function AppLayout() {
             {/* 통계차익: nested sub-tab (페어 발굴 / 대여요율). 페어 상세는 layout 밖. */}
             <Route path="/stat-arb" element={<StatArbLayout />}>
               <Route index element={<StatArbPage />} />
+              <Route path="mn" element={<StatArbMnPage />} />
               <Route path="positions" element={<StatArbPositionsPage />} />
               <Route path="loan-rates" element={<LoanRatesPage />} />
             </Route>
