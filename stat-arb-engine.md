@@ -357,17 +357,39 @@ POST   /api/groups                     사용자 정의 그룹
   - PR19 ✅ 청산 기록 — leg.exit_price + loans.ended_at + status='closed'. partial close 미지원
 - **Phase 6** — 후속 정리
   - PR20 `lens-common` workspace crate (worktree1 머지 후, realtime + stat-arb-engine 공유 모듈)
+- **Phase 7 — M:N 발굴** (2026-05-20~21 진행)
+  - PR-A ✅ 도메인 그룹 1:1 점검 + ETF 카테고리 그룹 추가 (`d344543`)
+  - PR-B ✅ Dense PCA pre-filter — factor 1~3 + candidate pool top-30 (`fc3187b`)
+  - PR-B.1 ✅ etf_category 멤버 확장 (underlying 구성종목 합치기) + 임계 완화
+    (MIN_HALF_LIFE 3→0.5, R² 0.3→0.5) (`014cd3b`)
+  - PR-C1 ✅ Sparse CCA core (Witten PMD-CCA) + 단위 테스트 4/4 (`1626214`)
+  - PR-C2 ✅ 그룹별 M:N 발굴 (양변 분할 + Sparse CCA + 합성 spread OLS+ADF) +
+    `GET /groups/{id}/mn-pair` + `GET /mn-pairs` API + backend proxy (`24efae8`)
+  - PR-C2.1 ✅ fail 이유 카운트 + true correlation (`9d53977`)
+  - PR-C3 ✅ 프론트 `/stat-arb/mn` 페이지 — 그룹 필터, leg 확장, score Top 정렬 (`fd4047a`)
+  - **다음 단계** (트랙 A 마무리 + 트랙 B):
+    - **PR-D Johansen test** — M:N 잔차 cointegration 정식 검증. 현재 OLS+ADF 단순화.
+      ndarray-linalg 또는 자체 구현 (Johansen은 eigendecomposition 무거움). 가짜 양성 강하게 거르기
+    - **PR-E Sparse PCA cluster (트랙 B)** — sparsity 강제 PCA로 서브클러스터 추출.
+      그 cluster를 ETF/주식 1개와 페어. 1:N 형태 자연. 트랙 A (CCA)와 결과 다를 수 있음
+    - **PR-F 두 트랙 통합 스크리너** — `[CCA]` `[sPCA]` `[1:1]` 출처 뱃지, dedup, 통합 score
+- **Phase 8 — 후속 (우선순위 별도)**
+  - 발굴 자체에 다중 timeframe (현재는 일봉. 분봉 발굴은 별도 — §12 정책 참조)
+  - 수동 조립 모드 (`POST /pairs/validate`)
+  - realtime 스냅샷 동기화 (현재 PG 분봉만)
+  - 매도차(베이시스) 레이어 — 선물 페어 발굴 추가 시 PnL 시뮬에 합산
+  - **2차 — 대여·주식선물 결합** (§1) — 통계차익 매수 포지션의 대여 송출 + 베이시스 낮으면
+    선물 매도차 수익 레이어 중첩
+  - **PnL 시뮬레이터 UX 개선** — 라벨/순서/설명 단순화
 
-### 향후 후보 (스코프 외 — 우선순위 별도)
-- **PnL 시뮬레이터 UX 개선** — 라벨/순서/설명 단순화. 평일 장중 실데이터 보고 평가 후 정비.
-- ✅ ~~**bars.rs 수정주가 컬럼 교체**~~ — A-1로 완료 (2026-05-20). close_price → adj_close,
-  ohlcv_intraday → ohlcv_intraday_adjusted view. 페어 통계량은 다음 cron cycle에 자동 재산출.
-- **M:N 발굴** — Sparse CCA + Johansen + Sparse PCA cluster (다음 진입 후보 1순위)
-- 발굴 자체에 다중 timeframe (현재는 일봉 + 상세만 다중)
-- 수동 조립 모드 (`POST /pairs/validate`)
-- realtime 스냅샷 동기화 (현재는 PG 분봉만)
-- 매도차(베이시스) 레이어 — 선물 페어 발굴 추가 시 PnL 시뮬에 합산
-- **2차 — 대여·주식선물 결합** (§1) — 통계차익 매수 포지션의 대여 송출 + 베이시스 낮으면 선물 매도차 수익 레이어 중첩
+### 알려진 한계 (M:N PR-C 머지 후)
+- **etf 그룹 fail 324개** — universe top 100 ETF만 cache → universe 밖 ETF는 PCA 입력 미포함 → M:N 발굴 X. universe top 200~300 확장 또는 cache 미존재 그룹 자동 제외 필요 (PR-C2.2)
+- **현재 발굴 35 페어** — leg 1:2=17 (가장 많음 — ETF 트래킹 형태), 2:2=8, 1:3=7. Top score:
+  sector:반도체 (2:2, corr=0.31, hl=1.5d, adf=-6.69, r²=0.94)
+- **etf_category r²<0.5 fail 26개** — 큰 혼합 그룹 (KOSPI200 ETF + 구성종목)의 multi-leg OLS 정상 발굴 제한
+
+### ✅ ~~bars.rs 수정주가 컬럼 교체~~ — A-1로 완료 (2026-05-20)
+close_price → adj_close, ohlcv_intraday → ohlcv_intraday_adjusted view.
 
 ## 11. 통계 알고리즘 노트
 
