@@ -1,0 +1,605 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LS Data Test</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: #000;
+    color: #d1d1d6;
+    font-family: 'Menlo', 'Consolas', monospace;
+    font-size: 12px;
+    line-height: 1.5;
+  }
+
+  /* ── 상단 헤더 ──────────────────────────────────────────── */
+  #header {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 8px 16px;
+    background: #111;
+    border-bottom: 1px solid #222;
+    position: sticky;
+    top: 0;
+    z-index: 10;
+  }
+  #header h1 { font-size: 13px; color: #fff; letter-spacing: .5px; }
+
+  .badge {
+    padding: 2px 8px;
+    border-radius: 3px;
+    font-size: 11px;
+    font-weight: 600;
+  }
+  .badge-ok   { background: #0a3d1f; color: #34c759; }
+  .badge-err  { background: #3d0a0a; color: #ff3b30; }
+  .badge-wait { background: #1a1a00; color: #ff9f0a; }
+
+  #stats-bar {
+    margin-left: auto;
+    display: flex;
+    gap: 16px;
+    color: #636366;
+    font-size: 11px;
+  }
+  #stats-bar span b { color: #8e8e93; }
+
+  /* ── 메인 테이블 ────────────────────────────────────────── */
+  #main-table {
+    width: 100%;
+    border-collapse: collapse;
+    table-layout: fixed;
+  }
+  #main-table th {
+    background: #111;
+    color: #636366;
+    font-size: 10px;
+    letter-spacing: .5px;
+    text-transform: uppercase;
+    padding: 6px 10px;
+    text-align: right;
+    border-bottom: 1px solid #222;
+    position: sticky;
+    top: 37px;
+  }
+  #main-table th:nth-child(-n+3) { text-align: left; }
+
+  #main-table td {
+    padding: 5px 10px;
+    border-bottom: 1px solid #111;
+    text-align: right;
+    vertical-align: middle;
+  }
+  #main-table td:nth-child(-n+3) { text-align: left; }
+
+  tr.data-row:hover td { background: #151515; }
+
+  /* ── 그룹 구분 행 ────────────────────────────────────────── */
+  tr.group-header td {
+    padding: 7px 12px 5px;
+    font-size: 10px;
+    letter-spacing: .8px;
+    text-transform: uppercase;
+    user-select: none;
+  }
+  tr.group-header td .g-sub {
+    color: #2a2a2a;
+    font-size: 9px;
+    margin-left: 10px;
+    letter-spacing: .2px;
+    text-transform: none;
+  }
+
+  /* ── 데이터 셀 ───────────────────────────────────────────── */
+  .tr-badge {
+    display: inline-block;
+    font-size: 10px;
+    font-weight: 600;
+    color: #0a84ff;
+    line-height: 1.3;
+  }
+  .tr-badge-sec { color: #3a5a7a; font-size: 9px; }
+  .code   { color: #fff; }
+  .price  { color: #fff; font-weight: 600; font-size: 13px; }
+  .dim    { color: #636366; }
+  .src-ws   { color: #34c759; font-size: 10px; }
+  .src-rest { color: #3a5a3a; font-size: 10px; }
+  .age-ok  { color: #34c759; }
+  .age-lag { color: #ff9f0a; }
+  .age-old { color: #ff3b30; }
+  .ob-ask  { color: #ff3b30; }
+  .ob-bid  { color: #34c759; }
+
+  /* ── raw toggle ──────────────────────────────────────────── */
+  .raw-toggle {
+    cursor: pointer;
+    color: #0a84ff;
+    text-decoration: none;
+    font-size: 10px;
+    white-space: nowrap;
+  }
+  .raw-toggle:hover { text-decoration: underline; }
+  .raw-sep { color: #2a2a2a; margin: 0 2px; }
+
+  /* ── raw sub-row ─────────────────────────────────────────── */
+  .raw-sub-row td {
+    background: #080808;
+    border-bottom: 2px solid #2a2a2a;
+    padding: 0;
+  }
+  .raw-sub-content {
+    max-height: 260px;
+    overflow-y: auto;
+    padding: 8px 14px;
+    font-size: 11px;
+    white-space: pre-wrap;
+    word-break: break-all;
+    color: #8e8e93;
+  }
+  .raw-sub-content .k     { color: #0a84ff; }
+  .raw-sub-content .v-num { color: #34c759; }
+  .raw-sub-content .v-str { color: #ff9f0a; }
+
+  /* ── 연결 끊김 오버레이 ──────────────────────────────────── */
+  #overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,.7);
+    align-items: center;
+    justify-content: center;
+    color: #ff3b30;
+    font-size: 14px;
+    font-weight: 600;
+    z-index: 100;
+  }
+  #overlay.show { display: flex; }
+</style>
+</head>
+<body>
+
+<div id="header">
+  <h1>LS DATA TEST</h1>
+  <span id="conn-badge" class="badge badge-wait">CONNECTING</span>
+  <div id="stats-bar">
+    <span>msgs <b id="s-total">—</b></span>
+    <span>errors <b id="s-errors">—</b></span>
+    <span>subs <b id="s-entries">—</b></span>
+  </div>
+</div>
+
+<table id="main-table">
+  <colgroup>
+    <col style="width:5%">   <!-- TR -->
+    <col style="width:7%">   <!-- CODE -->
+    <col style="width:10%">  <!-- NAME -->
+    <col style="width:6%">   <!-- TIME -->
+    <col style="width:14%">  <!-- PRICE (+호가) -->
+    <col style="width:7%">   <!-- PREV -->
+    <col style="width:6%">   <!-- HIGH -->
+    <col style="width:6%">   <!-- LOW -->
+    <col style="width:8%">   <!-- VOL -->
+    <col style="width:6%">   <!-- NAV -->
+    <col style="width:4%">   <!-- SRC -->
+    <col style="width:5%">   <!-- CNT -->
+    <col style="width:4%">   <!-- /S -->
+    <col style="width:6%">   <!-- AGE -->
+    <col style="width:6%">   <!-- RAW -->
+  </colgroup>
+  <thead>
+    <tr>
+      <th>TR</th>
+      <th>CODE</th>
+      <th>NAME</th>
+      <th>TIME</th>
+      <th>PRICE / 호가</th>
+      <th>PREV</th>
+      <th>HIGH</th>
+      <th>LOW</th>
+      <th>VOL</th>
+      <th>NAV/지수</th>
+      <th>SRC</th>
+      <th>CNT</th>
+      <th>/S</th>
+      <th>AGE</th>
+      <th>RAW</th>
+    </tr>
+  </thead>
+  <tbody id="tbody"></tbody>
+</table>
+
+<div id="overlay"><div>WS disconnected — reconnecting…</div></div>
+
+<script>
+// ── 그룹 메타 ─────────────────────────────────────────────────
+const GROUP_ORDER = ['KOSPI주식','KOSDAQ주식','ETF','주식선물','지수선물','지수','기타'];
+const GROUP_META  = {
+  'KOSPI주식':  { label:'KOSPI 주식',  sub:'S3_ 체결 + H1_ 호가  →  1종목 1행',           color:'#4a8aff' },
+  'KOSDAQ주식': { label:'KOSDAQ 주식', sub:'K3_ 체결 + HA_ 호가  →  1종목 1행',            color:'#bf6aff' },
+  'ETF':        { label:'ETF',         sub:'S3_ 체결 + I5_ iNAV  →  1종목 1행',            color:'#34c759' },
+  '주식선물':   { label:'주식선물',    sub:'JC0 체결  ·  JH0 호가 10단',                   color:'#ff9f0a' },
+  '지수선물':   { label:'지수선물',    sub:'FC9(K200선물+지수)  ·  FH9 호가 5단  ·  JC0 A066(K150선물, 지수필드 장중확인)', color:'#ffcc00' },
+  '지수':       { label:'지수',        sub:'IJ_ — 001=KOSPI200(확인) · 003/301=KOSDAQ150(장중실측)',  color:'#5ac8fa' },
+  '기타':       { label:'기타',        sub:'',                                              color:'#636366' },
+};
+
+// 주식/ETF 그룹에서 체결(primary)과 호가/NAV(secondary)를 1행으로 합침
+const PAIRED_GROUPS   = new Set(['KOSPI주식','KOSDAQ주식','ETF']);
+const SECONDARY_TRS   = new Set(['H1_','HA_','I5_']);
+
+// 체결 TR → 대응 secondary TR
+function secTrOf(entry) {
+  if (!PAIRED_GROUPS.has(entry.group)) return null;
+  if (entry.tr_cd === 'S3_') return entry.group === 'ETF' ? 'I5_' : 'H1_';
+  if (entry.tr_cd === 'K3_') return 'HA_';
+  return null;
+}
+
+// ── 코드에서 이름 유도 (선물/지수) ──────────────────────────
+const FUTURES_PROD = {
+  '11':'삼성전자','50':'SK하이닉스','23':'삼성전기',
+  '24':'LG전자','16':'현대차','20':'현대모비스','FE':'SK스퀘어',
+  '01':'KOSPI200','06':'KOSDAQ150',
+};
+const MONTH_KO = {'1':'1월','2':'2월','3':'3월','4':'4월','5':'5월','6':'6월',
+                  '7':'7월','8':'8월','9':'9월','0':'10월'};
+const IJ_NAMES = {'001':'KOSPI200','003':'KOSDAQ150?','301':'KOSDAQ150?'};
+
+function deriveName(trCd, code) {
+  if (['JC0','JH0'].includes(trCd) && code.length === 8 && code[0] === 'A') {
+    const prod = code.slice(1,3);
+    const mo   = MONTH_KO[code[4]] || code[4];
+    return (FUTURES_PROD[prod] || prod) + ' ' + mo + '물';
+  }
+  if (['FC9','FH9'].includes(trCd) && code.startsWith('A01')) {
+    return 'KOSPI200 ' + (MONTH_KO[code[4]] || code[4]) + '물';
+  }
+  if (trCd === 'IJ_') return IJ_NAMES[code] || '지수' + code;
+  return '';
+}
+
+// ── WebSocket ────────────────────────────────────────────────
+let ws, lastSnap = null, reconnectDelay = 1000;
+const openRaw = new Set();
+const lastRenderedUs = {};
+let tableBuilt = false;
+
+function connect() {
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  ws = new WebSocket(`${proto}://${location.host}/ws`);
+  ws.onopen  = () => { reconnectDelay = 1000; document.getElementById('overlay').classList.remove('show'); };
+  ws.onmessage = e => { try { const s = JSON.parse(e.data); lastSnap = s; render(s); } catch(err){} };
+  ws.onclose = () => {
+    document.getElementById('overlay').classList.add('show');
+    const b = document.getElementById('conn-badge');
+    b.textContent = 'WS CLOSED'; b.className = 'badge badge-err';
+    setTimeout(connect, reconnectDelay);
+    reconnectDelay = Math.min(reconnectDelay * 2, 30000);
+  };
+  ws.onerror = () => ws.close();
+}
+connect();
+
+// ── 테이블 초기 빌드 ─────────────────────────────────────────
+function buildGroupedTable(entries) {
+  const tbody = document.getElementById('tbody');
+  tbody.innerHTML = '';
+
+  // 그룹별 묶기 (SUBSCRIPTIONS 순서 유지)
+  const grouped = {};
+  GROUP_ORDER.forEach(g => grouped[g] = []);
+  entries.forEach(e => (grouped[e.group || '기타'] = grouped[e.group || '기타'] || []).push(e));
+
+  GROUP_ORDER.forEach(gKey => {
+    const list = grouped[gKey];
+    if (!list || list.length === 0) return;
+    const meta = GROUP_META[gKey] || GROUP_META['기타'];
+
+    // 그룹 헤더 행
+    const sep = document.createElement('tr');
+    sep.id = `group-${gKey}`;
+    sep.className = 'group-header';
+    sep.innerHTML = `<td colspan="15" style="background:#080808;color:${meta.color};border-top:1px solid ${meta.color}33;border-bottom:1px solid #1a1a1a">
+      <b>${meta.label}</b><span class="g-sub">${meta.sub}</span></td>`;
+    tbody.appendChild(sep);
+
+    // 엔트리 행 생성
+    const isPaired = PAIRED_GROUPS.has(gKey);
+    list.forEach(entry => {
+      const row = document.createElement('tr');
+      row.id = `row-${entry.tr_cd}-${entry.code}`;
+      row.className = 'data-row';
+      // paired 그룹의 secondary(H1_/HA_/I5_)는 DOM에만 있고 숨김
+      // toggleRaw의 서브행 앵커로만 사용됨
+      if (isPaired && SECONDARY_TRS.has(entry.tr_cd)) {
+        row.style.display = 'none';
+      }
+      tbody.appendChild(row);
+    });
+  });
+
+  tableBuilt = true;
+}
+
+// ── 렌더링 ──────────────────────────────────────────────────
+function render(snap) {
+  // 헤더
+  const conn = snap.conn;
+  const b = document.getElementById('conn-badge');
+  if      (conn.status === 'connected')          { b.textContent='CONNECTED';    b.className='badge badge-ok';   }
+  else if (conn.status.startsWith('disconnected')){ b.textContent='DISCONNECTED'; b.className='badge badge-err';  }
+  else                                            { b.textContent=conn.status.toUpperCase(); b.className='badge badge-wait'; }
+  document.getElementById('s-total').textContent   = fmtNum(conn.total_msgs);
+  document.getElementById('s-errors').textContent  = conn.total_errors;
+  document.getElementById('s-entries').textContent = snap.entries.length;
+
+  if (!tableBuilt && snap.entries.length > 0) buildGroupedTable(snap.entries);
+
+  const nowUs = snap.ts;
+  snap.entries.forEach(entry => updateRow(entry, snap, nowUs));
+}
+
+function updateRow(entry, snap, nowUs) {
+  const rawKey = `${entry.tr_cd}:${entry.code}`;
+
+  // paired 그룹의 secondary는 primary가 렌더링함 — 스킵
+  if (PAIRED_GROUPS.has(entry.group) && SECONDARY_TRS.has(entry.tr_cd)) return;
+
+  // secondary가 있는 경우 해당 entry도 같이 체크
+  const secTr  = secTrOf(entry);
+  const secEntry = secTr ? snap.entries.find(e => e.tr_cd === secTr && e.code === entry.code) : null;
+  const secKey  = secEntry ? `${secEntry.tr_cd}:${secEntry.code}` : null;
+
+  const curP = entry.last_recv_us;
+  const curS = secEntry?.last_recv_us ?? 0;
+  if (lastRenderedUs[rawKey] === curP && lastRenderedUs[secKey ?? '__'] === curS) return;
+  lastRenderedUs[rawKey] = curP;
+  if (secKey) lastRenderedUs[secKey] = curS;
+
+  let row = document.getElementById(`row-${entry.tr_cd}-${entry.code}`);
+  if (!row) {
+    row = document.createElement('tr');
+    row.id = `row-${entry.tr_cd}-${entry.code}`;
+    row.className = 'data-row';
+    document.getElementById('tbody').appendChild(row);
+  }
+
+  // ── AGE ──────────────────────────────────────────────────
+  // paired면 둘 중 최신 기준
+  const lastUs = Math.max(curP, curS);
+  let ageStr = '—', ageClass = 'dim';
+  if (lastUs > 0) {
+    const ageUs = nowUs - lastUs;
+    const s = ageUs / 1e6;
+    ageStr  = s < 1 ? `${Math.round(ageUs/1000)}ms` : s < 60 ? `${s.toFixed(1)}s` : `${Math.floor(s/60)}m`;
+    ageClass = s < 1 ? 'age-ok' : s < 5 ? 'age-lag' : 'age-old';
+  }
+
+  // ── 이름 ─────────────────────────────────────────────────
+  const name = entry.name || secEntry?.name || deriveName(entry.tr_cd, entry.code) || '—';
+
+  // ── TR 배지 ───────────────────────────────────────────────
+  let trHtml = `<span class="tr-badge">${entry.tr_cd}</span>`;
+  if (secEntry) trHtml += `<br><span class="tr-badge-sec">${secEntry.tr_cd}</span>`;
+
+  // ── PRICE / 호가 셀 ──────────────────────────────────────
+  // 체결(S3_/K3_/JC0/FC9/IJ_): 현재가 + 바로 아래 best bid/ask (H1_/HA_에서)
+  // 호가(JH0/FH9): 풀 orderbook 미니뷰
+  let priceCell;
+  if (['JH0','FH9'].includes(entry.tr_cd)) {
+    priceCell = buildObMini(entry.body);
+  } else {
+    const priceVal = entry.price != null ? `<span class="price">${fmtNum(entry.price)}</span>` : '—';
+    let bidAsk = '';
+    if (secEntry && ['H1_','HA_'].includes(secEntry.tr_cd)) {
+      const b1 = secEntry.body?.bidho1, a1 = secEntry.body?.offerho1;
+      if (a1 || b1) {
+        bidAsk = `<div style="font-size:10px;margin-top:1px">` +
+          (a1 ? `<span class="ob-ask">${fmtNum(a1)}</span>` : '') +
+          (a1 && b1 ? `<span class="dim"> / </span>` : '') +
+          (b1 ? `<span class="ob-bid">${fmtNum(b1)}</span>` : '') +
+          `</div>`;
+      }
+    }
+    priceCell = priceVal + bidAsk;
+  }
+
+  // ── NAV/지수 셀 ────────────────────────────────────────────
+  // ETF: I5_ iNAV
+  // FC9: k200jisu (KOSPI200 지수, 선물가와 별도)
+  // JC0 지수선물(A01.../A06...): k150jisu 혹은 k200jisu (장중 실측)
+  let navVal = '—';
+  if (secEntry?.nav != null) {
+    // ETF I5_ iNAV
+    navVal = secEntry.nav.toFixed(2);
+  } else if (entry.nav != null) {
+    navVal = entry.nav.toFixed(2);
+  } else if (entry.tr_cd === 'FC9') {
+    const k200 = parseNum(entry.body?.k200jisu);
+    if (k200 != null) navVal = `<span style="color:#5ac8fa">${k200.toFixed(2)}</span><span class="dim" style="font-size:9px"> K200</span>`;
+  } else if (entry.tr_cd === 'JC0' && entry.body &&
+             (entry.code.startsWith('A01') || entry.code.startsWith('A06'))) {
+    // 필드명 장중 실측 필요 — k150jisu / k200jisu / basijisu 등 시도
+    const kidx = parseNum(entry.body.k150jisu ?? entry.body.k200jisu ?? entry.body.basijisu);
+    if (kidx != null) {
+      const lbl = entry.code.startsWith('A06') ? 'K150' : 'K200';
+      navVal = `<span style="color:#5ac8fa">${kidx.toFixed(2)}</span><span class="dim" style="font-size:9px"> ${lbl}</span>`;
+    }
+  }
+
+  // ── SRC ──────────────────────────────────────────────────
+  const srcClass = entry.price_source === 'ws' ? 'src-ws' : entry.price_source === 't1102' ? 'src-rest' : 'dim';
+  const srcTxt   = entry.price_source || '—';
+
+  // ── COUNT ─────────────────────────────────────────────────
+  const cnt  = entry.recv_count > 0 ? fmtNum(entry.recv_count) : '—';
+  const mps  = entry.recv_count > 0 ? entry.msg_per_sec.toFixed(1) : '—';
+
+  // ── RAW 토글 ─────────────────────────────────────────────
+  // paired이면 체결/호가(iNAV) 각각 별도 토글
+  let rawHtml;
+  if (secEntry) {
+    const secLabel = secEntry.tr_cd === 'I5_' ? 'iNAV' : '호가';
+    const openP = openRaw.has(rawKey);
+    const openS = openRaw.has(secKey);
+    rawHtml =
+      `<a class="raw-toggle" onclick="toggleRaw('${rawKey}')">${openP ? '▲체결' : '▼체결'}</a>` +
+      `<span class="raw-sep">|</span>` +
+      `<a class="raw-toggle" onclick="toggleRaw('${secKey}')">${openS ? '▲'+secLabel : '▼'+secLabel}</a>`;
+  } else {
+    const isOpen = openRaw.has(rawKey);
+    rawHtml = `<a class="raw-toggle" onclick="toggleRaw('${rawKey}')">${isOpen ? '▲ hide' : '▼ raw'}</a>`;
+  }
+
+  row.innerHTML = `
+    <td>${trHtml}</td>
+    <td class="code">${entry.code}</td>
+    <td class="dim" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${name}</td>
+    <td class="dim">${entry.chetime ?? '—'}</td>
+    <td>${priceCell}</td>
+    <td class="dim">${entry.prev_close != null ? fmtNum(entry.prev_close) : '—'}</td>
+    <td class="dim">${entry.high   != null ? fmtNum(entry.high)   : '—'}</td>
+    <td class="dim">${entry.low    != null ? fmtNum(entry.low)    : '—'}</td>
+    <td class="dim">${entry.volume != null ? fmtNum(entry.volume) : '—'}</td>
+    <td class="dim">${navVal}</td>
+    <td class="${srcClass}">${srcTxt}</td>
+    <td class="dim">${cnt}</td>
+    <td class="dim">${mps}</td>
+    <td class="${ageClass}">${ageStr}</td>
+    <td>${rawHtml}</td>`;
+
+  // 열린 raw 서브행 내용 갱신
+  [rawKey, secKey].filter(Boolean).forEach(k => {
+    if (!openRaw.has(k)) return;
+    const subDiv = document.querySelector(`#sub-${CSS.escape(k)} .raw-sub-content`);
+    if (!subDiv) return;
+    const e = snap.entries.find(e => `${e.tr_cd}:${e.code}` === k);
+    if (!e) return;
+    const sc = subDiv.scrollTop;
+    subDiv.innerHTML = formatBody(e.body);
+    subDiv.scrollTop = sc;
+  });
+}
+
+// ── 호가 미니뷰 (JH0/FH9 전용) ──────────────────────────────
+function buildObMini(body) {
+  if (!body) return '<span class="dim">—</span>';
+  const asks = [], bids = [];
+  for (let i = 1; i <= 5; i++) {
+    const ah = body[`offerho${i}`], ar = body[`offerrem${i}`];
+    const bh = body[`bidho${i}`],   br = body[`bidrem${i}`];
+    if (ah) asks.push(`<span class="ob-ask">${fmtNum(ah)}<span class="dim">(${fmtNum(ar??0)})</span></span>`);
+    if (bh) bids.push(`<span class="ob-bid">${fmtNum(bh)}<span class="dim">(${fmtNum(br??0)})</span></span>`);
+  }
+  if (!asks.length && !bids.length) return '<span class="dim">—</span>';
+  return `<div style="font-size:10px;line-height:1.6">
+    <div>${asks.join(' ')}</div>
+    <div>${bids.join(' ')}</div>
+  </div>`;
+}
+
+// ── raw body 포맷팅 ────────────────────────────────────────
+function formatBody(body) {
+  if (body === null || body === undefined || typeof body !== 'object') return '(no data)';
+  return '{\n' + Object.entries(body).map(([k,v]) => {
+    const isNum = typeof v==='number' || (typeof v==='string' && v!=='' && !isNaN(+v));
+    return `  <span class="k">${k}</span>: ` + (isNum
+      ? `<span class="v-num">${v}</span>`
+      : `<span class="v-str">"${v}"</span>`);
+  }).join(',\n') + '\n}';
+}
+
+// ── raw 서브행 토글 ────────────────────────────────────────
+function toggleRaw(key) {
+  const ci = key.indexOf(':');
+  const trCd = key.slice(0, ci), code = key.slice(ci+1);
+  const mainRow = document.getElementById(`row-${trCd}-${code}`);
+  const subId   = `sub-${key}`;
+
+  if (openRaw.has(key)) {
+    openRaw.delete(key);
+    document.getElementById(subId)?.remove();
+    // 버튼 텍스트 갱신 (이미 rendered되므로 부모 행에서 찾기)
+    refreshRawToggles(trCd, code);
+  } else {
+    openRaw.add(key);
+    const entry   = lastSnap?.entries.find(e => e.tr_cd===trCd && e.code===code);
+    const content = entry ? formatBody(entry.body) : '(no data)';
+    const subRow  = document.createElement('tr');
+    subRow.id     = subId;
+    subRow.className = 'raw-sub-row';
+    subRow.innerHTML = `<td colspan="15"><div class="raw-sub-content">${content}</div></td>`;
+    // hidden 행도 앵커로 사용 가능 — 시각적으로 primary 행 바로 아래 나타남
+    mainRow?.insertAdjacentElement('afterend', subRow);
+    refreshRawToggles(trCd, code);
+  }
+}
+
+// 토글 버튼 텍스트를 현재 openRaw 상태에 맞게 갱신
+function refreshRawToggles(trCd, code) {
+  // primary 또는 secondary 행에서 원래 entry 찾기
+  const entry = lastSnap?.entries.find(e => e.tr_cd===trCd && e.code===code);
+  if (!entry) return;
+  // primary row를 찾아 RAW 셀 재생성 (렌더 루틴은 다음 heartbeat에서 갱신)
+  // 즉시 반영: primary row 직접 업데이트
+  const isPrimary = !(PAIRED_GROUPS.has(entry.group) && SECONDARY_TRS.has(entry.tr_cd));
+  const primaryTrCd = isPrimary ? trCd
+    : (trCd==='H1_'||trCd==='I5_') ? 'S3_' : (trCd==='HA_' ? 'K3_' : trCd);
+  const primaryRow = document.getElementById(`row-${primaryTrCd}-${code}`);
+  if (!primaryRow) return;
+  const rawCell = primaryRow.cells[14];
+  if (!rawCell) return;
+
+  const pKey = `${primaryTrCd}:${code}`;
+  const pEntry = lastSnap?.entries.find(e => e.tr_cd===primaryTrCd && e.code===code);
+  const secTr  = pEntry ? secTrOf(pEntry) : null;
+  const sKey   = secTr ? `${secTr}:${code}` : null;
+
+  if (sKey) {
+    const secLabel = secTr === 'I5_' ? 'iNAV' : '호가';
+    rawCell.innerHTML =
+      `<a class="raw-toggle" onclick="toggleRaw('${pKey}')">${openRaw.has(pKey)?'▲체결':'▼체결'}</a>` +
+      `<span class="raw-sep">|</span>` +
+      `<a class="raw-toggle" onclick="toggleRaw('${sKey}')">${openRaw.has(sKey)?'▲'+secLabel:'▼'+secLabel}</a>`;
+  } else {
+    rawCell.innerHTML = `<a class="raw-toggle" onclick="toggleRaw('${pKey}')">${openRaw.has(pKey)?'▲ hide':'▼ raw'}</a>`;
+  }
+}
+
+// ── 유틸 ──────────────────────────────────────────────────
+function parseNum(v) {
+  if (v == null) return null;
+  const n = typeof v === 'string' ? parseFloat(v) : v;
+  return isNaN(n) ? null : n;
+}
+
+function fmtNum(n) {
+  if (n == null) return '—';
+  const v = typeof n === 'string' ? parseFloat(n) : n;
+  return isNaN(v) ? String(n) : v.toLocaleString('ko-KR');
+}
+
+// 1초마다 AGE 컬럼 갱신 (primary 행만 / heartbeat 보완)
+setInterval(() => {
+  if (!lastSnap) return;
+  const nowUs = Date.now() * 1000;
+  lastSnap.entries.forEach(entry => {
+    if (PAIRED_GROUPS.has(entry.group) && SECONDARY_TRS.has(entry.tr_cd)) return;
+    const row = document.getElementById(`row-${entry.tr_cd}-${entry.code}`);
+    if (!row) return;
+    const ageCell = row.cells[13];
+    if (!ageCell) return;
+    if (entry.last_recv_us === 0) { ageCell.textContent='—'; ageCell.className='dim'; return; }
+    const diff = (nowUs - entry.last_recv_us) / 1000;
+    const s = diff / 1000;
+    ageCell.textContent = s<1 ? `${Math.round(diff)}ms` : s<60 ? `${s.toFixed(1)}s` : `${Math.floor(s/60)}m`;
+    ageCell.className   = s<1 ? 'age-ok' : s<5 ? 'age-lag' : 'age-old';
+  });
+}, 1000);
+</script>
+</body>
+</html>
