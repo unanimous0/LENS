@@ -145,14 +145,15 @@ export function EtfDashboardPage() {
   }, [expandedCode, pdfs, prevCloseCache])
 
   // 200ms throttled tick snapshot — 라이브 구독 시 매 tick 전체 재계산 방지.
-  const [{ etfTicks, orderbookTicks }, setTicks] = useState(() => {
+  // stockTicks: 펼친 ETF의 PDF 구성종목 실시간 현재가용 (장중).
+  const [{ etfTicks, orderbookTicks, stockTicks }, setTicks] = useState(() => {
     const s = useMarketStore.getState()
-    return { etfTicks: s.etfTicks, orderbookTicks: s.orderbookTicks }
+    return { etfTicks: s.etfTicks, orderbookTicks: s.orderbookTicks, stockTicks: s.stockTicks }
   })
   useEffect(() => {
     const id = setInterval(() => {
       const s = useMarketStore.getState()
-      setTicks({ etfTicks: s.etfTicks, orderbookTicks: s.orderbookTicks })
+      setTicks({ etfTicks: s.etfTicks, orderbookTicks: s.orderbookTicks, stockTicks: s.stockTicks })
     }, 200)
     return () => clearInterval(id)
   }, [])
@@ -181,9 +182,23 @@ export function EtfDashboardPage() {
 
   // 구독 — 표시 ETF의 가격(S3_) + iNAV(I5_) + 호가.
   const visibleCodes = useMemo(() => visibleMaster.map((e) => e.code), [visibleMaster])
-  usePageStockSubscriptions(visibleCodes)
   usePageInavSubscriptions(visibleCodes)
   usePageOrderbookBulk(visibleCodes)
+
+  // 펼친 ETF의 PDF 구성종목 코드 — 장중 실시간 현재가용. 닫으면 빈 배열 → 자동 unsubscribe.
+  // 구분 없이 전체 구독 (KODEX 200처럼 종목 많은 ETF는 사용자가 안 펼치면 됨).
+  const expandedPdfCodes = useMemo(() => {
+    if (!expandedCode || !pdfs) return [] as string[]
+    const pdf = pdfs[expandedCode]
+    return pdf ? pdf.stocks.filter((s) => s.qty > 0).map((s) => s.code) : []
+  }, [expandedCode, pdfs])
+
+  // ETF 가격 + 펼친 PDF 구성종목을 함께 stock 구독 (S3_). diff 처리는 훅 내부.
+  const stockSubCodes = useMemo(
+    () => [...visibleCodes, ...expandedPdfCodes],
+    [visibleCodes, expandedPdfCodes],
+  )
+  usePageStockSubscriptions(stockSubCodes)
 
   // 거래대금 캐시 주기 저장 — 다음 mount 시 초기 정렬용.
   useEffect(() => {
@@ -357,7 +372,7 @@ export function EtfDashboardPage() {
                     {expanded && (
                       <tr className="bg-bg-base">
                         <td colSpan={11} className="p-0">
-                          <PdfSubTable pdf={pdfs?.[r.code]} prevCloseCache={prevCloseCache} />
+                          <PdfSubTable pdf={pdfs?.[r.code]} prevCloseCache={prevCloseCache} stockTicks={stockTicks} />
                         </td>
                       </tr>
                     )}
@@ -380,24 +395,29 @@ export function EtfDashboardPage() {
   )
 }
 
-/** PDF 구성종목 서브테이블 — 전일종가 기반(실시간 가격 없음). 금액·비중 산출. */
-function PdfSubTable({ pdf, prevCloseCache }: {
+/** PDF 구성종목 서브테이블 — 펼친 ETF의 구성종목을 실시간 구독해 현재가 표시.
+ *  평가가격 = 현재가(장중 실시간) 우선, 미수신 시 전일종가 폴백. 금액·비중 산출. */
+function PdfSubTable({ pdf, prevCloseCache, stockTicks }: {
   pdf: EtfPdf | undefined
   prevCloseCache: Record<string, number>
+  stockTicks: Record<string, import('@/types/market').StockTick>
 }) {
   if (!pdf) {
     return <div className="px-6 py-3 text-[11px] text-t3">PDF 데이터 없음</div>
   }
   const stocks = pdf.stocks.filter((s) => s.qty > 0)
   const cash = pdf.cash || 0
-  // 금액 = 수량 × 전일종가. NAV총액 = 종목금액합 + 현금. 비중 = 금액 / NAV총액.
+  // 평가가격 = 현재가(실시간) 우선, 없으면 전일종가. 금액 = 수량 × 평가가격.
+  // NAV총액 = 종목금액합 + 현금. 비중 = 금액 / NAV총액.
   const rows = stocks.map((s) => {
+    const live = stockTicks[s.code]?.price ?? 0
     const pc = prevCloseCache[s.code] ?? 0
-    return { code: s.code, name: s.name, qty: s.qty, prevClose: pc, value: pc * s.qty }
+    const price = live > 0 ? live : pc
+    return { code: s.code, name: s.name, qty: s.qty, live, prevClose: pc, value: price * s.qty }
   })
   const stockValueSum = rows.reduce((acc, r) => acc + r.value, 0)
   const navTotal = stockValueSum + cash
-  const loading = stocks.some((s) => prevCloseCache[s.code] === undefined)
+  const liveCount = rows.filter((r) => r.live > 0).length
 
   return (
     <div className="px-4 py-3 bg-[#0a0a0a] border-y border-white/[0.04]">
@@ -408,15 +428,15 @@ function PdfSubTable({ pdf, prevCloseCache }: {
         <span className="text-[#3a3a3e]">|</span>
         <span>종목 <span className="text-t2 tabular-nums">{stocks.length}</span></span>
         <span className="text-[#3a3a3e]">|</span>
-        <span className="text-t4">전일종가 기준 · 실시간 아님</span>
-        {loading && <span className="text-blue">· 전일종가 로딩…</span>}
+        <span className="text-t4">실시간 {liveCount}/{stocks.length} · 나머지 전일종가</span>
       </div>
       <div className="rounded bg-[#0d0d0f] border border-white/[0.03] overflow-x-auto">
-        <table className="tabular-nums" style={{ tableLayout: 'fixed', width: '100%', minWidth: '760px' }}>
+        <table className="tabular-nums" style={{ tableLayout: 'fixed', width: '100%', minWidth: '880px' }}>
           <colgroup>
             <col style={{ width: 90 }} />{/* 코드 */}
-            <col style={{ width: 220 }} />{/* 종목명 */}
-            <col style={{ width: 110 }} />{/* 수량 */}
+            <col style={{ width: 200 }} />{/* 종목명 */}
+            <col style={{ width: 100 }} />{/* 수량 */}
+            <col style={{ width: 120 }} />{/* 현재가 */}
             <col style={{ width: 120 }} />{/* 전일종가 */}
             <col style={{ width: 140 }} />{/* 금액 */}
             <col style={{ width: 90 }} />{/* 비중 */}
@@ -426,6 +446,7 @@ function PdfSubTable({ pdf, prevCloseCache }: {
               <td className="pl-4 py-1.5 text-left">코드</td>
               <td className="py-1.5 text-left">종목명</td>
               <td className="py-1.5 pr-3 text-right">수량(1CU)</td>
+              <td className="py-1.5 pr-3 text-right">현재가</td>
               <td className="py-1.5 pr-3 text-right">전일종가</td>
               <td className="py-1.5 pr-3 text-right">금액</td>
               <td className="py-1.5 pr-4 text-right">비중</td>
@@ -437,7 +458,8 @@ function PdfSubTable({ pdf, prevCloseCache }: {
                 <td className="pl-4 py-[5px] text-left text-[11px] text-t3">{r.code}</td>
                 <td className="py-[5px] text-left text-[11px] text-t1 whitespace-nowrap overflow-hidden text-ellipsis">{r.name}</td>
                 <td className="py-[5px] pr-3 text-right text-[11px] text-t2">{r.qty.toLocaleString()}</td>
-                <td className="py-[5px] pr-3 text-right text-[11px] text-t2">{r.prevClose > 0 ? r.prevClose.toLocaleString() : '-'}</td>
+                <td className="py-[5px] pr-3 text-right text-[11px] text-t1">{r.live > 0 ? r.live.toLocaleString() : '-'}</td>
+                <td className="py-[5px] pr-3 text-right text-[11px] text-t3">{r.prevClose > 0 ? r.prevClose.toLocaleString() : '-'}</td>
                 <td className="py-[5px] pr-3 text-right text-[11px] text-t1">{r.value > 0 ? Math.round(r.value).toLocaleString() : '-'}</td>
                 <td className="py-[5px] pr-4 text-right text-[11px] text-t2">{navTotal > 0 && r.value > 0 ? `${((r.value / navTotal) * 100).toFixed(2)}%` : '-'}</td>
               </tr>
@@ -446,6 +468,7 @@ function PdfSubTable({ pdf, prevCloseCache }: {
             <tr className="border-t border-white/[0.08] bg-white/[0.015]">
               <td className="pl-4 py-[5px] text-left text-[11px] text-warning">현금</td>
               <td className="py-[5px] text-left text-[11px] text-t3">—</td>
+              <td className="py-[5px] pr-3 text-right text-[11px] text-t4">—</td>
               <td className="py-[5px] pr-3 text-right text-[11px] text-t4">—</td>
               <td className="py-[5px] pr-3 text-right text-[11px] text-t4">—</td>
               <td className="py-[5px] pr-3 text-right text-[11px] text-warning">{cash > 0 ? Math.round(cash).toLocaleString() : '-'}</td>
