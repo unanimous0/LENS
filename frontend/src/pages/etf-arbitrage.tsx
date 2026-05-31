@@ -1,4 +1,5 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { cn, todayKst } from '@/lib/utils'
 import { useMarketStore } from '@/stores/marketStore'
@@ -441,6 +442,15 @@ export function EtfArbitragePage() {
   const [searchQuery, setSearchQuery] = useState<string>(() => localStorage.getItem('etf.searchQuery') ?? '')
   useEffect(() => { localStorage.setItem('etf.searchQuery', searchQuery) }, [searchQuery])
   const [expanded, setExpanded] = useState<string | null>(null)
+
+  // 종목차익 화면에서 ETF 클릭 시 새 탭 deep link(?focus=코드)로 진입.
+  // 그 ETF를 상위 N 밖이어도 강제 표시 + 자동 펼침.
+  const [searchParams] = useSearchParams()
+  const focusCode = searchParams.get('focus')
+  useEffect(() => {
+    if (focusCode) setExpanded(focusCode)
+  }, [focusCode])
+
   type SortKey =
     | 'code' | 'name' | 'tradeValue' | 'etfPrice' | 'nav' | 'rNav' | 'fNav'
     | 'priceNavBp' | 'askNavBp' | 'bidNavBp'
@@ -720,8 +730,14 @@ export function EtfArbitragePage() {
       return lv > 0 ? lv : (cache[code] ?? 0)
     }
     const sorted = [...filtered].sort((a, b) => volOf(b.code) - volOf(a.code))
-    return subLimit === 'all' ? sorted : sorted.slice(0, subLimit)
-  }, [master, subTypes, subLimit, sortTick])
+    const limited = subLimit === 'all' ? sorted : sorted.slice(0, subLimit)
+    // deep link focus ETF는 상위 N/유형 필터 밖이어도 강제 포함 (맨 앞).
+    if (focusCode && !limited.some((e) => e.code === focusCode)) {
+      const f = master.find((e) => e.code === focusCode)
+      if (f) return [f, ...limited]
+    }
+    return limited
+  }, [master, subTypes, subLimit, sortTick, focusCode])
 
   // 2단계 구독 — 가벼운 ETF 코드(거래대금/순위)는 넓게, 무거운 PDF 구성종목은 상위 N만.
   //
@@ -924,10 +940,24 @@ export function EtfArbitragePage() {
   }, [expanded, sortKey, sortAsc])
 
   const rows = useMemo(() => {
-    if (frozenOrder == null) return naturalRows
-    const orderMap = new Map(frozenOrder.map((c, i) => [c, i] as const))
-    return [...naturalRows].sort((a, b) => (orderMap.get(a.code) ?? Infinity) - (orderMap.get(b.code) ?? Infinity))
-  }, [naturalRows, frozenOrder])
+    const ordered = frozenOrder == null
+      ? naturalRows
+      : (() => {
+          const orderMap = new Map(frozenOrder.map((c, i) => [c, i] as const))
+          return [...naturalRows].sort((a, b) => (orderMap.get(a.code) ?? Infinity) - (orderMap.get(b.code) ?? Infinity))
+        })()
+    // deep link focus ETF는 정렬·가상화와 무관하게 맨 앞으로 — 진입 즉시 보이고 펼쳐지게.
+    if (focusCode) {
+      const fi = ordered.findIndex((r) => r.code === focusCode)
+      if (fi > 0) {
+        const copy = [...ordered]
+        const [f] = copy.splice(fi, 1)
+        copy.unshift(f)
+        return copy
+      }
+    }
+    return ordered
+  }, [naturalRows, frozenOrder, focusCode])
 
   // 차트/Orderbook 패널이 가리키는 ETF — 선택 또는 정렬 첫 행.
   // 이 한 종목에 대한 history/trades만 셀럭티브 구독해 page-level root selector 회피.

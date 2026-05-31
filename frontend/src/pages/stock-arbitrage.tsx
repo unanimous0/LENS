@@ -3,6 +3,8 @@ import { useMarketStore } from '@/stores/marketStore'
 import { cn, todayKst } from '@/lib/utils'
 import { OrderbookModal, SpreadOrderbookModal } from '@/components/OrderbookModal'
 import { usePageSubscriptions } from '@/hooks/usePageSubscriptions'
+import { usePageStockSubscriptions } from '@/hooks/usePageStockSubscriptions'
+import { usePageInavSubscriptions } from '@/hooks/usePageInavSubscriptions'
 
 // ── 타입 ──
 
@@ -87,6 +89,9 @@ interface EtfHolder {
   cuUnit: number   // ETF CU 좌수
 }
 
+// 펼친 종목의 보유 ETF 중 현재가·iNAV를 실시간 구독할 상위 N (수량순). 나머지는 기여BP만.
+const HOLDER_SUB_LIMIT = 15
+
 type SK = keyof Pick<Row,
   'baseName' | 'spotPrice' | 'futuresPrice' | 'theoreticalPrice' | 'marketBasis' | 'basisGapBp' |
   'theoreticalBasis' | 'basisGap' | 'spotCumVolume' | 'futuresVolume' | 'multiplier' |
@@ -167,14 +172,15 @@ export function StockArbitragePage() {
 
   // 200ms throttled snapshot — store 직접 구독 시 매 tick(~60Hz)마다 페이지 전체 재렌더.
   // 5Hz로 낮춰도 트레이딩 모니터링엔 충분히 부드러움. ETF 페이지와 같은 패턴.
-  const [{ stockTicks, futuresTicks }, setSnap] = useState(() => {
+  // etfTicks: 펼친 종목의 보유 ETF 상위 N개 현재가·iNAV (괴리·선물대체괴리·차익 계산).
+  const [{ stockTicks, futuresTicks, etfTicks }, setSnap] = useState(() => {
     const s = useMarketStore.getState()
-    return { stockTicks: s.stockTicks, futuresTicks: s.futuresTicks }
+    return { stockTicks: s.stockTicks, futuresTicks: s.futuresTicks, etfTicks: s.etfTicks }
   })
   useEffect(() => {
     const id = setInterval(() => {
       const s = useMarketStore.getState()
-      setSnap({ stockTicks: s.stockTicks, futuresTicks: s.futuresTicks })
+      setSnap({ stockTicks: s.stockTicks, futuresTicks: s.futuresTicks, etfTicks: s.etfTicks })
     }, 200)
     return () => clearInterval(id)
   }, [])
@@ -238,6 +244,16 @@ export function StockArbitragePage() {
       .then((res) => setEtfNavs((p) => ({ ...p, ...(res.navs ?? {}) })))
       .catch(() => {})
   }, [expandedStock, pdfIndex, etfNavs])
+
+  // 펼친 종목의 보유 ETF 중 상위 N(수량순)만 현재가·iNAV 구독 → 괴리/선물대체괴리/차익.
+  // ETF당 코드 1개라 가벼움. 닫으면 빈 배열 → 자동 unsubscribe.
+  const expandedEtfCodes = useMemo(() => {
+    if (!expandedStock) return [] as string[]
+    const holders = pdfIndex.get(expandedStock) ?? []
+    return [...holders].sort((a, b) => b.qty - a.qty).slice(0, HOLDER_SUB_LIMIT).map((h) => h.etfCode)
+  }, [expandedStock, pdfIndex])
+  usePageStockSubscriptions(expandedEtfCodes)
+  usePageInavSubscriptions(expandedEtfCodes)
 
   // 종목코드별 배당 인덱스 — 행 매칭 시 O(1) 조회
   const divByCode = useMemo(() => {
@@ -541,9 +557,9 @@ export function StockArbitragePage() {
           <tbody>
             {filtered.map((r) => (
               <Fragment key={r.baseCode}>
-              <tr className="border-b border-white/[0.04] bg-black hover:bg-[#1d1d1d] transition-colors">
+              <tr onClick={() => handleStockClick(r.baseCode)} className="border-b border-white/[0.04] bg-black hover:bg-[#1d1d1d] transition-colors cursor-pointer">
                 {/* 종목 */}
-                <td className="pl-4 pr-3 py-[9px] sticky left-0 z-10 cursor-pointer" style={{ backgroundColor: 'inherit' }} onClick={() => handleStockClick(r.baseCode)} title="클릭 — 이 종목을 담은 ETF 목록">
+                <td className="pl-4 pr-3 py-[9px] sticky left-0 z-10" style={{ backgroundColor: 'inherit' }} title="클릭 — 이 종목을 담은 ETF 목록">
                   <div className={cn('text-[11px] leading-none', expandedStock === r.baseCode ? 'text-accent' : 'text-white hover:text-accent')}>
                     {expandedStock === r.baseCode ? '▾ ' : ''}{r.baseName}
                   </div>
@@ -575,13 +591,13 @@ export function StockArbitragePage() {
                 {/* 액션 */}
                 <td className="px-1 py-[9px] text-center align-middle">
                   <button
-                    onClick={() => setObTarget({ spotCode: r.baseCode, futuresCode: r.frontCode, spotName: r.baseName })}
+                    onClick={(e) => { e.stopPropagation(); setObTarget({ spotCode: r.baseCode, futuresCode: r.frontCode, spotName: r.baseName }) }}
                     className="text-[10px] text-white/90 bg-[#2a2a2e] border border-white/10 rounded px-2.5 py-[3px] hover:bg-[#444448] transition-colors"
                   >호가</button>
                 </td>
                 <td className="px-1 py-[9px] text-center align-middle">
                   <button
-                    onClick={() => r.spreadCode && setSpreadTarget({ spreadCode: r.spreadCode, spotName: r.baseName })}
+                    onClick={(e) => { e.stopPropagation(); if (r.spreadCode) setSpreadTarget({ spreadCode: r.spreadCode, spotName: r.baseName }) }}
                     className={cn('text-[10px] rounded px-2.5 py-[3px] border transition-colors', r.spreadCode ? 'text-white/90 bg-[#2a2a2e] border-white/10 hover:bg-[#444448]' : 'text-[#3a3a3e] border-transparent cursor-default')}
                   >스프</button>
                 </td>
@@ -589,7 +605,7 @@ export function StockArbitragePage() {
                 <C>{r.holding031 ? r.holding031.toLocaleString() : '-'}</C>
                 <C>{r.holding052 ? r.holding052.toLocaleString() : '-'}</C>
                 <td className="px-1 py-[9px] text-center align-middle">
-                  <button className="text-[10px] text-white/90 bg-[#2a2a2e] border border-white/10 rounded px-2.5 py-[3px] hover:bg-[#444448] transition-colors">조회</button>
+                  <button onClick={(e) => e.stopPropagation()} className="text-[10px] text-white/90 bg-[#2a2a2e] border border-white/10 rounded px-2.5 py-[3px] hover:bg-[#444448] transition-colors">조회</button>
                 </td>
                 <C sub className="pr-4">{r.futuresHolding ? r.futuresHolding.toLocaleString() : '-'}</C>
               </tr>
@@ -599,8 +615,10 @@ export function StockArbitragePage() {
                     <EtfHoldersTable
                       holders={pdfIndex.get(r.baseCode) ?? []}
                       spotPrice={r.spotPrice || r.spotPrevClose}
+                      futuresPrice={r.futuresPrice}
                       basisGapBp={r.basisGapBp}
                       navs={etfNavs}
+                      etfTicks={etfTicks}
                     />
                   </td>
                 </tr>
@@ -995,73 +1013,131 @@ function fVol(v: number) {
   return v.toLocaleString()
 }
 
+type HolderSK = 'etfCode' | 'etfName' | 'qty' | 'weight' | 'amount' | 'contribBp'
+  | 'etfPrice' | 'iNAV' | 'premiumBp' | 'swapPremiumBp' | 'arbBp'
+
 /** 종목명 클릭 시 펼치는 확장행 — 이 종목을 담은 ETF 목록.
- *  비중 = (PDF수량 × 종목현재가) / (ETF 주당 NAV × CU).
- *  기여BP = 종목 갭BP × ETF내 비중 → 이 종목을 선물로 대체 시 그 ETF 차익 기여.
- *  NAV는 전일 기준(etf_master_daily)이라 비중은 근사지만 하루 변동에 둔감. */
-function EtfHoldersTable({ holders, spotPrice, basisGapBp, navs }: {
+ *  비중 = (PDF수량 × 종목현재가) / (ETF 주당 NAV × CU). 기여BP = 종목 갭BP × 비중.
+ *  현재가/iNAV는 상위 N개만 실시간 구독. 괴리=가격vs iNAV.
+ *  선물대체 NAV = iNAV + (선물−현물)×수량/CU (그 종목만 선물 평가). 추가 구독 0.
+ *  차익bp = (선물대체NAV − 현재가)/iNAV. 부호로 매수차(+)/매도차(−) 방향.
+ *  ETF 행 클릭 → 새 탭 ETF 차익거래(?focus=)로 그 ETF 펼침. */
+function EtfHoldersTable({ holders, spotPrice, futuresPrice, basisGapBp, navs, etfTicks }: {
   holders: EtfHolder[]
   spotPrice: number
+  futuresPrice: number
   basisGapBp: number
   navs: Record<string, number>
+  etfTicks: Record<string, import('@/types/market').ETFTick>
 }) {
+  const [hk, setHk] = useState<HolderSK>('qty')
+  const [hasc, setHasc] = useState(false)
+  const sortH = (k: HolderSK) => { if (k === hk) setHasc((v) => !v); else { setHk(k); setHasc(k === 'etfCode' || k === 'etfName') } }
+
   if (holders.length === 0) {
     return <div className="px-6 py-3 text-[11px] text-[#8b8b8e]">이 종목을 담은 ETF 없음 (PDF 미보유)</div>
   }
   const rows = holders.map((h) => {
     const amount = h.qty * spotPrice
-    const etfTotal = (navs[h.etfCode] ?? 0) * h.cuUnit
-    const weight = etfTotal > 0 ? amount / etfTotal : 0
-    return { ...h, amount, weight, contribBp: basisGapBp * weight }
-  }).sort((a, b) => b.qty - a.qty)
+    const weight = (navs[h.etfCode] ?? 0) * h.cuUnit > 0 ? amount / ((navs[h.etfCode] ?? 0) * h.cuUnit) : 0
+    const t = etfTicks[h.etfCode]
+    const etfPrice = t?.price ?? 0
+    const iNAV = t?.nav ?? 0
+    const premiumBp = iNAV > 0 && etfPrice > 0 ? ((etfPrice - iNAV) / iNAV) * 10000 : null
+    // 그 종목만 선물가로 평가한 NAV. 선물·현물가 미수신(0)이면 계산 불가.
+    const swapNav = iNAV > 0 && futuresPrice > 0 && spotPrice > 0 ? iNAV + (futuresPrice - spotPrice) * h.qty / h.cuUnit : 0
+    const swapPremiumBp = swapNav > 0 && etfPrice > 0 ? ((etfPrice - swapNav) / swapNav) * 10000 : null
+    const arbBp = swapNav > 0 && etfPrice > 0 && iNAV > 0 ? ((swapNav - etfPrice) / iNAV) * 10000 : null
+    return { ...h, amount, weight, contribBp: basisGapBp * weight, etfPrice, iNAV, premiumBp, swapPremiumBp, arbBp }
+  })
+  rows.sort((a, b) => {
+    const dir = hasc ? 1 : -1
+    if (hk === 'etfCode') return a.etfCode.localeCompare(b.etfCode) * dir
+    if (hk === 'etfName') return a.etfName.localeCompare(b.etfName) * dir
+    const av = (a[hk] as number | null) ?? -Infinity
+    const bv = (b[hk] as number | null) ?? -Infinity
+    return (av - bv) * dir
+  })
   const loading = holders.some((h) => navs[h.etfCode] === undefined)
+  const openArb = (code: string) => window.open(`/etf/arbitrage?focus=${code}`, '_blank')
+  const bpCell = (v: number | null) => v == null ? '-' : `${fBp(v)}bp`
 
   return (
-    // 메인 테이블이 auto layout으로 매우 넓어, 확장 패널을 viewport 폭에 sticky 고정해야
-    // 가로 스크롤과 무관하게 ETF 목록 전체 컬럼이 화면에 보인다.
+    // 메인 테이블이 auto layout으로 매우 넓어, 확장 패널을 viewport 폭에 sticky 고정.
     <div
       className="px-4 py-3 bg-[#0a0a0a] border-y border-white/[0.04]"
       style={{ position: 'sticky', left: 0, width: '100vw', maxWidth: '100vw', boxSizing: 'border-box' }}
     >
       <div className="mb-2 text-[11px] text-[#8b8b8e]">
-        이 종목을 담은 ETF <span className="text-white tabular-nums">{rows.length}</span>개 · PDF 수량 순
-        <span className="ml-2 text-[#5a5a5e]">기여BP = 갭BP × ETF내 비중 (이 종목을 선물로 대체 시 ETF 차익 기여)</span>
+        이 종목을 담은 ETF <span className="text-white tabular-nums">{rows.length}</span>개
+        <span className="ml-2 text-[#5a5a5e]">기여BP=갭BP×비중 · 선물대체괴리/차익bp=그 종목 선물 대체 시 · 부호: 매수차(+)/매도차(−) · ETF 클릭→차익거래 새 탭</span>
+        <span className="ml-2 text-[#5a5a5e]">현재가·iNAV는 상위 {HOLDER_SUB_LIMIT}개만 실시간</span>
         {loading && <span className="ml-2 text-[#0a84ff]">· NAV 로딩…</span>}
       </div>
       <div className="rounded bg-[#0d0d0f] border border-white/[0.03] overflow-x-auto">
-        <table className="tabular-nums" style={{ tableLayout: 'fixed', width: '100%', minWidth: '720px' }}>
+        <table className="tabular-nums" style={{ tableLayout: 'fixed', width: '100%', minWidth: '1240px' }}>
           <colgroup>
-            <col style={{ width: 90 }} />{/* ETF코드 */}
-            <col style={{ width: 260 }} />{/* ETF명 */}
-            <col style={{ width: 110 }} />{/* PDF수량 */}
-            <col style={{ width: 100 }} />{/* 비중 */}
-            <col style={{ width: 150 }} />{/* 금액 */}
-            <col style={{ width: 100 }} />{/* 기여BP */}
+            <col style={{ width: 80 }} />{/* ETF코드 */}
+            <col style={{ width: 200 }} />{/* ETF명 */}
+            <col style={{ width: 90 }} />{/* PDF수량 */}
+            <col style={{ width: 80 }} />{/* 비중 */}
+            <col style={{ width: 120 }} />{/* 금액 */}
+            <col style={{ width: 86 }} />{/* 기여BP */}
+            <col style={{ width: 100 }} />{/* 현재가 */}
+            <col style={{ width: 100 }} />{/* iNAV */}
+            <col style={{ width: 86 }} />{/* 괴리 */}
+            <col style={{ width: 100 }} />{/* 선물대체괴리 */}
+            <col style={{ width: 90 }} />{/* 차익bp */}
           </colgroup>
           <thead className="text-[10px] text-[#a8a8ae] uppercase tracking-wide bg-[#16161a] border-b border-white/[0.06]">
             <tr>
-              <td className="pl-4 py-1.5 text-left">ETF코드</td>
-              <td className="py-1.5 text-left">ETF명</td>
-              <td className="py-1.5 pr-3 text-right">PDF수량</td>
-              <td className="py-1.5 pr-3 text-right">비중</td>
-              <td className="py-1.5 pr-3 text-right">금액</td>
-              <td className="py-1.5 pr-4 text-right">기여BP</td>
+              <HTh k="etfCode" hk={hk} hasc={hasc} onSort={sortH} left className="pl-4">ETF코드</HTh>
+              <HTh k="etfName" hk={hk} hasc={hasc} onSort={sortH} left>ETF명</HTh>
+              <HTh k="qty" hk={hk} hasc={hasc} onSort={sortH}>PDF수량</HTh>
+              <HTh k="weight" hk={hk} hasc={hasc} onSort={sortH}>비중</HTh>
+              <HTh k="amount" hk={hk} hasc={hasc} onSort={sortH}>금액</HTh>
+              <HTh k="contribBp" hk={hk} hasc={hasc} onSort={sortH}>기여BP</HTh>
+              <HTh k="etfPrice" hk={hk} hasc={hasc} onSort={sortH}>현재가</HTh>
+              <HTh k="iNAV" hk={hk} hasc={hasc} onSort={sortH}>iNAV</HTh>
+              <HTh k="premiumBp" hk={hk} hasc={hasc} onSort={sortH}>괴리</HTh>
+              <HTh k="swapPremiumBp" hk={hk} hasc={hasc} onSort={sortH}>선물대체괴리</HTh>
+              <HTh k="arbBp" hk={hk} hasc={hasc} onSort={sortH} className="pr-4">차익bp</HTh>
             </tr>
           </thead>
           <tbody>
             {rows.map((r) => (
-              <tr key={r.etfCode} className="border-b border-white/[0.03] hover:bg-white/[0.02]">
+              <tr key={r.etfCode} onClick={() => openArb(r.etfCode)} className="border-b border-white/[0.03] hover:bg-white/[0.04] cursor-pointer" title="클릭 — ETF 차익거래 새 탭에서 이 ETF 펼침">
                 <td className="pl-4 py-[5px] text-left text-[11px] text-[#8b8b8e]">{r.etfCode}</td>
                 <td className="py-[5px] text-left text-[11px] text-white whitespace-nowrap overflow-hidden text-ellipsis">{r.etfName}</td>
                 <td className="py-[5px] pr-3 text-right text-[11px] text-[#d1d1d6]">{r.qty.toLocaleString()}</td>
                 <td className="py-[5px] pr-3 text-right text-[11px] text-[#d1d1d6]">{r.weight > 0 ? `${(r.weight * 100).toFixed(2)}%` : '-'}</td>
                 <td className="py-[5px] pr-3 text-right text-[11px] text-white">{r.amount > 0 ? Math.round(r.amount).toLocaleString() : '-'}</td>
-                <td className={cn('py-[5px] pr-4 text-right text-[11px]', cV(r.contribBp))}>{r.weight > 0 ? `${fBp(r.contribBp)}bp` : '-'}</td>
+                <td className={cn('py-[5px] pr-3 text-right text-[11px]', cV(r.contribBp))}>{r.weight > 0 ? bpCell(r.contribBp) : '-'}</td>
+                <td className="py-[5px] pr-3 text-right text-[11px] text-white">{r.etfPrice > 0 ? r.etfPrice.toLocaleString() : '-'}</td>
+                <td className="py-[5px] pr-3 text-right text-[11px] text-[#d1d1d6]">{r.iNAV > 0 ? r.iNAV.toLocaleString(undefined, { maximumFractionDigits: 0 }) : '-'}</td>
+                <td className={cn('py-[5px] pr-3 text-right text-[11px]', r.premiumBp == null ? 'text-[#5a5a5e]' : cV(r.premiumBp))}>{bpCell(r.premiumBp)}</td>
+                <td className={cn('py-[5px] pr-3 text-right text-[11px]', r.swapPremiumBp == null ? 'text-[#5a5a5e]' : cV(r.swapPremiumBp))}>{bpCell(r.swapPremiumBp)}</td>
+                <td className={cn('py-[5px] pr-4 text-right text-[11px]', r.arbBp == null ? 'text-[#5a5a5e]' : cV(r.arbBp))}>{bpCell(r.arbBp)}</td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
     </div>
+  )
+}
+
+/** EtfHoldersTable 정렬 헤더 셀. */
+function HTh({ k, hk, hasc, onSort, left, className, children }: {
+  k: HolderSK; hk: HolderSK; hasc: boolean; onSort: (k: HolderSK) => void
+  left?: boolean; className?: string; children: React.ReactNode
+}) {
+  return (
+    <td
+      onClick={() => onSort(k)}
+      className={cn('py-1.5 cursor-pointer select-none whitespace-nowrap', left ? 'text-left' : 'pr-3 text-right', hk === k ? 'text-white' : 'hover:text-[#d1d1d6]', className)}
+    >
+      {children}{hk === k && <span className="ml-0.5">{hasc ? '▲' : '▼'}</span>}
+    </td>
   )
 }
