@@ -7,6 +7,10 @@
 
 cd "$(dirname "$0")"
 
+# 파일 디스크립터 한도 확장 — 기본 1024로는 WS 연결 재시도 폭주 시 소켓 고갈.
+# LS API 연결 burst 후 TLS 재시도 누적 → "Too many open files" 방지.
+ulimit -n 65536
+
 # 각 백그라운드 작업을 별도 프로세스 그룹으로 — 종료 시 손자까지 모두 정리
 set -m
 
@@ -75,6 +79,9 @@ for i in $(seq 1 60); do
     sleep 0.5
 done
 echo "[실시간] Rust 서비스 시작 (포트 8200)..."
+# 로그 레벨: 평소 INFO (피드 모드/fetch 결과/실패율/재연결/에러/phase 전환).
+# 개별 구독·orderbook sleep·WS 접속 등 반복 노이즈는 debug라 평소 숨김.
+# 상세 디버깅 필요 시: RUST_LOG=lens_realtime=debug ./start_dev.sh
 (cd realtime && ./target/release/lens-realtime 2>&1 | tee -a "../logs/realtime.log.${LOG_DAY}") &
 REALTIME_PID=$!
 

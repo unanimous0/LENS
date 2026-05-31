@@ -487,7 +487,7 @@ impl MarketFeed for LsApiFeed {
                             sorted.sort();
                             let new_key = sorted.join(",");
                             if new_key == current_futures_key {
-                                info!("Subscribe: same {} codes — skip (already active)", codes.len());
+                                debug!("Subscribe: same {} codes — skip (already active)", codes.len());
                                 continue;
                             }
                             current_futures_key = new_key;
@@ -510,6 +510,9 @@ impl MarketFeed for LsApiFeed {
                         }
                         Some(SubCommand::Unsubscribe(_)) => {
                             futures_cancel.cancel();
+                            // key 초기화 필수: 동일 코드로 재Subscribe 시 "already active" no-op
+                            // 방지. ETF 페이지 이탈 → 종목차익 재진입 시 복구 불가 버그 수정.
+                            current_futures_key = String::new();
                         }
                         Some(SubCommand::SubscribeStocks(codes)) => {
                             // ref-count: 처음 보는 코드만 LS WS subscribe 신규 spawn 트리거.
@@ -532,10 +535,10 @@ impl MarketFeed for LsApiFeed {
                                 }
                             }
                             if warm_resumed > 0 {
-                                info!("SubscribeStocks: {} warm-down resumed (no LS reconnect)", warm_resumed);
+                                debug!("SubscribeStocks: {} warm-down resumed (no LS reconnect)", warm_resumed);
                             }
                             if newly_added.is_empty() {
-                                info!("SubscribeStocks: +{} (refcount only, no new code)", codes.len());
+                                debug!("SubscribeStocks: +{} (refcount only, no new code)", codes.len());
                                 continue;
                             }
 
@@ -551,7 +554,7 @@ impl MarketFeed for LsApiFeed {
                                     [(tr.to_string(), code.clone()), ("VI_".to_string(), code.clone())]
                                 })
                                 .collect();
-                            info!("SubscribeStocks: +{} new ({} total unique, {} active subs)", newly_added.len(), current_stocks.len(), codes.len());
+                            debug!("SubscribeStocks: +{} new ({} total unique, {} active subs)", newly_added.len(), current_stocks.len(), codes.len());
 
                             stocks_cancel = CancellationToken::new();
                             spawn_stocks_connections(
@@ -575,7 +578,7 @@ impl MarketFeed for LsApiFeed {
                                         Ok(t) => t,
                                         Err(e) => { warn!("SubscribeStocks t1102 token fail: {e}"); return; }
                                     };
-                                    info!("SubscribeStocks t1102 fetch: {} codes (캐시 스킵 적용)", added_for_fetch.len());
+                                    debug!("SubscribeStocks t1102 fetch: {} codes (캐시 스킵 적용)", added_for_fetch.len());
                                     super::ls_rest::fetch_stocks_initial(&token, &added_for_fetch, &n, &tx2, &cancel2, &stats2, Some(&fetched), Some(&failed), Some(&etf_codes_c)).await;
                                 });
                             }
@@ -608,7 +611,7 @@ impl MarketFeed for LsApiFeed {
                                 });
                                 pending_drops.insert(code.clone(), handle);
                             }
-                            info!("UnsubscribeStocks: -{} codes scheduled warm-down ({}s, {} pending total)", to_warm.len(), warm_down_secs, pending_drops.len());
+                            debug!("UnsubscribeStocks: -{} codes scheduled warm-down ({}s, {} pending total)", to_warm.len(), warm_down_secs, pending_drops.len());
                             // LS WS reconnect 안 함 — 타이머 만료 후 drop_rx 분기에서 처리.
                         }
                         Some(SubCommand::PrioritizeStocks(codes)) => {
@@ -656,10 +659,10 @@ impl MarketFeed for LsApiFeed {
                                 }
                             }
                             if warm_resumed > 0 {
-                                info!("SubscribeInav: {} warm-down resumed (no LS reconnect)", warm_resumed);
+                                debug!("SubscribeInav: {} warm-down resumed (no LS reconnect)", warm_resumed);
                             }
                             if newly_added.is_empty() {
-                                info!("SubscribeInav: +{} (refcount only)", codes.len());
+                                debug!("SubscribeInav: +{} (refcount only)", codes.len());
                                 continue;
                             }
 
@@ -669,7 +672,7 @@ impl MarketFeed for LsApiFeed {
                             let inav_subs: Vec<(String, String)> = current_inav.keys()
                                 .map(|code| ("I5_".to_string(), code.clone()))
                                 .collect();
-                            info!("SubscribeInav: +{} new ({} total unique)", newly_added.len(), current_inav.len());
+                            debug!("SubscribeInav: +{} new ({} total unique)", newly_added.len(), current_inav.len());
 
                             inav_cancel = CancellationToken::new();
                             spawn_inav_connections(
@@ -698,7 +701,7 @@ impl MarketFeed for LsApiFeed {
                                 });
                                 pending_inav_drops.insert(code.clone(), handle);
                             }
-                            info!("UnsubscribeInav: -{} codes scheduled warm-down ({}s, {} pending total)", to_warm.len(), warm_down_secs, pending_inav_drops.len());
+                            debug!("UnsubscribeInav: -{} codes scheduled warm-down ({}s, {} pending total)", to_warm.len(), warm_down_secs, pending_inav_drops.len());
                         }
                         Some(SubCommand::SubscribeOrderbook { codes }) => {
                             // 기존 호가 연결 종료
@@ -706,7 +709,7 @@ impl MarketFeed for LsApiFeed {
                             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
                             let n_chunks = codes.len().div_ceil(MAX_SUBS_PER_CONNECTION);
-                            info!("Orderbook subscribe: {} codes ({} conns)", codes.len(), n_chunks);
+                            debug!("Orderbook subscribe: {} codes ({} conns)", codes.len(), n_chunks);
                             ob_cancel = CancellationToken::new();
                             spawn_orderbook_connection(
                                 &codes, &app_key, &app_secret, &names,
@@ -714,7 +717,7 @@ impl MarketFeed for LsApiFeed {
                             );
                         }
                         Some(SubCommand::UnsubscribeOrderbook) => {
-                            info!("Orderbook unsubscribe");
+                            debug!("Orderbook unsubscribe");
                             ob_cancel.cancel();
                         }
                         None => break,
@@ -1147,7 +1150,17 @@ async fn run_single_connection(
     request.headers_mut().insert("User-Agent", HeaderValue::from_static("Mozilla/5.0 LENS/1.0"));
     request.headers_mut().insert("Accept-Language", HeaderValue::from_static("ko-KR,ko;q=0.9"));
 
-    let connector = tokio_tungstenite::Connector::NativeTls(native_tls::TlsConnector::new().unwrap());
+    // LS API WS 서버 TLS 이력:
+    // - 초기: TLS 1.3 ClientHello 거부 → TLS 1.2 강제 필요
+    // - 2026-05-26: TLS 1.2 ClientHello 타임아웃 → TLS 1.3으로 업그레이드된 것으로 확인
+    // max_protocol_version 제거 → native-tls가 TLS 1.2/1.3 중 서버 선택에 맡김.
+    // min_protocol_version은 TLS 1.2 유지 (TLS 1.0/1.1 보안 취약 방지).
+    let connector = tokio_tungstenite::Connector::NativeTls(
+        native_tls::TlsConnector::builder()
+            .min_protocol_version(Some(native_tls::Protocol::Tlsv12))
+            .build()
+            .unwrap()
+    );
     let (ws, _) = tokio_tungstenite::connect_async_tls_with_config(request, None, false, Some(connector))
         .await.map_err(|e| format!("ws connect: {e}"))?;
 
@@ -1188,6 +1201,11 @@ async fn run_single_connection(
                             stream_data_us.store(now, Ordering::Relaxed);
                             handle_tick(&text, tx, names, stock_codes, futures_to_spot).await;
                         }
+                    }
+                    Some(Ok(tungstenite::Message::Ping(data))) => {
+                        // LS API keep-alive: Ping → Pong 응답 필수.
+                        // 응답 없으면 LS 서버가 ~30s 후 데이터 전송 중단 ("LS silent").
+                        let _ = write.send(tungstenite::Message::Pong(data)).await;
                     }
                     Some(Ok(tungstenite::Message::Close(f))) => {
                         return Err(format!("closed: {}", f.map(|f| f.reason.to_string()).unwrap_or_default()));
@@ -1329,9 +1347,9 @@ async fn handle_tick(
                 timestamp: now,
             }));
         }
-        // 주식선물/스프레드 호가 (JH0): 5호가
+        // 주식선물/스프레드 호가 (JH0): 10호가 (API doc + ls_data_test 실측 2026-05-26)
         "JH0" => {
-            let (asks, bids) = parse_orderbook_levels(body, 5);
+            let (asks, bids) = parse_orderbook_levels(body, 10);
             let total_ask = pu(&body["totofferrem"]);
             let total_bid = pu(&body["totbidrem"]);
             try_send_tick(tx, WsMessage::OrderbookTick(OrderbookTick {

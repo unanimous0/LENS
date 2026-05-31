@@ -145,7 +145,46 @@ function computeMetric(
   quoteMode: QuoteMode,
   dividends: Map<string, DividendInfo[]>,
   todayIso: string,
+  inavMode: boolean,  // true = iNAV 기반 (외부망/mock), false = rNAV 기반 (내부망)
 ): EtfMetrics {
+  // === iNAV 모드 (외부망/mock): 거래소 발행 iNAV를 NAV 기준으로 사용. PDF 주식 구독 없음. ===
+  // Pass 1/2 루프 전체 생략 → O(1). 차익/fNAV 계산 불가 → 0/null.
+  // dividendN은 날짜 정보만 필요하므로 가격 없이도 계산 (만기 제한 없이 다음 배당락 카운트).
+  if (inavMode) {
+    const etfTick = etfTicks[code]
+    const navLive = etfTick?.nav ?? 0
+    const lastPrice = etfTick?.price ?? 0
+    const ob = orderbookTicks[code]
+    const ask1 = ob?.asks[0]?.price ?? 0
+    const bid1 = ob?.bids[0]?.price ?? 0
+    const priceNavBp = navLive > 0 && lastPrice > 0 ? ((lastPrice - navLive) / navLive) * 10000 : 0
+    const askNavBp = navLive > 0 && ask1 > 0 ? ((ask1 - navLive) / navLive) * 10000 : 0
+    const bidNavBp = navLive > 0 && bid1 > 0 ? ((bid1 - navLive) / navLive) * 10000 : 0
+    const tradeValue = etfTick?.cum_volume ?? stockTicks[code]?.cum_volume ?? 0
+    let dividendN = 0
+    for (const s of pdf.stocks) {
+      if (s.qty <= 0) continue
+      // futExpiryIso = '' → 상한 없음 (falsy check). 모든 다가오는 배당락 카운트.
+      const div = pickDividendsInWindow(dividends.get(s.code), todayIso, '')
+      if (div.total > 0) dividendN += 1
+    }
+    return {
+      diffBp: 0, buyArbBp: 0, sellArbBp: 0,
+      realProfitWon: null, realProfitBp: null,
+      fNav: navLive, rNav: navLive, nav: navLive, navDiff: 0,
+      dividendN, pdfValue: 0, appliedPct: 0, futuresCount: 0,
+      etfPrice: lastPrice,
+      etfPrevClose: etfTick?.prev_close ?? 0,
+      tradeValue,
+      priceNavBp: Math.abs(priceNavBp) > 1000 ? 0 : priceNavBp,
+      askNavBp: Math.abs(askNavBp) > 1000 ? 0 : askNavBp,
+      bidNavBp: Math.abs(bidNavBp) > 1000 ? 0 : bidNavBp,
+      missingWeight: 0, haltedCount: 0,
+      arbitrable: pdf.arbitrable !== false,
+    }
+  }
+
+  // === rNAV 모드 (내부망): PDF 구성종목 실시간 가격으로 NAV 직접 계산 ===
   const cuUnit = pdf.cu_unit ?? 0
   const cash = pdf.cash || 0
   const r = ratePct / 100
@@ -486,13 +525,14 @@ export function EtfArbitragePage() {
   })
   useEffect(() => { localStorage.setItem('etf.arbMode', arbMode) }, [arbMode])
 
-  // 표시 ETF 개수 제한 — LS API 동시 WS 한도 회피 + 화면 효율.
-  // 디폴트 100. '전체'는 거래량 폭주 종목 한 번에 sub해서 LS 연결 끊김 위험.
+  // 표시 ETF 개수 제한. 디폴트 50.
+  // iNAV 모드: ETF 코드만 구독 → 연결 수 ∝ ETF 수 아님. 'all'도 안전.
+  // rNAV 모드(내부망): PDF 구성종목 포함 구독 → 제한 무관(내부망은 연결 수 제한 없음).
   const [subLimit, setSubLimit] = useState<number | 'all'>(() => {
     const saved = localStorage.getItem('etf.subLimit')
     if (saved === 'all') return 'all'
     const n = saved ? parseInt(saved, 10) : NaN
-    return [50, 100, 200, 300].includes(n) ? n : 100
+    return [50, 100, 200].includes(n) ? n : 50
   })
   useEffect(() => {
     localStorage.setItem('etf.subLimit', subLimit === 'all' ? 'all' : String(subLimit))
@@ -599,6 +639,10 @@ export function EtfArbitragePage() {
   //   - ArbRow 내부에서 자기 etf.code 의 history만 구독 (Sparkline용)
   //   - 차트/Orderbook 패널은 effectiveCode(선택 또는 첫 행) 한 종목만 구독
   const pushEtfHistoryBatch = useMarketStore((s) => s.pushEtfHistoryBatch)
+  const networkMode = useMarketStore((s) => s.networkMode)
+  // 외부망(ls_api/mock): iNAV 기반. PDF 구성종목 구독 없음, WS 연결 ETF 수만큼만.
+  // 내부망: rNAV 직접 계산. PDF 구성종목 전체 구독 (연결 제한 없음).
+  const isINavMode = networkMode !== 'internal'
 
   useEffect(() => {
     // 오늘 이후 배당만 fetch — 과거 배당은 이론베이시스 산출에 무관. KST 기준.
@@ -679,24 +723,27 @@ export function EtfArbitragePage() {
     return subLimit === 'all' ? sorted : sorted.slice(0, subLimit)
   }, [master, subTypes, subLimit, sortTick])
 
-  // 주식/ETF + 선물 front 코드 구독.
+  // ETF 코드 구독 (항상). 내부망(rNAV 모드)에서만 PDF 구성종목 + 선물도 추가.
+  // iNAV 모드(외부망/mock): ETF 코드만 → WS 연결 수 최소화 (LS API 한도 회피).
   // 선물은 ls_api 모드에선 fixed group의 auto_spread로 front 월물 자동 구독되지만, mock에서는
   // 명시적으로 subscribe-stocks에 A+7 코드 포함시켜야 mock이 futures tick 생성.
   const stockSubscriptionCodes = useMemo(() => {
-    if (!pdfs) return [] as string[]
     const all = new Set<string>()
     for (const etf of visibleMaster) {
       all.add(etf.code)
-      const pdf = pdfs[etf.code]
-      if (!pdf) continue
-      for (const s of pdf.stocks) {
-        all.add(s.code)
-        const fm = futuresByBase.get(s.code)
-        if (fm?.front?.code) all.add(fm.front.code)
+      if (!isINavMode && pdfs) {
+        // 내부망: PDF 구성종목 + 각 종목의 선물 front 코드까지 구독
+        const pdf = pdfs[etf.code]
+        if (!pdf) continue
+        for (const s of pdf.stocks) {
+          all.add(s.code)
+          const fm = futuresByBase.get(s.code)
+          if (fm?.front?.code) all.add(fm.front.code)
+        }
       }
     }
     return Array.from(all)
-  }, [visibleMaster, pdfs, futuresByBase])
+  }, [visibleMaster, pdfs, futuresByBase, isINavMode])
 
   usePageStockSubscriptions(stockSubscriptionCodes)
 
@@ -742,13 +789,13 @@ export function EtfArbitragePage() {
     const cache = baseMetricsRefCache.current
     if (!pdfs) { baseMetricsRefCache.current = out; return out }
     for (const [code, pdf] of Object.entries(pdfs)) {
-      const newM = computeMetric(code, pdf, undefined, stockTicks, futuresTicks, etfTicks, orderbookTicks, futuresByBase, minFuturesVolume, arbMode, ratePct, slippageBp, taxBp, quoteMode, dividends, todayIso)
+      const newM = computeMetric(code, pdf, undefined, stockTicks, futuresTicks, etfTicks, orderbookTicks, futuresByBase, minFuturesVolume, arbMode, ratePct, slippageBp, taxBp, quoteMode, dividends, todayIso, isINavMode)
       const cached = cache[code]
       out[code] = cached && metricsEqual(cached, newM) ? cached : newM
     }
     baseMetricsRefCache.current = out
     return out
-  }, [pdfs, stockTicks, futuresTicks, etfTicks, orderbookTicks, futuresByBase, minFuturesVolume, arbMode, ratePct, slippageBp, taxBp, quoteMode, dividends, todayIso])
+  }, [pdfs, stockTicks, futuresTicks, etfTicks, orderbookTicks, futuresByBase, minFuturesVolume, arbMode, ratePct, slippageBp, taxBp, quoteMode, dividends, todayIso, isINavMode])
 
   const metricsRefCache = useRef<Record<string, EtfMetrics>>({})
   const metricsByCode = useMemo(() => {
@@ -764,13 +811,13 @@ export function EtfArbitragePage() {
     for (const code of excludedCodes) {
       const pdf = pdfs[code]
       if (!pdf) continue
-      const newM = computeMetric(code, pdf, excluded[code], stockTicks, futuresTicks, etfTicks, orderbookTicks, futuresByBase, minFuturesVolume, arbMode, ratePct, slippageBp, taxBp, quoteMode, dividends, todayIso)
+      const newM = computeMetric(code, pdf, excluded[code], stockTicks, futuresTicks, etfTicks, orderbookTicks, futuresByBase, minFuturesVolume, arbMode, ratePct, slippageBp, taxBp, quoteMode, dividends, todayIso, isINavMode)
       const cached = cache[code]
       out[code] = cached && metricsEqual(cached, newM) ? cached : newM
     }
     metricsRefCache.current = out
     return out
-  }, [baseMetricsByCode, excluded, pdfs, stockTicks, futuresTicks, etfTicks, orderbookTicks, futuresByBase, minFuturesVolume, arbMode, ratePct, slippageBp, taxBp, quoteMode, dividends, todayIso])
+  }, [baseMetricsByCode, excluded, pdfs, stockTicks, futuresTicks, etfTicks, orderbookTicks, futuresByBase, minFuturesVolume, arbMode, ratePct, slippageBp, taxBp, quoteMode, dividends, todayIso, isINavMode])
 
 
   const naturalRows = useMemo(() => {
@@ -1052,6 +1099,7 @@ export function EtfArbitragePage() {
                   setSubTypes={setSubTypes}
                   masterCount={master?.length ?? 0}
                   visibleCount={visibleMaster.length}
+                  isINavMode={isINavMode}
                 />
                 <div className="flex flex-wrap items-center gap-x-3 gap-y-2 text-[11px]">
                   <FilterField label="차익 방향">
@@ -1171,26 +1219,26 @@ export function EtfArbitragePage() {
         {/* col width는 헤더 + typical 콘텐츠 길이 기반 비율. tableLayout fixed + width 100%이면
             컨테이너 폭에 맞춰 모든 컬럼이 명시 비율대로 비례 확장. 합 1844px. */}
         {master && pdfs && (
-          <table className="border-collapse" style={{ tableLayout: 'fixed', width: '100%', minWidth: '1846px' }}>
+          <table className="border-collapse" style={{ tableLayout: 'fixed', width: '100%', minWidth: isINavMode ? '836px' : '1846px' }}>
             <colgroup>
               <col style={{ width: 200 }} />{/* 종목 */}
               <col style={{ width: 130 }} />{/* 거래대금 */}
               <col style={{ width: 86 }} />{/* 현재가 */}
-              <col style={{ width: 100 }} />{/* iNAV — NAV 3종 폭 늘려 숫자 답답함 해소 */}
-              <col style={{ width: 100 }} />{/* rNAV */}
-              <col style={{ width: 100 }} />{/* fNAV */}
-              <col style={{ width: 80 }} />{/* 현재괴리 */}
-              <col style={{ width: 80 }} />{/* 매도괴리 */}
-              <col style={{ width: 80 }} />{/* 매수괴리 */}
-              <col style={{ width: 88 }} />{/* 매수차BP */}
-              <col style={{ width: 88 }} />{/* 매도차BP */}
-              <col style={{ width: 76 }} />{/* 차익bp */}
-              <col style={{ width: 130 }} />{/* 실집행차익(원) */}
-              <col style={{ width: 88 }} />{/* 실집행BP */}
+              <col style={{ width: 110 }} />{/* iNAV */}
+              {!isINavMode && <col style={{ width: 100 }} />}{/* rNAV (내부망만) */}
+              {!isINavMode && <col style={{ width: 100 }} />}{/* fNAV (내부망만) */}
+              <col style={{ width: 86 }} />{/* 현재괴리 */}
+              <col style={{ width: 86 }} />{/* 매도괴리 */}
+              <col style={{ width: 86 }} />{/* 매수괴리 */}
+              {!isINavMode && <col style={{ width: 88 }} />}{/* 매수차BP */}
+              {!isINavMode && <col style={{ width: 88 }} />}{/* 매도차BP */}
+              {!isINavMode && <col style={{ width: 76 }} />}{/* 차익bp */}
+              {!isINavMode && <col style={{ width: 130 }} />}{/* 실집행차익 */}
+              {!isINavMode && <col style={{ width: 88 }} />}{/* 실집행BP */}
               <col style={{ width: 64 }} />{/* 배당수 */}
-              <col style={{ width: 72 }} />{/* 선물비중 */}
-              <col style={{ width: 64 }} />{/* 선물수 */}
-              <col style={{ width: 220 }} />{/* 추이 — sparkline 150 + 여유 */}
+              {!isINavMode && <col style={{ width: 72 }} />}{/* 선물비중 */}
+              {!isINavMode && <col style={{ width: 64 }} />}{/* 선물수 */}
+              {!isINavMode && <col style={{ width: 220 }} />}{/* 추이 */}
             </colgroup>
             <thead className="sticky top-0 z-20">
               <tr className="text-[12px] text-[#8b8b8e] bg-black">
@@ -1198,20 +1246,20 @@ export function EtfArbitragePage() {
                 <ArbTh sort={() => handleSort('tradeValue')} active={sortKey === 'tradeValue'} asc={sortAsc}>거래대금</ArbTh>
                 <ArbTh sort={() => handleSort('etfPrice')} active={sortKey === 'etfPrice'} asc={sortAsc}>현재가</ArbTh>
                 <ArbTh sort={() => handleSort('nav')} active={sortKey === 'nav'} asc={sortAsc} title="iNAV — 거래소 발행 실시간 NAV (LS API I5_ feed). 모든 ETF 공통.">iNAV</ArbTh>
-                <ArbTh sort={() => handleSort('rNav')} active={sortKey === 'rNav'} asc={sortAsc} title="현물 NAV — (SUM(S·D)+현금)/CU 자체 산출. 비차익 ETF는 PDF 처리가 깨져 흐림.">rNAV</ArbTh>
-                <ArbTh sort={() => handleSort('fNav')} active={sortKey === 'fNav'} asc={sortAsc} title="선물대체 NAV. V=O 종목은 K로 평가">fNAV</ArbTh>
+                {!isINavMode && <ArbTh sort={() => handleSort('rNav')} active={sortKey === 'rNav'} asc={sortAsc} title="현물 NAV — (SUM(S·D)+현금)/CU 자체 산출. 비차익 ETF는 PDF 처리가 깨져 흐림.">rNAV</ArbTh>}
+                {!isINavMode && <ArbTh sort={() => handleSort('fNav')} active={sortKey === 'fNav'} asc={sortAsc} title="선물대체 NAV. V=O 종목은 K로 평가">fNAV</ArbTh>}
                 <ArbTh sort={() => handleSort('priceNavBp')} active={sortKey === 'priceNavBp'} asc={sortAsc}>현재 괴리</ArbTh>
                 <ArbTh sort={() => handleSort('askNavBp')} active={sortKey === 'askNavBp'} asc={sortAsc}>매도 괴리</ArbTh>
                 <ArbTh sort={() => handleSort('bidNavBp')} active={sortKey === 'bidNavBp'} asc={sortAsc}>매수 괴리</ArbTh>
-                <ArbTh sort={() => handleSort('buyArbBp')} active={sortKey === 'buyArbBp'} asc={sortAsc} title="매수차BP_net. R>0 종목 V=O들의 (T-slip-tax)·H 합">매수차BP</ArbTh>
-                <ArbTh sort={() => handleSort('sellArbBp')} active={sortKey === 'sellArbBp'} asc={sortAsc} title="매도차BP_net. R<0 종목 V=O들의 (T+slip)·H 합. 음수=이익">매도차BP</ArbTh>
-                <ArbTh sort={() => handleSort('diffBp')} active={sortKey === 'diffBp'} asc={sortAsc} title="매수차BP + 매도차BP. 부호로 우세 방향">차익bp</ArbTh>
-                <ArbTh sort={() => handleSort('realProfitWon')} active={sortKey === 'realProfitWon'} asc={sortAsc} title="실집행차익(1 CU 기준 원). ETF 호가 vs fNAV 차익 (매수차는 매도세 차감)">실집행차익</ArbTh>
-                <ArbTh sort={() => handleSort('realProfitBp')} active={sortKey === 'realProfitBp'} asc={sortAsc}>실집행BP</ArbTh>
+                {!isINavMode && <ArbTh sort={() => handleSort('buyArbBp')} active={sortKey === 'buyArbBp'} asc={sortAsc} title="매수차BP_net. R>0 종목 V=O들의 (T-slip-tax)·H 합">매수차BP</ArbTh>}
+                {!isINavMode && <ArbTh sort={() => handleSort('sellArbBp')} active={sortKey === 'sellArbBp'} asc={sortAsc} title="매도차BP_net. R<0 종목 V=O들의 (T+slip)·H 합. 음수=이익">매도차BP</ArbTh>}
+                {!isINavMode && <ArbTh sort={() => handleSort('diffBp')} active={sortKey === 'diffBp'} asc={sortAsc} title="매수차BP + 매도차BP. 부호로 우세 방향">차익bp</ArbTh>}
+                {!isINavMode && <ArbTh sort={() => handleSort('realProfitWon')} active={sortKey === 'realProfitWon'} asc={sortAsc} title="실집행차익(1 CU 기준 원). ETF 호가 vs fNAV 차익 (매수차는 매도세 차감)">실집행차익</ArbTh>}
+                {!isINavMode && <ArbTh sort={() => handleSort('realProfitBp')} active={sortKey === 'realProfitBp'} asc={sortAsc}>실집행BP</ArbTh>}
                 <ArbTh sort={() => handleSort('dividendN')} active={sortKey === 'dividendN'} asc={sortAsc} title="만기 이전 배당락 종목 수">배당수</ArbTh>
-                <ArbTh sort={() => handleSort('appliedPct')} active={sortKey === 'appliedPct'} asc={sortAsc}>선물비중</ArbTh>
-                <ArbTh sort={() => handleSort('futuresCount')} active={sortKey === 'futuresCount'} asc={sortAsc}>선물수</ArbTh>
-                <ArbTh className="text-center">추이</ArbTh>
+                {!isINavMode && <ArbTh sort={() => handleSort('appliedPct')} active={sortKey === 'appliedPct'} asc={sortAsc}>선물비중</ArbTh>}
+                {!isINavMode && <ArbTh sort={() => handleSort('futuresCount')} active={sortKey === 'futuresCount'} asc={sortAsc}>선물수</ArbTh>}
+                {!isINavMode && <ArbTh className="text-center">추이</ArbTh>}
               </tr>
             </thead>
             <tbody>
@@ -1231,6 +1279,7 @@ export function EtfArbitragePage() {
                       onSelect={handleRowSelect}
                       maxMissingFrac={maxMissingPct / 100}
                       arbMode={arbMode}
+                      isINavMode={isINavMode}
                     />
                   )
                 }
@@ -1242,7 +1291,7 @@ export function EtfArbitragePage() {
                     data-index={vr.index}
                     ref={rowVirtualizer.measureElement}
                   >
-                    <td colSpan={18} className="p-0">
+                    <td colSpan={isINavMode ? 8 : 18} className="p-0">
                       <ExpandedPanel
                         pdf={entry.pdf}
                         etfCode={entry.etfCode}
@@ -1261,6 +1310,7 @@ export function EtfArbitragePage() {
                         pdfSortKey={pdfSortKey}
                         pdfSortAsc={pdfSortAsc}
                         onPdfSort={handlePdfSort}
+                        isINavMode={isINavMode}
                       />
                     </td>
                   </tr>
@@ -1318,6 +1368,7 @@ type ExpandedPanelProps = {
   pdfSortKey: PdfSortKey
   pdfSortAsc: boolean
   onPdfSort: (key: PdfSortKey) => void
+  isINavMode: boolean  // true = 외부망/mock. 구성종목 실시간 가격 없음 → 안내 표시.
 }
 
 /** PDF 테이블 정렬 키 — 모든 컬럼 정렬 가능. */
@@ -1538,13 +1589,14 @@ function DividendCard({ d }: { d: DividendInfo }) {
 function ExpandedPanel({
   pdf, etfCode, metrics, futuresByBase, excluded, onToggle,
   stockTicks, futuresTicks, arbMode, ratePct, taxBp, minFuturesVolume,
-  dividends, todayIso, pdfSortKey, pdfSortAsc, onPdfSort,
+  dividends, todayIso, pdfSortKey, pdfSortAsc, onPdfSort, isINavMode,
 }: ExpandedPanelProps) {
   const cash = pdf.cash || 0
   const cuUnit = pdf.cu_unit ?? 0
   const r = ratePct / 100
 
   // 종목별 arb info 계산 — 펼친 ETF만 영향, 200ms tick에 재계산.
+  // hooks는 항상 무조건 호출 (Rules of Hooks). iNAV 모드 early return은 모든 hooks 뒤에서.
   const stockInfos = useMemo<Map<string, StockArbInfo>>(() => {
     type Pre = StockArbInfo & { code: string; G: number }
     const arr: Pre[] = []
@@ -1641,6 +1693,19 @@ function ExpandedPanel({
     }
     return null
   }, [pdf, futuresByBase, todayIso])
+
+  // iNAV 모드(외부망/mock): 구성종목 실시간 가격 미구독 → 안내 표시 (hooks 모두 호출 후).
+  if (isINavMode) {
+    return (
+      <div className="px-6 py-4 flex items-center gap-3 text-[12px] text-t3 border-t border-white/[0.04]">
+        <span className="text-[#0a84ff]">●</span>
+        <span>
+          <span className="text-t2">iNAV 모드</span>에서는 구성종목 실시간 가격을 구독하지 않습니다.
+          {' '}<span className="text-t4">구성종목 차익 내역은 내부망(rNAV 모드)에서 이용 가능합니다.</span>
+        </span>
+      </div>
+    )
+  }
 
   return (
     <div className="px-4 py-3 bg-[#0a0a0a] border-y border-white/[0.04]">
@@ -1931,13 +1996,14 @@ const ArbC = memo(function ArbC({ children, c, className }: { children: React.Re
 
 /** ArbRow — memo로 wrap된 행. m/history/isSelected ref 안정 시 reconcile skip.
  * 필터 클릭 시 metricsByCode가 재계산 안 되어야(=Step B 적용) 실제 효과 발현. */
-const ArbRow = memo(function ArbRow({ etf, m, isSelected, onSelect, maxMissingFrac, arbMode }: {
+const ArbRow = memo(function ArbRow({ etf, m, isSelected, onSelect, maxMissingFrac, arbMode, isINavMode }: {
   etf: EtfMaster
   m: EtfMetrics | undefined
   isSelected: boolean
   onSelect: (code: string) => void
   maxMissingFrac: number  // 누락 비중 임계값 (0.01 = 1%). 초과 시 fNAV/실집행 컬럼 흐림
   arbMode: ArbMode        // 단일 모드일 때 차익bp를 해당 모드 차익bp와 동일하게 표시
+  isINavMode: boolean     // true = 외부망/mock (iNAV 기반). rNAV/fNAV/차익 컬럼 숨김.
 }) {
   // history는 self selective — 자기 ETF의 entry가 변할 때만 이 행 재렌더.
   // 페이지 root selector 였을 때는 어느 ETF든 entry 갱신되면 모든 ArbRow.history prop이
@@ -1976,33 +2042,39 @@ const ArbRow = memo(function ArbRow({ etf, m, isSelected, onSelect, maxMissingFr
           ? m.etfPrice.toLocaleString()
           : (m?.etfPrevClose ? m.etfPrevClose.toLocaleString() : '-')
       }</ArbC>
-      {/* iNAV: 거래소 발행 실시간 NAV (I5_). 모든 ETF 공통. rNAV/자체 산출과 비교용 진실값. */}
+      {/* iNAV: 거래소 발행 실시간 NAV (I5_). 모든 ETF 공통. */}
       <ArbC>{m && m.nav > 0 ? m.nav.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '-'}</ArbC>
-      {/* rNAV: 자체 산출 (SUM(S·D)+현금)/CU. 비차익 ETF는 PDF 처리가 깨져 (지수선물 미평가, 채권 시세 없음 등)
-       *  의미 없으므로 흐림. 라이브 NAV는 iNAV 컬럼에 별도 표시. */}
-      <ArbC c={dim ? 'text-[#5a5a5e]' : undefined}>
-        {dim ? '—' : (m?.rNav ? m.rNav.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '-')}
-      </ArbC>
-      <ArbC c={dim ? 'text-[#5a5a5e]' : (m && m.fNav > 0 && m.rNav > 0 ? (m.fNav > m.rNav ? 'text-[#00b26b]' : m.fNav < m.rNav ? 'text-[#bb4a65]' : 'text-white') : 'text-white')}>{dim ? '—' : (m?.fNav ? m.fNav.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '-')}</ArbC>
+      {/* rNAV / fNAV — 내부망(rNAV 모드)만 표시. iNAV 모드에선 컬럼 자체 숨김. */}
+      {!isINavMode && (
+        <ArbC c={dim ? 'text-[#5a5a5e]' : undefined}>
+          {dim ? '—' : (m?.rNav ? m.rNav.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '-')}
+        </ArbC>
+      )}
+      {!isINavMode && (
+        <ArbC c={dim ? 'text-[#5a5a5e]' : (m && m.fNav > 0 && m.rNav > 0 ? (m.fNav > m.rNav ? 'text-[#00b26b]' : m.fNav < m.rNav ? 'text-[#bb4a65]' : 'text-white') : 'text-white')}>
+          {dim ? '—' : (m?.fNav ? m.fNav.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '-')}
+        </ArbC>
+      )}
       <ArbC c={m && m.priceNavBp > 0 ? 'text-[#00b26b]' : m && m.priceNavBp < 0 ? 'text-[#bb4a65]' : 'text-[#d1d1d6]'}>{m && m.nav > 0 ? `${fmt(m.priceNavBp, 2)}bp` : '-'}</ArbC>
       <ArbC c={m && m.askNavBp > 0 ? 'text-[#00b26b]' : m && m.askNavBp < 0 ? 'text-[#bb4a65]' : 'text-[#d1d1d6]'}>{m && m.nav > 0 && m.askNavBp !== 0 ? `${fmt(m.askNavBp, 2)}bp` : '-'}</ArbC>
       <ArbC c={m && m.bidNavBp > 0 ? 'text-[#00b26b]' : m && m.bidNavBp < 0 ? 'text-[#bb4a65]' : 'text-[#d1d1d6]'}>{m && m.nav > 0 && m.bidNavBp !== 0 ? `${fmt(m.bidNavBp, 2)}bp` : '-'}</ArbC>
-      <ArbC c={dim ? 'text-[#5a5a5e]' : (m && m.buyArbBp > 0 ? 'text-[#00b26b]' : 'text-[#5a5a5e]')}>{dim ? '—' : (m && m.buyArbBp > 0.001 ? formatBp(m.buyArbBp) : '-')}</ArbC>
-      <ArbC c={dim ? 'text-[#5a5a5e]' : (m && m.sellArbBp < 0 ? 'text-[#bb4a65]' : 'text-[#5a5a5e]')}>{dim ? '—' : (m && m.sellArbBp < -0.001 ? formatBp(m.sellArbBp) : '-')}</ArbC>
-      <ArbC c={dim ? 'text-[#5a5a5e]' : cn('font-medium', diffColor)}>{
-        dim ? '—' :
-        !m ? '-' :
-        // 단일 모드는 차익bp = 해당 모드 차익bp (mixed에서만 합산)
-        arbMode === 'buy'  ? formatBp(m.buyArbBp) :
-        arbMode === 'sell' ? formatBp(m.sellArbBp) :
-        formatBp(m.diffBp)
-      }</ArbC>
-      <ArbC c={dim || (m && m.realProfitWon == null) ? 'text-warning' : (m && m.realProfitWon != null && m.realProfitWon > 0 ? 'text-[#00b26b]' : m && m.realProfitWon != null && m.realProfitWon < 0 ? 'text-[#bb4a65]' : 'text-[#5a5a5e]')}>{dim ? '—' : (m && m.realProfitWon == null ? '정지' : (m && m.realProfitWon != null && Math.abs(m.realProfitWon) > 1 ? `${Math.round(m.realProfitWon).toLocaleString()}원` : '-'))}</ArbC>
-      <ArbC c={dim || (m && m.realProfitBp == null) ? 'text-warning' : (m && m.realProfitBp != null && m.realProfitBp > 0 ? 'text-[#00b26b]' : m && m.realProfitBp != null && m.realProfitBp < 0 ? 'text-[#bb4a65]' : 'text-[#5a5a5e]')}>{dim ? '—' : (m && m.realProfitBp == null ? '정지' : (m && m.realProfitBp != null && Math.abs(m.realProfitBp) > 0.01 ? `${formatBp(m.realProfitBp)}bp` : '-'))}</ArbC>
+      {/* 차익 관련 컬럼 — 내부망(rNAV 모드)만 표시 */}
+      {!isINavMode && <ArbC c={dim ? 'text-[#5a5a5e]' : (m && m.buyArbBp > 0 ? 'text-[#00b26b]' : 'text-[#5a5a5e]')}>{dim ? '—' : (m && m.buyArbBp > 0.001 ? formatBp(m.buyArbBp) : '-')}</ArbC>}
+      {!isINavMode && <ArbC c={dim ? 'text-[#5a5a5e]' : (m && m.sellArbBp < 0 ? 'text-[#bb4a65]' : 'text-[#5a5a5e]')}>{dim ? '—' : (m && m.sellArbBp < -0.001 ? formatBp(m.sellArbBp) : '-')}</ArbC>}
+      {!isINavMode && (
+        <ArbC c={dim ? 'text-[#5a5a5e]' : cn('font-medium', diffColor)}>{
+          dim ? '—' : !m ? '-' :
+          arbMode === 'buy'  ? formatBp(m.buyArbBp) :
+          arbMode === 'sell' ? formatBp(m.sellArbBp) :
+          formatBp(m.diffBp)
+        }</ArbC>
+      )}
+      {!isINavMode && <ArbC c={dim || (m && m.realProfitWon == null) ? 'text-warning' : (m && m.realProfitWon != null && m.realProfitWon > 0 ? 'text-[#00b26b]' : m && m.realProfitWon != null && m.realProfitWon < 0 ? 'text-[#bb4a65]' : 'text-[#5a5a5e]')}>{dim ? '—' : (m && m.realProfitWon == null ? '정지' : (m && m.realProfitWon != null && Math.abs(m.realProfitWon) > 1 ? `${Math.round(m.realProfitWon).toLocaleString()}원` : '-'))}</ArbC>}
+      {!isINavMode && <ArbC c={dim || (m && m.realProfitBp == null) ? 'text-warning' : (m && m.realProfitBp != null && m.realProfitBp > 0 ? 'text-[#00b26b]' : m && m.realProfitBp != null && m.realProfitBp < 0 ? 'text-[#bb4a65]' : 'text-[#5a5a5e]')}>{dim ? '—' : (m && m.realProfitBp == null ? '정지' : (m && m.realProfitBp != null && Math.abs(m.realProfitBp) > 0.01 ? `${formatBp(m.realProfitBp)}bp` : '-'))}</ArbC>}
       <ArbC c={dim ? 'text-[#5a5a5e]' : (m && m.dividendN > 0 ? 'text-[#ff9f0a]' : 'text-[#5a5a5e]')}>{dim ? '—' : (m && m.dividendN > 0 ? m.dividendN : '-')}</ArbC>
-      <ArbC c={dim ? 'text-[#5a5a5e]' : 'text-[#d1d1d6]'}>{dim ? '—' : (m ? m.appliedPct.toFixed(1) : '-')}</ArbC>
-      <ArbC c={dim ? 'text-[#5a5a5e]' : 'text-[#d1d1d6]'}>{dim ? '—' : (m ? m.futuresCount : '-')}</ArbC>
-      <td className="px-2 py-[6px] text-center">{dim ? <span className="text-[9px] text-[#5a5a5e]">—</span> : <Sparkline history={history} height={30} />}</td>
+      {!isINavMode && <ArbC c={dim ? 'text-[#5a5a5e]' : 'text-[#d1d1d6]'}>{dim ? '—' : (m ? m.appliedPct.toFixed(1) : '-')}</ArbC>}
+      {!isINavMode && <ArbC c={dim ? 'text-[#5a5a5e]' : 'text-[#d1d1d6]'}>{dim ? '—' : (m ? m.futuresCount : '-')}</ArbC>}
+      {!isINavMode && <td className="px-2 py-[6px] text-center">{dim ? <span className="text-[9px] text-[#5a5a5e]">—</span> : <Sparkline history={history} height={30} />}</td>}
     </tr>
   )
 })
@@ -2422,19 +2494,19 @@ const TYPE_LABEL: Record<EtfType, string> = {
   other: '기타',
 }
 const TYPE_ORDER: EtfType[] = ['sector', 'index', 'derivative', 'bond', 'other']
-const LIMIT_OPTIONS: (number | 'all')[] = [50, 100, 200, 300, 'all']
+const LIMIT_OPTIONS: (number | 'all')[] = [50, 100, 200, 'all']
 
 /**
  * ETF 페이지 sub 범위 토글 — 표시 개수 + 유형 필터.
- * LS API 동시 WS 한도 회피 + 사용자 워크플로 (섹터/지수형 + 상위 100) 최적화.
- *
- * 디폴트: 100 + 섹터형. 전체 클릭 시 LS 끊김 위험 경고.
- * 30초마다 cum_volume 기준 재정렬 (sortTick 외부 state) → 거래량 폭주 종목 자동 진입.
+ * iNAV 모드(외부망): ETF 코드만 구독 → '전체'도 WS 연결 수 최소. 경고 불필요.
+ * rNAV 모드(내부망): PDF 구성종목 포함이지만 내부망은 연결 제한 없으므로 동일하게 경고 불필요.
+ * 30초마다 cum_volume 기준 재정렬 → 거래량 폭주 종목 자동 진입.
  */
 function SubScopeToggles({
   subLimit, setSubLimit,
   subTypes, setSubTypes,
   masterCount, visibleCount,
+  isINavMode,
 }: {
   subLimit: number | 'all'
   setSubLimit: (v: number | 'all') => void
@@ -2442,6 +2514,7 @@ function SubScopeToggles({
   setSubTypes: (s: Set<EtfType>) => void
   masterCount: number
   visibleCount: number
+  isINavMode: boolean
 }) {
   const allTypesActive = subTypes.size === TYPE_ORDER.length
   const toggleType = (t: EtfType) => {
@@ -2455,15 +2528,13 @@ function SubScopeToggles({
   const toggleAll = () => {
     setSubTypes(allTypesActive ? new Set<EtfType>(['sector']) : new Set<EtfType>(TYPE_ORDER))
   }
-  // "전체" 클릭 시 명시적 확인 — Agent 4 점검에서 ETF 페이지 전체 sub는
-  // stock+inav+orderbook 3개 hook 동시 적용으로 conn 70+ → LS 한도 초과 거의 확정.
-  // 실수로 누르는 사고 방지 (디폴트는 100 + 섹터로 안전).
+  // "전체" 클릭 시 rNAV 모드에서만 경고 — 내부망은 연결 제한 없으나 화면이 무거워질 수 있음.
+  // iNAV 모드: ETF 코드만 구독 → 전체 선택도 WS 연결 수 최소 → 경고 불필요.
   const handleLimitClick = (n: number | 'all') => {
-    if (n === 'all' && subLimit !== 'all') {
+    if (n === 'all' && subLimit !== 'all' && !isINavMode) {
       const ok = window.confirm(
-        '"전체" 표시는 약 4,000+ 코드를 한 번에 LS API에 sub합니다.\n\n' +
-        '동시 WS 연결 한도 초과로 *모든 페이지* 데이터 수신이 일시 끊길 수 있습니다.\n\n' +
-        '정말 진행하시겠습니까?'
+        '"전체" 표시는 모든 ETF의 PDF 구성종목까지 한 번에 구독합니다 (내부망).\n\n' +
+        '화면이 무거워질 수 있습니다. 계속하시겠습니까?'
       )
       if (!ok) return
     }
@@ -2518,11 +2589,14 @@ function SubScopeToggles({
         >
           전체
         </button>
-        {subLimit === 'all' && (
-          <span className="ml-auto text-[10px] text-down tabular-nums">
-            ⚠ 전체 sub는 LS 연결 끊김 위험
-          </span>
-        )}
+        <span className={cn(
+          'ml-auto text-[10px] tabular-nums px-1.5 py-0.5 rounded',
+          isINavMode
+            ? 'text-[#0a84ff] bg-[#0a84ff]/10'
+            : 'text-[#ff9f0a] bg-[#ff9f0a]/10'
+        )}>
+          {isINavMode ? '● iNAV 모드' : '● rNAV 모드 (내부망)'}
+        </span>
       </div>
     </div>
   )

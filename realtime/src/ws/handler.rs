@@ -31,7 +31,7 @@ async fn handle_client(
     // 새 client에 unique id 발급. frontend가 hello 메시지로 받아서 subscribe-stocks
     // 호출 시 X-LENS-Client-Id 헤더에 첨부 → disconnect 시 자동 cleanup.
     let client_id = state.next_client_id.fetch_add(1, Ordering::Relaxed);
-    info!("WebSocket client connected (id={})", client_id);
+    debug!("WebSocket client connected (id={})", client_id);
 
     // hello 메시지 전송 (snapshot 전에 보내야 frontend가 client_id를 먼저 확보).
     let hello = format!("{{\"type\":\"hello\",\"client_id\":{client_id}}}");
@@ -52,7 +52,7 @@ async fn handle_client(
     //  cache snapshot과 rx 사이 도착 tick은 두 번 전달될 수 있으나, 프론트 store가 멱등이라 무해.
     let mut rx = broadcaster.subscribe();
     let snapshot = broadcaster.snapshot();
-    info!("Flushing snapshot to client {}: {} messages", client_id, snapshot.len());
+    debug!("Flushing snapshot to client {}: {} messages", client_id, snapshot.len());
     for json in snapshot {
         if socket.send(Message::Text(json)).await.is_err() {
             info!("WS client {} disconnected during snapshot flush", client_id);
@@ -79,7 +79,7 @@ async fn handle_client(
         }
     }
 
-    info!("WebSocket client {} disconnected", client_id);
+    debug!("WebSocket client {} disconnected", client_id);
     cleanup_client_subs(&state, client_id).await;
 }
 

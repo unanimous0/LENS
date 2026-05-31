@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
 use serde::{Deserialize, Serialize};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 const PATH: &str = "../data/stock_volumes.json";
 const SAVE_EVERY: usize = 1000;
@@ -79,7 +79,7 @@ pub fn record(code: &str, value: u64) {
     }
     if let Some(snap) = snap_for_save {
         save_to_disk(&snap);
-        info!("stock_volumes flushed: {} entries", snap.len());
+        debug!("stock_volumes flushed: {} entries", snap.len());
     }
 }
 
@@ -95,5 +95,5 @@ pub fn flush() {
         Err(_) => return,
     };
     save_to_disk(&snap);
-    info!("stock_volumes flushed (final): {} entries", snap.len());
+    debug!("stock_volumes flushed (final): {} entries", snap.len());
 }

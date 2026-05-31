@@ -11,7 +11,7 @@ const tabs = [
   { label: "포지션", href: "/position" },
   { label: "수급", href: "/supply-demand" },
   { label: "종목차익", href: "/stock-arbitrage" },
-  { label: "ETF", href: "/etf-arbitrage" },
+  { label: "ETF", href: "/etf" },
   { label: "통계차익", href: "/stat-arb" },
   { label: "LP 매트릭스", href: "/lp-matrix" },
   { label: "배당", href: "/dividends" },
@@ -24,7 +24,10 @@ export function TopNav() {
       <div className="flex items-center gap-1">
         <span className="mr-4 text-sm font-bold tracking-tight text-accent">LENS</span>
         {tabs.map((tab) => {
-          const isActive = location.pathname === tab.href
+          // nested 경로(/etf/arbitrage, /stat-arb/mn 등)에서도 상위 탭 active 유지
+          const isActive =
+            location.pathname === tab.href ||
+            location.pathname.startsWith(tab.href + '/')
           return (
             <Link
               key={tab.href}

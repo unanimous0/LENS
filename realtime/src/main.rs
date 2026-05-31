@@ -20,7 +20,7 @@ use serde::Deserialize;
 use tokio::sync::{mpsc, Mutex as TokioMutex};
 use tokio_util::sync::CancellationToken;
 use tower_http::cors::{Any, CorsLayer};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use feed::internal::InternalFeed;
 use feed::ls_api::LsApiFeed;
@@ -991,7 +991,7 @@ async fn subscribe(
     Json(req): Json<SubRequest>,
 ) -> Json<serde_json::Value> {
     let count = req.codes.len();
-    info!("REST subscribe: {} codes", count);
+    debug!("REST subscribe: {} codes", count);
     let _ = state
         .sub_tx
         .read()
@@ -1005,7 +1005,7 @@ async fn unsubscribe(
     Json(req): Json<SubRequest>,
 ) -> Json<serde_json::Value> {
     let count = req.codes.len();
-    info!("REST unsubscribe: {} codes", count);
+    debug!("REST unsubscribe: {} codes", count);
     let _ = state
         .sub_tx
         .read()
@@ -1034,7 +1034,7 @@ async fn subscribe_stocks(
         let entry = state.client_subs.entry(id).or_insert_with(dashmap::DashSet::new);
         for c in &req.codes { entry.insert(c.clone()); }
     }
-    info!("REST subscribe-stocks: {} codes (client={:?})", count, cid);
+    debug!("REST subscribe-stocks: {} codes (client={:?})", count, cid);
     let _ = state
         .sub_tx
         .read()
@@ -1055,7 +1055,7 @@ async fn unsubscribe_stocks(
             for c in &req.codes { entry.remove(c); }
         }
     }
-    info!("REST unsubscribe-stocks: {} codes (client={:?})", count, cid);
+    debug!("REST unsubscribe-stocks: {} codes (client={:?})", count, cid);
     let _ = state
         .sub_tx
         .read()
@@ -1132,7 +1132,7 @@ async fn subscribe_inav(
         let entry = state.client_subs_inav.entry(id).or_insert_with(dashmap::DashSet::new);
         for c in &req.codes { entry.insert(c.clone()); }
     }
-    info!("REST subscribe-inav: {} codes (client={:?})", count, cid);
+    debug!("REST subscribe-inav: {} codes (client={:?})", count, cid);
     let _ = state.sub_tx.read().unwrap().send(SubCommand::SubscribeInav(req.codes));
     Json(serde_json::json!({"status": "ok", "subscribed": count}))
 }
@@ -1149,7 +1149,7 @@ async fn unsubscribe_inav(
             for c in &req.codes { entry.remove(c); }
         }
     }
-    info!("REST unsubscribe-inav: {} codes (client={:?})", count, cid);
+    debug!("REST unsubscribe-inav: {} codes (client={:?})", count, cid);
     let _ = state.sub_tx.read().unwrap().send(SubCommand::UnsubscribeInav(req.codes));
     Json(serde_json::json!({"status": "ok", "unsubscribed": count}))
 }
@@ -1186,7 +1186,7 @@ async fn subscribe_orderbook_bulk(
         codes.push((tr.to_string(), code));
     }
     let count = codes.len();
-    info!("REST orderbook bulk subscribe: {} codes", count);
+    debug!("REST orderbook bulk subscribe: {} codes", count);
     let _ = state
         .sub_tx
         .read()
@@ -1220,7 +1220,7 @@ async fn subscribe_orderbook(
     }
 
     let count = codes.len();
-    info!("REST orderbook subscribe: {} codes", count);
+    debug!("REST orderbook subscribe: {} codes", count);
     let _ = state
         .sub_tx
         .read()
@@ -1230,7 +1230,7 @@ async fn subscribe_orderbook(
 }
 
 async fn unsubscribe_orderbook(State(state): State<AppState>) -> Json<serde_json::Value> {
-    info!("REST orderbook unsubscribe");
+    debug!("REST orderbook unsubscribe");
     let _ = state
         .sub_tx
         .read()

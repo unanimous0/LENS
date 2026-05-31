@@ -196,7 +196,7 @@ impl InternalFeed {
                                 if *count == 1 { newly_added.push(key); }
                             }
                             if newly_added.is_empty() {
-                                info!("SubscribeStocks: +{} (refcount only)", codes.len());
+                                debug!("SubscribeStocks: +{} (refcount only)", codes.len());
                                 continue;
                             }
                             let sub_msg = serde_json::json!({
@@ -204,7 +204,7 @@ impl InternalFeed {
                                 "real_nav": self.real_nav,
                             });
                             let _ = write.send(tungstenite::Message::Text(sub_msg.to_string().into())).await;
-                            info!("SubscribeStocks: +{} new ({} unique)", newly_added.len(), current_stocks.len());
+                            debug!("SubscribeStocks: +{} new ({} unique)", newly_added.len(), current_stocks.len());
                         }
                         Some(SubCommand::UnsubscribeStocks(codes)) => {
                             let mut actually_dropped: Vec<String> = Vec::new();
@@ -221,7 +221,7 @@ impl InternalFeed {
                                 "unsubscribe": &actually_dropped,
                             });
                             let _ = write.send(tungstenite::Message::Text(unsub_msg.to_string().into())).await;
-                            info!("UnsubscribeStocks: -{} actually dropped (out of {} requests)", actually_dropped.len(), codes.len());
+                            debug!("UnsubscribeStocks: -{} actually dropped (out of {} requests)", actually_dropped.len(), codes.len());
                         }
                         Some(SubCommand::SubscribeInav(_)) | Some(SubCommand::UnsubscribeInav(_)) => {
                             // 내부망은 nav가 trade tick과 함께 흘러옴 (rnav_trade/inav). 별도 구독 불필요.

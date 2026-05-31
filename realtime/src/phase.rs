@@ -14,7 +14,7 @@
 use chrono::{DateTime, Datelike, Local, NaiveDateTime, NaiveTime, TimeZone, Timelike, Weekday};
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
-use tracing::info;
+use tracing::{debug, info};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Phase {
@@ -99,7 +99,9 @@ pub async fn wait_until_active(cancel: &CancellationToken, label: &str) -> bool 
     let next = next_attach_time();
     let now = Local::now();
     let total_secs = (next - now).num_seconds().max(60) as u64;
-    info!(
+    // 개별 task(orderbook[N] 등) sleep은 반복 노이즈 → debug 강등.
+    // 전체 phase 전환은 watchdog가 info로 1줄 요약하므로 평소엔 그쪽만 보면 됨.
+    debug!(
         "[PHASE] {label}: sleep — next attach at {} ({}분 후)",
         next.format("%Y-%m-%d %H:%M"),
         total_secs / 60

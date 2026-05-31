@@ -555,6 +555,7 @@ pub async fn fetch_stocks_initial(
             Ok(detail) => {
                 let price = pf(detail.get("price"));
                 let value = pu(detail.get("value")); // 백만원 단위 거래대금
+                let volume_qty = pu(detail.get("volume")); // 당일 누적 거래량 (주)
                 let h = pf(detail.get("high"));
                 let l = pf(detail.get("low"));
                 let pc = pf(detail.get("recprice"));
@@ -573,8 +574,10 @@ pub async fn fetch_stocks_initial(
                 // 정확히 etfTicks에 들어가게 (PR15b의 frontend fallback 의존 해소).
                 let is_etf = etf_codes.map(|s| s.contains(code)).unwrap_or(false);
 
-                if value > 0 {
-                    // 거래대금 있음 = 정상 emit. fetched 등록해서 다음 sweep skip.
+                if value > 0 || volume_qty > 0 {
+                    // 거래대금 또는 거래량 있음 = 정상 emit. fetched 등록해서 다음 sweep skip.
+                    // 거래대금(value)은 백만원 단위 반올림이라 소액 거래(수십만원)는 0이 될 수 있음.
+                    // 이때도 거래량(volume_qty)>0이면 거래가 있었던 것이므로 정상 처리해야 거래량이 버려지지 않음.
                     stats.emit_value_pos.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     crate::volume_cache::record(code, value);
                     if is_etf {
@@ -586,7 +589,7 @@ pub async fn fetch_stocks_initial(
                             spread_bp: 0.0,
                             spread_bid_bp: 0.0,
                             spread_ask_bp: 0.0,
-                            volume: 0,
+                            volume: volume_qty,
                             cum_volume: value * 1_000_000,
                             timestamp: now,
                             prev_close: if pc > 0.0 { Some(pc) } else { None },
@@ -599,7 +602,7 @@ pub async fn fetch_stocks_initial(
                         let _ = tx.send(WsMessage::StockTick(StockTick {
                             code: code.clone(), name,
                             price,
-                            volume: 0,
+                            volume: volume_qty,
                             cum_volume: value * 1_000_000,
                             timestamp: now, is_initial: true,
                             high: if h > 0.0 { Some(h) } else { None },

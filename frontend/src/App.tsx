@@ -8,6 +8,8 @@ import { DashboardPage } from './pages/dashboard'
 import { MarketPage } from './pages/market'
 import { LendingPage } from './pages/lending'
 import { StockArbitragePage } from './pages/stock-arbitrage'
+import { EtfLayout } from './pages/etf-layout'
+import { EtfDashboardPage } from './pages/etf-dashboard'
 import { EtfArbitragePage } from './pages/etf-arbitrage'
 import { StatArbPage } from './pages/stat-arb'
 import { StatArbMnPage } from './pages/stat-arb-mn'
@@ -56,7 +58,13 @@ function AppLayout() {
             <Route path="/position" element={<StubPage label="포지션" />} />
             <Route path="/supply-demand" element={<StubPage label="수급" />} />
             <Route path="/stock-arbitrage" element={<StockArbitragePage />} />
-            <Route path="/etf-arbitrage" element={<EtfArbitragePage />} />
+            {/* ETF: nested sub-tab (대시보드 / 차익거래) */}
+            <Route path="/etf" element={<EtfLayout />}>
+              <Route index element={<EtfDashboardPage />} />
+              <Route path="arbitrage" element={<EtfArbitragePage />} />
+            </Route>
+            {/* 구 경로 호환 — /etf-arbitrage → /etf/arbitrage */}
+            <Route path="/etf-arbitrage" element={<Navigate to="/etf/arbitrage" replace />} />
             {/* 통계차익: nested sub-tab (페어 발굴 / 대여요율). 페어 상세는 layout 밖. */}
             <Route path="/stat-arb" element={<StatArbLayout />}>
               <Route index element={<StatArbPage />} />
