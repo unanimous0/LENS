@@ -79,6 +79,14 @@ interface Row {
   futuresHolding: number
 }
 
+/** 역색인 항목 — 어떤 ETF가 이 종목을 PDF에 몇 주 담고 있는지. */
+interface EtfHolder {
+  etfCode: string
+  etfName: string
+  qty: number      // 1CU당 이 종목 수량
+  cuUnit: number   // ETF CU 좌수
+}
+
 type SK = keyof Pick<Row,
   'baseName' | 'spotPrice' | 'futuresPrice' | 'theoreticalPrice' | 'marketBasis' | 'basisGapBp' |
   'theoreticalBasis' | 'basisGap' | 'spotCumVolume' | 'futuresVolume' | 'multiplier' |
@@ -149,6 +157,11 @@ export function StockArbitragePage() {
     (filters.futVol > 0 ? 1 : 0) + (filters.gapBp > 0 ? 1 : 0) + (filters.spreadVol > 0 ? 1 : 0)
   const [obTarget, setObTarget] = useState<{ spotCode: string; futuresCode: string; spotName: string } | null>(null)
   const [spreadTarget, setSpreadTarget] = useState<{ spreadCode: string; spotName: string } | null>(null)
+
+  // 종목 → 그 종목을 담은 ETF 목록 (역색인). 종목명 클릭 시 확장행으로 표시.
+  const [expandedStock, setExpandedStock] = useState<string | null>(null)
+  const [pdfIndex, setPdfIndex] = useState<Map<string, EtfHolder[]>>(new Map())
+  const [etfNavs, setEtfNavs] = useState<Record<string, number>>({})
   const closeOb = useCallback(() => setObTarget(null), [])
   const closeSpread = useCallback(() => setSpreadTarget(null), [])
 
@@ -179,6 +192,52 @@ export function StockArbitragePage() {
       .then((d) => setDividends(d.items ?? []))
       .catch(() => {})  // 배당 API 실패는 치명적이지 않음 — dividend 0으로 떨어짐
   }, [])
+
+  // 종목 → ETF 역색인 구축. pdf-all + etfs 마스터로 "이 종목 담은 ETF + 1CU 수량" 맵.
+  // 종목명 클릭 시 그 종목이 들어간 ETF 목록(수량순)을 확장행에 표시.
+  useEffect(() => {
+    Promise.all([
+      fetch('/api/etfs/pdf-all').then((r) => r.json()),
+      fetch('/api/etfs').then((r) => r.json()),
+    ])
+      .then(([pdfRes, etfRes]) => {
+        const meta = new Map<string, { name: string; cu: number }>(
+          (etfRes.items ?? []).map((e: { code: string; name: string; cu_unit: number }) => [e.code, { name: e.name, cu: e.cu_unit }]),
+        )
+        const idx = new Map<string, EtfHolder[]>()
+        for (const [etfCode, pdf] of Object.entries((pdfRes.items ?? {}) as Record<string, { cu_unit: number; stocks: { code: string; qty: number }[] }>)) {
+          const m = meta.get(etfCode)
+          for (const s of pdf.stocks) {
+            if (s.qty <= 0) continue
+            let arr = idx.get(s.code)
+            if (!arr) { arr = []; idx.set(s.code, arr) }
+            arr.push({ etfCode, etfName: m?.name ?? etfCode, qty: s.qty, cuUnit: m?.cu ?? pdf.cu_unit })
+          }
+        }
+        setPdfIndex(idx)
+      })
+      .catch(() => {})
+  }, [])
+
+  // 종목명 클릭 — 확장 토글.
+  const handleStockClick = useCallback((baseCode: string) => {
+    setExpandedStock((prev) => (prev === baseCode ? null : baseCode))
+  }, [])
+
+  // 확장된 종목의 ETF들 NAV lazy fetch (비중 분모용). 캐시에 없는 것만.
+  useEffect(() => {
+    if (!expandedStock) return
+    const holders = pdfIndex.get(expandedStock) ?? []
+    const missing = holders.map((h) => h.etfCode).filter((c) => etfNavs[c] === undefined)
+    if (missing.length === 0) return
+    fetch('/api/etfs/nav', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ codes: missing }),
+    })
+      .then((r) => r.json())
+      .then((res) => setEtfNavs((p) => ({ ...p, ...(res.navs ?? {}) })))
+      .catch(() => {})
+  }, [expandedStock, pdfIndex, etfNavs])
 
   // 종목코드별 배당 인덱스 — 행 매칭 시 O(1) 조회
   const divByCode = useMemo(() => {
@@ -481,10 +540,13 @@ export function StockArbitragePage() {
           </thead>
           <tbody>
             {filtered.map((r) => (
-              <tr key={r.baseCode} className="border-b border-white/[0.04] bg-black hover:bg-[#1d1d1d] transition-colors">
+              <Fragment key={r.baseCode}>
+              <tr className="border-b border-white/[0.04] bg-black hover:bg-[#1d1d1d] transition-colors">
                 {/* 종목 */}
-                <td className="pl-4 pr-3 py-[9px] sticky left-0 z-10" style={{ backgroundColor: 'inherit' }}>
-                  <div className="text-[11px] text-white leading-none">{r.baseName}</div>
+                <td className="pl-4 pr-3 py-[9px] sticky left-0 z-10 cursor-pointer" style={{ backgroundColor: 'inherit' }} onClick={() => handleStockClick(r.baseCode)} title="클릭 — 이 종목을 담은 ETF 목록">
+                  <div className={cn('text-[11px] leading-none', expandedStock === r.baseCode ? 'text-accent' : 'text-white hover:text-accent')}>
+                    {expandedStock === r.baseCode ? '▾ ' : ''}{r.baseName}
+                  </div>
                   <div className="text-[9px] text-[#5a5a5e] leading-none mt-[2px] tabular-nums">
                     {r.baseCode} / {r.frontCode}
                   </div>
@@ -531,6 +593,19 @@ export function StockArbitragePage() {
                 </td>
                 <C sub className="pr-4">{r.futuresHolding ? r.futuresHolding.toLocaleString() : '-'}</C>
               </tr>
+              {expandedStock === r.baseCode && (
+                <tr className="bg-bg-base">
+                  <td colSpan={24} className="p-0">
+                    <EtfHoldersTable
+                      holders={pdfIndex.get(r.baseCode) ?? []}
+                      spotPrice={r.spotPrice || r.spotPrevClose}
+                      basisGapBp={r.basisGapBp}
+                      navs={etfNavs}
+                    />
+                  </td>
+                </tr>
+              )}
+              </Fragment>
             ))}
           </tbody>
         </table>
@@ -918,4 +993,75 @@ function fVol(v: number) {
   if (v >= 1e8) return `${Math.round(v / 1e8).toLocaleString()}억`
   if (v >= 1e4) return `${Math.round(v / 1e4).toLocaleString()}만`
   return v.toLocaleString()
+}
+
+/** 종목명 클릭 시 펼치는 확장행 — 이 종목을 담은 ETF 목록.
+ *  비중 = (PDF수량 × 종목현재가) / (ETF 주당 NAV × CU).
+ *  기여BP = 종목 갭BP × ETF내 비중 → 이 종목을 선물로 대체 시 그 ETF 차익 기여.
+ *  NAV는 전일 기준(etf_master_daily)이라 비중은 근사지만 하루 변동에 둔감. */
+function EtfHoldersTable({ holders, spotPrice, basisGapBp, navs }: {
+  holders: EtfHolder[]
+  spotPrice: number
+  basisGapBp: number
+  navs: Record<string, number>
+}) {
+  if (holders.length === 0) {
+    return <div className="px-6 py-3 text-[11px] text-[#8b8b8e]">이 종목을 담은 ETF 없음 (PDF 미보유)</div>
+  }
+  const rows = holders.map((h) => {
+    const amount = h.qty * spotPrice
+    const etfTotal = (navs[h.etfCode] ?? 0) * h.cuUnit
+    const weight = etfTotal > 0 ? amount / etfTotal : 0
+    return { ...h, amount, weight, contribBp: basisGapBp * weight }
+  }).sort((a, b) => b.qty - a.qty)
+  const loading = holders.some((h) => navs[h.etfCode] === undefined)
+
+  return (
+    // 메인 테이블이 auto layout으로 매우 넓어, 확장 패널을 viewport 폭에 sticky 고정해야
+    // 가로 스크롤과 무관하게 ETF 목록 전체 컬럼이 화면에 보인다.
+    <div
+      className="px-4 py-3 bg-[#0a0a0a] border-y border-white/[0.04]"
+      style={{ position: 'sticky', left: 0, width: '100vw', maxWidth: '100vw', boxSizing: 'border-box' }}
+    >
+      <div className="mb-2 text-[11px] text-[#8b8b8e]">
+        이 종목을 담은 ETF <span className="text-white tabular-nums">{rows.length}</span>개 · PDF 수량 순
+        <span className="ml-2 text-[#5a5a5e]">기여BP = 갭BP × ETF내 비중 (이 종목을 선물로 대체 시 ETF 차익 기여)</span>
+        {loading && <span className="ml-2 text-[#0a84ff]">· NAV 로딩…</span>}
+      </div>
+      <div className="rounded bg-[#0d0d0f] border border-white/[0.03] overflow-x-auto">
+        <table className="tabular-nums" style={{ tableLayout: 'fixed', width: '100%', minWidth: '720px' }}>
+          <colgroup>
+            <col style={{ width: 90 }} />{/* ETF코드 */}
+            <col style={{ width: 260 }} />{/* ETF명 */}
+            <col style={{ width: 110 }} />{/* PDF수량 */}
+            <col style={{ width: 100 }} />{/* 비중 */}
+            <col style={{ width: 150 }} />{/* 금액 */}
+            <col style={{ width: 100 }} />{/* 기여BP */}
+          </colgroup>
+          <thead className="text-[10px] text-[#a8a8ae] uppercase tracking-wide bg-[#16161a] border-b border-white/[0.06]">
+            <tr>
+              <td className="pl-4 py-1.5 text-left">ETF코드</td>
+              <td className="py-1.5 text-left">ETF명</td>
+              <td className="py-1.5 pr-3 text-right">PDF수량</td>
+              <td className="py-1.5 pr-3 text-right">비중</td>
+              <td className="py-1.5 pr-3 text-right">금액</td>
+              <td className="py-1.5 pr-4 text-right">기여BP</td>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.etfCode} className="border-b border-white/[0.03] hover:bg-white/[0.02]">
+                <td className="pl-4 py-[5px] text-left text-[11px] text-[#8b8b8e]">{r.etfCode}</td>
+                <td className="py-[5px] text-left text-[11px] text-white whitespace-nowrap overflow-hidden text-ellipsis">{r.etfName}</td>
+                <td className="py-[5px] pr-3 text-right text-[11px] text-[#d1d1d6]">{r.qty.toLocaleString()}</td>
+                <td className="py-[5px] pr-3 text-right text-[11px] text-[#d1d1d6]">{r.weight > 0 ? `${(r.weight * 100).toFixed(2)}%` : '-'}</td>
+                <td className="py-[5px] pr-3 text-right text-[11px] text-white">{r.amount > 0 ? Math.round(r.amount).toLocaleString() : '-'}</td>
+                <td className={cn('py-[5px] pr-4 text-right text-[11px]', cV(r.contribBp))}>{r.weight > 0 ? `${fBp(r.contribBp)}bp` : '-'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
 }

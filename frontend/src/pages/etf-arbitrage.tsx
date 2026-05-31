@@ -723,27 +723,43 @@ export function EtfArbitragePage() {
     return subLimit === 'all' ? sorted : sorted.slice(0, subLimit)
   }, [master, subTypes, subLimit, sortTick])
 
-  // ETF 코드 구독 (항상). 내부망(rNAV 모드)에서만 PDF 구성종목 + 선물도 추가.
-  // iNAV 모드(외부망/mock): ETF 코드만 → WS 연결 수 최소화 (LS API 한도 회피).
-  // 선물은 ls_api 모드에선 fixed group의 auto_spread로 front 월물 자동 구독되지만, mock에서는
-  // 명시적으로 subscribe-stocks에 A+7 코드 포함시켜야 mock이 futures tick 생성.
+  // 2단계 구독 — 가벼운 ETF 코드(거래대금/순위)는 넓게, 무거운 PDF 구성종목은 상위 N만.
+  //
+  //   ETF 코드(거래대금·가격·NAV): ETF당 1코드라 가벼움.
+  //     - 내부망: 섹터형 전체 구독 → 전체 라이브 거래대금으로 순위 정확. 폭증 ETF 즉시 진입.
+  //     - 외부망(iNAV 모드): 상위 N만 (WS 연결 한도. 전체 선별은 B 파이프라인에서).
+  //   PDF 구성종목 + 선물(rNAV/fNAV): 수백~수천 종목이라 무거움 → 상위 N(visibleMaster)만.
+  //     순위 밖 ETF는 거래대금만 받다가 상위 N 진입 시 visibleMaster에 들어와 PDF 자동 구독.
+  //   선물은 ls_api 모드에선 fixed group의 auto_spread로 front 월물 자동 구독되지만, mock에서는
+  //   명시적으로 subscribe-stocks에 A+7 코드 포함시켜야 mock이 futures tick 생성.
   const stockSubscriptionCodes = useMemo(() => {
     const all = new Set<string>()
-    for (const etf of visibleMaster) {
-      all.add(etf.code)
-      if (!isINavMode && pdfs) {
-        // 내부망: PDF 구성종목 + 각 종목의 선물 front 코드까지 구독
-        const pdf = pdfs[etf.code]
-        if (!pdf) continue
-        for (const s of pdf.stocks) {
-          all.add(s.code)
-          const fm = futuresByBase.get(s.code)
-          if (fm?.front?.code) all.add(fm.front.code)
-        }
+    // 1) ETF 코드 — 거래대금/순위용. 내부망은 섹터형 전체, 외부망은 상위 N.
+    const etfCodeSource = isINavMode
+      ? visibleMaster
+      : (master?.filter((e) => subTypes.has(e.type ?? 'other')) ?? [])
+    for (const etf of etfCodeSource) all.add(etf.code)
+    // PDF 구성종목 + 선물 추가 헬퍼.
+    const addPdfCodes = (code: string) => {
+      const pdf = pdfs?.[code]
+      if (!pdf) return
+      for (const s of pdf.stocks) {
+        all.add(s.code)
+        const fm = futuresByBase.get(s.code)
+        if (fm?.front?.code) all.add(fm.front.code)
       }
     }
+    // 2) PDF 구성종목 + 선물 — rNAV/fNAV 계산용. 무거움.
+    if (!isINavMode && pdfs) {
+      // 내부망: 상위 N(visibleMaster) 전체 PDF
+      for (const etf of visibleMaster) addPdfCodes(etf.code)
+    } else if (isINavMode && pdfs && expanded) {
+      // 외부망: 펼친 ETF 1개만 PDF on-demand 구독 → 그 ETF의 fNAV·차익을 정확히 계산.
+      //   전체 구독 부담 없이 사용자가 펼친 ETF 하나만 실시간 베이시스 비교.
+      addPdfCodes(expanded)
+    }
     return Array.from(all)
-  }, [visibleMaster, pdfs, futuresByBase, isINavMode])
+  }, [visibleMaster, master, subTypes, pdfs, futuresByBase, isINavMode, expanded])
 
   usePageStockSubscriptions(stockSubscriptionCodes)
 
@@ -1695,20 +1711,14 @@ function ExpandedPanel({
   }, [pdf, futuresByBase, todayIso])
 
   // iNAV 모드(외부망/mock): 구성종목 실시간 가격 미구독 → 안내 표시 (hooks 모두 호출 후).
-  if (isINavMode) {
-    return (
-      <div className="px-6 py-4 flex items-center gap-3 text-[12px] text-t3 border-t border-white/[0.04]">
-        <span className="text-[#0a84ff]">●</span>
-        <span>
-          <span className="text-t2">iNAV 모드</span>에서는 구성종목 실시간 가격을 구독하지 않습니다.
-          {' '}<span className="text-t4">구성종목 차익 내역은 내부망(rNAV 모드)에서 이용 가능합니다.</span>
-        </span>
-      </div>
-    )
-  }
-
   return (
     <div className="px-4 py-3 bg-[#0a0a0a] border-y border-white/[0.04]">
+      {isINavMode && (
+        <div className="mb-2 inline-flex items-center gap-2 px-3 py-1 rounded bg-[#0a84ff]/10 text-[10px] text-blue">
+          <span>●</span>
+          <span>외부망 — 펼친 이 ETF의 구성종목만 on-demand 실시간 구독해 fNAV·차익을 계산합니다.</span>
+        </div>
+      )}
       {/* PDF 메타 */}
       <div className="mb-3 inline-flex items-center gap-3 px-3 py-2 rounded bg-[#141417] text-[11px] text-[#8b8b8e]">
         <span>PDF 기준일 <span className="text-[#d1d1d6]">{pdf.as_of}</span></span>

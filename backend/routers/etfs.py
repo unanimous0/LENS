@@ -16,6 +16,7 @@ import time
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
 from sqlalchemy import text
 
 from core.database import korea_async_session
@@ -287,3 +288,31 @@ async def get_etf_pdf(code: str):
         "cash": pdf["cash"],
         "stocks": pdf["stocks"],
     }
+
+
+class NavRequest(BaseModel):
+    codes: list[str]
+
+
+@router.post("/nav")
+async def get_etf_navs(req: NavRequest) -> dict:
+    """ETF 주당 NAV 일괄 조회 — etf_master_daily.net_asset / listed_shares.
+
+    종목차익 화면에서 '이 종목을 든 ETF의 비중' 분모(ETF 1주 NAV)로 사용.
+    라이브 iNAV가 없을 때(장외 등) 폴백. 전일 기준이지만 비중은 하루 변동에 둔감.
+    반환: {"navs": {"069500": 130070.5, ...}}  (주당 NAV)
+    """
+    codes = [c for c in req.codes if c][:600]
+    if not codes:
+        return {"navs": {}}
+    async with korea_async_session() as session:
+        rows = (await session.execute(
+            text("""
+                SELECT DISTINCT ON (etf_code) etf_code, net_asset, listed_shares
+                FROM etf_master_daily
+                WHERE etf_code = ANY(:codes) AND listed_shares > 0
+                ORDER BY etf_code, snapshot_date DESC
+            """),
+            {"codes": codes},
+        )).all()
+    return {"navs": {r.etf_code: float(r.net_asset) / float(r.listed_shares) for r in rows}}
