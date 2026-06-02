@@ -839,7 +839,11 @@ export function EtfArbitragePage() {
     if (!pdfs) return baseMetricsByCode
     // exclude된 ETF 없으면 base 그대로 (object spread도 생략, ref 재사용 가능).
     const excludedCodes = Object.keys(excluded).filter((c) => (excluded[c]?.size ?? 0) > 0)
-    if (excludedCodes.length === 0) {
+    // 외부망: 펼친 ETF는 PDF를 on-demand 구독하므로 rNAV/fNAV/차익을 풀계산(inavMode=false)으로
+    //   덮어씀. 나머지 ETF는 PDF 미구독이라 iNAV 빠른계산 그대로. 펼친 1개만 추가 비용.
+    //   (rNAV 경로도 nav 필드는 iNAV 우선 — 반환부 `nav: navLive>0?navLive:rNav`.)
+    const expandFull = (isINavMode && expanded && pdfs[expanded]) ? expanded : null
+    if (excludedCodes.length === 0 && !expandFull) {
       metricsRefCache.current = baseMetricsByCode
       return baseMetricsByCode
     }
@@ -852,9 +856,14 @@ export function EtfArbitragePage() {
       const cached = cache[code]
       out[code] = cached && metricsEqual(cached, newM) ? cached : newM
     }
+    if (expandFull) {
+      const newM = computeMetric(expandFull, pdfs[expandFull], excluded[expandFull], stockTicks, futuresTicks, etfTicks, orderbookTicks, futuresByBase, minFuturesVolume, arbMode, ratePct, slippageBp, taxBp, quoteMode, dividends, todayIso, false)
+      const cached = cache[expandFull]
+      out[expandFull] = cached && metricsEqual(cached, newM) ? cached : newM
+    }
     metricsRefCache.current = out
     return out
-  }, [baseMetricsByCode, excluded, pdfs, stockTicks, futuresTicks, etfTicks, orderbookTicks, futuresByBase, minFuturesVolume, arbMode, ratePct, slippageBp, taxBp, quoteMode, dividends, todayIso, isINavMode])
+  }, [baseMetricsByCode, excluded, expanded, pdfs, stockTicks, futuresTicks, etfTicks, orderbookTicks, futuresByBase, minFuturesVolume, arbMode, ratePct, slippageBp, taxBp, quoteMode, dividends, todayIso, isINavMode])
 
 
   const naturalRows = useMemo(() => {
@@ -1762,10 +1771,24 @@ function ExpandedPanel({
   // iNAV 모드(외부망/mock): 구성종목 실시간 가격 미구독 → 안내 표시 (hooks 모두 호출 후).
   return (
     <div className="px-4 py-3 bg-[#0a0a0a] border-y border-white/[0.04]">
+      {/* 외부망: 펼친 이 ETF만 PDF on-demand 구독 → rNAV/fNAV/차익을 풀계산해 표시.
+          (전체 ETF는 거래소 iNAV만, 이 펼친 1개만 자체 rNAV·선물대체 fNAV·실집행차익 산출.) */}
       {isINavMode && (
-        <div className="mb-2 inline-flex items-center gap-2 px-3 py-1 rounded bg-[#0a84ff]/10 text-[10px] text-blue">
-          <span>●</span>
-          <span>외부망 — 펼친 이 ETF의 구성종목만 on-demand 실시간 구독해 fNAV·차익을 계산합니다.</span>
+        <div className="mb-2 flex flex-wrap items-center gap-x-4 gap-y-1 px-3 py-2 rounded bg-[#141417] text-[11px]">
+          <span className="text-blue text-[10px] whitespace-nowrap">● 펼친 ETF 실시간 차익</span>
+          {metrics && metrics.fNav > 0 ? (
+            <>
+              <span className="text-[#8b8b8e]">iNAV <span className="text-[#d1d1d6] tabular-nums">{metrics.nav > 0 ? fmt(metrics.nav) : '-'}</span></span>
+              <span className="text-[#8b8b8e]">rNAV <span className="text-[#d1d1d6] tabular-nums">{metrics.rNav > 0 ? fmt(metrics.rNav) : '-'}</span></span>
+              <span className="text-[#8b8b8e]">fNAV <span className={cn('tabular-nums', metrics.fNav > 0 && metrics.rNav > 0 ? (metrics.fNav > metrics.rNav ? 'text-[#00b26b]' : metrics.fNav < metrics.rNav ? 'text-[#bb4a65]' : 'text-[#d1d1d6]') : 'text-[#d1d1d6]')}>{fmt(metrics.fNav)}</span></span>
+              <span className="text-[#8b8b8e]">괴리 <span className={cn('tabular-nums', Math.abs(metrics.diffBp) > 5 ? (metrics.diffBp > 0 ? 'text-[#00b26b]' : 'text-[#bb4a65]') : 'text-[#d1d1d6]')}>{formatBp(metrics.diffBp)}bp</span></span>
+              <span className="text-[#8b8b8e]">매수차 <span className={cn('tabular-nums', metrics.buyArbBp > 0.001 ? 'text-[#00b26b]' : 'text-[#5a5a5e]')}>{metrics.buyArbBp > 0.001 ? `${formatBp(metrics.buyArbBp)}bp` : '-'}</span></span>
+              <span className="text-[#8b8b8e]">매도차 <span className={cn('tabular-nums', metrics.sellArbBp < -0.001 ? 'text-[#bb4a65]' : 'text-[#5a5a5e]')}>{metrics.sellArbBp < -0.001 ? `${formatBp(metrics.sellArbBp)}bp` : '-'}</span></span>
+              <span className="text-[#8b8b8e]">실집행 <span className={cn('tabular-nums', metrics.realProfitBp == null ? 'text-warning' : metrics.realProfitBp > 0 ? 'text-[#00b26b]' : metrics.realProfitBp < 0 ? 'text-[#bb4a65]' : 'text-[#5a5a5e]')}>{metrics.realProfitWon == null ? '정지종목' : `${Math.round(metrics.realProfitWon).toLocaleString()}원 (${formatBp(metrics.realProfitBp ?? 0)}bp)`}</span></span>
+            </>
+          ) : (
+            <span className="text-[#8b8b8e]">구성종목 실시간 구독 중… (잠시 후 fNAV·차익 표시)</span>
+          )}
         </div>
       )}
       {/* PDF 메타 */}
