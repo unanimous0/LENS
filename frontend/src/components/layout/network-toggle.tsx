@@ -26,6 +26,9 @@ export function NetworkToggle() {
         // 백엔드 쿨다운 — 사용자에게 즉시 알림
         const msg = await res.text()
         alert(`너무 빠른 전환입니다. ${msg}`)
+      } else if (res.status === 503) {
+        // 도달성 가드 거부 — 현재 환경에서 도달 불가한 망. 현재 피드 유지(setNetworkMode 안 함).
+        alert(await res.text())
       } else {
         console.error('네트워크 전환 실패:', await res.text())
       }

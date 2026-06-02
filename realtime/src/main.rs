@@ -709,6 +709,32 @@ async fn set_mode(
         }
     }
 
+    // 도달성 가드 — 현재 환경에서 도달 불가한 망으로 전환하면 전역 피드가 끊겨 모든 탭이
+    // 데이터를 잃는다 (예: 외부망에서 internal 누르면 10.21.1.208 timeout → 무한 reconnect).
+    // 전환 전 TCP 도달성을 확인해 안 맞는 모드는 거부하고 현재 피드를 유지한다. mock은 항상 가능.
+    let probe_target: Option<String> = match mode.as_str() {
+        "internal" => {
+            let url = std::env::var("INTERNAL_WS_URL")
+                .unwrap_or_else(|_| "ws://10.21.1.208:41001".to_string());
+            Some(url.trim_start_matches("ws://").trim_start_matches("wss://")
+                .split('/').next().unwrap_or("").to_string())
+        }
+        "ls_api" => Some("openapi.ls-sec.co.kr:8080".to_string()),
+        _ => None, // mock 등은 도달성 무관
+    };
+    if let Some(target) = probe_target {
+        let reachable = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            tokio::net::TcpStream::connect(&target),
+        ).await.map(|r| r.is_ok()).unwrap_or(false);
+        if !reachable {
+            return Err((
+                StatusCode::SERVICE_UNAVAILABLE,
+                format!("'{mode}' 서버({target}) 도달 불가 — 현재 환경에서 이 모드는 사용할 수 없습니다. (현재 피드 유지)"),
+            ));
+        }
+    }
+
     // 쿨다운 체크 + 슬롯 claim을 한 critical section에서 처리.
     // 두 동시 요청이 read-then-write 사이를 비집고 들어가 둘 다 spawn_feed 호출하는
     // TOCTOU race 방지 — write 락 잡고 즉시 갱신 후 후속 작업 진행.
