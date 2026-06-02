@@ -421,6 +421,10 @@ pub async fn fetch_initial_prices(
 
 /// 요청 간 균등 간격. TPS 10 한도에 맞춰 100ms (10/초). 한도 도달 시 fetch_t1102 내부 retry가 처리.
 const REQ_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
+/// t8407(주식멀티현재가) 배치 — 한 콜 최대 50종목 (실측 2026-06-02: 55+ HTTP 500).
+/// TPS 5 한도 → 청크 간 220ms (5콜/초 미만 여유). 50종목/220ms = ~225종목/초 (t1102 단건의 ~22배).
+const T8407_CHUNK: usize = 50;
+const T8407_INTERVAL: std::time::Duration = std::time::Duration::from_millis(220);
 /// HTTP 에러 시 재시도 횟수 (최초 1회 + 재시도 2회 = 총 3회)
 const MAX_RETRIES: usize = 2;
 
@@ -508,6 +512,167 @@ fn is_t1102_target(code: &str) -> bool {
     code.len() == 6 && code.chars().all(|c| c.is_ascii_alphanumeric())
 }
 
+/// 한 종목 스냅샷 처리 결과 — 호출자가 카운터/에러샘플 집계에 사용.
+enum EmitOutcome {
+    /// 거래대금/거래량 있음 → 정상 emit, fetched 등록됨.
+    Emitted,
+    /// 거래대금 0 + 전일종가만 → pc 박음, fetched 미등록(재시도 대상).
+    PcOnly,
+    /// 데이터 없음(value=0, 전일종가도 0).
+    NoData,
+}
+
+/// t1102(단건) / t8407(멀티) 응답 detail Map 하나를 받아 Stock/Etf 틱 emit.
+/// 두 TR은 필드가 거의 동일하나 **전일종가 키만 다름**: t1102=`recprice`, t8407=`jnilclose`
+/// (값은 동일, 본 함수가 양쪽을 fallback 처리). abnormal_rise_gu/low_lqdt_gu는 t8407 미제공
+/// → false로 시작하고 WS S3_ 스트림이 정확값으로 갱신.
+#[allow(clippy::too_many_arguments)]
+async fn emit_stock_from_detail(
+    code: &str,
+    detail: &serde_json::Map<String, serde_json::Value>,
+    names: &HashMap<String, String>,
+    is_etf: bool,
+    tx: &mpsc::Sender<WsMessage>,
+    stats: &Arc<Stats>,
+    fetched: Option<&Arc<DashMap<String, ()>>>,
+    failed: Option<&Arc<DashMap<String, FailedT1102>>>,
+) -> EmitOutcome {
+    let price = pf(detail.get("price"));
+    let value = pu(detail.get("value")); // 백만원 단위 거래대금
+    let volume_qty = pu(detail.get("volume")); // 당일 누적 거래량 (주)
+    let h = pf(detail.get("high"));
+    let l = pf(detail.get("low"));
+    // 전일종가: t1102=recprice, t8407=jnilclose (값 동일, 필드명만 차이).
+    let pc = {
+        let r = pf(detail.get("recprice"));
+        if r > 0.0 { r } else { pf(detail.get("jnilclose")) }
+    };
+    let uplmt = pf(detail.get("uplmtprice"));
+    let dnlmt = pf(detail.get("dnlmtprice"));
+    // 이상급등/저유동성 — t1102 응답에 직접 들어옴(t8407엔 없어 false). "0" = 정상.
+    let abnormal_rise = detail.get("abnormal_rise_gu")
+        .and_then(|v| v.as_str()).map(|s| s != "0" && !s.is_empty()).unwrap_or(false);
+    let low_liquidity = detail.get("low_lqdt_gu")
+        .and_then(|v| v.as_str()).map(|s| s != "0" && !s.is_empty()).unwrap_or(false);
+    let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.6f").to_string();
+    let name = names.get(code).cloned().unwrap_or_default();
+
+    if value > 0 || volume_qty > 0 {
+        // 거래대금 또는 거래량 있음 = 정상 emit. fetched 등록해서 다음 sweep skip.
+        // 거래대금(value)은 백만원 단위 반올림이라 소액 거래는 0이 될 수 있음 — volume>0이면 정상 처리.
+        stats.emit_value_pos.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        crate::volume_cache::record(code, value);
+        if is_etf {
+            // ETF: 이 시점에 nav는 모름 (I5_ 스트림이 채움). price + cum_volume + prev_close 박음.
+            let _ = tx.send(WsMessage::EtfTick(EtfTick {
+                code: code.to_string(), name,
+                price,
+                nav: 0.0,
+                spread_bp: 0.0,
+                spread_bid_bp: 0.0,
+                spread_ask_bp: 0.0,
+                volume: volume_qty,
+                cum_volume: value * 1_000_000,
+                timestamp: now,
+                prev_close: if pc > 0.0 { Some(pc) } else { None },
+                last_trade_volume: None,
+                trade_side: None,
+                halted: is_halted(code),
+                vi_active: is_vi_active(code),
+            })).await;
+        } else {
+            let _ = tx.send(WsMessage::StockTick(StockTick {
+                code: code.to_string(), name,
+                price,
+                volume: volume_qty,
+                cum_volume: value * 1_000_000,
+                timestamp: now, is_initial: true,
+                high: if h > 0.0 { Some(h) } else { None },
+                low: if l > 0.0 { Some(l) } else { None },
+                prev_close: if pc > 0.0 { Some(pc) } else { None },
+                last_trade_volume: None,  // 스냅샷 — 체결 단위 정보 X
+                trade_side: None,
+                halted: is_halted(code),
+                upper_limit: if uplmt > 0.0 { Some(uplmt) } else { None },
+                lower_limit: if dnlmt > 0.0 { Some(dnlmt) } else { None },
+                vi_active: is_vi_active(code),
+                warning: is_warning(code),
+                liquidation: is_liquidation(code),
+                abnormal_rise,
+                low_liquidity,
+                under_management: is_under_management(code),
+            })).await;
+        }
+        if let Some(set) = fetched { set.insert(code.to_string(), ()); }
+        if let Some(fmap) = failed { fmap.remove(code); }
+        EmitOutcome::Emitted
+    } else if pc > 0.0 {
+        // 거래대금 0이지만 전일종가 있음. 주식은 price=0 + prev_close=pc로 fallback 표시.
+        // ETF는 price=pc로 박아 종가 표시. fetched 미등록 → retry worker가 거래 발생까지 재시도.
+        stats.emit_pc_only.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if is_etf {
+            let _ = tx.send(WsMessage::EtfTick(EtfTick {
+                code: code.to_string(), name,
+                price: pc,  // 전일종가를 참고 가격으로
+                nav: 0.0,
+                spread_bp: 0.0,
+                spread_bid_bp: 0.0,
+                spread_ask_bp: 0.0,
+                volume: 0,
+                cum_volume: 0,  // pc_only는 미거래 — cum_volume 0
+                timestamp: now,
+                prev_close: Some(pc),
+                last_trade_volume: None,
+                trade_side: None,
+                halted: is_halted(code),
+                vi_active: is_vi_active(code),
+            })).await;
+        } else {
+            let _ = tx.send(WsMessage::StockTick(StockTick {
+                code: code.to_string(), name,
+                price: 0.0,
+                volume: 0,
+                cum_volume: 0,
+                timestamp: now, is_initial: true,
+                high: None, low: None,
+                prev_close: Some(pc),
+                last_trade_volume: None,
+                trade_side: None,
+                halted: is_halted(code),
+                upper_limit: if uplmt > 0.0 { Some(uplmt) } else { None },
+                lower_limit: if dnlmt > 0.0 { Some(dnlmt) } else { None },
+                vi_active: is_vi_active(code),
+                warning: is_warning(code),
+                liquidation: is_liquidation(code),
+                abnormal_rise,
+                low_liquidity,
+                under_management: is_under_management(code),
+            })).await;
+        }
+        if let Some(fmap) = failed {
+            let prev = fmap.get(code).map(|e| e.attempt_count).unwrap_or(0);
+            fmap.insert(code.to_string(), FailedT1102 {
+                last_error: "pc_only (value=0, awaiting trade)".to_string(),
+                error_kind: "pc_only",
+                attempt_count: prev + 1,
+            });
+        }
+        EmitOutcome::PcOnly
+    } else {
+        // value==0 + 전일종가 없음 (신규상장 등 정말 데이터 없는 케이스).
+        bump_fail(stats, "no_data");
+        if let Some(fmap) = failed {
+            let prev = fmap.get(code).map(|e| e.attempt_count).unwrap_or(0);
+            fmap.insert(code.to_string(), FailedT1102 {
+                last_error: "value=0, recprice=0".to_string(),
+                error_kind: "no_data",
+                attempt_count: prev + 1,
+            });
+        }
+        EmitOutcome::NoData
+    }
+}
+
 pub async fn fetch_stocks_initial(
     token: &str,
     codes: &[String],
@@ -530,210 +695,112 @@ pub async fn fetch_stocks_initial(
     // 에러 종류별 샘플 — 첫 5개 코드/메시지 로그용.
     let mut error_samples: HashMap<&'static str, Vec<(String, String)>> = HashMap::new();
 
+    // 1) 호출 대상 필터 — 잡코드(CASH/지수선물/ISIN) 제외 + 이미 fetch된 코드 skip.
+    //    frontend SubscribeStocks가 PDF의 'CASH'/ISIN 등을 무차별 보내도 여기서 차단.
+    let mut targets: Vec<&String> = Vec::with_capacity(codes.len());
     for code in codes {
-        if cancel.is_cancelled() { return count; }
-
-        // 잡코드 가드 — frontend SubscribeStocks가 PDF의 'CASH'/지수선물/ISIN 등을 무차별 보내도
-        // 여기서 차단해 LS 5xx + retry 무한루프 방지. failed에 들어 있으면 청소.
         if !is_t1102_target(code) {
             invalid += 1;
             if let Some(fmap) = failed { fmap.remove(code); }
             continue;
         }
-
-        // 이미 fetch 성공(value>0)한 코드는 건너뜀.
-        // pc-only로만 emit된 코드는 fetched에 안 들어가므로 자동 재시도 대상 — 거래 발생 시 가격 채움.
+        // 이미 fetch 성공(value>0)한 코드는 건너뜀. pc-only emit 코드는 fetched에 없어 재시도 대상.
         if let Some(set) = fetched {
-            if set.contains_key(code) {
-                skipped += 1;
-                continue;
-            }
+            if set.contains_key(code) { skipped += 1; continue; }
         }
-        stats.fetch_attempts.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        targets.push(code);
+    }
 
-        match fetch_t1102(&client, token, code).await {
-            Ok(detail) => {
-                let price = pf(detail.get("price"));
-                let value = pu(detail.get("value")); // 백만원 단위 거래대금
-                let volume_qty = pu(detail.get("volume")); // 당일 누적 거래량 (주)
-                let h = pf(detail.get("high"));
-                let l = pf(detail.get("low"));
-                let pc = pf(detail.get("recprice"));
-                let uplmt = pf(detail.get("uplmtprice"));
-                let dnlmt = pf(detail.get("dnlmtprice"));
-                // 이상급등/저유동성 — t1102 응답에 직접 들어옴. "0" = 정상, 그 외 = 해당 상태.
-                let abnormal_rise = detail.get("abnormal_rise_gu")
-                    .and_then(|v| v.as_str()).map(|s| s != "0" && !s.is_empty()).unwrap_or(false);
-                let low_liquidity = detail.get("low_lqdt_gu")
-                    .and_then(|v| v.as_str()).map(|s| s != "0" && !s.is_empty()).unwrap_or(false);
-                let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.6f").to_string();
-                let name = names.get(code.as_str()).cloned().unwrap_or_default();
+    // 2) t8407(주식멀티현재가)로 T8407_CHUNK개씩 배치 조회 — t1102 단건 대비 대폭 가속.
+    //    TPS 5 → 청크 간 T8407_INTERVAL. 청크 전체 실패 시 코드들을 failed에 기록(retry worker 처리).
+    for chunk in targets.chunks(T8407_CHUNK) {
+        if cancel.is_cancelled() { return count; }
+        stats.fetch_attempts.fetch_add(chunk.len() as u64, std::sync::atomic::Ordering::Relaxed);
 
-                // ETF 코드는 EtfTick으로 분기 — frontend etfTicks store에 들어가도록.
-                // 평일 LS WS S3_/I5_ 스트림은 동일 분기지만, t1102 단독 시점(휴장·시작 직후)에도
-                // 정확히 etfTicks에 들어가게 (PR15b의 frontend fallback 의존 해소).
-                let is_etf = etf_codes.map(|s| s.contains(code)).unwrap_or(false);
-
-                if value > 0 || volume_qty > 0 {
-                    // 거래대금 또는 거래량 있음 = 정상 emit. fetched 등록해서 다음 sweep skip.
-                    // 거래대금(value)은 백만원 단위 반올림이라 소액 거래(수십만원)는 0이 될 수 있음.
-                    // 이때도 거래량(volume_qty)>0이면 거래가 있었던 것이므로 정상 처리해야 거래량이 버려지지 않음.
-                    stats.emit_value_pos.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    crate::volume_cache::record(code, value);
-                    if is_etf {
-                        // ETF: t1102 시점에 nav는 모름 (I5_ 스트림이 채움). price + cum_volume + prev_close 박음.
-                        let _ = tx.send(WsMessage::EtfTick(EtfTick {
-                            code: code.clone(), name,
-                            price,
-                            nav: 0.0,
-                            spread_bp: 0.0,
-                            spread_bid_bp: 0.0,
-                            spread_ask_bp: 0.0,
-                            volume: volume_qty,
-                            cum_volume: value * 1_000_000,
-                            timestamp: now,
-                            prev_close: if pc > 0.0 { Some(pc) } else { None },
-                            last_trade_volume: None,
-                            trade_side: None,
-                            halted: is_halted(code),
-                            vi_active: is_vi_active(code),
-                        })).await;
-                    } else {
-                        let _ = tx.send(WsMessage::StockTick(StockTick {
-                            code: code.clone(), name,
-                            price,
-                            volume: volume_qty,
-                            cum_volume: value * 1_000_000,
-                            timestamp: now, is_initial: true,
-                            high: if h > 0.0 { Some(h) } else { None },
-                            low: if l > 0.0 { Some(l) } else { None },
-                            prev_close: if pc > 0.0 { Some(pc) } else { None },
-                            last_trade_volume: None,  // t1102 스냅샷 — 체결 단위 정보 X
-                            trade_side: None,
-                            halted: is_halted(code),
-                            upper_limit: if uplmt > 0.0 { Some(uplmt) } else { None },
-                            lower_limit: if dnlmt > 0.0 { Some(dnlmt) } else { None },
-                            vi_active: is_vi_active(code),
-                            warning: is_warning(code),
-                            liquidation: is_liquidation(code),
-                            abnormal_rise,
-                            low_liquidity,
-                            under_management: is_under_management(code),
-                        })).await;
-                    }
-                    if let Some(set) = fetched { set.insert(code.clone(), ()); }
-                    if let Some(fmap) = failed { fmap.remove(code); }
-                    count += 1;
-                } else if pc > 0.0 {
-                    // 거래대금 0이지만 전일종가 있음. 주식은 price=0 + prev_close=pc로 fallback 표시.
-                    // ETF는 prev_close 필드 없음 → price=pc로 박아 종가 표시.
-                    // 핵심: fetched에 등록하지 않음 → retry worker가 거래 발생할 때까지 60초 cycle로 재시도.
-                    stats.emit_pc_only.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    if is_etf {
-                        let _ = tx.send(WsMessage::EtfTick(EtfTick {
-                            code: code.clone(), name,
-                            price: pc,  // 전일종가를 참고 가격으로
-                            nav: 0.0,
-                            spread_bp: 0.0,
-                            spread_bid_bp: 0.0,
-                            spread_ask_bp: 0.0,
-                            volume: 0,
-                            cum_volume: 0,  // pc_only는 미거래 — cum_volume 0
-                            timestamp: now,
-                            prev_close: Some(pc),
-                            last_trade_volume: None,
-                            trade_side: None,
-                            halted: is_halted(code),
-                            vi_active: is_vi_active(code),
-                        })).await;
-                    } else {
-                        let _ = tx.send(WsMessage::StockTick(StockTick {
-                            code: code.clone(), name,
-                            price: 0.0,
-                            volume: 0,
-                            cum_volume: 0,
-                            timestamp: now, is_initial: true,
-                            high: None, low: None,
-                            prev_close: Some(pc),
-                            last_trade_volume: None,
-                            trade_side: None,
-                            halted: is_halted(code),
-                            upper_limit: if uplmt > 0.0 { Some(uplmt) } else { None },
-                            lower_limit: if dnlmt > 0.0 { Some(dnlmt) } else { None },
-                            vi_active: is_vi_active(code),
-                            warning: is_warning(code),
-                            liquidation: is_liquidation(code),
-                            abnormal_rise,
-                            low_liquidity,
-                            under_management: is_under_management(code),
-                        })).await;
-                    }
-                    if let Some(fmap) = failed {
-                        let prev = fmap.get(code).map(|e| e.attempt_count).unwrap_or(0);
-                        fmap.insert(code.clone(), FailedT1102 {
-                            last_error: "pc_only (value=0, awaiting trade)".to_string(),
-                            error_kind: "pc_only",
-                            attempt_count: prev + 1,
-                        });
-                    }
-                } else {
-                    // value==0 + recprice 없음 (신규상장 등 정말 데이터 없는 케이스).
-                    fail_no_data += 1;
-                    bump_fail(stats, "no_data");
-                    if error_samples.get("no_data").map(|v| v.len()).unwrap_or(0) < 5 {
-                        error_samples.entry("no_data").or_default()
-                            .push((code.clone(), "value=0, recprice=0".to_string()));
-                    }
-                    if let Some(fmap) = failed {
-                        let prev = fmap.get(code).map(|e| e.attempt_count).unwrap_or(0);
-                        fmap.insert(code.clone(), FailedT1102 {
-                            last_error: "value=0, recprice=0".to_string(),
-                            error_kind: "no_data",
-                            attempt_count: prev + 1,
-                        });
+        match fetch_t8407(&client, token, chunk).await {
+            Ok(map) => {
+                for &code in chunk {
+                    let detail = match map.get(code.as_str()) {
+                        Some(d) => d,
+                        None => {
+                            // t8407은 데이터 없는 코드(신규상장/유동성0/잡 ISIN 등)를 응답 배열에서
+                            // 아예 제외함 → t1102의 "value=0, recprice=0" no_data와 동일 의미.
+                            // failed에 기록해 retry worker가 거래 발생 시까지 재시도.
+                            fail_no_data += 1;
+                            bump_fail(stats, "no_data");
+                            if error_samples.get("no_data").map(|v| v.len()).unwrap_or(0) < 5 {
+                                error_samples.entry("no_data").or_default()
+                                    .push((code.clone(), "t8407 무응답 (데이터 없음)".to_string()));
+                            }
+                            if let Some(fmap) = failed {
+                                let prev = fmap.get(code).map(|e| e.attempt_count).unwrap_or(0);
+                                fmap.insert(code.clone(), FailedT1102 {
+                                    last_error: "t8407 무응답 (데이터 없음)".to_string(),
+                                    error_kind: "no_data",
+                                    attempt_count: prev + 1,
+                                });
+                            }
+                            continue;
+                        }
+                    };
+                    // ETF 코드는 EtfTick으로 분기 — frontend etfTicks store에 들어가도록.
+                    let is_etf = etf_codes.map(|s| s.contains(code.as_str())).unwrap_or(false);
+                    match emit_stock_from_detail(code, detail, names, is_etf, tx, stats, fetched, failed).await {
+                        EmitOutcome::Emitted => count += 1,
+                        EmitOutcome::PcOnly => {}
+                        EmitOutcome::NoData => {
+                            fail_no_data += 1;
+                            if error_samples.get("no_data").map(|v| v.len()).unwrap_or(0) < 5 {
+                                error_samples.entry("no_data").or_default()
+                                    .push((code.clone(), "value=0, recprice=0".to_string()));
+                            }
+                        }
                     }
                 }
             }
             Err(e) => {
+                // 청크 전체 실패 — 종류 분류 후 각 코드를 failed에 기록.
                 let kind = classify_error(&e);
                 match kind {
-                    "no_data" => fail_no_data += 1,
-                    "http_5xx" => fail_http_5xx += 1,
-                    "tps" => fail_tps += 1,
-                    _ => fail_other += 1,
+                    "no_data" => fail_no_data += chunk.len(),
+                    "http_5xx" => fail_http_5xx += chunk.len(),
+                    "tps" => fail_tps += chunk.len(),
+                    _ => fail_other += chunk.len(),
                 }
-                bump_fail(stats, kind);
-                if error_samples.get(kind).map(|v| v.len()).unwrap_or(0) < 5 {
-                    error_samples.entry(kind).or_default().push((code.clone(), e.clone()));
-                }
-                if let Some(fmap) = failed {
-                    let prev = fmap.get(code).map(|en| en.attempt_count).unwrap_or(0);
-                    fmap.insert(code.clone(), FailedT1102 {
-                        last_error: e,
-                        error_kind: kind,
-                        attempt_count: prev + 1,
-                    });
+                for &code in chunk {
+                    bump_fail(stats, kind);
+                    if error_samples.get(kind).map(|v| v.len()).unwrap_or(0) < 5 {
+                        error_samples.entry(kind).or_default().push((code.clone(), e.clone()));
+                    }
+                    if let Some(fmap) = failed {
+                        let prev = fmap.get(code).map(|en| en.attempt_count).unwrap_or(0);
+                        fmap.insert(code.clone(), FailedT1102 {
+                            last_error: e.clone(),
+                            error_kind: kind,
+                            attempt_count: prev + 1,
+                        });
+                    }
                 }
             }
         }
-        tokio::time::sleep(REQ_INTERVAL).await;
+        // 청크 간 간격은 fetch_t8407 내부 전역 게이트(t8407_rate_gate)가 처리 — 여기선 별도 sleep 불필요.
     }
     if invalid > 0 {
-        warn!("t1102 invalid codes skipped: {invalid} (CASH/지수선물/ISIN 등 — 호출 대상 아님)");
+        warn!("t8407 invalid codes skipped: {invalid} (CASH/지수선물/ISIN 등 — 호출 대상 아님)");
     }
     let failed_total = fail_no_data + fail_http_5xx + fail_tps + fail_other;
     if failed_total > 0 {
-        warn!("t1102 failures: no_data={fail_no_data} http_5xx={fail_http_5xx} tps={fail_tps} other={fail_other}");
+        warn!("t8407 failures: no_data={fail_no_data} http_5xx={fail_http_5xx} tps={fail_tps} other={fail_other}");
         // 종류별 첫 5개 코드+에러 샘플 — 디버그용.
         for (kind, samples) in &error_samples {
             let head: Vec<String> = samples.iter()
                 .map(|(c, e)| format!("{}={}", c, e.chars().take(60).collect::<String>()))
                 .collect();
-            warn!("t1102 {} samples: [{}]", kind, head.join(", "));
+            warn!("t8407 {} samples: [{}]", kind, head.join(", "));
         }
     }
     if skipped > 0 {
-        info!("t1102 skipped (already fetched): {skipped}");
+        info!("t8407 skipped (already fetched): {skipped}");
     }
     // sweep 끝 — 거래대금 캐시 강제 flush (incremental save가 못 따라잡은 잔여 보장).
     crate::volume_cache::flush();
@@ -785,6 +852,74 @@ async fn fetch_t8402(client: &reqwest::Client, token: &str, code: &str) -> Resul
     Err(last_err)
 }
 
+/// t8407 프로세스 전역 호출 게이트. 여러 sweep(메인 + 5초 후 ETF PDF + retry/Subscribe)이
+/// 동시에 돌아도 합산 호출 간격을 T8407_INTERVAL 이상으로 직렬화해 TPS 5 한도 초과를 예방.
+/// (per-caller pacing만으론 동시 2개 = ~9콜/초로 한도 초과 → 1초 재시도 백오프 누적 위험.)
+static T8407_GATE: OnceLock<TokioMutex<Instant>> = OnceLock::new();
+
+async fn t8407_rate_gate() {
+    let gate = T8407_GATE.get_or_init(|| {
+        TokioMutex::new(Instant::now().checked_sub(T8407_INTERVAL).unwrap_or_else(Instant::now))
+    });
+    let mut last = gate.lock().await;
+    let elapsed = last.elapsed();
+    if elapsed < T8407_INTERVAL {
+        tokio::time::sleep(T8407_INTERVAL - elapsed).await;
+    }
+    *last = Instant::now();
+}
+
+/// t8407(API용주식멀티현재가조회) — 6자리 주식코드를 구분자 없이 연접해 한 콜에 최대 50종목.
+/// 응답 `t8407OutBlock1` 배열을 `{shcode: detail}` 맵으로 반환. 필드는 t1102와 호환
+/// (전일종가만 jnilclose, emit_stock_from_detail이 fallback 처리). 401/403은 토큰 무효화 후 에러.
+async fn fetch_t8407(
+    client: &reqwest::Client,
+    token: &str,
+    codes: &[&String],
+) -> Result<HashMap<String, serde_json::Map<String, serde_json::Value>>, String> {
+    let shcode: String = codes.iter().map(|s| s.as_str()).collect();
+    let body = serde_json::json!({"t8407InBlock": {"nrec": codes.len(), "shcode": shcode}});
+    let mut last_err = String::new();
+    for attempt in 0..=MAX_RETRIES {
+        if attempt > 0 { tokio::time::sleep(std::time::Duration::from_secs(1)).await; }
+        t8407_rate_gate().await; // 전역 TPS 게이트 — 동시 sweep 합산 한도 보호
+        match client.post(T1102_URL)
+            .header("Content-Type", "application/json")
+            .header("authorization", format!("Bearer {token}"))
+            .header("tr_cd", "t8407").header("tr_cont", "N")
+            .json(&body).send().await
+        {
+            Ok(resp) if resp.status().is_success() => {
+                match resp.json::<serde_json::Value>().await {
+                    Ok(data) => {
+                        let mut out = HashMap::new();
+                        if let Some(arr) = data["t8407OutBlock1"].as_array() {
+                            for item in arr {
+                                if let Some(obj) = item.as_object() {
+                                    if let Some(sc) = obj.get("shcode").and_then(|v| v.as_str()) {
+                                        out.insert(sc.to_string(), obj.clone());
+                                    }
+                                }
+                            }
+                        }
+                        return Ok(out);
+                    }
+                    Err(e) => last_err = format!("parse: {e}"),
+                }
+            }
+            Ok(resp) if resp.status() == reqwest::StatusCode::UNAUTHORIZED
+                || resp.status() == reqwest::StatusCode::FORBIDDEN => {
+                invalidate_token_cache().await;
+                return Err(format!("http {} (token invalidated)", resp.status()));
+            }
+            Ok(resp) => last_err = format!("http {}", resp.status()),
+            Err(e) => last_err = format!("send: {e}"),
+        }
+    }
+    Err(last_err)
+}
+
+#[allow(dead_code)] // t8407 배치로 대체됨. 단건 디버그/폴백용 보존.
 async fn fetch_t1102(client: &reqwest::Client, token: &str, code: &str) -> Result<serde_json::Map<String, serde_json::Value>, String> {
     let body = serde_json::json!({"t1102InBlock": {"shcode": code}});
     let mut last_err = String::new();
