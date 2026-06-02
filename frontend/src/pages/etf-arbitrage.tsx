@@ -1506,21 +1506,21 @@ const PdfRow = memo(function PdfRow({
       rowBg,
       dimmed && 'opacity-40',
     )}>
-      <td className="py-1 pl-4 pr-2 font-mono text-[10.5px] text-[#8b8b8e]">{code}</td>
-      <td className={cn('py-1 px-2 text-[11px] truncate', hasFut ? 'text-white' : 'text-[#a8a8ae]')}>
-        {name}{!hasFut && <span className="ml-1 text-[9px] text-[#7a7a7e]">·선물無</span>}
+      <td className="py-2 pl-4 pr-2 font-mono text-[12px] text-[#8b8b8e]">{code}</td>
+      <td className={cn('py-2 px-2 text-[12.5px] truncate', hasFut ? 'text-white' : 'text-[#a8a8ae]')}>
+        {name}{!hasFut && <span className="ml-1 text-[10px] text-[#7a7a7e]">·선물無</span>}
       </td>
-      <td className="py-1 px-2 text-right text-[11px] tabular-nums text-[#d1d1d6]">{qty.toLocaleString()}</td>
-      <td className="py-1 px-2 text-right text-[11px] tabular-nums">
+      <td className="py-2 px-2 text-right text-[12.5px] tabular-nums text-[#d1d1d6]">{qty.toLocaleString()}</td>
+      <td className="py-2 px-2 text-right text-[12.5px] tabular-nums">
         {/* 비중 mini bar */}
         <div className="flex items-center justify-end gap-1.5">
-          <div className="w-8 h-1 bg-[#2a2a2e] rounded-sm overflow-hidden">
+          <div className="w-8 h-1.5 bg-[#2a2a2e] rounded-sm overflow-hidden">
             <div className="h-full bg-[#4a4a4e]" style={{ width: `${Math.min(100, H * 100)}%` }} />
           </div>
-          <span className="text-[#d1d1d6] w-9">{(H * 100).toFixed(2)}%</span>
+          <span className="text-[#d1d1d6] w-10">{(H * 100).toFixed(2)}%</span>
         </div>
       </td>
-      <td className="py-1 px-2 text-right text-[11px] tabular-nums relative group/div">
+      <td className="py-2 px-2 text-right text-[12.5px] tabular-nums relative group/div">
         {M > 0 ? (() => {
           // 색: 모두 확정 → 초록, 모두 예상 → 오렌지, 혼합 → 흰색.
           const allConfirmed = M_estimated === 0
@@ -1539,7 +1539,7 @@ const PdfRow = memo(function PdfRow({
         })() : <span className="text-[#5a5a5e]">—</span>}
       </td>
       <td className={cn(
-        'py-1 px-2 text-right text-[11px] tabular-nums',
+        'py-2 px-2 text-right text-[12.5px] tabular-nums',
         halted ? 'text-warning' :
         viActive ? 'text-warning' :
         atUpper ? 'text-[#bb4a65]' :
@@ -1560,16 +1560,16 @@ const PdfRow = memo(function PdfRow({
           </span>
         ) : '—'}
       </td>
-      <td className={cn('py-1 px-2 text-right text-[11px] tabular-nums', F > 0 ? 'text-[#d1d1d6]' : 'text-[#5a5a5e]')}>{F > 0 ? F.toLocaleString() : '—'}</td>
-      <td className={cn('py-1 px-2 text-right text-[11px] tabular-nums', N > 0 ? 'text-[#d1d1d6]' : 'text-[#5a5a5e]')}>{N > 0 ? Math.round(N).toLocaleString() : '—'}</td>
-      <td className={cn('py-1 px-2 text-right text-[11px] tabular-nums', hasFut ? (Q > 0 ? 'text-[#00b26b]' : Q < 0 ? 'text-[#bb4a65]' : 'text-[#8b8b8e]') : 'text-[#5a5a5e]')}>{hasFut ? Math.round(Q).toLocaleString() : '—'}</td>
-      <td className={cn('py-1 px-2 text-right text-[11px] tabular-nums', N > 0 ? 'text-[#8b8b8e]' : 'text-[#5a5a5e]')}>{N > 0 ? Math.round(P).toLocaleString() : '—'}</td>
-      <td className={cn('py-1 px-2 text-right text-[11px] tabular-nums', hasFut ? (R > 0 ? 'text-[#00b26b]' : R < 0 ? 'text-[#bb4a65]' : 'text-[#8b8b8e]') : 'text-[#5a5a5e]')}>{hasFut ? Math.round(R).toLocaleString() : '—'}</td>
-      <td className={cn('py-1 px-2 text-right text-[11px] tabular-nums font-medium', tColor)}>{hasFut && Math.abs(T) > 0.001 ? formatBp(T) : '—'}</td>
-      <td className={cn('py-1 px-2 text-right text-[11px] tabular-nums', futVol > 0 ? 'text-[#8b8b8e]' : 'text-[#5a5a5e]')}>{futVol > 0 ? futVol.toLocaleString() : '—'}</td>
-      <td className={cn('py-1 px-2 text-right text-[11px] tabular-nums font-medium', contribColor)}>{isUsed && Math.abs(contribBp) > 0.001 ? formatBp(contribBp) : '—'}</td>
+      <td className={cn('py-2 px-2 text-right text-[12.5px] tabular-nums', F > 0 ? 'text-[#d1d1d6]' : 'text-[#5a5a5e]')}>{F > 0 ? F.toLocaleString() : '—'}</td>
+      <td className={cn('py-2 px-2 text-right text-[12.5px] tabular-nums', N > 0 ? 'text-[#d1d1d6]' : 'text-[#5a5a5e]')}>{N > 0 ? Math.round(N).toLocaleString() : '—'}</td>
+      <td className={cn('py-2 px-2 text-right text-[12.5px] tabular-nums', hasFut ? (Q > 0 ? 'text-[#00b26b]' : Q < 0 ? 'text-[#bb4a65]' : 'text-[#8b8b8e]') : 'text-[#5a5a5e]')}>{hasFut ? Math.round(Q).toLocaleString() : '—'}</td>
+      <td className={cn('py-2 px-2 text-right text-[12.5px] tabular-nums', N > 0 ? 'text-[#8b8b8e]' : 'text-[#5a5a5e]')}>{N > 0 ? Math.round(P).toLocaleString() : '—'}</td>
+      <td className={cn('py-2 px-2 text-right text-[12.5px] tabular-nums', hasFut ? (R > 0 ? 'text-[#00b26b]' : R < 0 ? 'text-[#bb4a65]' : 'text-[#8b8b8e]') : 'text-[#5a5a5e]')}>{hasFut ? Math.round(R).toLocaleString() : '—'}</td>
+      <td className={cn('py-2 px-2 text-right text-[12.5px] tabular-nums font-medium', tColor)}>{hasFut && Math.abs(T) > 0.001 ? formatBp(T) : '—'}</td>
+      <td className={cn('py-2 px-2 text-right text-[12.5px] tabular-nums', futVol > 0 ? 'text-[#8b8b8e]' : 'text-[#5a5a5e]')}>{futVol > 0 ? futVol.toLocaleString() : '—'}</td>
+      <td className={cn('py-2 px-2 text-right text-[12.5px] tabular-nums font-medium', contribColor)}>{isUsed && Math.abs(contribBp) > 0.001 ? formatBp(contribBp) : '—'}</td>
       {/* 체크박스 td — flex 컨테이너로 wrap해서 행 height와 무관하게 정중앙 정렬 (input은 form 요소라 baseline 정렬이 행마다 달라지는 문제 회피) */}
-      <td className="py-1 px-2 align-middle">
+      <td className="py-2 px-2 align-middle">
         <div className="flex items-center justify-center">
           <input
             type="checkbox"
@@ -1834,7 +1834,7 @@ function ExpandedPanel({
             <col style={{ width: 94 }} />{/* 기여BP */}
             <col style={{ width: 60 }} />{/* 사용 */}
           </colgroup>
-          <thead className="sticky top-[33px] z-10 text-[#a8a8ae] text-[10px] uppercase tracking-wide bg-[#16161a] border-b border-white/[0.06]">
+          <thead className="sticky top-[33px] z-10 text-[#a8a8ae] text-[11.5px] uppercase tracking-wide bg-[#16161a] border-b border-white/[0.06]">
             <tr>
               <PdfTh sk="code" cur={pdfSortKey} asc={pdfSortAsc} onSort={onPdfSort} className="pl-4 text-left">코드</PdfTh>
               <PdfTh sk="name" cur={pdfSortKey} asc={pdfSortAsc} onSort={onPdfSort} className="text-left">종목명</PdfTh>
@@ -1888,7 +1888,7 @@ function PdfTh({ children, sk, cur, asc, onSort, className, title }: {
       title={title}
       onClick={() => onSort(sk)}
       className={cn(
-        'py-1.5 px-2 font-medium cursor-pointer select-none hover:text-white transition-colors whitespace-nowrap',
+        'py-2.5 px-2 font-medium cursor-pointer select-none hover:text-white transition-colors whitespace-nowrap',
         active && 'text-white',
         className?.includes('text-left') ? '' : 'text-right',
         className,

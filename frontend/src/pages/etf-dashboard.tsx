@@ -441,38 +441,38 @@ function PdfSubTable({ pdf, prevCloseCache, stockTicks }: {
             <col style={{ width: 140 }} />{/* 금액 */}
             <col style={{ width: 90 }} />{/* 비중 */}
           </colgroup>
-          <thead className="text-[10px] text-[#a8a8ae] uppercase tracking-wide bg-[#16161a] border-b border-white/[0.06]">
+          <thead className="text-[11.5px] text-[#a8a8ae] uppercase tracking-wide bg-[#16161a] border-b border-white/[0.06]">
             <tr>
-              <td className="pl-4 py-1.5 text-left">코드</td>
-              <td className="py-1.5 text-left">종목명</td>
-              <td className="py-1.5 pr-3 text-right">수량(1CU)</td>
-              <td className="py-1.5 pr-3 text-right">현재가</td>
-              <td className="py-1.5 pr-3 text-right">전일종가</td>
-              <td className="py-1.5 pr-3 text-right">금액</td>
-              <td className="py-1.5 pr-4 text-right">비중</td>
+              <td className="pl-4 py-2.5 text-left">코드</td>
+              <td className="py-2.5 text-left">종목명</td>
+              <td className="py-2.5 pr-3 text-right">수량(1CU)</td>
+              <td className="py-2.5 pr-3 text-right">현재가</td>
+              <td className="py-2.5 pr-3 text-right">전일종가</td>
+              <td className="py-2.5 pr-3 text-right">금액</td>
+              <td className="py-2.5 pr-4 text-right">비중</td>
             </tr>
           </thead>
           <tbody>
             {rows.map((r) => (
               <tr key={r.code} className="border-b border-white/[0.03] hover:bg-white/[0.02]">
-                <td className="pl-4 py-[5px] text-left text-[11px] text-t3">{r.code}</td>
-                <td className="py-[5px] text-left text-[11px] text-t1 whitespace-nowrap overflow-hidden text-ellipsis">{r.name}</td>
-                <td className="py-[5px] pr-3 text-right text-[11px] text-t2">{r.qty.toLocaleString()}</td>
-                <td className="py-[5px] pr-3 text-right text-[11px] text-t1">{r.live > 0 ? r.live.toLocaleString() : '-'}</td>
-                <td className="py-[5px] pr-3 text-right text-[11px] text-t3">{r.prevClose > 0 ? r.prevClose.toLocaleString() : '-'}</td>
-                <td className="py-[5px] pr-3 text-right text-[11px] text-t1">{r.value > 0 ? Math.round(r.value).toLocaleString() : '-'}</td>
-                <td className="py-[5px] pr-4 text-right text-[11px] text-t2">{navTotal > 0 && r.value > 0 ? `${((r.value / navTotal) * 100).toFixed(2)}%` : '-'}</td>
+                <td className="pl-4 py-2 text-left text-[12px] text-t3">{r.code}</td>
+                <td className="py-2 text-left text-[12.5px] text-t1 whitespace-nowrap overflow-hidden text-ellipsis">{r.name}</td>
+                <td className="py-2 pr-3 text-right text-[12.5px] text-t2">{r.qty.toLocaleString()}</td>
+                <td className="py-2 pr-3 text-right text-[12.5px] text-t1">{r.live > 0 ? r.live.toLocaleString() : '-'}</td>
+                <td className="py-2 pr-3 text-right text-[12.5px] text-t3">{r.prevClose > 0 ? r.prevClose.toLocaleString() : '-'}</td>
+                <td className="py-2 pr-3 text-right text-[12.5px] text-t1">{r.value > 0 ? Math.round(r.value).toLocaleString() : '-'}</td>
+                <td className="py-2 pr-4 text-right text-[12.5px] text-t2">{navTotal > 0 && r.value > 0 ? `${((r.value / navTotal) * 100).toFixed(2)}%` : '-'}</td>
               </tr>
             ))}
             {/* 현금 행 */}
             <tr className="border-t border-white/[0.08] bg-white/[0.015]">
-              <td className="pl-4 py-[5px] text-left text-[11px] text-warning">현금</td>
-              <td className="py-[5px] text-left text-[11px] text-t3">—</td>
-              <td className="py-[5px] pr-3 text-right text-[11px] text-t4">—</td>
-              <td className="py-[5px] pr-3 text-right text-[11px] text-t4">—</td>
-              <td className="py-[5px] pr-3 text-right text-[11px] text-t4">—</td>
-              <td className="py-[5px] pr-3 text-right text-[11px] text-warning">{cash > 0 ? Math.round(cash).toLocaleString() : '-'}</td>
-              <td className="py-[5px] pr-4 text-right text-[11px] text-warning">{navTotal > 0 && cash > 0 ? `${((cash / navTotal) * 100).toFixed(2)}%` : '-'}</td>
+              <td className="pl-4 py-2 text-left text-[12px] text-warning">현금</td>
+              <td className="py-2 text-left text-[12.5px] text-t3">—</td>
+              <td className="py-2 pr-3 text-right text-[12.5px] text-t4">—</td>
+              <td className="py-2 pr-3 text-right text-[12.5px] text-t4">—</td>
+              <td className="py-2 pr-3 text-right text-[12.5px] text-t4">—</td>
+              <td className="py-2 pr-3 text-right text-[12.5px] text-warning">{cash > 0 ? Math.round(cash).toLocaleString() : '-'}</td>
+              <td className="py-2 pr-4 text-right text-[12.5px] text-warning">{navTotal > 0 && cash > 0 ? `${((cash / navTotal) * 100).toFixed(2)}%` : '-'}</td>
             </tr>
           </tbody>
         </table>
