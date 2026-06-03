@@ -1293,26 +1293,26 @@ export function EtfArbitragePage() {
         {/* col width는 헤더 + typical 콘텐츠 길이 기반 비율. tableLayout fixed + width 100%이면
             컨테이너 폭에 맞춰 모든 컬럼이 명시 비율대로 비례 확장. 합 1844px. */}
         {master && pdfs && (
-          <table className="border-collapse" style={{ tableLayout: 'fixed', width: '100%', minWidth: isINavMode ? '836px' : '1846px' }}>
+          <table className="border-collapse" style={{ tableLayout: 'fixed', width: '100%', minWidth: '1846px' }}>
             <colgroup>
               <col style={{ width: 200 }} />{/* 종목 */}
               <col style={{ width: 130 }} />{/* 거래대금 */}
               <col style={{ width: 86 }} />{/* 현재가 */}
               <col style={{ width: 110 }} />{/* iNAV */}
-              {!isINavMode && <col style={{ width: 100 }} />}{/* rNAV (내부망만) */}
-              {!isINavMode && <col style={{ width: 100 }} />}{/* fNAV (내부망만) */}
+              <col style={{ width: 100 }} />{/* rNAV */}
+              <col style={{ width: 100 }} />{/* fNAV */}
               <col style={{ width: 86 }} />{/* 현재괴리 */}
               <col style={{ width: 86 }} />{/* 매도괴리 */}
               <col style={{ width: 86 }} />{/* 매수괴리 */}
-              {!isINavMode && <col style={{ width: 88 }} />}{/* 매수차BP */}
-              {!isINavMode && <col style={{ width: 88 }} />}{/* 매도차BP */}
-              {!isINavMode && <col style={{ width: 76 }} />}{/* 차익bp */}
-              {!isINavMode && <col style={{ width: 130 }} />}{/* 실집행차익 */}
-              {!isINavMode && <col style={{ width: 88 }} />}{/* 실집행BP */}
+              <col style={{ width: 88 }} />{/* 매수차BP */}
+              <col style={{ width: 88 }} />{/* 매도차BP */}
+              <col style={{ width: 76 }} />{/* 차익bp */}
+              <col style={{ width: 130 }} />{/* 실집행차익 */}
+              <col style={{ width: 88 }} />{/* 실집행BP */}
               <col style={{ width: 64 }} />{/* 배당수 */}
-              {!isINavMode && <col style={{ width: 72 }} />}{/* 선물비중 */}
-              {!isINavMode && <col style={{ width: 64 }} />}{/* 선물수 */}
-              {!isINavMode && <col style={{ width: 220 }} />}{/* 추이 */}
+              <col style={{ width: 72 }} />{/* 선물비중 */}
+              <col style={{ width: 64 }} />{/* 선물수 */}
+              <col style={{ width: 220 }} />{/* 추이 */}
             </colgroup>
             <thead className="sticky top-0 z-20">
               <tr className="text-[12px] text-[#8b8b8e] bg-black">
@@ -1320,20 +1320,20 @@ export function EtfArbitragePage() {
                 <ArbTh sort={() => handleSort('tradeValue')} active={sortKey === 'tradeValue'} asc={sortAsc}>거래대금</ArbTh>
                 <ArbTh sort={() => handleSort('etfPrice')} active={sortKey === 'etfPrice'} asc={sortAsc}>현재가</ArbTh>
                 <ArbTh sort={() => handleSort('nav')} active={sortKey === 'nav'} asc={sortAsc} title="iNAV — 거래소 발행 실시간 NAV (LS API I5_ feed). 모든 ETF 공통.">iNAV</ArbTh>
-                {!isINavMode && <ArbTh sort={() => handleSort('rNav')} active={sortKey === 'rNav'} asc={sortAsc} title="현물 NAV — (SUM(S·D)+현금)/CU 자체 산출. 비차익 ETF는 PDF 처리가 깨져 흐림.">rNAV</ArbTh>}
-                {!isINavMode && <ArbTh sort={() => handleSort('fNav')} active={sortKey === 'fNav'} asc={sortAsc} title="선물대체 NAV. V=O 종목은 K로 평가">fNAV</ArbTh>}
+                <ArbTh sort={() => handleSort('rNav')} active={sortKey === 'rNav'} asc={sortAsc} title="현물 NAV — (SUM(S·D)+현금)/CU 자체 산출. 외부망은 펼친 ETF만 계산.">rNAV</ArbTh>
+                <ArbTh sort={() => handleSort('fNav')} active={sortKey === 'fNav'} asc={sortAsc} title="선물대체 NAV. V=O 종목은 K로 평가. 외부망은 펼친 ETF만 계산.">fNAV</ArbTh>
                 <ArbTh sort={() => handleSort('priceNavBp')} active={sortKey === 'priceNavBp'} asc={sortAsc}>현재 괴리</ArbTh>
                 <ArbTh sort={() => handleSort('askNavBp')} active={sortKey === 'askNavBp'} asc={sortAsc}>매도 괴리</ArbTh>
                 <ArbTh sort={() => handleSort('bidNavBp')} active={sortKey === 'bidNavBp'} asc={sortAsc}>매수 괴리</ArbTh>
-                {!isINavMode && <ArbTh sort={() => handleSort('buyArbBp')} active={sortKey === 'buyArbBp'} asc={sortAsc} title="매수차BP_net. R>0 종목 V=O들의 (T-slip-tax)·H 합">매수차BP</ArbTh>}
-                {!isINavMode && <ArbTh sort={() => handleSort('sellArbBp')} active={sortKey === 'sellArbBp'} asc={sortAsc} title="매도차BP_net. R<0 종목 V=O들의 (T+slip)·H 합. 음수=이익">매도차BP</ArbTh>}
-                {!isINavMode && <ArbTh sort={() => handleSort('diffBp')} active={sortKey === 'diffBp'} asc={sortAsc} title="매수차BP + 매도차BP. 부호로 우세 방향">차익bp</ArbTh>}
-                {!isINavMode && <ArbTh sort={() => handleSort('realProfitWon')} active={sortKey === 'realProfitWon'} asc={sortAsc} title="실집행차익(1 CU 기준 원). ETF 호가 vs fNAV 차익 (매수차는 매도세 차감)">실집행차익</ArbTh>}
-                {!isINavMode && <ArbTh sort={() => handleSort('realProfitBp')} active={sortKey === 'realProfitBp'} asc={sortAsc}>실집행BP</ArbTh>}
+                <ArbTh sort={() => handleSort('buyArbBp')} active={sortKey === 'buyArbBp'} asc={sortAsc} title="매수차BP_net. R>0 종목 V=O들의 (T-slip-tax)·H 합">매수차BP</ArbTh>
+                <ArbTh sort={() => handleSort('sellArbBp')} active={sortKey === 'sellArbBp'} asc={sortAsc} title="매도차BP_net. R<0 종목 V=O들의 (T+slip)·H 합. 음수=이익">매도차BP</ArbTh>
+                <ArbTh sort={() => handleSort('diffBp')} active={sortKey === 'diffBp'} asc={sortAsc} title="매수차BP + 매도차BP. 부호로 우세 방향">차익bp</ArbTh>
+                <ArbTh sort={() => handleSort('realProfitWon')} active={sortKey === 'realProfitWon'} asc={sortAsc} title="실집행차익(1 CU 기준 원). ETF 호가 vs fNAV 차익 (매수차는 매도세 차감)">실집행차익</ArbTh>
+                <ArbTh sort={() => handleSort('realProfitBp')} active={sortKey === 'realProfitBp'} asc={sortAsc}>실집행BP</ArbTh>
                 <ArbTh sort={() => handleSort('dividendN')} active={sortKey === 'dividendN'} asc={sortAsc} title="만기 이전 배당락 종목 수">배당수</ArbTh>
-                {!isINavMode && <ArbTh sort={() => handleSort('appliedPct')} active={sortKey === 'appliedPct'} asc={sortAsc}>선물비중</ArbTh>}
-                {!isINavMode && <ArbTh sort={() => handleSort('futuresCount')} active={sortKey === 'futuresCount'} asc={sortAsc}>선물수</ArbTh>}
-                {!isINavMode && <ArbTh className="text-center">추이</ArbTh>}
+                <ArbTh sort={() => handleSort('appliedPct')} active={sortKey === 'appliedPct'} asc={sortAsc}>선물비중</ArbTh>
+                <ArbTh sort={() => handleSort('futuresCount')} active={sortKey === 'futuresCount'} asc={sortAsc}>선물수</ArbTh>
+                <ArbTh className="text-center">추이</ArbTh>
               </tr>
             </thead>
             <tbody>
@@ -1354,6 +1354,7 @@ export function EtfArbitragePage() {
                       maxMissingFrac={maxMissingPct / 100}
                       arbMode={arbMode}
                       isINavMode={isINavMode}
+                      arbCalc={!isINavMode || expanded === entry.etf.code}
                     />
                   )
                 }
@@ -1365,7 +1366,7 @@ export function EtfArbitragePage() {
                     data-index={vr.index}
                     ref={rowVirtualizer.measureElement}
                   >
-                    <td colSpan={isINavMode ? 8 : 18} className="p-0">
+                    <td colSpan={18} className="p-0">
                       <ExpandedPanel
                         pdf={entry.pdf}
                         etfCode={entry.etfCode}
@@ -2078,14 +2079,15 @@ const ArbC = memo(function ArbC({ children, c, className }: { children: React.Re
 
 /** ArbRow — memo로 wrap된 행. m/history/isSelected ref 안정 시 reconcile skip.
  * 필터 클릭 시 metricsByCode가 재계산 안 되어야(=Step B 적용) 실제 효과 발현. */
-const ArbRow = memo(function ArbRow({ etf, m, isSelected, onSelect, maxMissingFrac, arbMode, isINavMode }: {
+const ArbRow = memo(function ArbRow({ etf, m, isSelected, onSelect, maxMissingFrac, arbMode, isINavMode, arbCalc }: {
   etf: EtfMaster
   m: EtfMetrics | undefined
   isSelected: boolean
   onSelect: (code: string) => void
   maxMissingFrac: number  // 누락 비중 임계값 (0.01 = 1%). 초과 시 fNAV/실집행 컬럼 흐림
   arbMode: ArbMode        // 단일 모드일 때 차익bp를 해당 모드 차익bp와 동일하게 표시
-  isINavMode: boolean     // true = 외부망/mock (iNAV 기반). rNAV/fNAV/차익 컬럼 숨김.
+  isINavMode: boolean     // true = 외부망/mock (iNAV 기반).
+  arbCalc: boolean        // 차익 컬럼에 실제 풀계산값이 있는지. 내부망=항상 / 외부망=펼친 ETF만.
 }) {
   // history는 self selective — 자기 ETF의 entry가 변할 때만 이 행 재렌더.
   // 페이지 root selector 였을 때는 어느 ETF든 entry 갱신되면 모든 ArbRow.history prop이
@@ -2100,11 +2102,17 @@ const ArbRow = memo(function ArbRow({ etf, m, isSelected, onSelect, maxMissingFr
   const nonArb = !!m && m.arbitrable === false
   const tooMissing = !!m && m.missingWeight > maxMissingFrac
   const dim = nonArb || tooMissing
+  // 차익 컬럼 흐림 = 기존 dim(비차익/누락) + 외부망에서 아직 풀계산 안 된 행(펼치지 않음).
+  //   외부망은 펼친 ETF만 PDF 구독→풀계산이라, 나머지 행의 차익 컬럼은 '·'로 흐리게 + 펼침 유도.
+  const arbDim = dim || (isINavMode && !arbCalc)
+  const arbPlaceholder = (isINavMode && !arbCalc && !dim) ? '·' : '—'
   const dimReason = nonArb
     ? '레버리지/인버스/채권 등 — 자체 차익 산출 불가, 라이브 NAV만 신뢰'
     : tooMissing
       ? `누락 비중 ${(m!.missingWeight * 100).toFixed(1)}% — fNAV/실집행 의심값`
-      : undefined
+      : (isINavMode && !arbCalc)
+        ? '외부망 — 행을 펼치면 이 ETF의 rNAV/fNAV/차익을 실시간 계산합니다'
+        : undefined
   return (
     <tr
       className={cn(
@@ -2126,37 +2134,31 @@ const ArbRow = memo(function ArbRow({ etf, m, isSelected, onSelect, maxMissingFr
       }</ArbC>
       {/* iNAV: 거래소 발행 실시간 NAV (I5_). 모든 ETF 공통. */}
       <ArbC>{m && m.nav > 0 ? m.nav.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '-'}</ArbC>
-      {/* rNAV / fNAV — 내부망(rNAV 모드)만 표시. iNAV 모드에선 컬럼 자체 숨김. */}
-      {!isINavMode && (
-        <ArbC c={dim ? 'text-[#5a5a5e]' : undefined}>
-          {dim ? '—' : (m?.rNav ? m.rNav.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '-')}
-        </ArbC>
-      )}
-      {!isINavMode && (
-        <ArbC c={dim ? 'text-[#5a5a5e]' : (m && m.fNav > 0 && m.rNav > 0 ? (m.fNav > m.rNav ? 'text-[#00b26b]' : m.fNav < m.rNav ? 'text-[#bb4a65]' : 'text-white') : 'text-white')}>
-          {dim ? '—' : (m?.fNav ? m.fNav.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '-')}
-        </ArbC>
-      )}
+      {/* rNAV / fNAV — 차익 컬럼. 외부망은 펼친 ETF만 풀계산(arbCalc), 나머진 arbDim 흐림. */}
+      <ArbC c={arbDim ? 'text-[#5a5a5e]' : undefined}>
+        {arbDim ? arbPlaceholder : (m?.rNav ? m.rNav.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '-')}
+      </ArbC>
+      <ArbC c={arbDim ? 'text-[#5a5a5e]' : (m && m.fNav > 0 && m.rNav > 0 ? (m.fNav > m.rNav ? 'text-[#00b26b]' : m.fNav < m.rNav ? 'text-[#bb4a65]' : 'text-white') : 'text-white')}>
+        {arbDim ? arbPlaceholder : (m?.fNav ? m.fNav.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '-')}
+      </ArbC>
       <ArbC c={m && m.priceNavBp > 0 ? 'text-[#00b26b]' : m && m.priceNavBp < 0 ? 'text-[#bb4a65]' : 'text-[#d1d1d6]'}>{m && m.nav > 0 ? `${fmt(m.priceNavBp, 2)}bp` : '-'}</ArbC>
       <ArbC c={m && m.askNavBp > 0 ? 'text-[#00b26b]' : m && m.askNavBp < 0 ? 'text-[#bb4a65]' : 'text-[#d1d1d6]'}>{m && m.nav > 0 && m.askNavBp !== 0 ? `${fmt(m.askNavBp, 2)}bp` : '-'}</ArbC>
       <ArbC c={m && m.bidNavBp > 0 ? 'text-[#00b26b]' : m && m.bidNavBp < 0 ? 'text-[#bb4a65]' : 'text-[#d1d1d6]'}>{m && m.nav > 0 && m.bidNavBp !== 0 ? `${fmt(m.bidNavBp, 2)}bp` : '-'}</ArbC>
-      {/* 차익 관련 컬럼 — 내부망(rNAV 모드)만 표시 */}
-      {!isINavMode && <ArbC c={dim ? 'text-[#5a5a5e]' : (m && m.buyArbBp > 0 ? 'text-[#00b26b]' : 'text-[#5a5a5e]')}>{dim ? '—' : (m && m.buyArbBp > 0.001 ? formatBp(m.buyArbBp) : '-')}</ArbC>}
-      {!isINavMode && <ArbC c={dim ? 'text-[#5a5a5e]' : (m && m.sellArbBp < 0 ? 'text-[#bb4a65]' : 'text-[#5a5a5e]')}>{dim ? '—' : (m && m.sellArbBp < -0.001 ? formatBp(m.sellArbBp) : '-')}</ArbC>}
-      {!isINavMode && (
-        <ArbC c={dim ? 'text-[#5a5a5e]' : cn('font-medium', diffColor)}>{
-          dim ? '—' : !m ? '-' :
-          arbMode === 'buy'  ? formatBp(m.buyArbBp) :
-          arbMode === 'sell' ? formatBp(m.sellArbBp) :
-          formatBp(m.diffBp)
-        }</ArbC>
-      )}
-      {!isINavMode && <ArbC c={dim || (m && m.realProfitWon == null) ? 'text-warning' : (m && m.realProfitWon != null && m.realProfitWon > 0 ? 'text-[#00b26b]' : m && m.realProfitWon != null && m.realProfitWon < 0 ? 'text-[#bb4a65]' : 'text-[#5a5a5e]')}>{dim ? '—' : (m && m.realProfitWon == null ? '정지' : (m && m.realProfitWon != null && Math.abs(m.realProfitWon) > 1 ? `${Math.round(m.realProfitWon).toLocaleString()}원` : '-'))}</ArbC>}
-      {!isINavMode && <ArbC c={dim || (m && m.realProfitBp == null) ? 'text-warning' : (m && m.realProfitBp != null && m.realProfitBp > 0 ? 'text-[#00b26b]' : m && m.realProfitBp != null && m.realProfitBp < 0 ? 'text-[#bb4a65]' : 'text-[#5a5a5e]')}>{dim ? '—' : (m && m.realProfitBp == null ? '정지' : (m && m.realProfitBp != null && Math.abs(m.realProfitBp) > 0.01 ? `${formatBp(m.realProfitBp)}bp` : '-'))}</ArbC>}
+      {/* 차익 관련 컬럼 — 항상 표시. 외부망 미펼침 행은 arbDim으로 흐림 + 펼침 유도(arbPlaceholder '·'). */}
+      <ArbC c={arbDim ? 'text-[#5a5a5e]' : (m && m.buyArbBp > 0 ? 'text-[#00b26b]' : 'text-[#5a5a5e]')}>{arbDim ? arbPlaceholder : (m && m.buyArbBp > 0.001 ? formatBp(m.buyArbBp) : '-')}</ArbC>
+      <ArbC c={arbDim ? 'text-[#5a5a5e]' : (m && m.sellArbBp < 0 ? 'text-[#bb4a65]' : 'text-[#5a5a5e]')}>{arbDim ? arbPlaceholder : (m && m.sellArbBp < -0.001 ? formatBp(m.sellArbBp) : '-')}</ArbC>
+      <ArbC c={arbDim ? 'text-[#5a5a5e]' : cn('font-medium', diffColor)}>{
+        arbDim ? arbPlaceholder : !m ? '-' :
+        arbMode === 'buy'  ? formatBp(m.buyArbBp) :
+        arbMode === 'sell' ? formatBp(m.sellArbBp) :
+        formatBp(m.diffBp)
+      }</ArbC>
+      <ArbC c={arbDim || (m && m.realProfitWon == null) ? 'text-warning' : (m && m.realProfitWon != null && m.realProfitWon > 0 ? 'text-[#00b26b]' : m && m.realProfitWon != null && m.realProfitWon < 0 ? 'text-[#bb4a65]' : 'text-[#5a5a5e]')}>{arbDim ? arbPlaceholder : (m && m.realProfitWon == null ? '정지' : (m && m.realProfitWon != null && Math.abs(m.realProfitWon) > 1 ? `${Math.round(m.realProfitWon).toLocaleString()}원` : '-'))}</ArbC>
+      <ArbC c={arbDim || (m && m.realProfitBp == null) ? 'text-warning' : (m && m.realProfitBp != null && m.realProfitBp > 0 ? 'text-[#00b26b]' : m && m.realProfitBp != null && m.realProfitBp < 0 ? 'text-[#bb4a65]' : 'text-[#5a5a5e]')}>{arbDim ? arbPlaceholder : (m && m.realProfitBp == null ? '정지' : (m && m.realProfitBp != null && Math.abs(m.realProfitBp) > 0.01 ? `${formatBp(m.realProfitBp)}bp` : '-'))}</ArbC>
       <ArbC c={dim ? 'text-[#5a5a5e]' : (m && m.dividendN > 0 ? 'text-[#ff9f0a]' : 'text-[#5a5a5e]')}>{dim ? '—' : (m && m.dividendN > 0 ? m.dividendN : '-')}</ArbC>
-      {!isINavMode && <ArbC c={dim ? 'text-[#5a5a5e]' : 'text-[#d1d1d6]'}>{dim ? '—' : (m ? m.appliedPct.toFixed(1) : '-')}</ArbC>}
-      {!isINavMode && <ArbC c={dim ? 'text-[#5a5a5e]' : 'text-[#d1d1d6]'}>{dim ? '—' : (m ? m.futuresCount : '-')}</ArbC>}
-      {!isINavMode && <td className="px-2 py-[6px] text-center">{dim ? <span className="text-[9px] text-[#5a5a5e]">—</span> : <Sparkline history={history} height={30} />}</td>}
+      <ArbC c={arbDim ? 'text-[#5a5a5e]' : 'text-[#d1d1d6]'}>{arbDim ? arbPlaceholder : (m ? m.appliedPct.toFixed(1) : '-')}</ArbC>
+      <ArbC c={arbDim ? 'text-[#5a5a5e]' : 'text-[#d1d1d6]'}>{arbDim ? arbPlaceholder : (m ? m.futuresCount : '-')}</ArbC>
+      <td className="px-2 py-[6px] text-center">{arbDim ? <span className="text-[9px] text-[#5a5a5e]">{arbPlaceholder}</span> : <Sparkline history={history} height={30} />}</td>
     </tr>
   )
 })
