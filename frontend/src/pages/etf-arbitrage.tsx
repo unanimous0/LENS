@@ -327,13 +327,16 @@ function computeMetric(
   // PDF 종목 중 매매정지 있으면 fNav가 부정확해 차익도 의미 없음 → null로 둠. UI/정렬에서 자연스레 뒤로.
   const tax = taxBp / 10000   // 0.002 for 20bp
   const slip = slippageBp / 10000
+  // realProfitWon: 값=계산됨, 0=차익 방향 없음(dominant null), null=계산 불가.
+  //   null은 두 사유: (1) PDF 종목 매매정지(haltedCount>0) (2) 우세 방향 ETF 호가/fNav 미수신
+  //   (펼친 직후 종목가격은 왔지만 호가가 아직인 로딩 상태). ArbRow가 haltedCount로 '정지'/'계산중' 구분.
   let realProfitWon: number | null = 0
   if (haltedCount > 0) {
     realProfitWon = null
-  } else if (dominant === 'buy' && etfBuyPrice > 0 && fNav > 0) {
-    realProfitWon = fNav * (1 - tax) - etfBuyPrice * (1 + slip)
-  } else if (dominant === 'sell' && etfSellPrice > 0 && fNav > 0) {
-    realProfitWon = -(etfSellPrice * (1 - slip) - fNav)
+  } else if (dominant === 'buy') {
+    realProfitWon = (etfBuyPrice > 0 && fNav > 0) ? fNav * (1 - tax) - etfBuyPrice * (1 + slip) : null
+  } else if (dominant === 'sell') {
+    realProfitWon = (etfSellPrice > 0 && fNav > 0) ? -(etfSellPrice * (1 - slip) - fNav) : null
   }
   const realProfitBp: number | null = realProfitWon == null ? null : (rNav > 0 ? (realProfitWon / rNav) * 10000 : 0)
 
@@ -1791,7 +1794,7 @@ function ExpandedPanel({
               <span className="text-[#8b8b8e]">괴리 <span className={cn('tabular-nums', Math.abs(metrics.diffBp) > 5 ? (metrics.diffBp > 0 ? 'text-[#00b26b]' : 'text-[#bb4a65]') : 'text-[#d1d1d6]')}>{formatBp(metrics.diffBp)}bp</span></span>
               <span className="text-[#8b8b8e]">매수차 <span className={cn('tabular-nums', metrics.buyArbBp > 0.001 ? 'text-[#00b26b]' : 'text-[#5a5a5e]')}>{metrics.buyArbBp > 0.001 ? `${formatBp(metrics.buyArbBp)}bp` : '-'}</span></span>
               <span className="text-[#8b8b8e]">매도차 <span className={cn('tabular-nums', metrics.sellArbBp < -0.001 ? 'text-[#bb4a65]' : 'text-[#5a5a5e]')}>{metrics.sellArbBp < -0.001 ? `${formatBp(metrics.sellArbBp)}bp` : '-'}</span></span>
-              <span className="text-[#8b8b8e]">실집행 <span className={cn('tabular-nums', metrics.realProfitBp == null ? 'text-warning' : metrics.realProfitBp > 0 ? 'text-[#00b26b]' : metrics.realProfitBp < 0 ? 'text-[#bb4a65]' : 'text-[#5a5a5e]')}>{metrics.realProfitWon == null ? '정지종목' : `${Math.round(metrics.realProfitWon).toLocaleString()}원 (${formatBp(metrics.realProfitBp ?? 0)}bp)`}</span></span>
+              <span className="text-[#8b8b8e]">실집행 <span className={cn('tabular-nums', metrics.realProfitBp == null ? (metrics.haltedCount > 0 ? 'text-warning' : 'text-[#8b8b8e]') : metrics.realProfitBp > 0 ? 'text-[#00b26b]' : metrics.realProfitBp < 0 ? 'text-[#bb4a65]' : 'text-[#5a5a5e]')}>{metrics.realProfitWon == null ? (metrics.haltedCount > 0 ? '정지종목' : '호가 대기중…') : `${Math.round(metrics.realProfitWon).toLocaleString()}원 (${formatBp(metrics.realProfitBp ?? 0)}bp)`}</span></span>
             </>
           ) : (
             <span className="text-[#8b8b8e]">구성종목 실시간 구독 중… (잠시 후 fNAV·차익 표시)</span>
@@ -2159,8 +2162,8 @@ const ArbRow = memo(function ArbRow({ etf, m, isSelected, onSelect, maxMissingFr
         arbMode === 'sell' ? formatBp(m.sellArbBp) :
         formatBp(m.diffBp)
       }</ArbC>
-      <ArbC c={arbDim || (m && m.realProfitWon == null) ? 'text-warning' : (m && m.realProfitWon != null && m.realProfitWon > 0 ? 'text-[#00b26b]' : m && m.realProfitWon != null && m.realProfitWon < 0 ? 'text-[#bb4a65]' : 'text-[#5a5a5e]')}>{arbDim ? arbPlaceholder : (m && m.realProfitWon == null ? '정지' : (m && m.realProfitWon != null && Math.abs(m.realProfitWon) > 1 ? `${Math.round(m.realProfitWon).toLocaleString()}원` : '-'))}</ArbC>
-      <ArbC c={arbDim || (m && m.realProfitBp == null) ? 'text-warning' : (m && m.realProfitBp != null && m.realProfitBp > 0 ? 'text-[#00b26b]' : m && m.realProfitBp != null && m.realProfitBp < 0 ? 'text-[#bb4a65]' : 'text-[#5a5a5e]')}>{arbDim ? arbPlaceholder : (m && m.realProfitBp == null ? '정지' : (m && m.realProfitBp != null && Math.abs(m.realProfitBp) > 0.01 ? `${formatBp(m.realProfitBp)}bp` : '-'))}</ArbC>
+      <ArbC c={arbDim ? 'text-[#5a5a5e]' : (m && m.realProfitWon == null ? (m.haltedCount > 0 ? 'text-warning' : 'text-[#8b8b8e]') : (m && m.realProfitWon != null && m.realProfitWon > 0 ? 'text-[#00b26b]' : m && m.realProfitWon != null && m.realProfitWon < 0 ? 'text-[#bb4a65]' : 'text-[#5a5a5e]'))}>{arbDim ? arbPlaceholder : (m && m.realProfitWon == null ? (m.haltedCount > 0 ? '정지' : '계산중') : (m && m.realProfitWon != null && Math.abs(m.realProfitWon) > 1 ? `${Math.round(m.realProfitWon).toLocaleString()}원` : '-'))}</ArbC>
+      <ArbC c={arbDim ? 'text-[#5a5a5e]' : (m && m.realProfitBp == null ? (m.haltedCount > 0 ? 'text-warning' : 'text-[#8b8b8e]') : (m && m.realProfitBp != null && m.realProfitBp > 0 ? 'text-[#00b26b]' : m && m.realProfitBp != null && m.realProfitBp < 0 ? 'text-[#bb4a65]' : 'text-[#5a5a5e]'))}>{arbDim ? arbPlaceholder : (m && m.realProfitBp == null ? (m.haltedCount > 0 ? '정지' : '계산중') : (m && m.realProfitBp != null && Math.abs(m.realProfitBp) > 0.01 ? `${formatBp(m.realProfitBp)}bp` : '-'))}</ArbC>
       <ArbC c={dim ? 'text-[#5a5a5e]' : (m && m.dividendN > 0 ? 'text-[#ff9f0a]' : 'text-[#5a5a5e]')}>{dim ? '—' : (m && m.dividendN > 0 ? m.dividendN : '-')}</ArbC>
       <ArbC c={arbDim ? 'text-[#5a5a5e]' : 'text-[#d1d1d6]'}>{arbDim ? arbPlaceholder : (m ? m.appliedPct.toFixed(1) : '-')}</ArbC>
       <ArbC c={arbDim ? 'text-[#5a5a5e]' : 'text-[#d1d1d6]'}>{arbDim ? arbPlaceholder : (m ? m.futuresCount : '-')}</ArbC>
