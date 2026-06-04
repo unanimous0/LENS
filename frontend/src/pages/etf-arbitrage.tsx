@@ -1288,6 +1288,12 @@ export function EtfArbitragePage() {
 
       {/* 메인 테이블 (가상화) — vRows: 메인+펼침 평탄화 리스트, 보이는 ~30행만 DOM에 */}
       <div ref={tableContainerRef} className="mt-5 px-2 bg-black">
+        {isINavMode && master && pdfs && (
+          <div className="mb-2 inline-flex items-center gap-2 px-3 py-1.5 rounded bg-[#0a84ff]/10 text-[11px] text-blue">
+            <span>●</span>
+            <span>외부망 — 괴리는 전체 ETF 실시간, <b className="font-semibold">rNAV·fNAV·차익은 행을 펼친 ETF만</b> 실시간 계산됩니다 (<b className="font-semibold">·</b> = 펼치면 계산).</span>
+          </div>
+        )}
         {error && <div className="p-3 text-down text-sm">로드 실패: {error}</div>}
         {!error && (!master || !pdfs) && <div className="p-3 text-t3 text-sm">로드 중…</div>}
         {/* col width는 헤더 + typical 콘텐츠 길이 기반 비율. tableLayout fixed + width 100%이면

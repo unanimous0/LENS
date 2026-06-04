@@ -1014,7 +1014,7 @@ function fVol(v: number) {
 }
 
 type HolderSK = 'etfCode' | 'etfName' | 'qty' | 'weight' | 'amount' | 'contribBp'
-  | 'etfPrice' | 'iNAV' | 'premiumBp' | 'swapPremiumBp' | 'arbBp'
+  | 'volume' | 'etfPrice' | 'iNAV' | 'premiumBp' | 'swapPremiumBp' | 'arbBp'
 
 /** 종목명 클릭 시 펼치는 확장행 — 이 종목을 담은 ETF 목록.
  *  비중 = (PDF수량 × 종목현재가) / (ETF 주당 NAV × CU). 기여BP = 종목 갭BP × 비중.
@@ -1048,7 +1048,8 @@ function EtfHoldersTable({ holders, spotPrice, futuresPrice, basisGapBp, navs, e
     const swapNav = iNAV > 0 && futuresPrice > 0 && spotPrice > 0 ? iNAV + (futuresPrice - spotPrice) * h.qty / h.cuUnit : 0
     const swapPremiumBp = swapNav > 0 && etfPrice > 0 ? ((etfPrice - swapNav) / swapNav) * 10000 : null
     const arbBp = swapNav > 0 && etfPrice > 0 && iNAV > 0 ? ((swapNav - etfPrice) / iNAV) * 10000 : null
-    return { ...h, amount, weight, contribBp: basisGapBp * weight, etfPrice, iNAV, premiumBp, swapPremiumBp, arbBp }
+    const volume = t?.volume ?? 0  // ETF 당일 거래량(주). 상위 N개만 실시간 구독.
+    return { ...h, amount, weight, contribBp: basisGapBp * weight, volume, etfPrice, iNAV, premiumBp, swapPremiumBp, arbBp }
   })
   rows.sort((a, b) => {
     const dir = hasc ? 1 : -1
@@ -1071,11 +1072,11 @@ function EtfHoldersTable({ holders, spotPrice, futuresPrice, basisGapBp, navs, e
       <div className="mb-2 text-[11px] text-[#8b8b8e]">
         이 종목을 담은 ETF <span className="text-white tabular-nums">{rows.length}</span>개
         <span className="ml-2 text-[#5a5a5e]">기여BP=갭BP×비중 · 선물대체괴리/차익bp=그 종목 선물 대체 시 · 부호: 매수차(+)/매도차(−) · ETF 클릭→차익거래 새 탭</span>
-        <span className="ml-2 text-[#5a5a5e]">현재가·iNAV는 상위 {HOLDER_SUB_LIMIT}개만 실시간</span>
+        <span className="ml-2 text-[#5a5a5e]">거래량·현재가·iNAV는 상위 {HOLDER_SUB_LIMIT}개만 실시간</span>
         {loading && <span className="ml-2 text-[#0a84ff]">· NAV 로딩…</span>}
       </div>
       <div className="rounded bg-[#0d0d0f] border border-white/[0.03] overflow-x-auto">
-        <table className="tabular-nums" style={{ tableLayout: 'fixed', width: '100%', minWidth: '1240px' }}>
+        <table className="tabular-nums" style={{ tableLayout: 'fixed', width: '100%', minWidth: '1336px' }}>
           <colgroup>
             <col style={{ width: 80 }} />{/* ETF코드 */}
             <col style={{ width: 200 }} />{/* ETF명 */}
@@ -1083,6 +1084,7 @@ function EtfHoldersTable({ holders, spotPrice, futuresPrice, basisGapBp, navs, e
             <col style={{ width: 80 }} />{/* 비중 */}
             <col style={{ width: 120 }} />{/* 금액 */}
             <col style={{ width: 86 }} />{/* 기여BP */}
+            <col style={{ width: 96 }} />{/* 거래량 */}
             <col style={{ width: 100 }} />{/* 현재가 */}
             <col style={{ width: 100 }} />{/* iNAV */}
             <col style={{ width: 86 }} />{/* 괴리 */}
@@ -1097,6 +1099,7 @@ function EtfHoldersTable({ holders, spotPrice, futuresPrice, basisGapBp, navs, e
               <HTh k="weight" hk={hk} hasc={hasc} onSort={sortH}>비중</HTh>
               <HTh k="amount" hk={hk} hasc={hasc} onSort={sortH}>금액</HTh>
               <HTh k="contribBp" hk={hk} hasc={hasc} onSort={sortH}>기여BP</HTh>
+              <HTh k="volume" hk={hk} hasc={hasc} onSort={sortH}>거래량</HTh>
               <HTh k="etfPrice" hk={hk} hasc={hasc} onSort={sortH}>현재가</HTh>
               <HTh k="iNAV" hk={hk} hasc={hasc} onSort={sortH}>iNAV</HTh>
               <HTh k="premiumBp" hk={hk} hasc={hasc} onSort={sortH}>괴리</HTh>
@@ -1113,6 +1116,7 @@ function EtfHoldersTable({ holders, spotPrice, futuresPrice, basisGapBp, navs, e
                 <td className="py-[5px] pr-3 text-right text-[11px] text-[#d1d1d6]">{r.weight > 0 ? `${(r.weight * 100).toFixed(2)}%` : '-'}</td>
                 <td className="py-[5px] pr-3 text-right text-[11px] text-white">{r.amount > 0 ? Math.round(r.amount).toLocaleString() : '-'}</td>
                 <td className={cn('py-[5px] pr-3 text-right text-[11px]', cV(r.contribBp))}>{r.weight > 0 ? bpCell(r.contribBp) : '-'}</td>
+                <td className="py-[5px] pr-3 text-right text-[11px] text-[#d1d1d6]">{r.volume > 0 ? r.volume.toLocaleString() : '-'}</td>
                 <td className="py-[5px] pr-3 text-right text-[11px] text-white">{r.etfPrice > 0 ? r.etfPrice.toLocaleString() : '-'}</td>
                 <td className="py-[5px] pr-3 text-right text-[11px] text-[#d1d1d6]">{r.iNAV > 0 ? r.iNAV.toLocaleString(undefined, { maximumFractionDigits: 0 }) : '-'}</td>
                 <td className={cn('py-[5px] pr-3 text-right text-[11px]', r.premiumBp == null ? 'text-[#5a5a5e]' : cV(r.premiumBp))}>{bpCell(r.premiumBp)}</td>
