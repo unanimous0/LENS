@@ -462,8 +462,12 @@ export function EtfArbitragePage() {
     | 'dividendN' | 'appliedPct' | 'futuresCount'
   const [sortKey, setSortKey] = useState<SortKey>('diffBp')
   const [sortAsc, setSortAsc] = useState<boolean>(false)
+  // 모드별 기본 정렬키 — 실제 setSortKey effect는 isINavMode 정의 뒤(아래)에 둠 (TDZ 회피).
+  //   사용자가 헤더를 한 번이라도 클릭하면(sortTouched) 그 선택을 유지.
+  const sortTouched = useRef(false)
   // 같은 컬럼 클릭 시 방향 토글, 다른 컬럼이면 default 방향(텍스트=asc, 수치=desc).
   const handleSort = (key: SortKey) => {
+    sortTouched.current = true
     if (sortKey === key) {
       setSortAsc((v) => !v)
     } else {
@@ -657,6 +661,13 @@ export function EtfArbitragePage() {
   // 내부망: rNAV 직접 계산. PDF 구성종목 전체 구독 (연결 제한 없음).
   const isINavMode = networkMode !== 'internal'
 
+  // 모드별 기본 정렬키: 외부망=거래대금(차익bp는 펼친 것만 계산이라 무의미) / 내부망=차익bp(전체 계산).
+  //   networkMode가 mock→external/internal로 확정될 때 동작. 사용자가 헤더 클릭(sortTouched) 후엔 유지.
+  useEffect(() => {
+    if (sortTouched.current) return
+    setSortKey(isINavMode ? 'tradeValue' : 'diffBp')
+  }, [isINavMode])
+
   useEffect(() => {
     // 오늘 이후 배당만 fetch — 과거 배당은 이론베이시스 산출에 무관. KST 기준.
     const today = todayKst()
@@ -733,18 +744,22 @@ export function EtfArbitragePage() {
       return lv > 0 ? lv : (cache[code] ?? 0)
     }
     const sorted = [...filtered].sort((a, b) => volOf(b.code) - volOf(a.code))
-    // 외부망(iNAV 모드): 슬라이스 없이 섹터형 전체. iNAV(I5_)+현재가(S3_)+호가는 ETF당 1코드라
-    //   185개여도 ~3연결(190/conn). 전체 ETF 괴리를 실시간 계산하고, 화면 표시 상위 N 제한은
-    //   naturalRows에서 sortKey 정렬 후 적용 → "전체 풀 중 괴리 큰 상위 N"이 보임.
-    // 내부망: PDF 구성종목(수천)이 무거워 상위 N 유지.
-    const limited = (subLimit === 'all' || isINavMode) ? sorted : sorted.slice(0, subLimit)
-    // deep link focus ETF는 상위 N/유형 필터 밖이어도 강제 포함 (맨 앞).
-    if (focusCode && !limited.some((e) => e.code === focusCode)) {
-      const f = master.find((e) => e.code === focusCode)
-      if (f) return [f, ...limited]
+    // 내·외부망 모두 거래대금 상위 N(subLimit)만 — 표시 = 구독. 외부망에서 185 전체 구독은
+    //   키A WS 한계를 넘겨 현재가(S3_)/호가 스트림이 stuck됐었음(진단 2026-06-05: 재시작마다
+    //   inav/stocks 중 하나만 데이터 수신). 현재가/iNAV/호가는 표시되는 N개만 받으면 충분
+    //   (50위 밖은 화면에 안 보임). PDF 구성종목은 외부망에선 펼친 ETF만 on-demand(아래).
+    const limited = subLimit === 'all' ? sorted : sorted.slice(0, subLimit)
+    // deep link focus + 펼친(expanded) ETF는 상위 N 밖이어도 강제 포함 — 표시 + 시세 구독 유지.
+    //   (구독을 표시분으로 줄였으므로, 50위 밖 focus/펼친 ETF는 따로 챙겨야 시세가 들어옴.)
+    const forced: EtfMaster[] = []
+    for (const code of [focusCode, expanded]) {
+      if (code && !limited.some((e) => e.code === code) && !forced.some((e) => e.code === code)) {
+        const f = master.find((e) => e.code === code)
+        if (f) forced.push(f)
+      }
     }
-    return limited
-  }, [master, subTypes, subLimit, sortTick, focusCode, isINavMode])
+    return forced.length ? [...forced, ...limited] : limited
+  }, [master, subTypes, subLimit, sortTick, focusCode, expanded])
 
   // 2단계 구독 — 가벼운 ETF 코드(거래대금/순위)는 넓게, 무거운 PDF 구성종목은 상위 N만.
   //
@@ -943,22 +958,11 @@ export function EtfArbitragePage() {
       if (vb == null) return -1
       return (vb - va) * (sortAsc ? -1 : 1)
     })
-    // 외부망: visibleMaster가 섹터 전체라 정렬 후 상위 N만 표시 (전체 풀 중 sortKey 상위 N).
-    //   내부망은 visibleMaster가 이미 상위 N이라 slice 무해.
-    if (!(isINavMode && subLimit !== 'all')) return sorted
-    const display = sorted.slice(0, subLimit)
-    // 정렬상 상위 N 밖이어도 항상 표시해야 하는 ETF:
-    //   - focusCode: deep link(종목차익→ETF차익) 진입 ETF
-    //   - expanded: 사용자가 클릭해 펼친 ETF (slice에 잘리면 펼침 패널이 사라짐)
-    const extras: EtfMaster[] = []
-    for (const code of [focusCode, expanded]) {
-      if (code && !display.some((e) => e.code === code) && !extras.some((e) => e.code === code)) {
-        const f = sorted.find((e) => e.code === code)
-        if (f) extras.push(f)
-      }
-    }
-    return extras.length ? [...extras, ...display] : display
-  }, [visibleMaster, metricsByCode, sortKey, sortAsc, minDiffBp, minTradeProfit, searchQuery, isINavMode, subLimit, focusCode, expanded])
+    // visibleMaster가 이미 거래대금 상위 N + focus/펼친 ETF라, 여기선 sortKey 정렬만.
+    //   (이전엔 외부망 전체구독이라 여기서 slice했으나, 구독을 표시분으로 줄이며 visibleMaster가
+    //   N으로 슬라이스됨 → 추가 slice/extras 불필요.)
+    return sorted
+  }, [visibleMaster, metricsByCode, sortKey, sortAsc, minDiffBp, minTradeProfit, searchQuery])
 
   // 펼침 패널 열린 동안 행 순서 freeze (사용 토글로 metric이 바뀌어도 row 위치 안 흔들리게).
   // 닫히면 자연 정렬로 복귀, sortKey 바꾸면 새로 정렬 + 재freeze.
@@ -1175,7 +1179,7 @@ export function EtfArbitragePage() {
                   subTypes={subTypes}
                   setSubTypes={setSubTypes}
                   masterCount={master?.length ?? 0}
-                  visibleCount={isINavMode ? naturalRows.length : visibleMaster.length}
+                  visibleCount={naturalRows.length}
                   isINavMode={isINavMode}
                 />
                 <div className="flex flex-wrap items-center gap-x-3 gap-y-2 text-[11px]">
@@ -1294,7 +1298,7 @@ export function EtfArbitragePage() {
         {isINavMode && master && pdfs && (
           <div className="mb-2 inline-flex items-center gap-2 px-3 py-1.5 rounded bg-[#0a84ff]/10 text-[11px] text-blue">
             <span>●</span>
-            <span>외부망 — 괴리는 전체 ETF 실시간, <b className="font-semibold">rNAV·fNAV·차익은 행을 펼친 ETF만</b> 실시간 계산됩니다 (<b className="font-semibold">·</b> = 펼치면 계산).</span>
+            <span>외부망 — <b className="font-semibold">거래대금 상위 {subLimit === 'all' ? '전체' : subLimit}개</b>만 시세 구독(키A WS 부담 절감), rNAV·fNAV·차익은 펼친 ETF만 (<b className="font-semibold">·</b> = 펼치면 계산).</span>
           </div>
         )}
         {error && <div className="p-3 text-down text-sm">로드 실패: {error}</div>}
