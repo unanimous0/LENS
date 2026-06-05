@@ -548,7 +548,11 @@ impl MarketFeed for LsApiFeed {
                             // 각 종목당 체결(S3_/K3_) + VI 발동(VI_) 두 개 구독.
                             // VI_는 메시지 빈도 낮지만 같은 종목 단위라 spawn_stocks_connections가
                             // 190/conn 분할에서 함께 처리 — 단순.
+                            // 6자리 주식/ETF만 S3_/K3_ 구독. 선물(A+7, 8자)이 섞여 들어와도(프론트
+                            // addPdfCodes가 mock용으로 선물 코드를 함께 전송) S3_로 오구독하지 않는다 —
+                            // 선물 실시간은 JC0 그룹(시작 시 273 front 전체 구독)이 담당. ISIN/CASH 등도 제외.
                             let stocks_subs: Vec<(String, String)> = current_stocks.keys()
+                                .filter(|code| code.len() == 6)
                                 .flat_map(|code| {
                                     let tr = if kosdaq_codes.contains(code) { "K3_" } else { "S3_" };
                                     [(tr.to_string(), code.clone()), ("VI_".to_string(), code.clone())]
