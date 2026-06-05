@@ -2080,7 +2080,7 @@ function ArbTh({ children, className, sort, active, asc, left, sticky, title }: 
 /** 종목차익 테이블과 통일된 Cell. memo로 children/c/className 동일하면 재렌더 skip. */
 const ArbC = memo(function ArbC({ children, c, className }: { children: React.ReactNode; c?: string; className?: string }) {
   return (
-    <td className={cn('px-2 py-[7px] text-right text-[11px] tabular-nums whitespace-nowrap', c || 'text-white', className)}>
+    <td className={cn('px-2 py-[7px] text-right text-[12.5px] tabular-nums whitespace-nowrap', c || 'text-white', className)}>
       {children}
     </td>
   )
@@ -2132,7 +2132,7 @@ const ArbRow = memo(function ArbRow({ etf, m, isSelected, onSelect, maxMissingFr
       title={dimReason}
     >
       <td className="pl-4 pr-3 py-[7px] sticky left-0 z-10" style={STICKY_INHERIT_BG}>
-        <div className="text-[11px] text-white leading-none whitespace-nowrap">{etf.name}</div>
+        <div className="text-[12.5px] text-white leading-none whitespace-nowrap">{etf.name}</div>
         <div className="text-[9px] text-[#8e8e93] leading-none mt-[2px] tabular-nums">{etf.code}</div>
       </td>
       <ArbC c="text-[#d1d1d6]">{m && m.tradeValue > 0 ? formatTradeValue(m.tradeValue) : '-'}</ArbC>
