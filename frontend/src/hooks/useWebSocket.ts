@@ -17,6 +17,7 @@ export function useWebSocket() {
     let stockBuf: Record<string, any> = {}
     let futuresBuf: Record<string, any> = {}
     let obBuf: Record<string, any> = {}
+    let volBuf: Record<string, number> = {}
     let dirty = false
 
     const flush = () => {
@@ -30,10 +31,13 @@ export function useWebSocket() {
       const hasFutures = Object.keys(futuresBuf).length > 0
       const hasOb = Object.keys(obBuf).length > 0
 
+      const hasVol = Object.keys(volBuf).length > 0
+
       if (hasEtf) { store.batchUpdateETFs(etfBuf); etfBuf = {} }
       if (hasStock) { store.batchUpdateStocks(stockBuf); stockBuf = {} }
       if (hasFutures) { store.batchUpdateFutures(futuresBuf); futuresBuf = {} }
       if (hasOb) { store.batchUpdateOrderbooks(obBuf); obBuf = {} }
+      if (hasVol) { store.batchUpdateVolumes(volBuf); volBuf = {} }
     }
     rafId = requestAnimationFrame(flush)
 
@@ -69,6 +73,7 @@ export function useWebSocket() {
         else if (m.type === 'stock_tick') stockBuf[m.data.code] = m.data
         else if (m.type === 'futures_tick') futuresBuf[m.data.code] = m.data
         else if (m.type === 'orderbook_tick') obBuf[m.data.code] = m.data
+        else if (m.type === 'volume_tick') volBuf[m.data.code] = m.data.cum_volume
         else if (m.type === 'hello') {
           // realtime이 발급한 client_id — subscribe-stocks 호출 시 헤더로 첨부.
           if (typeof m.client_id === 'number') {

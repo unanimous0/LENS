@@ -32,6 +32,10 @@ pub enum SubCommand {
     SubscribeOrderbook { codes: Vec<(String, String)> },
     /// 호가 구독 해제
     UnsubscribeOrderbook,
+    /// ETF 거래대금 폴링 대상 셋 교체 (t8407 REST 30초 폴링, 키B). 외부망 순위 매기기 전용.
+    ///   replace 시맨틱 — 받은 셋으로 폴링 대상을 통째 교체(빈 셋이면 폴링 중지). WS 0연결이라
+    ///   ref-count/warm-down 불필요. 상위 N 실시간 구독(키A WS)과 별개.
+    SetVolumePolling(Vec<String>),
 }
 
 /// 시장 데이터 피드 trait.

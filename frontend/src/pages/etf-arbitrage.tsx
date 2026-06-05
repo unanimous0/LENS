@@ -6,6 +6,7 @@ import { useMarketStore } from '@/stores/marketStore'
 import { usePageStockSubscriptions } from '@/hooks/usePageStockSubscriptions'
 import { usePageInavSubscriptions } from '@/hooks/usePageInavSubscriptions'
 import { usePageOrderbookBulk } from '@/hooks/usePageOrderbookBulk'
+import { usePageVolumePolling } from '@/hooks/usePageVolumePolling'
 
 const HISTORY_INTERVAL_MS = 5000  // 5초 간격
 const HISTORY_MAX_POINTS = 120    // 10분치
@@ -740,7 +741,8 @@ export function EtfArbitragePage() {
     })()
     const live = useMarketStore.getState()
     const volOf = (code: string): number => {
-      const lv = live.etfTicks[code]?.cum_volume ?? live.stockTicks[code]?.cum_volume ?? 0
+      // 우선순위: WS 실시간(상위 N) > t8407 폴링(전체, 30초) > localStorage 캐시.
+      const lv = live.etfTicks[code]?.cum_volume ?? live.stockTicks[code]?.cum_volume ?? live.pollVolumes[code] ?? 0
       return lv > 0 ? lv : (cache[code] ?? 0)
     }
     const sorted = [...filtered].sort((a, b) => volOf(b.code) - volOf(a.code))
@@ -829,6 +831,15 @@ export function EtfArbitragePage() {
   // ETF 호가 일괄 구독 — 4모드 가격 (own/opp/mid)에 필요. visibleMaster 기준.
   const etfCodesForOrderbook = useMemo(() => visibleMaster.map((e) => e.code), [visibleMaster])
   usePageOrderbookBulk(etfCodesForOrderbook)
+
+  // 외부망: 전체 섹터 ETF 거래대금을 t8407(키B REST)로 30초 폴링 → 순위 매기기.
+  //   표시 N개만 WS 실시간(현재가/iNAV/호가)이라, 50위 밖 거래대금 변동을 이 폴링으로 따라감.
+  //   REST라 키A WS 부담 0. 내부망은 섹터 전체를 WS로 구독하므로 폴링 불필요.
+  const volumePollCodes = useMemo(
+    () => (isINavMode && master ? master.filter((e) => subTypes.has(e.type ?? 'other')).map((e) => e.code) : []),
+    [isINavMode, master, subTypes],
+  )
+  usePageVolumePolling(volumePollCodes)
 
   // ETF별 메트릭 계산 — 두 단계로 분리해서 excluded 토글 응답 최적화.
   //   baseMetricsByCode: 모든 ETF, exSet=undefined로 계산. 무거움 (~50ms). 200ms tick에만 재실행.

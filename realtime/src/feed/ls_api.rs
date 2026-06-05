@@ -226,6 +226,38 @@ impl MarketFeed for LsApiFeed {
             });
         }
 
+        // ETF 거래대금 30초 폴링 대상 셋 (외부망 순위 매기기용). SetVolumePolling으로 통째 교체.
+        //   t8407 REST(키B)라 WS 0연결 → 키A WS 한계와 무관. 상위 N 실시간 구독(키A)과 별개.
+        let volume_codes = std::sync::Arc::new(std::sync::RwLock::new(Vec::<String>::new()));
+        {
+            let volume_codes_w = volume_codes.clone();
+            let tx_v = tx.clone();
+            let cancel_v = cancel.clone();
+            tokio::spawn(async move {
+                use std::time::Duration;
+                // 초기 구독 셋 도착 대기.
+                tokio::select! {
+                    _ = tokio::time::sleep(Duration::from_secs(5)) => {}
+                    _ = cancel_v.cancelled() => return,
+                }
+                loop {
+                    if !crate::phase::wait_until_active(&cancel_v, "volume-poll").await { return; }
+                    let codes: Vec<String> = volume_codes_w.read().unwrap().clone();
+                    if !codes.is_empty() {
+                        let (ak, as_) = super::ls_rest::rest_credentials();
+                        match super::ls_rest::get_or_fetch_token(&ak, &as_).await {
+                            Ok(token) => super::ls_rest::fetch_t8407_volumes(&token, &codes, &tx_v, &cancel_v).await,
+                            Err(e) => tracing::warn!("volume-poll token: {e}"),
+                        }
+                    }
+                    tokio::select! {
+                        _ = tokio::time::sleep(Duration::from_secs(30)) => {}
+                        _ = cancel_v.cancelled() => return,
+                    }
+                }
+            });
+        }
+
         // t1102 실패 코드 백그라운드 재시도 worker.
         // 초기 fetch 시 LS 5xx로 빠뜨린 코드들이 failed map에 쌓여있음 → 60초마다
         // 재시도해 점진적으로 보충. Sleep phase (장 외)엔 자동 idle.
@@ -723,6 +755,11 @@ impl MarketFeed for LsApiFeed {
                         Some(SubCommand::UnsubscribeOrderbook) => {
                             debug!("Orderbook unsubscribe");
                             ob_cancel.cancel();
+                        }
+                        Some(SubCommand::SetVolumePolling(codes)) => {
+                            let n = codes.len();
+                            *volume_codes.write().unwrap() = codes;
+                            debug!("SetVolumePolling: {n} codes (t8407 30s poll)");
                         }
                         None => break,
                     }

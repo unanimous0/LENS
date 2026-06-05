@@ -475,6 +475,9 @@ impl MarketFeed for MockFeed {
                             SubCommand::PrioritizeStocks(_) => {
                                 // mock은 즉시 데이터 생성 — 우선화 의미 없음.
                             }
+                            SubCommand::SetVolumePolling(_) => {
+                                // 거래대금 폴링은 외부망(t8407 REST) 전용 — mock은 no-op.
+                            }
                         }
                     }
                 }

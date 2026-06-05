@@ -13,7 +13,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 use crate::model::message::WsMessage;
-use crate::model::tick::{EtfTick, StockTick, FuturesTick};
+use crate::model::tick::{EtfTick, StockTick, FuturesTick, VolumeTick};
 use crate::Stats;
 
 /// LS OpenAPI 에러 메시지 분류.
@@ -917,6 +917,36 @@ async fn fetch_t8407(
         }
     }
     Err(last_err)
+}
+
+/// 거래대금 폴링 — codes를 t8407로 배치 조회해 VolumeTick(거래대금)을 broadcast.
+/// 외부망 순위 매기기 전용(30초 주기 호출). fetch_t8407 재사용 → 내부 t8407_rate_gate가
+/// 청크 간격(TPS 5)을 처리. value(백만원) × 1_000_000 = cum_volume(원).
+pub async fn fetch_t8407_volumes(
+    token: &str,
+    codes: &[String],
+    tx: &mpsc::Sender<WsMessage>,
+    cancel: &CancellationToken,
+) {
+    let client = reqwest::Client::new();
+    for chunk in codes.chunks(T8407_CHUNK) {
+        if cancel.is_cancelled() { return; }
+        let refs: Vec<&String> = chunk.iter().collect();
+        match fetch_t8407(&client, token, &refs).await {
+            Ok(map) => {
+                for (code, detail) in map {
+                    let value = pu(detail.get("value")); // 백만원 단위 거래대금
+                    if value > 0 {
+                        let _ = tx.send(WsMessage::VolumeTick(VolumeTick {
+                            code,
+                            cum_volume: value * 1_000_000,
+                        })).await;
+                    }
+                }
+            }
+            Err(e) => warn!("t8407 volume poll: {e}"),
+        }
+    }
 }
 
 #[allow(dead_code)] // t8407 배치로 대체됨. 단건 디버그/폴백용 보존.

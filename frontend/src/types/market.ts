@@ -107,4 +107,10 @@ export interface ScenarioPnL {
   expected_pnl: number
 }
 
+/** 거래대금 틱 — 외부망 ETF 거래대금 30초 폴링(t8407 REST) 전용. 순위 매기기용. */
+export interface VolumeTick {
+  code: string
+  cum_volume: number
+}
+
 export type NetworkMode = 'internal' | 'external' | 'mock'

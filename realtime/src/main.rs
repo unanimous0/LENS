@@ -180,6 +180,7 @@ fn msg_pending_key(msg: &WsMessage) -> String {
         WsMessage::FuturesTick(t) => format!("futures_tick:{}", t.code),
         WsMessage::EtfTick(t) => format!("etf_tick:{}", t.code),
         WsMessage::OrderbookTick(t) => format!("orderbook_tick:{}", t.code),
+        WsMessage::VolumeTick(t) => format!("volume_tick:{}", t.code),
         // LP 매트릭스·북 리스크는 각각 단일 인스턴스 — 고정 key로 dedup.
         WsMessage::FairValueMatrix(_) => "fair_value_matrix".to_string(),
         WsMessage::BookRisk(_) => "book_risk".to_string(),
@@ -193,6 +194,8 @@ fn msg_cache_key(msg: &WsMessage) -> Option<String> {
         WsMessage::FuturesTick(t) => Some(format!("futures_tick:{}", t.code)),
         WsMessage::EtfTick(t) => Some(format!("etf_tick:{}", t.code)),
         WsMessage::OrderbookTick(_) => None,
+        // 거래대금은 캐시 — 신규 클라이언트가 전체 순위를 즉시 매길 수 있게.
+        WsMessage::VolumeTick(t) => Some(format!("volume_tick:{}", t.code)),
         // 매트릭스·북 리스크는 캐시 — 신규 클라이언트 연결 시 즉시 보여주기 위해.
         WsMessage::FairValueMatrix(_) => Some("fair_value_matrix".to_string()),
         WsMessage::BookRisk(_) => Some("book_risk".to_string()),
@@ -528,6 +531,7 @@ async fn main() {
         .route("/prioritize-stocks", post(prioritize_stocks))
         .route("/subscribe-inav", post(subscribe_inav))
         .route("/unsubscribe-inav", post(unsubscribe_inav))
+        .route("/subscribe-volumes", post(set_volume_polling))
         .route("/orderbook/subscribe", post(subscribe_orderbook))
         .route("/orderbook/subscribe-bulk", post(subscribe_orderbook_bulk))
         .route("/orderbook/unsubscribe", post(unsubscribe_orderbook))
@@ -1161,6 +1165,18 @@ async fn subscribe_inav(
     debug!("REST subscribe-inav: {} codes (client={:?})", count, cid);
     let _ = state.sub_tx.read().unwrap().send(SubCommand::SubscribeInav(req.codes));
     Json(serde_json::json!({"status": "ok", "subscribed": count}))
+}
+
+/// ETF 거래대금 폴링 대상 셋 교체 (t8407 30초 폴링, 키B REST). replace 시맨틱 —
+/// 받은 셋으로 통째 교체(빈 셋이면 폴링 중지). WS 0연결이라 client_id 추적 불필요.
+async fn set_volume_polling(
+    State(state): State<AppState>,
+    Json(req): Json<SubRequest>,
+) -> Json<serde_json::Value> {
+    let count = req.codes.len();
+    debug!("REST set-volume-polling: {} codes (t8407 30s poll)", count);
+    let _ = state.sub_tx.read().unwrap().send(SubCommand::SetVolumePolling(req.codes));
+    Json(serde_json::json!({"status": "ok", "polling": count}))
 }
 
 async fn unsubscribe_inav(

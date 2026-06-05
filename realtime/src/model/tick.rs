@@ -140,3 +140,11 @@ pub struct OrderbookTick {
     pub total_bid_qty: u64,
     pub timestamp: String,
 }
+
+/// 거래대금 틱 — 외부망 ETF 거래대금 30초 폴링(t8407 REST) 전용.
+/// 순위 매기기용이라 거래대금만 담는다. 현재가/NAV/호가는 상위 N이 WS로 따로 받음.
+#[derive(Debug, Clone, Serialize)]
+pub struct VolumeTick {
+    pub code: String,
+    pub cum_volume: u64, // 누적 거래대금 (원). t8407 value(백만원) × 1_000_000.
+}

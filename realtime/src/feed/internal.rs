@@ -223,8 +223,9 @@ impl InternalFeed {
                             let _ = write.send(tungstenite::Message::Text(unsub_msg.to_string().into())).await;
                             debug!("UnsubscribeStocks: -{} actually dropped (out of {} requests)", actually_dropped.len(), codes.len());
                         }
-                        Some(SubCommand::SubscribeInav(_)) | Some(SubCommand::UnsubscribeInav(_)) => {
+                        Some(SubCommand::SubscribeInav(_)) | Some(SubCommand::UnsubscribeInav(_)) | Some(SubCommand::SetVolumePolling(_)) => {
                             // 내부망은 nav가 trade tick과 함께 흘러옴 (rnav_trade/inav). 별도 구독 불필요.
+                            //   거래대금 폴링(SetVolumePolling)도 외부망 전용이라 내부망은 no-op.
                         }
                         Some(SubCommand::PrioritizeStocks(_)) => {
                             // 내부망은 데이터 즉시 도착 — 우선화 의미 없음. no-op.

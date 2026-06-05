@@ -44,6 +44,9 @@ interface MarketState {
   batchUpdateOrderbooks: (ticks: Record<string, OrderbookTick>) => void
   clearOrderbook: (code: string) => void
   clearOrderbooks: () => void
+  /** 외부망 ETF 거래대금(t8407 30초 폴링). code → cum_volume. 순위 매기기 전용(비구독 ETF 포함). */
+  pollVolumes: Record<string, number>
+  batchUpdateVolumes: (ticks: Record<string, number>) => void
   /** ETF 메트릭 시계열 history. ETF 코드 → 최근 N개 포인트.
    *  - diffBp: PDF 매도차-매수차 (signed). 양수=매도차 우세, 음수=매수차 우세
    *  - price/nav/priceNavBp: ETF 가격 / 라이브 iNAV / 괴리bp — 가격·NAV 차트용
@@ -111,6 +114,9 @@ export const useMarketStore = create<MarketState>((set) => ({
     set((state) => ({ etfTicks: { ...state.etfTicks, [tick.code]: tick } })),
   batchUpdateETFs: (ticks) =>
     set((state) => ({ etfTicks: { ...state.etfTicks, ...ticks } })),
+  pollVolumes: {},
+  batchUpdateVolumes: (ticks) =>
+    set((state) => ({ pollVolumes: { ...state.pollVolumes, ...ticks } })),
   stockTicks: {},
   updateStockTick: (tick) =>
     set((state) => {
