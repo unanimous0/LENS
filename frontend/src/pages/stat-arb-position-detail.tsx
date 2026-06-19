@@ -94,14 +94,17 @@ export function StatArbPositionDetailPage() {
     )
   }
 
-  const stat1d = detail.timeframes.find((t) => t.timeframe === '1d')
+  // 헤드라인 timeframe = 30분 인트라데이 (일봉 종가 스파이크 배제, 2026-06-19).
+  const stat1d = detail.timeframes.find((t) => t.timeframe === '30m')
   const entry = position.entry_stats ?? {}
 
-  // 실시간 spread/z
+  // 실시간 spread/z — 차트 z와 동일 기준(백엔드 30분 center/scale) 우선, 없으면 재계산.
   const leftPrice = leftTick?.price ?? 0
   const rightPrice = rightTick?.price ?? 0
   const hasLive = leftPrice > 0 && rightPrice > 0 && stat1d != null
-  const { mean: spMean, std: spStd } = spreadStats(detail.spread_series)
+  const _fb = spreadStats(detail.spread_series)
+  const spMean = detail.spread_center ?? _fb.mean
+  const spStd = detail.spread_scale ?? _fb.std
   const liveSpread = hasLive
     ? rightPrice - stat1d!.alpha - stat1d!.hedge_ratio * leftPrice
     : null
@@ -143,8 +146,14 @@ export function StatArbPositionDetailPage() {
   const loanPnL = estimateLoanPnL(position)
   const totalPnL = (markPnL ?? 0) + loanPnL
 
+  // half-life 단위 환산: stat1d(30분봉) half_life는 "30분봉 개수" → 거래일로 환산.
+  // 30분봉 ≈ 13개/거래일(09:00~15:30, 단일가 제외). entry.half_life는 보유기간(일) 기준 기존값.
+  const BARS_30M_PER_TRADING_DAY = 13
+  const currentHalfLifeDays =
+    stat1d?.half_life != null ? stat1d.half_life / BARS_30M_PER_TRADING_DAY : null
+
   // 자동 라벨 — closed는 라벨 안 보여줌 (별도 "청산" 뱃지가 명확)
-  const halfLife = entry.half_life ?? stat1d?.half_life ?? null
+  const halfLife = entry.half_life ?? currentHalfLifeDays
   const label = !isClosed ? deriveLabel(position, currentZ, halfLife) : null
   const labelMeta = label ? LABEL_META[label] : null
   const regress = regressionPct(position.entry_z, currentZ)
@@ -261,6 +270,7 @@ export function StatArbPositionDetailPage() {
                   ? { ts: position.opened_at, spread: entrySpread }
                   : null
               }
+              live={liveSpread}
             />
           </div>
         </div>
@@ -277,13 +287,19 @@ export function StatArbPositionDetailPage() {
                   ? { ts: position.opened_at, z: position.entry_z }
                   : null
               }
+              live={liveZ}
             />
           </div>
         </div>
         <div className="panel p-3 lg:col-span-2">
-          <div className="mb-2 text-xs text-t3">잔차 분포 · 현재 위치 빨강</div>
+          <div className="mb-2 text-xs text-t3">잔차 분포 (σ 단위) · 평균 0 · ±1σ/±2σ · 현재 빨강</div>
           <div className="h-[200px]">
-            <ResidualHistogram bins={detail.histogram} currentSpread={currentSpread} />
+            <ResidualHistogram
+              bins={detail.histogram}
+              center={spMean}
+              scale={spStd}
+              currentZ={currentZ}
+            />
           </div>
         </div>
       </div>
@@ -388,7 +404,7 @@ export function StatArbPositionDetailPage() {
               <StatRow
                 label="half-life (d)"
                 entry={entry.half_life}
-                current={stat1d?.half_life}
+                current={currentHalfLifeDays ?? undefined}
                 fmt={(v) => v.toFixed(2)}
               />
               <StatRow

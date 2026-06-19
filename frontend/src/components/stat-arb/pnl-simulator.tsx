@@ -32,7 +32,8 @@ export function PnlSimulator({
   liveZ: number | null
   liveSpread: number | null
 }) {
-  const stat1d = detail.timeframes.find((t) => t.timeframe === '1d')
+  // 헤드라인 timeframe = 30분 인트라데이 (일봉 종가 스파이크 배제, 2026-06-19).
+  const stat1d = detail.timeframes.find((t) => t.timeframe === '30m')
   const lastPoint = detail.spread_series[detail.spread_series.length - 1]
 
   // 방향 판정 — liveZ가 있으면 우선
@@ -269,7 +270,9 @@ export function PnlSimulator({
             entryStats: {
               alpha: stat1d.alpha,
               beta: stat1d.hedge_ratio,
-              half_life: stat1d.half_life,
+              // half_life는 거래일 단위로 저장 (position-detail이 '일'로 표시).
+              // stat1d(30분봉) half_life는 봉 개수 → ÷13(30분봉/거래일).
+              half_life: stat1d.half_life / 13,
               adf: stat1d.adf_tstat,
               r2: stat1d.r_squared,
             },

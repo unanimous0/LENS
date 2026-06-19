@@ -31,6 +31,9 @@ export type PairDetail = {
   timeframes: TimeframeStat[]
   spread_series: SpreadPoint[]
   histogram: HistBin[]
+  /** 헤드라인(30분) 잔차 정규화 기준. 실시간 z = (liveSpread − spread_center) / spread_scale. */
+  spread_center?: number
+  spread_scale?: number
 }
 
 // /pairs 응답의 페어 — 한 줄 요약 (메인 테이블에서 사용)

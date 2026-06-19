@@ -4,8 +4,14 @@
 
 use serde::Serialize;
 
-use crate::data::bars::{aggregate, AssetSeries, Bar, Timeframe};
+use crate::data::bars::{bucket_ohlc, Bar};
 use crate::stats;
+
+// 인트라데이 버킷 크기 (ms). 헤드라인=30분. 비교표=1분/5분/30분/1시간.
+const BUCKET_1M_MS: i64 = 60 * 1000;
+const BUCKET_5M_MS: i64 = 5 * 60 * 1000;
+const BUCKET_30M_MS: i64 = 30 * 60 * 1000;
+const BUCKET_1H_MS: i64 = 60 * 60 * 1000;
 
 /// timeframe 1개 통계량 (1d, 1m 별로 각각).
 #[derive(Debug, Clone, Serialize)]
@@ -44,12 +50,16 @@ pub struct PairDetail {
     pub right_key: String,
     pub left_name: String,
     pub right_name: String,
-    /// timeframe 별 통계 — 데이터 부족하거나 fit 실패하면 빠짐.
+    /// timeframe 별 통계 (1분/5분/30분/1시간 인트라데이) — 데이터 부족·fit 실패 시 빠짐.
     pub timeframes: Vec<TimeframeStat>,
-    /// 일봉 기준 잔차 시계열 (전체 일자, 최대 ~250 point).
+    /// 30분 인트라데이 잔차 시계열 (일봉 종가 스파이크 배제). 헤드라인 차트.
     pub spread_series: Vec<SpreadPoint>,
-    /// 잔차 분포 히스토그램 — 일봉 잔차 기준.
+    /// 잔차 분포 히스토그램 — 30분 인트라데이 잔차 기준.
     pub histogram: Vec<HistBin>,
+    /// 헤드라인(30분) 잔차 정규화 기준 — 프론트 실시간 z를 차트 z와 동일 기준으로 맞추기 위함.
+    /// z = (spread - spread_center) / spread_scale.
+    pub spread_center: f64,
+    pub spread_scale: f64,
 }
 
 // ---------------------------------------------------------------------------
@@ -116,29 +126,6 @@ fn timeframe_stat_from_bars(
     })
 }
 
-/// raw timeframe (캐시에서 그대로) 통계.
-fn timeframe_stat_raw(
-    label: &'static str,
-    left: &AssetSeries,
-    right: &AssetSeries,
-    tf: Timeframe,
-) -> Option<TimeframeStat> {
-    timeframe_stat_from_bars(label, left.bars(tf), right.bars(tf))
-}
-
-/// 집계 timeframe — 양쪽 시리즈를 base에서 N-bar 집계 후 통계.
-fn timeframe_stat_aggregated(
-    label: &'static str,
-    left: &AssetSeries,
-    right: &AssetSeries,
-    base: Timeframe,
-    multiplier: usize,
-) -> Option<TimeframeStat> {
-    let left_agg = aggregate(left.bars(base), multiplier);
-    let right_agg = aggregate(right.bars(base), multiplier);
-    timeframe_stat_from_bars(label, &left_agg, &right_agg)
-}
-
 fn histogram(values: &[f64], n_bins: usize) -> Vec<HistBin> {
     if values.is_empty() || n_bins == 0 {
         return Vec::new();
@@ -182,20 +169,25 @@ fn histogram(values: &[f64], n_bins: usize) -> Vec<HistBin> {
 // 메인 빌더
 // ---------------------------------------------------------------------------
 
+/// `left_raw`/`right_raw` = stitched 인트라데이 raw (과거 1분봉 + 최근 30초봉, ts ASC).
+/// 일봉(종가 단일가 스파이크)을 배제하고 인트라데이만 사용 — 사용자 결정 2026-06-19.
+/// 헤드라인·차트는 30분 버킷(장 시작/마감 단일가 제외), 비교표는 1분/5분/30분/1시간.
 pub fn build_pair_detail(
     left_key: String,
     right_key: String,
     left_name: String,
     right_name: String,
-    left: &AssetSeries,
-    right: &AssetSeries,
+    left_raw: &[Bar],
+    right_raw: &[Bar],
 ) -> Option<PairDetail> {
-    // 일봉 시계열 — 응답의 메인 차트
-    let (x_d, y_d, ts) = intersect_by_ts(left.bars(Timeframe::Day1), right.bars(Timeframe::Day1));
-    if x_d.len() < 30 {
+    // 헤드라인 = 30분 버킷 시계열 (메인 차트 + KPI z 기준)
+    let l30 = bucket_ohlc(left_raw, BUCKET_30M_MS);
+    let r30 = bucket_ohlc(right_raw, BUCKET_30M_MS);
+    let (x, y, ts) = intersect_by_ts(&l30, &r30);
+    if x.len() < 30 {
         return None;
     }
-    let r = stats::ols(&x_d, &y_d)?;
+    let r = stats::ols(&x, &y)?;
     let resid = &r.residuals;
     let mean = resid.iter().sum::<f64>() / resid.len() as f64;
     let sigma = stats::stddev_pop(resid)?;
@@ -213,41 +205,30 @@ pub fn build_pair_detail(
 
     let hist = histogram(resid, 30);
 
-    // 8 timeframe 통계 — raw 3개 + 집계 5개. 데이터 부족 시 자연 None.
-    //
-    // raw: 30s(4/27~), 1m(1/2~4/24), 1d(1년)
-    // 집계: 5m/30m/1h = bars_1m × N (sample 풍부)
-    //       1w/1mo = bars_1d × N
-    //
-    // 단위 해석 (half_life 단위 = 그 timeframe의 단위):
-    //   30s hl=120 → 120×30s = 1시간
-    //   1m hl=60 → 60분 = 1시간
-    //   5m hl=12 → 60분 = 1시간
-    //   1d hl=3 → 3일
-    //   1w hl=2 → 2주
+    // 비교표 — 전부 인트라데이 버킷 (일/주/월 제거). 30분은 위 OLS와 동일 입력이라 일관.
     let mut timeframes: Vec<TimeframeStat> = Vec::new();
-    if let Some(s) = timeframe_stat_raw("30s", left, right, Timeframe::Sec30) {
+    if let Some(s) = timeframe_stat_from_bars(
+        "1m",
+        &bucket_ohlc(left_raw, BUCKET_1M_MS),
+        &bucket_ohlc(right_raw, BUCKET_1M_MS),
+    ) {
         timeframes.push(s);
     }
-    if let Some(s) = timeframe_stat_raw("1m", left, right, Timeframe::Min1) {
+    if let Some(s) = timeframe_stat_from_bars(
+        "5m",
+        &bucket_ohlc(left_raw, BUCKET_5M_MS),
+        &bucket_ohlc(right_raw, BUCKET_5M_MS),
+    ) {
         timeframes.push(s);
     }
-    if let Some(s) = timeframe_stat_aggregated("5m", left, right, Timeframe::Min1, 5) {
+    if let Some(s) = timeframe_stat_from_bars("30m", &l30, &r30) {
         timeframes.push(s);
     }
-    if let Some(s) = timeframe_stat_aggregated("30m", left, right, Timeframe::Min1, 30) {
-        timeframes.push(s);
-    }
-    if let Some(s) = timeframe_stat_aggregated("1h", left, right, Timeframe::Min1, 60) {
-        timeframes.push(s);
-    }
-    if let Some(s) = timeframe_stat_raw("1d", left, right, Timeframe::Day1) {
-        timeframes.push(s);
-    }
-    if let Some(s) = timeframe_stat_aggregated("1w", left, right, Timeframe::Day1, 5) {
-        timeframes.push(s);
-    }
-    if let Some(s) = timeframe_stat_aggregated("1mo", left, right, Timeframe::Day1, 21) {
+    if let Some(s) = timeframe_stat_from_bars(
+        "1h",
+        &bucket_ohlc(left_raw, BUCKET_1H_MS),
+        &bucket_ohlc(right_raw, BUCKET_1H_MS),
+    ) {
         timeframes.push(s);
     }
 
@@ -259,5 +240,7 @@ pub fn build_pair_detail(
         timeframes,
         spread_series,
         histogram: hist,
+        spread_center: mean,
+        spread_scale: sigma_safe,
     })
 }

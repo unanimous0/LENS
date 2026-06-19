@@ -569,3 +569,30 @@ cron이 sujung=Y + gap > 15% 자동 감지 + adj_factor UPDATE. 평상시 LS 호
 - **부분 청산 / 추가 진입**: 현재 미지원. 운용해보고 필요성 판단.
 - **multi-user / 권한**: 단일 사용자 가정. 다중 사용자 필요 시 positions 테이블에 user_id 추가.
 - **백테스트 결과 저장**: 수동 조립 백테스트 결과를 saved_pairs에 함께 저장할지.
+
+## 15. 페어 상세(detail) 인트라데이 전환 + 부호 결정성 + 차트 UX (2026-06-19)
+
+memory: `project_statarb_intraday_detail`. **발굴(discovery)은 여전히 일봉**, 상세 표시·시그널만 인트라데이로.
+
+### 15.1 detail = 30분 인트라데이 (일봉 종가 스파이크 배제)
+- **동기**: 일봉 종가에 단일가(closing auction) 튀는 값이 섞여 z·차트가 망가짐(스파이크 1개가 y축 다 잡아먹음). → 일봉 버림.
+- **데이터**: 과거 1분봉(`interval=60`, ~04-24) + 최근 30초봉(`interval=30`, 04-27~)을 거래일상 연속 stitch. `ohlcv_intraday_adjusted`(수정주가) 사용.
+- **헤드라인·차트 = 30분 버킷**, 비교표 = 1분/5분/30분/1시간 (일/주/월 제거).
+- **구현** (`bars.rs`): `in_continuous_session(ts)`(KST 09:01~15:19만 — 시가 09:00·마감 15:20~15:30 단일가 제외) · `bucket_ohlc(bars, ms)`(시각정렬 버킷, 일경계 안 넘음, 혼합 interval 허용) · `unified_intraday(1m, 30s)`(30초 첫 ts 이전 1분봉+30초 concat) · `load_intraday_one(pool, asset_type, code, interval, days)`.
+- **on-demand 로드** (`main.rs pair_detail`): warmup 캐시의 30초는 `WARMUP_DAYS_30S=5`(5일)뿐 → 디테일은 그 페어만 30초 60일 on-demand 로드해 캐시 1분봉과 stitch. 캐시 ref는 await 전 복사 후 drop(DashMap shard lock 회피).
+- **`build_pair_detail`**(`detail.rs`): 시그니처 `&AssetSeries`→`&[Bar]`(stitched raw) 2개. 30분 OLS→잔차→z→spread_series, histogram, `spread_center`(mean)/`spread_scale`(std) 필드 추가(프론트 실시간 z를 차트 z와 동일 기준으로).
+- **프론트** (`stat-arb-detail.tsx`): `KPI_TF='30m'`, 실시간 z=`(liveSpread−spread_center)/spread_scale`. pnl-simulator·position-detail도 '30m'. half-life는 30분봉 개수 → 거래일 ÷13 환산.
+- **참고**: spread_series ~250(일봉)→~1,100(30분). 1분봉은 이동창(`WARMUP_DAYS_1M=130`)이라 detail 시작이 "오늘−130일"(현재 ~2/9), 시간 지나면 1분봉 구간이 줄어 30초로 대체됨(§12 fade).
+
+### 15.2 페어 좌/우(=z 부호) 결정성 (중요 버그 수정)
+- **증상**: 같은 페어가 볼 때마다 z 부호 뒤집힘.
+- **원인**: `discovery.rs`가 후보 시리즈를 **DashMap `cache.iter()`로 순회**(비결정적 순서) → 페어 (a,b)의 좌/우가 재시작마다 뒤바뀜 → 잔차 = y−α−β·x 의 x,y가 바뀌어 z 부호 반전.
+- **수정**: `series_data`를 **키로 정렬**(1:1 발굴 + 그룹 발굴 둘 다). 항상 작은 코드=left(x), 큰 코드=right(y) → 부호 안정. (열린 포지션은 자기 진입 시점 키를 써서 영향 없음.)
+
+### 15.3 차트 UX (`components/stat-arb/charts.tsx`)
+- **라이브 이어 그리기**: DB 시계열(어제까지) 끝에 실시간 현재값을 30분 버킷으로 `series.update()`(전체 리빌드 X). ts는 effect 내 `Date.now()`(render 중 호출 금지 — react-hooks/purity).
+- **x축 KST 날짜+시간**: `tickMarkFormatter`(날짜 틱 YY-MM-DD / 인트라데이 틱 HH:MM) + 크로스헤어 `YYYY-MM-DD HH:MM`. timestamp는 UTC 취급이라 +9h 보정.
+- **히스토그램 = σ 단위 커스텀 SVG**(lightweight-charts는 분포·세로선·정수 σ눈금 불가): x축 z(σ), 평균 0 + ±1σ/±2σ 세로선, y축 빈도, 현재=빨강 막대+값 라벨, 막대 호버 툴팁(σ 구간/빈도/비중).
+- **두 라인차트 시간축 동기화**: 체크박스 토글(기본 on). `register` prop으로 차트 인스턴스를 부모에 등록→`subscribeVisibleLogicalRangeChange` 연동(guard로 무한루프 방지).
+- **평균회귀 시그널 라벨**(`meanRevSignal`): z 부호→"롱 L/숏 R"(z>0) or "롱 R/숏 L"(z<0), |z|≥2 "진입권". 추세 해석 없이 트레이드 방향을 글자로. 상단 카드 + z차트 헤더.
+- 상단 3카드 리디자인(leg=가격 히어로, spread·z=z 히어로+시그널 pill).

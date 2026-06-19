@@ -622,6 +622,90 @@ pub fn aggregate(bars: &[Bar], multiplier: usize) -> Vec<Bar> {
         .collect()
 }
 
+/// KST 기준 연속매매 세션(09:01~15:19)이면 true.
+/// 장 시작 단일가(09:00)·마감 단일가(15:20~15:30)는 점프·노이즈가 커 인트라데이 분석에서 제외.
+/// (사용자 결정 2026-06-19: 종가/시가 단일가 왜곡 배제.)
+pub fn in_continuous_session(ts_ms: i64) -> bool {
+    use chrono::Timelike;
+    let kst = match chrono::FixedOffset::east_opt(9 * 3600) {
+        Some(z) => z,
+        None => return false,
+    };
+    match kst.timestamp_millis_opt(ts_ms).single() {
+        Some(t) => {
+            let mins = (t.hour() * 60 + t.minute()) as i32;
+            (9 * 60 + 1..=15 * 60 + 19).contains(&mins)
+        }
+        None => false,
+    }
+}
+
+/// 과거 1분봉 + 최근 30초봉을 이어붙인 raw 인트라데이.
+/// DB상 1분봉(~04-24)과 30초봉(04-27~)은 겹치지 않지만, 안전하게 30초 첫 ts 이전 1분봉만 채택.
+pub fn unified_intraday(bars_1m: &[Bar], bars_30s: &[Bar]) -> Vec<Bar> {
+    let cut = bars_30s.first().map(|b| b.ts).unwrap_or(i64::MAX);
+    let mut out: Vec<Bar> = bars_1m.iter().filter(|b| b.ts < cut).copied().collect();
+    out.extend_from_slice(bars_30s);
+    out
+}
+
+/// 시각 정렬(clock-aligned) OHLCV 버킷 집계. `bucket_ms` 경계로 floor.
+/// 연속매매 세션 밖(장 시작/마감 단일가) 봉은 제외. 혼합 interval(1분+30초) raw 허용.
+/// 입력은 ts ASC 정렬 가정 — 같은 버킷 키가 연속이라 단일 패스로 묶임.
+/// 기존 `aggregate`(N-bar chunks_exact)와 달리 *일 경계를 넘지 않고* 시각에 정렬됨.
+pub fn bucket_ohlc(bars: &[Bar], bucket_ms: i64) -> Vec<Bar> {
+    if bucket_ms <= 0 {
+        return Vec::new();
+    }
+    let mut out: Vec<Bar> = Vec::new();
+    let mut cur_key: i64 = i64::MIN;
+    for b in bars {
+        if !in_continuous_session(b.ts) {
+            continue;
+        }
+        let key = b.ts - b.ts.rem_euclid(bucket_ms);
+        if key != cur_key {
+            out.push(Bar {
+                ts: key,
+                open: b.open,
+                high: b.high,
+                low: b.low,
+                close: b.close,
+                volume: b.volume,
+            });
+            cur_key = key;
+        } else if let Some(last) = out.last_mut() {
+            if b.high > last.high {
+                last.high = b.high;
+            }
+            if b.low < last.low {
+                last.low = b.low;
+            }
+            last.close = b.close;
+            last.volume += b.volume;
+        }
+    }
+    out
+}
+
+/// 자산군별 단일종목 분봉 로더 디스패치 (detail on-demand 30초 long load 용).
+/// warmup 캐시는 30초 5일치뿐이라, 디테일은 그 페어만 길게 별도 로드한다.
+pub async fn load_intraday_one(
+    pool: &PgPool,
+    asset_type: AssetType,
+    code: &str,
+    interval_sec: i16,
+    days: i32,
+) -> Result<Vec<Bar>, sqlx::Error> {
+    match asset_type {
+        AssetType::Stock | AssetType::Etf => load_stock_intraday(pool, code, interval_sec, days).await,
+        AssetType::StockFuture | AssetType::IndexFuture => {
+            load_futures_intraday(pool, code, interval_sec, days).await
+        }
+        AssetType::Index => load_index_intraday(pool, code, interval_sec, days).await,
+    }
+}
+
 /// 기존 bars 벡터의 마지막 ts 이후의 *새 bars*만 끝에 append.
 /// `new`는 ASC 정렬되어 있다고 가정.
 /// 반환: 실제 추가된 bar 개수.

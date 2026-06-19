@@ -165,6 +165,9 @@ pub fn discover_all_one_to_one(
             series_data.push((entry.key().clone(), closes));
         }
     }
+    // 키로 정렬 — DashMap 순회 순서가 비결정적이라 정렬 안 하면 페어 좌/우(=z 부호)가
+    // 재시작마다 뒤바뀜. 정렬 고정 시 항상 작은 키가 left(x), 큰 키가 right(y)로 일관.
+    series_data.sort_by(|a, b| a.0.cmp(&b.0));
     let n_series = series_data.len();
     tracing::info!("[discovery] 1:1 후보 시리즈 {} 개", n_series);
 
@@ -701,6 +704,8 @@ pub fn discover_within_group(
             }
         }
     }
+    // 키로 정렬 — 페어 좌/우(=z 부호) 결정성 보장 (members 순서와 무관하게 일관).
+    series_data.sort_by(|a, b| a.0.cmp(&b.0));
     let n = series_data.len();
     if n < 2 {
         return Vec::new();

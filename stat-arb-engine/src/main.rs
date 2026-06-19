@@ -286,8 +286,9 @@ async fn pair_detail(
     State(state): State<AppState>,
     Query(q): Query<PairDetailQuery>,
 ) -> Response {
-    let left = match state.cache.get(&q.left) {
-        Some(v) => v,
+    // 캐시 ref는 await 전에 필요한 것만 복사 후 drop (DashMap shard lock을 DB await 동안 잡지 않게).
+    let left_meta = match state.cache.get(&q.left) {
+        Some(v) => (v.code.clone(), v.asset_type, v.bars_1m.clone()),
         None => {
             return (
                 StatusCode::NOT_FOUND,
@@ -296,8 +297,8 @@ async fn pair_detail(
                 .into_response();
         }
     };
-    let right = match state.cache.get(&q.right) {
-        Some(v) => v,
+    let right_meta = match state.cache.get(&q.right) {
+        Some(v) => (v.code.clone(), v.asset_type, v.bars_1m.clone()),
         None => {
             return (
                 StatusCode::NOT_FOUND,
@@ -306,6 +307,31 @@ async fn pair_detail(
                 .into_response();
         }
     };
+    let pool = match &state.pg {
+        Some(p) => p,
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({"error": "DB 미연결 — 인트라데이 로드 불가"})),
+            )
+                .into_response();
+        }
+    };
+
+    // 디테일은 인트라데이(일봉 종가 스파이크 배제). warmup 캐시의 30초는 5일치뿐이라
+    // 이 페어만 30초를 길게(60일) on-demand 로드해 과거 1분봉과 stitch.
+    const DETAIL_30S_DAYS: i32 = 60;
+    let (l_code, l_type, l_1m) = left_meta;
+    let (r_code, r_type, r_1m) = right_meta;
+    let l_30s = data::bars::load_intraday_one(pool, l_type, &l_code, 30, DETAIL_30S_DAYS)
+        .await
+        .unwrap_or_default();
+    let r_30s = data::bars::load_intraday_one(pool, r_type, &r_code, 30, DETAIL_30S_DAYS)
+        .await
+        .unwrap_or_default();
+    let left_raw = data::bars::unified_intraday(&l_1m, &l_30s);
+    let right_raw = data::bars::unified_intraday(&r_1m, &r_30s);
+
     // 종목명 룩업 — pairs.names 에 들어있음
     let (left_name, right_name) = {
         let s = state.pairs.read().await;
@@ -319,13 +345,13 @@ async fn pair_detail(
         q.right.clone(),
         left_name,
         right_name,
-        &left,
-        &right,
+        &left_raw,
+        &right_raw,
     ) {
         Some(d) => Json(d).into_response(),
         None => (
             StatusCode::UNPROCESSABLE_ENTITY,
-            Json(serde_json::json!({"error": "데이터 부족 (일봉 30개 미만 또는 OLS 실패)"})),
+            Json(serde_json::json!({"error": "데이터 부족 (인트라데이 30봉 미만 또는 OLS 실패)"})),
         )
             .into_response(),
     }
