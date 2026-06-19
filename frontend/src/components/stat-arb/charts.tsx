@@ -10,7 +10,7 @@ import {
 
 import type { HistBin, SpreadPoint } from '@/types/stat-arb'
 
-// 인트라데이(30분) 차트 — x축에 KST 날짜 + 시간 표시.
+// 인트라데이(10분) 차트 — x축에 KST 날짜 + 시간 표시.
 // lightweight-charts는 timestamp를 UTC로 다루므로 +9h offset 후 UTC 필드를 읽어 KST 벽시계로.
 const KST_OFFSET_SEC = 9 * 3600
 const pad = (n: number) => String(n).padStart(2, '0')
@@ -47,7 +47,7 @@ const baseChartOpts = {
   crosshair: { mode: 1 as const },
 } as const
 
-// 시계열(스프레드·z) 차트 전용 — x축에 시간까지 표시 (인트라데이 30분).
+// 시계열(스프레드·z) 차트 전용 — x축에 시간까지 표시 (인트라데이 10분).
 //  · 날짜 경계 틱(Year/Month/Day) → YY-MM-DD
 //  · 인트라데이 틱(Time) → HH:MM
 //  · 크로스헤어 툴팁 → YYYY-MM-DD HH:MM (KST)
@@ -55,6 +55,9 @@ const seriesTimeScale = {
   borderColor: C.bgSurface,
   timeVisible: true,
   secondsVisible: false,
+  // 10분봉(~3,200점)을 fitContent로 전체 표시하려면 기본 minBarSpacing(0.5)으론 압축 한계 →
+  // 최근 일부만 보임. 낮춰서 전체 기간이 한눈에 들어오게 (확대는 사용자 휠 스크롤).
+  minBarSpacing: 0.08,
   tickMarkFormatter: (time: number, tickMarkType: number) => {
     const p = kstParts(time)
     if (tickMarkType < 3) return `${String(p.y).slice(2)}-${pad(p.mo)}-${pad(p.da)}`
@@ -178,12 +181,12 @@ export function SpreadChart({
     }
   }, [data, entry, register])
 
-  // 라이브 점 append/갱신 — 전체 리빌드 없이 마지막 점만. 30분 버킷으로 묶어 틱 폭주 방지.
+  // 라이브 점 append/갱신 — 전체 리빌드 없이 마지막 점만. 10분 버킷으로 묶어 틱 폭주 방지.
   // ts는 effect 안에서 now()로 생성 (render 중 Date.now() 호출 금지 — react-hooks/purity).
   useEffect(() => {
     const s = seriesRef.current
     if (!s || live == null) return
-    const bucket = Math.floor(Date.now() / 1000 / 1800) * 1800
+    const bucket = Math.floor(Date.now() / 1000 / 600) * 600
     if (bucket < lastTsRef.current) return
     s.update({ time: bucket as never, value: live })
     lastTsRef.current = bucket
@@ -314,7 +317,7 @@ export function ZScoreChart({
   useEffect(() => {
     const s = seriesRef.current
     if (!s || live == null) return
-    const bucket = Math.floor(Date.now() / 1000 / 1800) * 1800
+    const bucket = Math.floor(Date.now() / 1000 / 600) * 600
     if (bucket < lastTsRef.current) return
     s.update({ time: bucket as never, value: live })
     lastTsRef.current = bucket
@@ -400,7 +403,7 @@ export function LegCompareChart({
     const ls = lSeriesRef.current
     const rs = rSeriesRef.current
     if (!ls || !rs || !live) return
-    const bucket = Math.floor(Date.now() / 1000 / 1800) * 1800
+    const bucket = Math.floor(Date.now() / 1000 / 600) * 600
     if (bucket < lastTsRef.current) return
     const { l: baseL, r: baseR } = baseRef.current
     if (baseL > 0 && live.left > 0) ls.update({ time: bucket as never, value: (live.left / baseL - 1) * 100 })

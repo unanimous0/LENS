@@ -7,9 +7,10 @@ use serde::Serialize;
 use crate::data::bars::{bucket_ohlc, Bar};
 use crate::stats;
 
-// 인트라데이 버킷 크기 (ms). 헤드라인=30분. 비교표=1분/5분/30분/1시간.
+// 인트라데이 버킷 크기 (ms). 헤드라인=10분. 비교표=1분/5분/10분/30분/1시간.
 const BUCKET_1M_MS: i64 = 60 * 1000;
 const BUCKET_5M_MS: i64 = 5 * 60 * 1000;
+const BUCKET_10M_MS: i64 = 10 * 60 * 1000;
 const BUCKET_30M_MS: i64 = 30 * 60 * 1000;
 const BUCKET_1H_MS: i64 = 60 * 60 * 1000;
 
@@ -52,13 +53,13 @@ pub struct PairDetail {
     pub right_key: String,
     pub left_name: String,
     pub right_name: String,
-    /// timeframe 별 통계 (1분/5분/30분/1시간 인트라데이) — 데이터 부족·fit 실패 시 빠짐.
+    /// timeframe 별 통계 (1분/5분/10분/30분/1시간 인트라데이) — 데이터 부족·fit 실패 시 빠짐.
     pub timeframes: Vec<TimeframeStat>,
-    /// 30분 인트라데이 잔차 시계열 (일봉 종가 스파이크 배제). 헤드라인 차트.
+    /// 10분 인트라데이 잔차 시계열 (일봉 종가 스파이크 배제). 헤드라인 차트.
     pub spread_series: Vec<SpreadPoint>,
-    /// 잔차 분포 히스토그램 — 30분 인트라데이 잔차 기준.
+    /// 잔차 분포 히스토그램 — 10분 인트라데이 잔차 기준.
     pub histogram: Vec<HistBin>,
-    /// 헤드라인(30분) 잔차 정규화 기준 — 프론트 실시간 z를 차트 z와 동일 기준으로 맞추기 위함.
+    /// 헤드라인(10분) 잔차 정규화 기준 — 프론트 실시간 z를 차트 z와 동일 기준으로 맞추기 위함.
     /// z = (spread - spread_center) / spread_scale.
     pub spread_center: f64,
     pub spread_scale: f64,
@@ -173,7 +174,7 @@ fn histogram(values: &[f64], n_bins: usize) -> Vec<HistBin> {
 
 /// `left_raw`/`right_raw` = stitched 인트라데이 raw (과거 1분봉 + 최근 30초봉, ts ASC).
 /// 일봉(종가 단일가 스파이크)을 배제하고 인트라데이만 사용 — 사용자 결정 2026-06-19.
-/// 헤드라인·차트는 30분 버킷(장 시작/마감 단일가 제외), 비교표는 1분/5분/30분/1시간.
+/// 헤드라인·차트는 10분 버킷(장 시작/마감 단일가 제외), 비교표는 1분/5분/10분/30분/1시간.
 pub fn build_pair_detail(
     left_key: String,
     right_key: String,
@@ -182,10 +183,10 @@ pub fn build_pair_detail(
     left_raw: &[Bar],
     right_raw: &[Bar],
 ) -> Option<PairDetail> {
-    // 헤드라인 = 30분 버킷 시계열 (메인 차트 + KPI z 기준)
-    let l30 = bucket_ohlc(left_raw, BUCKET_30M_MS);
-    let r30 = bucket_ohlc(right_raw, BUCKET_30M_MS);
-    let (x, y, ts) = intersect_by_ts(&l30, &r30);
+    // 헤드라인 = 10분 버킷 시계열 (메인 차트 + KPI z 기준)
+    let l10 = bucket_ohlc(left_raw, BUCKET_10M_MS);
+    let r10 = bucket_ohlc(right_raw, BUCKET_10M_MS);
+    let (x, y, ts) = intersect_by_ts(&l10, &r10);
     if x.len() < 30 {
         return None;
     }
@@ -210,7 +211,7 @@ pub fn build_pair_detail(
 
     let hist = histogram(resid, 30);
 
-    // 비교표 — 전부 인트라데이 버킷 (일/주/월 제거). 30분은 위 OLS와 동일 입력이라 일관.
+    // 비교표 — 전부 인트라데이 버킷 (일/주/월 제거). 10분은 위 헤드라인 OLS와 동일 입력이라 일관.
     let mut timeframes: Vec<TimeframeStat> = Vec::new();
     if let Some(s) = timeframe_stat_from_bars(
         "1m",
@@ -226,7 +227,14 @@ pub fn build_pair_detail(
     ) {
         timeframes.push(s);
     }
-    if let Some(s) = timeframe_stat_from_bars("30m", &l30, &r30) {
+    if let Some(s) = timeframe_stat_from_bars("10m", &l10, &r10) {
+        timeframes.push(s);
+    }
+    if let Some(s) = timeframe_stat_from_bars(
+        "30m",
+        &bucket_ohlc(left_raw, BUCKET_30M_MS),
+        &bucket_ohlc(right_raw, BUCKET_30M_MS),
+    ) {
         timeframes.push(s);
     }
     if let Some(s) = timeframe_stat_from_bars(

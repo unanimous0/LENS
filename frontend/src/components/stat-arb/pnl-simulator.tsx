@@ -32,8 +32,8 @@ export function PnlSimulator({
   liveZ: number | null
   liveSpread: number | null
 }) {
-  // 헤드라인 timeframe = 30분 인트라데이 (일봉 종가 스파이크 배제, 2026-06-19).
-  const stat1d = detail.timeframes.find((t) => t.timeframe === '30m')
+  // 헤드라인 timeframe = 10분 인트라데이 (일봉 종가 스파이크 배제; 30분→10분 2026-06-20).
+  const stat1d = detail.timeframes.find((t) => t.timeframe === '10m')
   const lastPoint = detail.spread_series[detail.spread_series.length - 1]
 
   // 방향 판정 — liveZ가 있으면 우선
@@ -62,7 +62,7 @@ export function PnlSimulator({
   const [modalOpen, setModalOpen] = useState(false)
   const [savedToast, setSavedToast] = useState<string | null>(null)
 
-  // 권장 수량 기준가 — 실시간 우선, 없으면 마지막 30분봉 종가(장 마감/실시간 끊김 대비).
+  // 권장 수량 기준가 — 실시간 우선, 없으면 마지막 10분봉 종가(장 마감/실시간 끊김 대비).
   const refRight = livePrices.right > 0 ? livePrices.right : lastPoint?.right ?? 0
   const refLeft = livePrices.left > 0 ? livePrices.left : lastPoint?.left ?? 0
 
@@ -369,8 +369,8 @@ export function PnlSimulator({
               alpha: stat1d.alpha,
               beta: stat1d.hedge_ratio,
               // half_life는 거래일 단위로 저장 (position-detail이 '일'로 표시).
-              // stat1d(30분봉) half_life는 봉 개수 → ÷13(30분봉/거래일).
-              half_life: stat1d.half_life / 13,
+              // stat1d(10분봉) half_life는 봉 개수 → ÷38(10분봉/거래일, 09:00~15:10).
+              half_life: stat1d.half_life / 38,
               adf: stat1d.adf_tstat,
               r2: stat1d.r_squared,
             },

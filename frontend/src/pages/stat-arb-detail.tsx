@@ -11,7 +11,7 @@ import { humanHalfLifeShort } from '@/lib/stat-arb/half-life'
 import { useMarketStore } from '@/stores/marketStore'
 import type { PairDetail } from '@/types/stat-arb'
 
-const KPI_TF = '30m' // KPI 카드·메인 차트는 30분 인트라데이 기준 (일봉 종가 스파이크 배제, 2026-06-19)
+const KPI_TF = '10m' // KPI 카드·메인 차트는 10분 인트라데이 기준 (일봉 종가 스파이크 배제; 30분→10분 2026-06-20)
 
 /** 평균회귀 트레이드 방향 — 차트 추세를 머리로 해석할 필요 없게 명시.
  *  spread = R − α − β·L 이라 z>0 = R 비쌈 → 숏 R / 롱 L,  z<0 = R 쌈 → 롱 R / 숏 L.
@@ -145,7 +145,7 @@ export function StatArbDetailPage() {
   const leftPrice = leftTick?.price ?? 0
   const rightPrice = rightTick?.price ?? 0
   const hasLive = leftPrice > 0 && rightPrice > 0 && dayStat != null
-  // 실시간 z는 차트 z와 동일 기준이어야 함 → 백엔드가 준 30분 잔차 정규화 기준(center/scale) 우선 사용.
+  // 실시간 z는 차트 z와 동일 기준이어야 함 → 백엔드가 준 10분 잔차 정규화 기준(center/scale) 우선 사용.
   // (없으면 spread_series에서 재계산 — 구버전 응답 호환.)
   const _fallback = spreadStats(detail.spread_series)
   const spreadMean = detail.spread_center ?? _fallback.mean
@@ -244,17 +244,17 @@ export function StatArbDetailPage() {
               cls={zCls}
             />
             <KpiCard
-              label="half-life (30m)"
+              label={`half-life (${KPI_TF})`}
               value={dayStat ? humanHalfLifeShort(KPI_TF, dayStat.half_life) : '—'}
               cls="text-t1"
             />
             <KpiCard
-              label="ADF (30m)"
+              label={`ADF (${KPI_TF})`}
               value={dayStat ? dayStat.adf_tstat.toFixed(2) : '—'}
               cls={dayStat && dayStat.adf_tstat <= -3 ? 'text-up' : 'text-t3'}
             />
             <KpiCard
-              label="R² (30m)"
+              label={`R² (${KPI_TF})`}
               value={dayStat ? dayStat.r_squared.toFixed(3) : '—'}
               cls={dayStat && dayStat.r_squared >= 0.9 ? 'text-up' : 'text-t1'}
             />

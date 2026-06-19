@@ -34,7 +34,7 @@ export type PairDetail = {
   timeframes: TimeframeStat[]
   spread_series: SpreadPoint[]
   histogram: HistBin[]
-  /** 헤드라인(30분) 잔차 정규화 기준. 실시간 z = (liveSpread − spread_center) / spread_scale. */
+  /** 헤드라인(10분) 잔차 정규화 기준. 실시간 z = (liveSpread − spread_center) / spread_scale. */
   spread_center?: number
   spread_scale?: number
 }

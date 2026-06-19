@@ -94,11 +94,11 @@ export function StatArbPositionDetailPage() {
     )
   }
 
-  // 헤드라인 timeframe = 30분 인트라데이 (일봉 종가 스파이크 배제, 2026-06-19).
-  const stat1d = detail.timeframes.find((t) => t.timeframe === '30m')
+  // 헤드라인 timeframe = 10분 인트라데이 (일봉 종가 스파이크 배제; 30분→10분 2026-06-20).
+  const stat1d = detail.timeframes.find((t) => t.timeframe === '10m')
   const entry = position.entry_stats ?? {}
 
-  // 실시간 spread/z — 차트 z와 동일 기준(백엔드 30분 center/scale) 우선, 없으면 재계산.
+  // 실시간 spread/z — 차트 z와 동일 기준(백엔드 10분 center/scale) 우선, 없으면 재계산.
   const leftPrice = leftTick?.price ?? 0
   const rightPrice = rightTick?.price ?? 0
   const hasLive = leftPrice > 0 && rightPrice > 0 && stat1d != null
@@ -146,11 +146,11 @@ export function StatArbPositionDetailPage() {
   const loanPnL = estimateLoanPnL(position)
   const totalPnL = (markPnL ?? 0) + loanPnL
 
-  // half-life 단위 환산: stat1d(30분봉) half_life는 "30분봉 개수" → 거래일로 환산.
-  // 30분봉 ≈ 13개/거래일(09:00~15:30, 단일가 제외). entry.half_life는 보유기간(일) 기준 기존값.
-  const BARS_30M_PER_TRADING_DAY = 13
+  // half-life 단위 환산: stat1d(10분봉) half_life는 "10분봉 개수" → 거래일로 환산.
+  // 10분봉 ≈ 38개/거래일(09:00~15:10, 09:01~15:19 연속세션). entry.half_life는 보유기간(일) 기준 기존값.
+  const BARS_10M_PER_TRADING_DAY = 38
   const currentHalfLifeDays =
-    stat1d?.half_life != null ? stat1d.half_life / BARS_30M_PER_TRADING_DAY : null
+    stat1d?.half_life != null ? stat1d.half_life / BARS_10M_PER_TRADING_DAY : null
 
   // 자동 라벨 — closed는 라벨 안 보여줌 (별도 "청산" 뱃지가 명확)
   const halfLife = entry.half_life ?? currentHalfLifeDays
@@ -444,7 +444,7 @@ export function StatArbPositionDetailPage() {
 
         {/* 통계 변화 */}
         <div className="panel p-3">
-          <div className="mb-2 text-xs text-t3">통계량 변화 (진입 freeze vs 현재 1d)</div>
+          <div className="mb-2 text-xs text-t3">통계량 변화 (진입 freeze vs 현재 10m)</div>
           <table className="w-full text-xs tabular-nums">
             <thead className="text-t3">
               <tr>

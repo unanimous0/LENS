@@ -10,6 +10,7 @@ const TF_TO_SECONDS: Record<string, number> = {
   '30s': 30,
   '1m': 60,
   '5m': 300,
+  '10m': 600,
   '30m': 1800,
   '1h': 3600,
   '1d': 86400,
