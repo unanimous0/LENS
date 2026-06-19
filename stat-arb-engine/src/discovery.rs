@@ -115,9 +115,18 @@ fn evaluate_pair(
         return None;
     }
 
-    // 3. ADF on residuals
+    // 3. ADF on residuals — 양방향 대칭 게이트.
+    //    주 방향(y=b, x=a) 잔차뿐 아니라 역방향(y=a, x=b) 잔차 ADF도 둘 다 통과해야 함.
+    //    OLS는 y/x 선택에 따라 잔차가 달라져 ADF가 비대칭 → 한쪽만 통과하는 "방향 취약"
+    //    페어를 거른다. 견고히 공적분된 페어는 양 방향 다 통과(개념: 강한 기준이면
+    //    방향 비대칭은 비이슈). 대칭 정석은 M:N Johansen(PR-D)에서.
     let adf = stats::adf_tstat(&r.residuals)?;
     if adf > ADF_CRIT {
+        return None;
+    }
+    let r_rev = stats::ols(&b, &a)?;
+    let adf_rev = stats::adf_tstat(&r_rev.residuals)?;
+    if adf_rev > ADF_CRIT {
         return None;
     }
 

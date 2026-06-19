@@ -171,6 +171,21 @@ export function StatArbPositionDetailPage() {
     projectedExitDays = halfLife * (Math.log(Math.abs(currentZ) / 0.3) / Math.log(2))
   }
 
+  // β 드리프트 — 진입 β 대비 현재 β 변화. 자동 리밸런싱 X, 경고 + 수동 판단.
+  // 헤지: left:right 주식 수 = β:1 → right 고정 시 β-정합 left 수량 = round(β × rightQty).
+  const curBeta = stat1d?.hedge_ratio ?? null
+  const betaDriftPct =
+    entry.beta != null && entry.beta !== 0 && curBeta != null
+      ? ((curBeta - entry.beta) / Math.abs(entry.beta)) * 100
+      : null
+  const rightLegQty = rightLeg?.qty ?? 0
+  const curLeftLegQty = leftLeg?.qty ?? 0
+  const impliedLeftQty =
+    curBeta != null && rightLegQty > 0 ? Math.round(Math.abs(curBeta) * rightLegQty) : null
+  const leftQtyDelta = impliedLeftQty != null ? impliedLeftQty - curLeftLegQty : null
+  const BETA_DRIFT_WARN_PCT = 15
+  const betaDriftWarn = betaDriftPct != null && Math.abs(betaDriftPct) >= BETA_DRIFT_WARN_PCT
+
   const saveNote = async () => {
     setSavingNote(true)
     try {
@@ -254,6 +269,57 @@ export function StatArbPositionDetailPage() {
         />
         <Kpi label="평가 + 대여" value={`${fmtPnL(markPnL)} + ${fmtPnL(loanPnL)}`} />
       </div>
+
+      {/* β 드리프트 — 헤지 재조정 가이드 (자동 아님, 수동 판단) */}
+      {!isClosed && betaDriftPct != null && (
+        <div className={`panel p-3 ${betaDriftWarn ? 'border border-warning/40' : ''}`}>
+          <div className="mb-2 flex items-center gap-2">
+            <span className="text-xs text-t3">β 드리프트 · 헤지 재조정 가이드</span>
+            <span className="text-[10px] text-t4">자동 리밸런싱 아님 — 수동 판단</span>
+            {betaDriftWarn && (
+              <span className="rounded-sm bg-warning/15 px-2 py-0.5 text-[10px] text-warning">
+                재조정 검토
+              </span>
+            )}
+          </div>
+          <div className="grid grid-cols-1 gap-3 text-xs sm:grid-cols-3">
+            <div>
+              <div className="text-[10px] text-t3">진입 β → 현재 β</div>
+              <div className="tabular-nums text-t1">
+                {entry.beta?.toFixed(4) ?? '—'} → {curBeta?.toFixed(4) ?? '—'}
+              </div>
+            </div>
+            <div>
+              <div className="text-[10px] text-t3">드리프트</div>
+              <div className={`tabular-nums ${betaDriftWarn ? 'text-warning' : 'text-t2'}`}>
+                {betaDriftPct >= 0 ? '+' : ''}
+                {betaDriftPct.toFixed(1)}%
+              </div>
+            </div>
+            <div>
+              <div className="text-[10px] text-t3">
+                β-정합 {detail.left_name} 수량 ({detail.right_name}{' '}
+                {rightLegQty.toLocaleString()}주 고정 기준)
+              </div>
+              <div className="tabular-nums text-t1">
+                {curLeftLegQty.toLocaleString()} → {impliedLeftQty?.toLocaleString() ?? '—'}주
+                {leftQtyDelta != null && leftQtyDelta !== 0 && (
+                  <span
+                    className={`ml-1 text-[10px] ${leftQtyDelta > 0 ? 'text-up' : 'text-down'}`}
+                  >
+                    ({leftQtyDelta > 0 ? '+' : ''}
+                    {leftQtyDelta.toLocaleString()}주)
+                  </span>
+                )}
+              </div>
+            </div>
+          </div>
+          <div className="mt-2 text-[10px] text-t4">
+            ※ β는 ~1년 일봉 기반이라 일시 divergence에 둔감하지만, 수량 재조정은 평균회귀
+            베팅을 일부 실현·변경함. 구조적 드리프트일 때만 검토.
+          </div>
+        </div>
+      )}
 
       {/* 차트 3개 */}
       <div className="grid grid-cols-1 gap-1 lg:grid-cols-2">

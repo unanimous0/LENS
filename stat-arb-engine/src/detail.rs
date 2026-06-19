@@ -34,6 +34,8 @@ pub struct SpreadPoint {
     pub ts: i64,
     pub spread: f64, // 잔차 그 자체 (원단위)
     pub z: f64,      // 표준화 (mean=0, std=1)
+    pub left: f64,   // 그 시점 left(x) 종가 — 프론트 % 등락 차트용
+    pub right: f64,  // 그 시점 right(y) 종가
 }
 
 /// 히스토그램 한 bin.
@@ -196,10 +198,13 @@ pub fn build_pair_detail(
     let spread_series: Vec<SpreadPoint> = ts
         .iter()
         .zip(resid.iter())
-        .map(|(t, e)| SpreadPoint {
+        .enumerate()
+        .map(|(i, (t, e))| SpreadPoint {
             ts: *t,
             spread: *e,
             z: (e - mean) / sigma_safe,
+            left: x[i],
+            right: y[i],
         })
         .collect();
 

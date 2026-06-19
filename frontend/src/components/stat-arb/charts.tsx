@@ -33,9 +33,10 @@ const C = {
   t2: '#d1d1d6',
   t3: '#8e8e93',
   t4: '#636366',
-  accent: '#34c759', // 메인 시리즈 색 (초록)
+  accent: '#34c759', // 메인 시리즈 색 (초록) — leg compare에서 left(x)
   warning: '#ff9f0a', // ±2 밴드 / 현재점 강조
   down: '#ff3b30',
+  blue: '#0a84ff', // leg compare에서 right(y)
 } as const
 
 const baseChartOpts = {
@@ -321,6 +322,90 @@ export function ZScoreChart({
       price: live,
       color: Math.abs(live) >= 2 ? C.down : C.t1,
     })
+  }, [live])
+
+  useResize(containerRef, chartRef)
+
+  return <div ref={containerRef} className="h-full w-full" />
+}
+
+// ---------------------------------------------------------------------------
+// 2b. 두 종목 % 등락 오버레이 — 시작점 0 기준 정규화. left(초록)/right(파랑).
+//     스프레드 차트(z와 모양 동일·중복) 대체: 두 종목의 실제 경로를 직접 보여줌.
+// ---------------------------------------------------------------------------
+export function LegCompareChart({
+  data,
+  live,
+  register,
+}: {
+  data: SpreadPoint[]
+  /** 실시간 현재가 (두 leg). 시작점 기준 % 로 환산해 끝에 이어 그림. */
+  live?: { left: number; right: number } | null
+  register?: (chart: IChartApi | null) => void
+}) {
+  const containerRef = useRef<HTMLDivElement>(null)
+  const chartRef = useRef<IChartApi | null>(null)
+  const lSeriesRef = useRef<ISeriesApi<'Line'> | null>(null)
+  const rSeriesRef = useRef<ISeriesApi<'Line'> | null>(null)
+  const baseRef = useRef<{ l: number; r: number }>({ l: 0, r: 0 })
+  const lastTsRef = useRef<number>(0)
+
+  useEffect(() => {
+    if (!containerRef.current) return
+    const pts = data.filter((p) => p.left != null && p.right != null && p.left > 0 && p.right > 0)
+    const chart = createChart(containerRef.current, {
+      ...baseChartOpts,
+      timeScale: seriesTimeScale,
+      localization: seriesLocalization,
+      width: containerRef.current.clientWidth,
+      height: containerRef.current.clientHeight,
+    })
+    chartRef.current = chart
+    register?.(chart)
+    const baseL = pts[0]?.left ?? 0
+    const baseR = pts[0]?.right ?? 0
+    baseRef.current = { l: baseL, r: baseR }
+    const pct = (v: number, base: number) => (base > 0 ? (v / base - 1) * 100 : 0)
+    const fmt = {
+      type: 'custom' as const,
+      formatter: (v: number) => `${v >= 0 ? '+' : ''}${v.toFixed(1)}%`,
+      minMove: 0.01,
+    }
+    const lSeries = chart.addLineSeries({ color: C.accent, lineWidth: 2, priceFormat: fmt })
+    const rSeries = chart.addLineSeries({ color: C.blue, lineWidth: 2, priceFormat: fmt })
+    lSeries.setData(pts.map((p) => ({ time: Math.floor(p.ts / 1000), value: pct(p.left!, baseL) })))
+    rSeries.setData(pts.map((p) => ({ time: Math.floor(p.ts / 1000), value: pct(p.right!, baseR) })))
+    lSeriesRef.current = lSeries
+    rSeriesRef.current = rSeries
+    lastTsRef.current = pts.length ? Math.floor(pts[pts.length - 1].ts / 1000) : 0
+    lSeries.createPriceLine({
+      price: 0,
+      color: C.t4,
+      lineStyle: LineStyle.Dashed,
+      axisLabelVisible: false,
+      title: '',
+      lineWidth: 1,
+    })
+    chart.timeScale().fitContent()
+    return () => {
+      register?.(null)
+      chart.remove()
+      lSeriesRef.current = null
+      rSeriesRef.current = null
+    }
+  }, [data, register])
+
+  // 라이브 — 두 leg 현재가를 시작점 기준 %로 끝에 이어 그림.
+  useEffect(() => {
+    const ls = lSeriesRef.current
+    const rs = rSeriesRef.current
+    if (!ls || !rs || !live) return
+    const bucket = Math.floor(Date.now() / 1000 / 1800) * 1800
+    if (bucket < lastTsRef.current) return
+    const { l: baseL, r: baseR } = baseRef.current
+    if (baseL > 0 && live.left > 0) ls.update({ time: bucket as never, value: (live.left / baseL - 1) * 100 })
+    if (baseR > 0 && live.right > 0) rs.update({ time: bucket as never, value: (live.right / baseR - 1) * 100 })
+    lastTsRef.current = bucket
   }, [live])
 
   useResize(containerRef, chartRef)

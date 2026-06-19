@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useMemo, useState } from 'react'
 
 import { keyToCode } from '@/lib/stat-arb-keys'
 import type { PairDetail } from '@/types/stat-arb'
@@ -44,27 +44,38 @@ export function PnlSimulator({
   const livePriceForBuy = buyRight ? livePrices.right : livePrices.left
 
   // 사용자 입력
+  // 포지션 크기 — 'amount'(억원 기준, β비율로 수량 자동) / 'qty'(right 수량 직접)
+  const [sizeMode, setSizeMode] = useState<'amount' | 'qty'>('amount')
+  const [amountEok, setAmountEok] = useState(1) // right leg 명목 목표 (억원)
   const [qty, setQty] = useState(100)
   const [days, setDays] = useState(5)
   const [lendOut, setLendOut] = useState(true)
-  const [buyPrice, setBuyPrice] = useState(0)
+  // 사용자가 직접 입력한 매수가 (manualEdit=true일 때만 사용).
+  const [buyPriceManual, setBuyPriceManual] = useState(0)
   // 사용자가 매수가를 직접 수정했는지. true면 자동 갱신 중단.
-  const manualEdit = useRef(false)
+  const [manualEdit, setManualEdit] = useState(false)
+  // 매수가: 수동 편집 전까지 실시간 매수 leg 가격을 그대로 추종 (effect 없이 파생).
+  const buyPrice =
+    manualEdit || livePriceForBuy <= 0 ? buyPriceManual : livePriceForBuy
 
   // 포지션 등록 모달
   const [modalOpen, setModalOpen] = useState(false)
   const [savedToast, setSavedToast] = useState<string | null>(null)
 
-  // 실시간 매수 leg 가격 들어오면 자동으로 매수가 채움 (manual 진입 전까지).
-  useEffect(() => {
-    if (!manualEdit.current && livePriceForBuy > 0) {
-      setBuyPrice(livePriceForBuy)
-    }
-  }, [livePriceForBuy])
+  // 권장 수량 기준가 — 실시간 우선, 없으면 마지막 30분봉 종가(장 마감/실시간 끊김 대비).
+  const refRight = livePrices.right > 0 ? livePrices.right : lastPoint?.right ?? 0
+  const refLeft = livePrices.left > 0 ? livePrices.left : lastPoint?.left ?? 0
+
+  // 금액 기준이면 right leg 기준가로 right 수량 환산. (1억/10억 딱 안 떨어져도 반올림.)
+  // β-헤지: left:right 주식 수 비율 = β:1 (스프레드 = right − α − β·left 추종).
+  const beta = stat1d?.hedge_ratio ?? 0
+  const qtyFromAmount =
+    refRight > 0 ? Math.max(1, Math.round((amountEok * 1e8) / refRight)) : 0
+  const rightQty = sizeMode === 'amount' ? qtyFromAmount : qty
+  const leftQty = Math.max(0, Math.round(Math.abs(beta) * rightQty))
 
   const calc = useMemo(() => {
     if (!stat1d) return null
-    const beta = stat1d.hedge_ratio
 
     const buyCode = buyRight ? keyToCode(detail.right_key) : keyToCode(detail.left_key)
     const sellCode = buyRight ? keyToCode(detail.left_key) : keyToCode(detail.right_key)
@@ -72,10 +83,14 @@ export function PnlSimulator({
     const sellName = buyRight ? detail.left_name : detail.right_name
 
     // ① 통계차익 — 회귀 시 spread → 0. 절댓값 × right 수량.
-    const statPnL = Math.abs(spread) * qty
+    const statPnL = Math.abs(spread) * rightQty
+
+    // 권장 수량 명목금액 (기준가 = 실시간 우선, 없으면 마지막 종가)
+    const rightNotional = refRight * rightQty
+    const leftNotional = refLeft * leftQty
 
     // ② 대여수익 — 매수 leg 명목금액 × 요율 × 일수/365.
-    const buyQty = buyRight ? qty : Math.abs(beta) * qty
+    const buyQty = buyRight ? rightQty : leftQty
     const notional = buyPrice * buyQty
     const buyRate = loanRates.get(buyCode) ?? 0
     const loanPnL = lendOut && buyRate > 0 ? notional * (buyRate / 100) * (days / 365) : 0
@@ -92,6 +107,10 @@ export function PnlSimulator({
       buyCode,
       sellCode,
       buyQty,
+      rightQty,
+      leftQty,
+      rightNotional,
+      leftNotional,
       notional,
       buyRate,
       statPnL,
@@ -99,7 +118,22 @@ export function PnlSimulator({
       total,
       annualRate,
     }
-  }, [stat1d, qty, days, lendOut, buyPrice, loanRates, detail, buyRight, z, spread])
+  }, [
+    stat1d,
+    beta,
+    rightQty,
+    leftQty,
+    days,
+    lendOut,
+    buyPrice,
+    loanRates,
+    detail,
+    buyRight,
+    z,
+    spread,
+    refRight,
+    refLeft,
+  ])
 
   if (!calc) {
     return (
@@ -138,27 +172,91 @@ export function PnlSimulator({
         </div>
       </div>
 
-      {/* 입력 폼 */}
-      <div className="mb-3 grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <label className="flex flex-col gap-1 text-xs">
-          <span className="text-t3">수량 (right 기준)</span>
-          <input
-            type="number"
-            value={qty}
-            onChange={(e) => setQty(Math.max(0, parseInt(e.target.value) || 0))}
-            className="rounded-sm bg-bg-surface px-2 py-1 text-t1 focus:outline-none"
-          />
-        </label>
+      {/* 포지션 크기 — 금액(억원) / 수량 직접 토글 */}
+      <div className="mb-2">
+        <div className="mb-1 flex items-center gap-2 text-xs text-t3">
+          <span>포지션 크기</span>
+          <div className="flex overflow-hidden rounded-sm border border-bg-primary">
+            <button
+              type="button"
+              onClick={() => setSizeMode('amount')}
+              className={`px-2 py-0.5 text-[11px] ${sizeMode === 'amount' ? 'bg-accent/20 text-accent' : 'text-t4'}`}
+            >
+              금액 기준
+            </button>
+            <button
+              type="button"
+              onClick={() => setSizeMode('qty')}
+              className={`px-2 py-0.5 text-[11px] ${sizeMode === 'qty' ? 'bg-accent/20 text-accent' : 'text-t4'}`}
+            >
+              수량 직접
+            </button>
+          </div>
+        </div>
+        {sizeMode === 'amount' ? (
+          <div className="flex items-center gap-1.5 text-xs">
+            <input
+              type="number"
+              step="0.1"
+              value={amountEok}
+              onChange={(e) => setAmountEok(Math.max(0, parseFloat(e.target.value) || 0))}
+              className="w-24 rounded-sm bg-bg-surface px-2 py-1 text-t1 focus:outline-none"
+            />
+            <span className="text-t3">
+              억원 <span className="text-t4">({detail.right_name} 명목 기준 · left는 β배 자동)</span>
+            </span>
+          </div>
+        ) : (
+          <div className="flex items-center gap-1.5 text-xs">
+            <input
+              type="number"
+              value={qty}
+              onChange={(e) => setQty(Math.max(0, parseInt(e.target.value) || 0))}
+              className="w-24 rounded-sm bg-bg-surface px-2 py-1 text-t1 focus:outline-none"
+            />
+            <span className="text-t3">
+              {detail.right_name} 수량 <span className="text-t4">(left는 β배 자동)</span>
+            </span>
+          </div>
+        )}
+      </div>
+
+      {/* β-헤지 권장 수량 (left:right = β:1) */}
+      <div className="mb-3 rounded-sm bg-bg-surface px-3 py-2">
+        <div className="mb-1 text-[10px] text-t4">
+          β-헤지 권장 수량 (left:right 주식 수 = β:1 = {Math.abs(calc.beta).toFixed(2)}:1)
+        </div>
+        <div className="grid grid-cols-2 gap-2 text-xs tabular-nums">
+          <div>
+            <div className="text-t3">{detail.left_name}</div>
+            <div className="text-t1">
+              {calc.leftQty.toLocaleString()}주
+              <span className="ml-1 text-[10px] text-t4">
+                {Math.round(calc.leftNotional).toLocaleString()}원
+              </span>
+            </div>
+          </div>
+          <div>
+            <div className="text-t3">{detail.right_name}</div>
+            <div className="text-t1">
+              {calc.rightQty.toLocaleString()}주
+              <span className="ml-1 text-[10px] text-t4">
+                {Math.round(calc.rightNotional).toLocaleString()}원
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* 입력 폼 — 매수가 / 보유일 / 대여 */}
+      <div className="mb-3 grid grid-cols-2 gap-3 lg:grid-cols-3">
         <label className="flex flex-col gap-1 text-xs">
           <span className="flex items-center gap-1 text-t3">
             매수가
-            {manualEdit.current ? (
+            {manualEdit ? (
               <button
                 type="button"
-                onClick={() => {
-                  manualEdit.current = false
-                  if (livePriceForBuy > 0) setBuyPrice(livePriceForBuy)
-                }}
+                onClick={() => setManualEdit(false)}
                 className="text-[10px] text-accent hover:underline"
               >
                 자동 복귀
@@ -171,8 +269,8 @@ export function PnlSimulator({
             type="number"
             value={buyPrice}
             onChange={(e) => {
-              manualEdit.current = true
-              setBuyPrice(Math.max(0, parseInt(e.target.value) || 0))
+              setManualEdit(true)
+              setBuyPriceManual(Math.max(0, parseInt(e.target.value) || 0))
             }}
             className="rounded-sm bg-bg-surface px-2 py-1 text-t1 focus:outline-none"
           />
@@ -261,7 +359,7 @@ export function PnlSimulator({
           detail={detail}
           prefill={{
             buyRight,
-            rightQty: qty,
+            rightQty: calc.rightQty,
             buyPrice,
             sellPrice: buyRight ? livePrices.left : livePrices.right,
             lendOutBuy: lendOut,

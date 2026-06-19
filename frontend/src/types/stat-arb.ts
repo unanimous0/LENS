@@ -16,6 +16,9 @@ export type SpreadPoint = {
   ts: i64
   spread: number
   z: number
+  /** 그 시점 left(x)/right(y) 종가 — % 등락 비교 차트용 (구버전 응답엔 없을 수 있음). */
+  left?: number
+  right?: number
 }
 
 export type HistBin = {

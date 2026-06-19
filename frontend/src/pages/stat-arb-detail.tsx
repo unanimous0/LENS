@@ -2,7 +2,7 @@ import type { IChartApi, LogicalRange } from 'lightweight-charts'
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 
-import { ResidualHistogram, SpreadChart, ZScoreChart } from '@/components/stat-arb/charts'
+import { LegCompareChart, ResidualHistogram, ZScoreChart } from '@/components/stat-arb/charts'
 import { PnlSimulator } from '@/components/stat-arb/pnl-simulator'
 import { TimeframeTable } from '@/components/stat-arb/timeframe-table'
 import { usePageStockSubscriptions } from '@/hooks/usePageStockSubscriptions'
@@ -157,11 +157,7 @@ export function StatArbDetailPage() {
   const dbLastZ = detail.spread_series.length
     ? detail.spread_series[detail.spread_series.length - 1].z
     : 0
-  const dbLastSpread = detail.spread_series.length
-    ? detail.spread_series[detail.spread_series.length - 1].spread
-    : 0
   const displayZ = liveZ ?? dbLastZ
-  const displaySpread = liveSpread ?? dbLastSpread
   const zCls = Math.abs(displayZ) >= 2.5 ? 'text-warning' : Math.abs(displayZ) >= 1.5 ? 'text-t1' : 'text-t3'
   const signal = meanRevSignal(displayZ, detail.left_name, detail.right_name)
 
@@ -304,17 +300,24 @@ export function StatArbDetailPage() {
               onChange={(e) => setSyncCharts(e.target.checked)}
               className="accent-accent"
             />
-            스프레드·z 차트 시간축 동기화
+            가격·z 차트 시간축 동기화
           </label>
           <div className="panel p-3">
-            <div className="mb-2 text-xs text-t3">
-              스프레드 시계열 (잔차 = y − α − β·x)  ·  현재 {Math.round(displaySpread).toLocaleString()}
-              {liveSpread != null && <span className="ml-1 text-[10px] text-accent">실시간</span>}
+            <div className="mb-2 flex flex-wrap items-center gap-x-3 text-xs text-t3">
+              <span>두 종목 % 등락 (시작점 0 기준)</span>
+              <span className="flex items-center gap-1">
+                <span className="inline-block h-1.5 w-3 rounded-sm bg-accent" />
+                <span className="text-t2">{detail.left_name}</span>
+              </span>
+              <span className="flex items-center gap-1">
+                <span className="inline-block h-1.5 w-3 rounded-sm bg-blue" />
+                <span className="text-t2">{detail.right_name}</span>
+              </span>
             </div>
             <div className="h-[260px]">
-              <SpreadChart
+              <LegCompareChart
                 data={detail.spread_series}
-                live={liveSpread}
+                live={leftPrice > 0 && rightPrice > 0 ? { left: leftPrice, right: rightPrice } : null}
                 register={setSpreadChart}
               />
             </div>
