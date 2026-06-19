@@ -20,6 +20,10 @@ use super::{MarketFeed, SubCommand};
 const WS_URL: &str = "wss://openapi.ls-sec.co.kr:9443/websocket";
 const MAX_RECONNECT_DELAY_SECS: u64 = 60;
 const MAX_SUBS_PER_CONNECTION: usize = 190;
+/// WS connect(TLS 핸드셰이크 포함) 명시적 타임아웃. 없으면 LS가 SYN/accept를 늦게 처리할 때
+/// 커널 기본 TCP 타임아웃(~30s+)을 그대로 기다린 뒤 os error 110 → ETF 화면 데이터가 ~30s 늦음.
+/// 10s에 끊고 짧은 backoff로 재시도하면, LS가 빨리 받아주는 순간을 더 빨리 잡는다.
+const WS_CONNECT_TIMEOUT_SECS: u64 = 10;
 /// 수신 유휴 타임아웃 (장중 한정).
 /// 5개 WS 연결이 공유하는 last_data_us 기준이라 "feed 전체"가 N초 침묵해야 발동.
 /// 개별 연결이 illiquid 종목만 담당해 조용해도, 다른 연결이 데이터 받으면 reset됨.
@@ -507,6 +511,19 @@ impl MarketFeed for LsApiFeed {
             keys.sort();
             keys.join(",")
         };
+        // front 선물 baseline — 종목차익·ETF차익 둘 다 front 선물이 필요(선물대체 NAV 등).
+        // /unsubscribe(종목차익 이탈)는 선물을 죽이지 않고 이 baseline으로 복귀시킨다.
+        let baseline_futures: Vec<(String, String)> = initial_futures.clone();
+        let baseline_futures_key: String = current_futures_key.clone();
+
+        // ETF 화면 무거운 스트림(iNAV I5_ / 호가 H1_)을 키B(와이프 계좌) WS로 분산.
+        // 키A 한 계정에 ~9연결/800+구독이 몰려 LS가 TLS 세션 강제 종료(SSL shutdown) → 호가 stall.
+        // 별도 계정인 키B로 옮기면 각자 독립 한계. 키B 미설정이면 키A로 폴백(kb_active=false →
+        // 윈도우 게이트/watchdog 미작동, 기존 동작 유지). 키B WS는 09:00~15:45만 활성(15:50 FD).
+        let (kb_key, kb_secret, kb_active) = match super::ls_rest::ws_key_b_credentials() {
+            Some((k, s)) => { info!("ETF iNAV/호가 WS를 키B로 분산 (키A 부하 절감, 09:00~15:45)"); (k, s, true) }
+            None => { info!("키B 미설정 — iNAV/호가 WS 키A 유지 (분산 없음)"); (app_key.clone(), app_secret.clone(), false) }
+        };
 
         // sub_rx에서 전환 명령 대기
         loop {
@@ -541,10 +558,22 @@ impl MarketFeed for LsApiFeed {
                             );
                         }
                         Some(SubCommand::Unsubscribe(_)) => {
+                            // 선물을 cancel하지 않고 **front baseline으로 복귀**.
+                            // front 선물은 종목차익(front 뷰)·ETF차익(선물대체 NAV) 둘 다 항상 필요.
+                            // 과거엔 종목차익 페이지 이탈 시 cancel → ETF 화면 선물가 frozen 버그(2026-06-15).
+                            // 이미 baseline(front)이면 그대로 둠(연결 유지). back-month였으면 front로 전환.
+                            if current_futures_key == baseline_futures_key {
+                                continue;
+                            }
+                            current_futures_key = baseline_futures_key.clone();
                             futures_cancel.cancel();
-                            // key 초기화 필수: 동일 코드로 재Subscribe 시 "already active" no-op
-                            // 방지. ETF 페이지 이탈 → 종목차익 재진입 시 복구 불가 버그 수정.
-                            current_futures_key = String::new();
+                            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                            futures_cancel = CancellationToken::new();
+                            info!("Reverting futures to front baseline: {} codes", baseline_futures.len());
+                            spawn_futures_connections(
+                                &baseline_futures, &app_key, &app_secret, &names, &stock_codes,
+                                &futures_to_spot, &tx, &cancel, &futures_cancel, &stats, &last_data_us, &last_subscribe_us, &last_data_futures,
+                            );
                         }
                         Some(SubCommand::SubscribeStocks(codes)) => {
                             // ref-count: 처음 보는 코드만 LS WS subscribe 신규 spawn 트리거.
@@ -712,7 +741,7 @@ impl MarketFeed for LsApiFeed {
 
                             inav_cancel = CancellationToken::new();
                             spawn_inav_connections(
-                                &inav_subs, &app_key, &app_secret, &names, &stock_codes,
+                                &inav_subs, &kb_key, &kb_secret, kb_active, &names, &stock_codes,
                                 &futures_to_spot, &tx, &cancel, &inav_cancel, &stats, &last_data_us, &last_subscribe_us, &last_data_inav,
                             );
                         }
@@ -748,7 +777,7 @@ impl MarketFeed for LsApiFeed {
                             debug!("Orderbook subscribe: {} codes ({} conns)", codes.len(), n_chunks);
                             ob_cancel = CancellationToken::new();
                             spawn_orderbook_connection(
-                                &codes, &app_key, &app_secret, &names,
+                                &codes, &kb_key, &kb_secret, kb_active, &names,
                                 &stock_codes, &futures_to_spot, &tx, &cancel, &ob_cancel, &stats, &last_data_us, &last_subscribe_us, &last_data_orderbook,
                             );
                         }
@@ -787,7 +816,7 @@ impl MarketFeed for LsApiFeed {
                         info!("Inav warm-down expired: -{} codes ({} unique remain)", actually_dropped.len(), current_inav.len());
                         inav_cancel = CancellationToken::new();
                         spawn_inav_connections(
-                            &inav_subs, &app_key, &app_secret, &names, &stock_codes,
+                            &inav_subs, &kb_key, &kb_secret, kb_active, &names, &stock_codes,
                             &futures_to_spot, &tx, &cancel, &inav_cancel, &stats, &last_data_us, &last_subscribe_us, &last_data_inav,
                         );
                     }
@@ -1004,6 +1033,7 @@ fn spawn_stocks_connections(
 fn spawn_inav_connections(
     subs: &[(String, String)],
     app_key: &str, app_secret: &str,
+    key_b: bool,
     names: &Arc<HashMap<String, String>>,
     stock_codes: &Arc<HashSet<String>>,
     futures_to_spot: &Arc<HashMap<String, String>>,
@@ -1044,11 +1074,43 @@ fn spawn_inav_connections(
                 }
             });
 
+            // 키B WS는 09:00~15:45만 LENS 소유 → 윈도우 종료(15:45) 시 연결 강제 종료(15:50 Finance_Data).
+            // wait_until_active(WindDown 16:00까지)로는 부족. watchdog가 open→closed 전이만 감지해 종료.
+            // (전이 기준이라야 장 개시 전 윈도우 대기 중인 연결을 잘못 죽이지 않음.)
+            if key_b {
+                let cc_wd = combined_cancel.clone();
+                tokio::spawn(async move {
+                    let mut was_open = super::ls_rest::is_lens_rest_window_now();
+                    loop {
+                        tokio::select! {
+                            _ = cc_wd.cancelled() => return,
+                            _ = tokio::time::sleep(std::time::Duration::from_secs(30)) => {}
+                        }
+                        let open = super::ls_rest::is_lens_rest_window_now();
+                        if was_open && !open {
+                            info!("키B WS 윈도우 종료(15:45) — inav 연결 닫음");
+                            cc_wd.cancel();
+                            return;
+                        }
+                        was_open = open;
+                    }
+                });
+            }
+
             let mut attempt = 0u32;
             let mut silent_count = 0u32;
             loop {
                 if combined_cancel.is_cancelled() { return; }
                 if !crate::phase::wait_until_active(&combined_cancel, &format!("inav[{i}]")).await { return; }
+                // 키B는 윈도우 밖이면 연결하지 않고 열릴 때까지 대기(종료 X) — 장 개시 전 구독이
+                // 09:00에 자동 시작되게. 15초 폴링이라 09:00 개시 지연 최대 ~15초(이전 60초).
+                // 장 마감 후(15:45)엔 위 watchdog가 combined를 취소해 종료됨.
+                if key_b && !super::ls_rest::is_lens_rest_window_now() {
+                    tokio::select! {
+                        _ = tokio::time::sleep(std::time::Duration::from_secs(15)) => continue,
+                        _ = combined_cancel.cancelled() => return,
+                    }
+                }
                 let conn_id = 300 + i;
                 let ticks_before = stats.tick_count.load(Ordering::Relaxed);
                 match run_single_connection(
@@ -1085,6 +1147,7 @@ fn spawn_inav_connections(
 fn spawn_orderbook_connection(
     codes: &[(String, String)],
     app_key: &str, app_secret: &str,
+    key_b: bool,
     names: &Arc<HashMap<String, String>>,
     stock_codes: &Arc<HashSet<String>>,
     futures_to_spot: &Arc<HashMap<String, String>>,
@@ -1130,11 +1193,41 @@ fn spawn_orderbook_connection(
                 }
             });
 
+            // 키B WS는 09:00~15:45만 LENS 소유 → 윈도우 종료(15:45) 시 강제 종료(15:50 Finance_Data).
+            // watchdog가 open→closed 전이만 감지 (장 개시 전 대기 중인 연결 오종료 방지).
+            if key_b {
+                let cc_wd = combined.clone();
+                tokio::spawn(async move {
+                    let mut was_open = super::ls_rest::is_lens_rest_window_now();
+                    loop {
+                        tokio::select! {
+                            _ = cc_wd.cancelled() => return,
+                            _ = tokio::time::sleep(std::time::Duration::from_secs(30)) => {}
+                        }
+                        let open = super::ls_rest::is_lens_rest_window_now();
+                        if was_open && !open {
+                            info!("키B WS 윈도우 종료(15:45) — orderbook 연결 닫음");
+                            cc_wd.cancel();
+                            return;
+                        }
+                        was_open = open;
+                    }
+                });
+            }
+
             let mut attempt = 0u32;
             let mut silent_count = 0u32;
             loop {
                 if combined.is_cancelled() { return; }
                 if !crate::phase::wait_until_active(&combined, &format!("orderbook[{conn_id}]")).await { return; }
+                // 키B 윈도우 밖이면 종료하지 말고 열릴 때까지 대기 (장 개시 전 09:00 자동 시작).
+                // 15초 폴링이라 09:00 개시 지연 최대 ~15초(이전 60초).
+                if key_b && !super::ls_rest::is_lens_rest_window_now() {
+                    tokio::select! {
+                        _ = tokio::time::sleep(std::time::Duration::from_secs(15)) => continue,
+                        _ = combined.cancelled() => return,
+                    }
+                }
                 let ticks_before = stats.tick_count.load(Ordering::Relaxed);
                 match run_single_connection(
                     conn_id, &ak, &as_, &chunk_codes, &n, &sc, &f2s, &tx, &combined, &last_data_us, &last_subscribe_us, &stream_data_us,
@@ -1202,8 +1295,13 @@ async fn run_single_connection(
             .build()
             .unwrap()
     );
-    let (ws, _) = tokio_tungstenite::connect_async_tls_with_config(request, None, false, Some(connector))
-        .await.map_err(|e| format!("ws connect: {e}"))?;
+    let (ws, _) = match tokio::time::timeout(
+        std::time::Duration::from_secs(WS_CONNECT_TIMEOUT_SECS),
+        tokio_tungstenite::connect_async_tls_with_config(request, None, false, Some(connector)),
+    ).await {
+        Ok(res) => res.map_err(|e| format!("ws connect: {e}"))?,
+        Err(_) => return Err(format!("ws connect: timeout ({WS_CONNECT_TIMEOUT_SECS}s)")),
+    };
 
     let (mut write, mut read) = ws.split();
     debug!("conn[{conn_id}] connected, subscribing {} codes", subscriptions.len());

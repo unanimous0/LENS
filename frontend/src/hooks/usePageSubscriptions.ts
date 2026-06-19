@@ -1,58 +1,44 @@
 import { useEffect, useRef } from 'react'
 
 /**
- * 페이지별 종목 구독 관리.
+ * 선물(JC0) 월물 구독 — **replace 시맨틱** 전용 훅.
  *
- * - 마운트/codes 변경 시: 새 코드 subscribe, 이전 사용한 코드 중 빠진 건 unsubscribe
- * - 언마운트 시: 자기가 마지막에 잡고 있던 코드 unsubscribe (페이지 떠나면 갱신 중단)
+ * 백엔드 `/realtime/subscribe`(`SubCommand::Subscribe`)는 받은 코드 셋으로 선물 연결을
+ * **통째 교체**한다(현재 연결 cancel → 새 셋으로 재연결). 같은 셋이면 서버가 no-op 처리.
  *
- * Rust 측은 코드 레벨 ref-count 없이 단순 add/remove. 한 페이지만 active한 것이
- * 일반적이라 충분 — 같은 코드를 두 페이지가 동시에 보면 마지막에 unsubscribe하는
- * 페이지가 풀어버린다는 한계는 있음. 그 케이스 생기면 그때 ref-count 도입.
+ * 그래서 여기서는 add/remove diff를 하지 않고 **항상 전체 codes를 그대로 /subscribe로** 보낸다.
+ * 과거엔 stocks용 ref-count(add/remove) 패턴을 그대로 썼는데, 월물 전환 시
+ *   added(원월물) → /subscribe (원월물 연결 spawn)
+ *   removed(근월물) → /unsubscribe → futures_cancel.cancel() → 방금 띄운 원월물까지 kill
+ * 이 되어 "원월물 데이터 안 들어옴" 버그가 났다. /unsubscribe는 페이지 이탈 시에만 보낸다.
+ *
+ * 동일 코드 셋은 join(',') 키로 effect 재실행을 막아 중복 전환을 피한다(서버 no-op과 이중 방어).
  */
 export function usePageSubscriptions(codes: string[]): void {
-  const lastSet = useRef<Set<string>>(new Set())
+  const key = codes.filter(Boolean).slice().sort().join(',')
+  const sentRef = useRef(false)
 
   useEffect(() => {
-    const next = new Set(codes.filter(Boolean))
-    const prev = lastSet.current
+    const list = codes.filter(Boolean)
+    if (list.length === 0) return
+    fetch('/realtime/subscribe', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ codes: list }),
+    }).catch(() => {})
+    sentRef.current = true
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key])
 
-    const added: string[] = []
-    next.forEach((c) => { if (!prev.has(c)) added.push(c) })
-    const removed: string[] = []
-    prev.forEach((c) => { if (!next.has(c)) removed.push(c) })
-
-    if (added.length > 0) {
-      fetch('/realtime/subscribe', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ codes: added }),
-      }).catch(() => {})
-    }
-    if (removed.length > 0) {
+  // 언마운트: 선물 연결 해제 (장 외 누적 방지)
+  useEffect(() => {
+    return () => {
+      if (!sentRef.current) return
       fetch('/realtime/unsubscribe', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ codes: removed }),
+        body: JSON.stringify({ codes: [] }),
       }).catch(() => {})
-    }
-    lastSet.current = next
-    // Note: codes 배열 자체는 매 렌더 새로 생기지만, 위 diff 로직이 idempotent라
-    // 실 변경 없으면 added/removed 모두 빈 배열 → fetch 안 일어남.
-  }, [codes])
-
-  // 언마운트: 마지막 보유 코드 모두 unsubscribe
-  useEffect(() => {
-    return () => {
-      const all = Array.from(lastSet.current)
-      if (all.length > 0) {
-        fetch('/realtime/unsubscribe', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ codes: all }),
-        }).catch(() => {})
-      }
-      lastSet.current = new Set()
     }
   }, [])
 }

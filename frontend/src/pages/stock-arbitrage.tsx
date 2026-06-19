@@ -166,6 +166,8 @@ export function StockArbitragePage() {
   // 종목 → 그 종목을 담은 ETF 목록 (역색인). 종목명 클릭 시 확장행으로 표시.
   const [expandedStock, setExpandedStock] = useState<string | null>(null)
   const [pdfIndex, setPdfIndex] = useState<Map<string, EtfHolder[]>>(new Map())
+  // PDF 구성 기준일 (전역 단일 pdf_date — pdf-all 응답의 as_of). 확장행에 "며칠자 PDF" 표시용.
+  const [pdfAsOf, setPdfAsOf] = useState<string | null>(null)
   const [etfNavs, setEtfNavs] = useState<Record<string, number>>({})
   const closeOb = useCallback(() => setObTarget(null), [])
   const closeSpread = useCallback(() => setSpreadTarget(null), [])
@@ -211,8 +213,11 @@ export function StockArbitragePage() {
           (etfRes.items ?? []).map((e: { code: string; name: string; cu_unit: number }) => [e.code, { name: e.name, cu: e.cu_unit }]),
         )
         const idx = new Map<string, EtfHolder[]>()
-        for (const [etfCode, pdf] of Object.entries((pdfRes.items ?? {}) as Record<string, { cu_unit: number; stocks: { code: string; qty: number }[] }>)) {
+        let asOf: string | null = null
+        for (const [etfCode, pdf] of Object.entries((pdfRes.items ?? {}) as Record<string, { cu_unit: number; as_of?: string; stocks: { code: string; qty: number }[] }>)) {
           const m = meta.get(etfCode)
+          // as_of는 전역 단일 pdf_date라 모든 ETF 동일. 혹시 섞이면 가장 최신을 채택.
+          if (pdf.as_of && (asOf === null || pdf.as_of > asOf)) asOf = pdf.as_of
           for (const s of pdf.stocks) {
             if (s.qty <= 0) continue
             let arr = idx.get(s.code)
@@ -221,6 +226,7 @@ export function StockArbitragePage() {
           }
         }
         setPdfIndex(idx)
+        setPdfAsOf(asOf)
       })
       .catch(() => {})
   }, [])
@@ -619,6 +625,7 @@ export function StockArbitragePage() {
                       basisGapBp={r.basisGapBp}
                       navs={etfNavs}
                       etfTicks={etfTicks}
+                      pdfAsOf={pdfAsOf}
                     />
                   </td>
                 </tr>
@@ -1022,13 +1029,14 @@ type HolderSK = 'etfCode' | 'etfName' | 'qty' | 'weight' | 'amount' | 'contribBp
  *  선물대체 NAV = iNAV + (선물−현물)×수량/CU (그 종목만 선물 평가). 추가 구독 0.
  *  차익bp = (선물대체NAV − 현재가)/iNAV. 부호로 매수차(+)/매도차(−) 방향.
  *  ETF 행 클릭 → 새 탭 ETF 차익거래(?focus=)로 그 ETF 펼침. */
-function EtfHoldersTable({ holders, spotPrice, futuresPrice, basisGapBp, navs, etfTicks }: {
+function EtfHoldersTable({ holders, spotPrice, futuresPrice, basisGapBp, navs, etfTicks, pdfAsOf }: {
   holders: EtfHolder[]
   spotPrice: number
   futuresPrice: number
   basisGapBp: number
   navs: Record<string, number>
   etfTicks: Record<string, import('@/types/market').ETFTick>
+  pdfAsOf: string | null
 }) {
   const [hk, setHk] = useState<HolderSK>('qty')
   const [hasc, setHasc] = useState(false)
@@ -1070,6 +1078,11 @@ function EtfHoldersTable({ holders, spotPrice, futuresPrice, basisGapBp, navs, e
       style={{ position: 'sticky', left: 0, width: '100vw', maxWidth: '100vw', boxSizing: 'border-box' }}
     >
       <div className="mb-2 text-[11px] text-[#8b8b8e]">
+        {pdfAsOf && (
+          <span className="mr-2 px-1.5 py-0.5 rounded bg-[#1e1e22] text-[#a8a8ae] tabular-nums" title="ETF 구성종목(PDF) 기준일">
+            PDF {pdfAsOf}
+          </span>
+        )}
         이 종목을 담은 ETF <span className="text-white tabular-nums">{rows.length}</span>개
         <span className="ml-2 text-[#5a5a5e]">기여BP=갭BP×비중 · 선물대체괴리/차익bp=그 종목 선물 대체 시 · 부호: 매수차(+)/매도차(−) · ETF 클릭→차익거래 새 탭</span>
         <span className="ml-2 text-[#5a5a5e]">거래량·현재가·iNAV는 상위 {HOLDER_SUB_LIMIT}개만 실시간</span>

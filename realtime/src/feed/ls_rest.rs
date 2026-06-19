@@ -111,6 +111,20 @@ pub fn rest_credentials() -> (String, String) {
     )
 }
 
+/// 키B(와이프 계좌) credential을 명시적으로 반환 — WS 부하 분산용(2026-06-12).
+/// 키A WS가 한 계정 한계(연결/구독)를 넘어 LS가 TLS 세션을 강제 종료(SSL shutdown) →
+/// 호가 stall + 30초 재연결. ETF 화면의 무거운 스트림(iNAV I5_ / 호가 H1_)을 별도 계정인
+/// 키B WS로 옮겨 각자 독립 한계를 받게 한다. 단 키B는 09:00~15:45만 LENS 소유라
+/// (15:50~ Finance_Data) 호출부가 `is_lens_rest_window_now()`로 윈도우를 게이트해야 함.
+/// 키B 미설정(LS_APP_KEY_B 빈값)이면 None → 호출부가 키A로 폴백.
+pub fn ws_key_b_credentials() -> Option<(String, String)> {
+    let p = key_pool()?;
+    if p.key_b.is_empty() || p.secret_b.is_empty() {
+        return None;
+    }
+    Some((p.key_b.clone(), p.secret_b.clone()))
+}
+
 /// LS OAuth 토큰 TTL — 실제 24시간이지만 1시간 마진 두고 23시간 후 갱신.
 /// 매 WS 재연결마다 토큰 받지 않게 프로세스 단위로 캐시.
 const TOKEN_TTL: Duration = Duration::from_secs(23 * 3600);

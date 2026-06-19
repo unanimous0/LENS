@@ -22,6 +22,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## 상세 문서
 
 기능 상세, 프로젝트 구조 등은 별도 문서 참조:
+- **[lp-system-design.md](lp-system-design.md)** — **LP 시스템 단일 진실원**. fair value m×n 매트릭스 + 4대 지표 + 현재 build 상태. 전략 방향은 항상 여기 기준 (memory `project_lens_lp_pivot` 참조)
 - **[features.md](features.md)** — 구현된 기능 상세 (대여가능확인, 상환가능확인, 실시간 시세, 데이터 어댑터)
 - **[architecture.md](architecture.md)** — 프로젝트 구조, 데이터 소스 전략, 새 기능 추가 방법
 - **[ls-api.md](ls-api.md)** — LS증권 OpenAPI 연동 가이드 (실시간 시세, 선물 베이시스)
@@ -31,6 +32,46 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **[stock-arbitrage.md](stock-arbitrage.md)** — 종목차익 기능 설계 (베이시스 모니터링 + ETF 차익 계산)
 - **[etf-arbitrage.md](etf-arbitrage.md)** — ETF 차익 기능 설계 + **실시간 페이지 reference 구현**의 성능 최적화 다층 방어 표
 - **[stat-arb-engine.md](stat-arb-engine.md)** — 통계 차익거래 엔진 + 화면 설계 (M:N 페어 발굴, 대여·매도차 통합, 포지션 추적). 별도 Rust binary `stat-arb-engine/` (port 8300)
+- `docs/ETF Market Making Plans/` (00~07) — **참고용 외부 자료**. 실행 스펙 아님. 기술 스택·phase 구성 그대로 베끼지 말 것 (memory `reference_etf_mm_plans`)
+
+## 데이터 흐름 / 책임 분할
+
+**4-service 토폴로지** — 각각 다른 책임, 데이터 경로 겹치지 않음:
+
+```
+LS API (외부망 WS/REST)  ──┐
+내부망 WS (10.21.1.208)   ──┼──→  Rust realtime (8200) ──WS──┐
+Mock feed                ──┘                                  │
+                                                              ├──→  React (3100) Zustand
+Finance_Data PG (read-only) ─→ FastAPI (8100) ──REST/api──────┤
+                            ─→ stat-arb-engine (8300) ─proxy ─┘
+                                  ↑ 10분/1시간 cron 페어 갱신
+LENS SQLite (lens.db)  ←──쓰기──  FastAPI (포지션·loan_rates·saved_pairs)
+```
+
+- **LENS가 쓰는 DB는 SQLite `lens.db` 하나뿐** (포지션·대여요율·저장 페어). Finance_Data PG는 **read-only** 약속 (코드 차원). 쓰기는 항상 Finance_Data 프로젝트 책임.
+- **WebSocket은 Rust 8200 전담**. FastAPI에 `ws.py` 없음. 프론트는 App 레벨에서 `useWebSocket()` 1회 연결 후 페이지별 `usePage*Subscriptions` 훅으로 구독 토글.
+- **MarketFeed adapter trait** (`realtime/src/feed/`): `MockFeed` / `LsApiFeed` / `InternalFeed`. 통합 Tick 타입 없이 각 adapter native 포맷 유지, WebSocket broadcast 시점에 직렬화. 토글: `POST /mode/{mode}`.
+- **stat-arb-engine은 독립 Rust binary** (`stat-arb-engine/`, port 8300). FastAPI `routers/stat_arb.py`가 프록시. 직접 Finance_Data PG에서 sqlx로 일/분봉 조회, 결과 메모리 cache.
+
+## LP 시스템 방향 (현재 작업 메인)
+
+LENS의 현재 주력 방향은 단순 차익 모니터링이 아니라 **자체 fair value 체계 + 외부 플로우 탐지로 진정한 LP 전환**. 상세는 `lp-system-design.md`가 단일 진실원이고, 새 기능·리팩터·UI 설계는 거기 정의된 m×n 매트릭스(m=ETF, n=hedge route) + 5-level cascade + 4대 지표 (FV gap / beta-adjusted delta / residual risk / PnL decomp) 프레임에 맞춰서 한다.
+
+- 첫 build 검증 완료 (2026-05-21 라이브, memory `project_lp_first_build_handoff` / `project_zx_live_verified`). 다음 milestone은 §9.5 multi-factor / ETF 확장 / 인포맥스 금리(§9.7).
+- M:N 통계차익 별도 트랙: PR-A~C3 (35 페어) 완료, 다음 PR-D Johansen / PR-E Sparse PCA / PR-F 통합 (memory `project_mn_screener_progress`).
+
+## 종목코드 처리
+
+종목코드는 3개 layer 모두 다른 포맷이라 변환 함수 거치지 않으면 무조건 깨진다:
+
+| Layer | 포맷 | 예시 |
+|---|---|---|
+| 사용자 입력 | 자유 형식 (memory `feedback_symbol_input`) | `005930`, `A005930`, `KR7005930003` |
+| LS API | 주식 6자리 / 선물 A+7자리 | `005930`, `A1KQK000` |
+| 내부망 WS | 주식 A+6 / 선물 KA+7 / data는 12자리 ISIN | sub: `A005930`, payload: `KR7005930003` |
+
+정규화는 `backend/services/stock_code.py` 단일 진입점 사용. 수정·신규 진입점 추가 시 8개 호출 site 정합성 검증.
 
 ## 디자인 가이드
 
@@ -102,15 +143,21 @@ CSS 변수는 `globals.css`의 `@theme inline`에 정의. Tailwind 클래스로 
   환경변수 `FEED_MODE=mock` 등으로 수동 오버라이드 가능. 장 외 시간에는 ls_api 모드에서 대부분 no_data → 미리보기는 mock 권장.
 
 ```bash
-./start_dev.sh                                                       # 전체 (uvicorn + cargo + vite)
-cd frontend && npx vite                                              # 프론트만
-cd frontend && npx tsc --noEmit                                      # 타입 체크
-cd frontend && npm run lint                                          # ESLint
-cd backend && uvicorn main:app --host 0.0.0.0 --port 8100 --reload   # FastAPI만
-cd realtime && cargo build --release && ./target/release/lens-realtime  # Rust 실시간만
+./start_dev.sh                                                                # 전체 (uvicorn + cargo×2 + vite, 로그 14일 회전)
+cd frontend && npx vite                                                       # 프론트만
+cd frontend && npx tsc --noEmit                                               # 타입 체크
+cd frontend && npm run lint                                                   # ESLint
+cd backend && uvicorn main:app --host 0.0.0.0 --port 8100 --reload            # FastAPI만
+cd realtime && cargo build --release && ./target/release/lens-realtime        # Rust 실시간만
+cd stat-arb-engine && cargo build --release && ./target/release/stat-arb-engine  # 통계 차익 엔진만 (8300)
 ```
 
-**참고:** 테스트 프레임워크 미설정 (프론트: Vitest 없음, 백엔드: pytest 없음, Rust: 단위 테스트 정의 없음)
+**참고:** 테스트 프레임워크 미설정 (프론트: Vitest 없음, 백엔드: pytest 없음, Rust: 단위 테스트 정의 없음). 검증은 타입 체크 + lint + 실제 화면 동작 + agent 영향 범위 검증으로.
+
+**유틸 스크립트:**
+- `python3 scripts/scrape_ls_api_guide.py` — LS API 365개 TR 가이드 자동 갱신 (월 1회 권장, 결과: `docs/ls_api_guide/ls_api_full.md`)
+- `python3 scripts/probe_t8434.py` — 다중현재가 TR 프로브 (디버깅용)
+- Windows 오프라인 배포 시 `backend/requirements-win.txt` 사용 (uvloop 제외)
 
 ## ⚠️ Z+X LS 키 배분 (PR-16, 2026-05-20)
 
@@ -118,8 +165,10 @@ LS 계정 2개 (아버지/와이프) → API 키 2개. 시간대 기반 분배. 
 
 | 시간대 | 키A (아버지, `.env` LS_APP_KEY_A) | 키B (와이프, `.env` LS_APP_KEY_B) |
 |---|---|---|
-| 09:00 ~ 15:45 KST | LENS WS 영구 | **LENS REST 추가** |
-| 15:50 ~ 익일 08:50 | LENS WS 영구 (+REST fallback) | **Finance_Data 일배치** |
+| 09:00 ~ 15:45 KST | LENS WS 코어(현물·선물·주식) 영구 | **LENS REST + ETF iNAV/호가 WS** |
+| 15:50 ~ 익일 08:50 | LENS WS 영구 (+REST fallback) | **Finance_Data 일배치** (키B WS는 15:45 자동 해제) |
+
+**WS 두 키 분산 (2026-06-12):** 키A 한 계정 과부하(LS가 TLS 세션 강제 종료 → 호가 stall + 30초 지연)로, ETF 차익 화면의 무거운 스트림(iNAV I5_ / 호가 H1_)을 키B WS로 분리. 별개 계정이라 독립 한계. 키B WS는 09:00~15:45만(watchdog가 15:45 자동 해제). 상세·한계는 `realtime-service.md` §WS 두 키 분산.
 
 → **22:30 ~ 24:30 사이 `./start_dev.sh` 실행 금지** (Finance_Data 키B 점유 시간대). LENS WS는 키A라 영향 없지만, *키B 시간대 약속*은 이 룰에 포함됨. Finance_Data 정기 작업:
 

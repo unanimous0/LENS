@@ -658,6 +658,9 @@ export function EtfArbitragePage() {
   //   - 차트/Orderbook 패널은 effectiveCode(선택 또는 첫 행) 한 종목만 구독
   const pushEtfHistoryBatch = useMarketStore((s) => s.pushEtfHistoryBatch)
   const networkMode = useMarketStore((s) => s.networkMode)
+  // 거래대금 폴링(t8407, ~5초 첫 도착)이 한 번이라도 들어왔는지. false→true 한 번만 뒤집혀
+  // visibleMaster를 즉시 재계산시킨다 — 30초 sortTick을 기다리지 않고 첫 순위/구독을 잡기 위함.
+  const pollReady = useMarketStore((s) => Object.keys(s.pollVolumes).length > 0)
   // 외부망(ls_api/mock): iNAV 기반. PDF 구성종목 구독 없음, WS 연결 ETF 수만큼만.
   // 내부망: rNAV 직접 계산. PDF 구성종목 전체 구독 (연결 제한 없음).
   const isINavMode = networkMode !== 'internal'
@@ -761,7 +764,7 @@ export function EtfArbitragePage() {
       }
     }
     return forced.length ? [...forced, ...limited] : limited
-  }, [master, subTypes, subLimit, sortTick, focusCode, expanded])
+  }, [master, subTypes, subLimit, sortTick, focusCode, expanded, pollReady])
 
   // 2단계 구독 — 가벼운 ETF 코드(거래대금/순위)는 넓게, 무거운 PDF 구성종목은 상위 N만.
   //
