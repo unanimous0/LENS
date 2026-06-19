@@ -104,7 +104,7 @@ export function SpreadChart({
   /** 실시간 현재값(스프레드) — DB 시계열(어제까지) 끝에 이어 그림. ts는 내부에서 now()로. */
   live?: number | null
   /** 차트 인스턴스를 부모에 등록 (시간축 동기화용). stable한 setState setter를 넘길 것. */
-  register?: (chart: IChartApi | null) => void
+  register?: (chart: IChartApi | null, series?: ISeriesApi<'Line'> | null) => void
 }) {
   const containerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
@@ -122,7 +122,6 @@ export function SpreadChart({
       height: containerRef.current.clientHeight,
     })
     chartRef.current = chart
-    register?.(chart)
     const series: ISeriesApi<'Line'> = chart.addLineSeries({
       color: C.accent,
       lineWidth: 2,
@@ -132,6 +131,7 @@ export function SpreadChart({
       data.map((p) => ({ time: Math.floor(p.ts / 1000), value: p.spread }))
     )
     seriesRef.current = series
+    register?.(chart, series)
     lastTsRef.current = data.length ? Math.floor(data[data.length - 1].ts / 1000) : 0
     // 0 line
     series.createPriceLine({
@@ -212,7 +212,7 @@ export function ZScoreChart({
   /** 실시간 현재 z — DB 시계열 끝에 이어 그림. ts는 내부에서 now()로. */
   live?: number | null
   /** 차트 인스턴스를 부모에 등록 (시간축 동기화용). */
-  register?: (chart: IChartApi | null) => void
+  register?: (chart: IChartApi | null, series?: ISeriesApi<'Line'> | null) => void
 }) {
   const containerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
@@ -230,7 +230,6 @@ export function ZScoreChart({
       height: containerRef.current.clientHeight,
     })
     chartRef.current = chart
-    register?.(chart)
 
     const series = chart.addLineSeries({
       color: C.accent,
@@ -239,6 +238,7 @@ export function ZScoreChart({
     })
     series.setData(data.map((p) => ({ time: Math.floor(p.ts / 1000), value: p.z })))
     seriesRef.current = series
+    register?.(chart, series)
     lastTsRef.current = data.length ? Math.floor(data[data.length - 1].ts / 1000) : 0
 
     // 0 line
@@ -344,7 +344,7 @@ export function LegCompareChart({
   data: SpreadPoint[]
   /** 실시간 현재가 (두 leg). 시작점 기준 % 로 환산해 끝에 이어 그림. */
   live?: { left: number; right: number } | null
-  register?: (chart: IChartApi | null) => void
+  register?: (chart: IChartApi | null, series?: ISeriesApi<'Line'> | null) => void
 }) {
   const containerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
@@ -364,7 +364,6 @@ export function LegCompareChart({
       height: containerRef.current.clientHeight,
     })
     chartRef.current = chart
-    register?.(chart)
     const baseL = pts[0]?.left ?? 0
     const baseR = pts[0]?.right ?? 0
     baseRef.current = { l: baseL, r: baseR }
@@ -380,6 +379,8 @@ export function LegCompareChart({
     rSeries.setData(pts.map((p) => ({ time: Math.floor(p.ts / 1000), value: pct(p.right!, baseR) })))
     lSeriesRef.current = lSeries
     rSeriesRef.current = rSeries
+    // crosshair 동기화용 primary series = right(파랑). 시간축 공유라 logical index로 맞춤.
+    register?.(chart, rSeries)
     lastTsRef.current = pts.length ? Math.floor(pts[pts.length - 1].ts / 1000) : 0
     lSeries.createPriceLine({
       price: 0,

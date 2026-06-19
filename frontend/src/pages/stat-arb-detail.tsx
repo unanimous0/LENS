@@ -1,5 +1,5 @@
-import type { IChartApi, LogicalRange } from 'lightweight-charts'
-import { useEffect, useMemo, useState } from 'react'
+import type { IChartApi, ISeriesApi, LogicalRange } from 'lightweight-charts'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 
 import { LegCompareChart, ResidualHistogram, ZScoreChart } from '@/components/stat-arb/charts'
@@ -46,10 +46,21 @@ export function StatArbDetailPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
-  // 스프레드·z 차트 시간축 동기화 (체크박스 토글). 두 차트 인스턴스를 모아 연동.
-  const [spreadChart, setSpreadChart] = useState<IChartApi | null>(null)
-  const [zChart, setZChart] = useState<IChartApi | null>(null)
+  // 가격·z 차트 동기화 (체크박스 토글). 차트+primary series를 모아 시간축·crosshair 연동.
+  type ChartReg = { chart: IChartApi; series: ISeriesApi<'Line'> } | null
+  const [legReg, setLegReg] = useState<ChartReg>(null)
+  const [zReg, setZReg] = useState<ChartReg>(null)
   const [syncCharts, setSyncCharts] = useState(true)
+  const registerLeg = useCallback(
+    (chart: IChartApi | null, series?: ISeriesApi<'Line'> | null) =>
+      setLegReg(chart && series ? { chart, series } : null),
+    []
+  )
+  const registerZ = useCallback(
+    (chart: IChartApi | null, series?: ISeriesApi<'Line'> | null) =>
+      setZReg(chart && series ? { chart, series } : null),
+    []
+  )
 
   // left/right key에서 종목코드/타입 추출 — 실시간 구독 대상
   const leftCode = left ? keyToCode(left) : ''
@@ -104,7 +115,9 @@ export function StatArbDetailPage() {
 
   // 두 차트 시간축 동기화 — 한쪽 visible range 변경을 다른 쪽에 반영. guard로 무한루프 방지.
   useEffect(() => {
-    if (!syncCharts || !spreadChart || !zChart) return
+    if (!syncCharts || !legReg || !zReg) return
+    const a = legReg.chart
+    const b = zReg.chart
     let guard = false
     const link = (dst: IChartApi) => (range: LogicalRange | null) => {
       if (guard || !range) return
@@ -112,18 +125,50 @@ export function StatArbDetailPage() {
       dst.timeScale().setVisibleLogicalRange(range)
       guard = false
     }
-    const h1 = link(zChart)
-    const h2 = link(spreadChart)
-    spreadChart.timeScale().subscribeVisibleLogicalRangeChange(h1)
-    zChart.timeScale().subscribeVisibleLogicalRangeChange(h2)
-    // 켜는 즉시 1회 맞춤 (스프레드 → z)
-    const r = spreadChart.timeScale().getVisibleLogicalRange()
-    if (r) zChart.timeScale().setVisibleLogicalRange(r)
+    const h1 = link(b)
+    const h2 = link(a)
+    a.timeScale().subscribeVisibleLogicalRangeChange(h1)
+    b.timeScale().subscribeVisibleLogicalRangeChange(h2)
+    // 켜는 즉시 1회 맞춤 (가격 → z)
+    const r = a.timeScale().getVisibleLogicalRange()
+    if (r) b.timeScale().setVisibleLogicalRange(r)
     return () => {
-      spreadChart.timeScale().unsubscribeVisibleLogicalRangeChange(h1)
-      zChart.timeScale().unsubscribeVisibleLogicalRangeChange(h2)
+      a.timeScale().unsubscribeVisibleLogicalRangeChange(h1)
+      b.timeScale().unsubscribeVisibleLogicalRangeChange(h2)
     }
-  }, [syncCharts, spreadChart, zChart])
+  }, [syncCharts, legReg, zReg])
+
+  // 두 차트 crosshair(십자선) 동기화 — 한쪽 호버 시 다른 쪽 같은 시점에 십자선 표시.
+  // 두 차트가 같은 timestamp(spread_series)를 공유 → param.logical로 상대 차트 값 조회.
+  useEffect(() => {
+    if (!syncCharts || !legReg || !zReg) return
+    let guard = false
+    const sync =
+      (dst: ChartReg) =>
+      (param: { time?: unknown; logical?: number | null }) => {
+        if (guard || !dst) return
+        guard = true
+        if (param.time === undefined || param.logical == null) {
+          dst.chart.clearCrosshairPosition()
+        } else {
+          const bar = dst.series.dataByIndex(param.logical)
+          if (bar && 'value' in bar && bar.value != null) {
+            dst.chart.setCrosshairPosition(bar.value, param.time as never, dst.series)
+          } else {
+            dst.chart.clearCrosshairPosition()
+          }
+        }
+        guard = false
+      }
+    const onLeg = sync(zReg)
+    const onZ = sync(legReg)
+    legReg.chart.subscribeCrosshairMove(onLeg)
+    zReg.chart.subscribeCrosshairMove(onZ)
+    return () => {
+      legReg.chart.unsubscribeCrosshairMove(onLeg)
+      zReg.chart.unsubscribeCrosshairMove(onZ)
+    }
+  }, [syncCharts, legReg, zReg])
 
   if (loading) {
     return <div className="p-4 text-sm text-t3">로딩 중…</div>
@@ -300,7 +345,7 @@ export function StatArbDetailPage() {
               onChange={(e) => setSyncCharts(e.target.checked)}
               className="accent-accent"
             />
-            가격·z 차트 시간축 동기화
+            가격·z 차트 동기화 (시간축 + 십자선)
           </label>
           <div className="panel p-3">
             <div className="mb-2 flex flex-wrap items-center gap-x-3 text-xs text-t3">
@@ -318,7 +363,7 @@ export function StatArbDetailPage() {
               <LegCompareChart
                 data={detail.spread_series}
                 live={leftPrice > 0 && rightPrice > 0 ? { left: leftPrice, right: rightPrice } : null}
-                register={setSpreadChart}
+                register={registerLeg}
               />
             </div>
           </div>
@@ -343,7 +388,7 @@ export function StatArbDetailPage() {
               <ZScoreChart
                 data={detail.spread_series}
                 live={liveZ}
-                register={setZChart}
+                register={registerZ}
               />
             </div>
           </div>
