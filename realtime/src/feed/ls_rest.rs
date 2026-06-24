@@ -54,6 +54,7 @@ pub struct FailedT1102 {
 const TOKEN_URL: &str = "https://openapi.ls-sec.co.kr:8080/oauth2/token";
 const T8402_URL: &str = "https://openapi.ls-sec.co.kr:8080/futureoption/market-data";
 const T1102_URL: &str = "https://openapi.ls-sec.co.kr:8080/stock/market-data";
+const STOCK_CHART_URL: &str = "https://openapi.ls-sec.co.kr:8080/stock/chart";
 
 /// Z+X 키 풀 (2026-05-20). 두 LS 계정(아버지/와이프)의 키를 각 역할별로 분리.
 /// WS는 키A 영구. REST는 09:00~15:45 KST는 키B, 그 외는 키A.
@@ -980,6 +981,73 @@ async fn fetch_t1102(client: &reqwest::Client, token: &str, code: &str) -> Resul
                     Ok(data) => {
                         if let Some(block) = data["t1102OutBlock"].as_object() {
                             return Ok(block.clone());
+                        }
+                        return Err(data.get("rsp_msg").and_then(|v| v.as_str()).unwrap_or("no data").into());
+                    }
+                    Err(e) => last_err = format!("parse: {e}"),
+                }
+            }
+            Ok(resp) if resp.status() == reqwest::StatusCode::UNAUTHORIZED
+                || resp.status() == reqwest::StatusCode::FORBIDDEN => {
+                invalidate_token_cache().await;
+                return Err(format!("http {} (token invalidated)", resp.status()));
+            }
+            Ok(resp) => last_err = format!("http {}", resp.status()),
+            Err(e) => last_err = format!("send: {e}"),
+        }
+    }
+    Err(last_err)
+}
+
+// t8412(주식차트 N분) TPS 1 — 호출 간 1.1초 직렬화 게이트.
+const T8412_INTERVAL: std::time::Duration = std::time::Duration::from_millis(1100);
+static T8412_GATE: OnceLock<TokioMutex<std::time::Instant>> = OnceLock::new();
+async fn t8412_rate_gate() {
+    let gate = T8412_GATE.get_or_init(|| {
+        TokioMutex::new(
+            std::time::Instant::now()
+                .checked_sub(T8412_INTERVAL)
+                .unwrap_or_else(std::time::Instant::now),
+        )
+    });
+    let mut last = gate.lock().await;
+    let elapsed = last.elapsed();
+    if elapsed < T8412_INTERVAL {
+        tokio::time::sleep(T8412_INTERVAL - elapsed).await;
+    }
+    *last = std::time::Instant::now();
+}
+
+/// t8412 — 주식차트(N분). 당일(nday="0") N분봉 `t8412OutBlock1` 배열 반환.
+/// 주식·ETF용 (shcode 6자리). 당일 09:00~현재 N분봉을 한 번에 받음(qrycnt 500).
+/// 각 원소: {date:"YYYYMMDD", time:"HHMMSS"(KST), open, high, low, close, jdiff_vol, ...}.
+/// TPS 1 — `t8412_rate_gate`로 직렬화. 토큰은 호출자가 획득해 전달(fetch_t1102 패턴).
+pub async fn fetch_t8412_today(
+    client: &reqwest::Client,
+    token: &str,
+    code: &str,
+    ncnt: u32,
+) -> Result<Vec<serde_json::Value>, String> {
+    t8412_rate_gate().await;
+    let body = serde_json::json!({"t8412InBlock": {
+        "shcode": code, "ncnt": ncnt, "qrycnt": 500, "nday": "0",
+        "sdate": "", "stime": "", "edate": "99999999", "etime": "",
+        "cts_date": "", "cts_time": "", "comp_yn": "N"
+    }});
+    let mut last_err = String::new();
+    for attempt in 0..=MAX_RETRIES {
+        if attempt > 0 { tokio::time::sleep(std::time::Duration::from_secs(1)).await; }
+        match client.post(STOCK_CHART_URL)
+            .header("Content-Type", "application/json")
+            .header("authorization", format!("Bearer {token}"))
+            .header("tr_cd", "t8412").header("tr_cont", "N")
+            .json(&body).send().await
+        {
+            Ok(resp) if resp.status().is_success() => {
+                match resp.json::<serde_json::Value>().await {
+                    Ok(data) => {
+                        if let Some(arr) = data["t8412OutBlock1"].as_array() {
+                            return Ok(arr.clone());
                         }
                         return Err(data.get("rsp_msg").and_then(|v| v.as_str()).unwrap_or("no data").into());
                     }

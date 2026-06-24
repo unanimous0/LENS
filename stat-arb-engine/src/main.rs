@@ -117,6 +117,9 @@ struct AppState {
     pairs: Arc<RwLock<PairsState>>,
     groups: Arc<RwLock<GroupsState>>,
     stats: Arc<EngineStats>,
+    /// realtime(8200) 호출용 — detail 당일분 stitch(t8412 경유). connection pool 재사용.
+    http: reqwest::Client,
+    realtime_base: String,
 }
 
 #[derive(Serialize)]
@@ -282,6 +285,74 @@ struct PairDetailQuery {
     right: String,
 }
 
+/// 당일(오늘 09:00~현재) 분봉을 realtime(8200) t8412 경유로 받아 `raw`(전일까지 인트라데이)
+/// 뒤에 stitch. 주식/ETF만(지수·선물은 realtime이 빈 배열 → 그대로 반환). 실패해도 graceful
+/// (받은 만큼만, 못 받으면 전일까지). raw가 ASC 정렬을 유지하도록 append 후 ts 기준 정렬.
+async fn stitch_today_intraday(
+    state: &AppState,
+    mut raw: Vec<data::bars::Bar>,
+    asset_type: data::bars::AssetType,
+    code: &str,
+) -> Vec<data::bars::Bar> {
+    use data::bars::AssetType;
+    let at = match asset_type {
+        AssetType::Stock => "S",
+        AssetType::Etf => "E",
+        _ => return raw, // 지수/선물은 t8412 미지원 — 전일까지만
+    };
+    let url = format!(
+        "{}/intraday/today?code={}&asset_type={}&interval=1",
+        state.realtime_base, code, at
+    );
+    // leg당 3.5초 — 두 leg 순차 합계 7초 < FastAPI 프록시 타임아웃(10초)이라 realtime
+    // stall 시에도 엔진의 "전일까지" graceful 폴백이 프록시 503보다 먼저 동작.
+    let resp = match state
+        .http
+        .get(&url)
+        .timeout(std::time::Duration::from_millis(3500))
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!("당일분 fetch 실패 {code}: {e} — 전일까지 사용");
+            return raw;
+        }
+    };
+    let val: serde_json::Value = match resp.json().await {
+        Ok(v) => v,
+        Err(_) => return raw,
+    };
+    let arr = match val.get("bars").and_then(|b| b.as_array()) {
+        Some(a) => a,
+        None => return raw,
+    };
+    let last_ts = raw.last().map(|b| b.ts).unwrap_or(i64::MIN);
+    let before = raw.len();
+    for b in arr {
+        let ts = b.get("ts").and_then(|v| v.as_i64()).unwrap_or(0);
+        if ts <= last_ts {
+            continue; // DB 과거분과 겹치는 구간 제외
+        }
+        raw.push(data::bars::Bar {
+            ts,
+            open: b.get("open").and_then(|v| v.as_f64()).unwrap_or(0.0),
+            high: b.get("high").and_then(|v| v.as_f64()).unwrap_or(0.0),
+            low: b.get("low").and_then(|v| v.as_f64()).unwrap_or(0.0),
+            close: b.get("close").and_then(|v| v.as_f64()).unwrap_or(0.0),
+            volume: b.get("volume").and_then(|v| v.as_i64()).unwrap_or(0),
+        });
+    }
+    if raw.len() > before {
+        raw.sort_by_key(|b| b.ts); // intersect_by_ts/bucket_ohlc는 ASC 정렬 가정
+        state
+            .stats
+            .realtime_fetches
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+    raw
+}
+
 async fn pair_detail(
     State(state): State<AppState>,
     Query(q): Query<PairDetailQuery>,
@@ -331,6 +402,10 @@ async fn pair_detail(
         .unwrap_or_default();
     let left_raw = data::bars::unified_intraday(&l_1m, &l_30s);
     let right_raw = data::bars::unified_intraday(&r_1m, &r_30s);
+    // 당일 장중분(오늘 09:00~현재)을 realtime t8412로 받아 뒤에 stitch — "당일까지 연속" 시계열.
+    // 주식/ETF만(지수/선물은 그대로). 실패해도 graceful(전일까지). 두 leg 순차(t8412 TPS 1).
+    let left_raw = stitch_today_intraday(&state, left_raw, l_type, &l_code).await;
+    let right_raw = stitch_today_intraday(&state, right_raw, r_type, &r_code).await;
 
     // 종목명 룩업 — pairs.names 에 들어있음
     let (left_name, right_name) = {
@@ -548,12 +623,16 @@ async fn main() {
         });
     }
 
+    let realtime_base =
+        std::env::var("REALTIME_BASE_URL").unwrap_or_else(|_| "http://localhost:8200".to_string());
     let app_state = AppState {
         pg,
         cache,
         pairs,
         groups: groups_state,
         stats: engine_stats.clone(),
+        http: reqwest::Client::new(),
+        realtime_base,
     };
 
     let cors = CorsLayer::new()

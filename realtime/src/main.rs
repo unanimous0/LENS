@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock as StdRwLock};
 use std::time::Instant;
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, Method, StatusCode};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -536,6 +536,7 @@ async fn main() {
         .route("/orderbook/subscribe-bulk", post(subscribe_orderbook_bulk))
         .route("/orderbook/unsubscribe", post(unsubscribe_orderbook))
         .route("/debug/stats", get(debug_stats))
+        .route("/intraday/today", get(intraday_today))
         .with_state(state.clone())
         .layer(cors);
 
@@ -694,6 +695,91 @@ async fn health() -> &'static str {
 
 async fn get_mode(State(state): State<AppState>) -> String {
     state.feed_mode.read().unwrap().clone()
+}
+
+#[derive(Deserialize)]
+struct IntradayTodayQuery {
+    code: String,
+    /// 자산군: "S"(주식)/"E"(ETF)/"I"(지수)/"F"(선물). t8412는 S·E만 지원.
+    asset_type: String,
+    /// N분봉 단위 (기본 1). 엔진이 자체 버킷팅하므로 보통 1.
+    #[serde(default)]
+    interval: Option<u32>,
+}
+
+/// KST date("YYYYMMDD") + time("HHMMSS") → UTC UNIX milliseconds.
+/// 엔진 Bar.ts(=UTC ms)와 동일 체계로 맞춰 stitch 정합 보장.
+fn kst_datetime_to_utc_ms(date: &str, time: &str) -> Option<i64> {
+    use chrono::TimeZone;
+    if date.len() != 8 || time.len() < 6 {
+        return None;
+    }
+    let y = date[0..4].parse::<i32>().ok()?;
+    let mo = date[4..6].parse::<u32>().ok()?;
+    let d = date[6..8].parse::<u32>().ok()?;
+    let h = time[0..2].parse::<u32>().ok()?;
+    let mi = time[2..4].parse::<u32>().ok()?;
+    let s = time[4..6].parse::<u32>().ok()?;
+    let nd = chrono::NaiveDate::from_ymd_opt(y, mo, d)?;
+    let nt = chrono::NaiveTime::from_hms_opt(h, mi, s)?;
+    let kst = chrono::FixedOffset::east_opt(9 * 3600)?;
+    let dt = kst.from_local_datetime(&nd.and_time(nt)).single()?;
+    Some(dt.timestamp_millis())
+}
+
+/// 당일(오늘 09:00~현재) N분봉 — LS t8412로 즉석 조회. 통계차익 detail이 전일까지의
+/// DB 인트라데이 뒤에 stitch해 "당일까지 연속" 시계열을 그리게 함.
+/// 주식·ETF만 지원(지수/선물은 빈 배열 → 엔진이 graceful하게 전일까지만 사용).
+async fn intraday_today(
+    State(_state): State<AppState>,
+    Query(q): Query<IntradayTodayQuery>,
+) -> Json<serde_json::Value> {
+    let empty = || serde_json::json!({"code": q.code, "bars": []});
+    // t8412는 주식차트 — shcode 6자리(주식/ETF)만. 지수(I)/선물(F)은 미지원.
+    if (q.asset_type != "S" && q.asset_type != "E") || q.code.len() != 6 {
+        return Json(empty());
+    }
+    let ncnt = q.interval.unwrap_or(1).max(1);
+    let (ak, sk) = feed::ls_rest::rest_credentials();
+    let token = match feed::ls_rest::get_or_fetch_token(&ak, &sk).await {
+        Ok(t) => t,
+        Err(e) => {
+            warn!("intraday_today token 실패 {}: {e}", q.code);
+            return Json(empty());
+        }
+    };
+    let client = reqwest::Client::new();
+    let rows = match feed::ls_rest::fetch_t8412_today(&client, &token, &q.code, ncnt).await {
+        Ok(r) => r,
+        Err(e) => {
+            warn!("intraday_today t8412 실패 {}: {e}", q.code);
+            return Json(empty());
+        }
+    };
+    let g = |r: &serde_json::Value, k: &str| -> f64 {
+        match r.get(k) {
+            Some(serde_json::Value::Number(n)) => n.as_f64().unwrap_or(0.0),
+            Some(serde_json::Value::String(s)) => s.parse().unwrap_or(0.0),
+            _ => 0.0,
+        }
+    };
+    let bars: Vec<serde_json::Value> = rows
+        .iter()
+        .filter_map(|r| {
+            let date = r.get("date")?.as_str()?;
+            let time = r.get("time")?.as_str()?;
+            let ts = kst_datetime_to_utc_ms(date, time)?;
+            Some(serde_json::json!({
+                "ts": ts,
+                "open": g(r, "open"),
+                "high": g(r, "high"),
+                "low": g(r, "low"),
+                "close": g(r, "close"),
+                "volume": g(r, "jdiff_vol") as i64,
+            }))
+        })
+        .collect();
+    Json(serde_json::json!({"code": q.code, "interval_seconds": ncnt * 60, "bars": bars}))
 }
 
 /// 런타임 피드 모드 전환. 기존 feed cancel → await join → 새 feed spawn.
