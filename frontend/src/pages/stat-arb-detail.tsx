@@ -7,7 +7,7 @@ import { PnlSimulator } from '@/components/stat-arb/pnl-simulator'
 import { TimeframeTable } from '@/components/stat-arb/timeframe-table'
 import { usePageStockSubscriptions } from '@/hooks/usePageStockSubscriptions'
 import { keyToCode, keyType } from '@/lib/stat-arb-keys'
-import { humanHalfLifeShort } from '@/lib/stat-arb/half-life'
+import { CAL_PER_TRADING_DAY, toTradingDays } from '@/lib/stat-arb/half-life'
 import { useMarketStore } from '@/stores/marketStore'
 import type { PairDetail } from '@/types/stat-arb'
 
@@ -213,6 +213,16 @@ export function StatArbDetailPage() {
   const zCls = Math.abs(displayZ) >= 2.5 ? 'text-warning' : Math.abs(displayZ) >= 1.5 ? 'text-t1' : 'text-t3'
   const signal = meanRevSignal(displayZ, detail.left_name, detail.right_name)
 
+  // 청산권(±0.3σ) 도달 예상 — 현재 z에서 지수회귀로 외삽. 달력일(주말·공휴일 포함) 근사.
+  //   예상거래일 = half-life(거래일) × log₂(|현재z| / 0.3),  달력일 = ×CAL_PER_TRADING_DAY.
+  // |z|≤0.3이면 이미 청산권. half-life는 평균치라 큰 충격은 더 걸릴 수 있음(근사).
+  const EXIT_Z = 0.3
+  const hlTradingDays = dayStat ? toTradingDays(KPI_TF, dayStat.half_life) : null
+  const projectedExitCalDays =
+    hlTradingDays != null && hlTradingDays > 0 && Math.abs(displayZ) > EXIT_Z
+      ? hlTradingDays * Math.log2(Math.abs(displayZ) / EXIT_Z) * CAL_PER_TRADING_DAY
+      : null
+
   return (
     <div className="flex flex-col gap-1 p-1">
       {/* 헤더 */}
@@ -296,8 +306,14 @@ export function StatArbDetailPage() {
               cls={zCls}
             />
             <KpiCard
-              label={`half-life (${KPI_TF})`}
-              value={dayStat ? humanHalfLifeShort(KPI_TF, dayStat.half_life) : '—'}
+              label="청산권(±0.3σ) 예상"
+              value={
+                projectedExitCalDays != null
+                  ? `약 ${projectedExitCalDays.toFixed(1)}일`
+                  : Math.abs(displayZ) <= 0.3
+                  ? '청산권 도달'
+                  : '—'
+              }
               cls="text-t1"
             />
             <KpiCard
