@@ -11,6 +11,7 @@ import {
   holdDays,
   regressionPct,
 } from '@/lib/position-labels'
+import { CAL_PER_TRADING_DAY, toTradingDays } from '@/lib/stat-arb/half-life'
 import { keyToCode, keyType } from '@/lib/stat-arb-keys'
 import { useMarketStore } from '@/stores/marketStore'
 import type { Position } from '@/types/positions'
@@ -146,11 +147,10 @@ export function StatArbPositionDetailPage() {
   const loanPnL = estimateLoanPnL(position)
   const totalPnL = (markPnL ?? 0) + loanPnL
 
-  // half-life 단위 환산: stat1d(10분봉) half_life는 "10분봉 개수" → 거래일로 환산.
-  // 10분봉 ≈ 38개/거래일(09:00~15:10, 09:01~15:19 연속세션). entry.half_life는 보유기간(일) 기준 기존값.
-  const BARS_10M_PER_TRADING_DAY = 38
+  // half-life 단위 환산: stat1d(10분봉) half_life는 "10분봉 개수" → 거래일(toTradingDays=÷38).
+  // entry.half_life는 진입 시 거래일로 저장된 기존값. (deriveLabel/예상청산 계산은 거래일 기준)
   const currentHalfLifeDays =
-    stat1d?.half_life != null ? stat1d.half_life / BARS_10M_PER_TRADING_DAY : null
+    stat1d?.half_life != null ? toTradingDays('10m', stat1d.half_life) : null
 
   // 자동 라벨 — closed는 라벨 안 보여줌 (별도 "청산" 뱃지가 명확)
   const halfLife = entry.half_life ?? currentHalfLifeDays
@@ -159,8 +159,8 @@ export function StatArbPositionDetailPage() {
   const regress = regressionPct(position.entry_z, currentZ)
   const days = holdDays(position.opened_at)
 
-  // 예상 청산 도달일 — half-life × log2(|currentZ|/0.3). closed면 의미 없음.
-  let projectedExitDays: number | null = null
+  // 예상 청산 도달 — half-life(거래일) × log2(|currentZ|/0.3) → 달력일(×1.49). closed면 의미 없음.
+  let projectedExitCalDays: number | null = null
   if (
     !isClosed &&
     halfLife &&
@@ -168,7 +168,8 @@ export function StatArbPositionDetailPage() {
     currentZ != null &&
     Math.abs(currentZ) > 0.3
   ) {
-    projectedExitDays = halfLife * (Math.log(Math.abs(currentZ) / 0.3) / Math.log(2))
+    const tradingDays = halfLife * (Math.log(Math.abs(currentZ) / 0.3) / Math.log(2))
+    projectedExitCalDays = tradingDays * CAL_PER_TRADING_DAY
   }
 
   // β 드리프트 — 진입 β 대비 현재 β 변화. 자동 리밸런싱 X, 경고 + 수동 판단.
@@ -256,14 +257,14 @@ export function StatArbPositionDetailPage() {
         />
         <Kpi label="회귀" value={regress != null ? `${regress.toFixed(0)}%` : '—'} />
         <Kpi
-          label={isClosed ? '확정 보유' : '예상 청산'}
+          label={isClosed ? '확정 보유' : '청산권(±0.3σ) 예상'}
           value={
             isClosed
-              ? `${days}d`
-              : projectedExitDays != null
-              ? `${projectedExitDays.toFixed(1)}d 후`
+              ? `${days}일`
+              : projectedExitCalDays != null
+              ? `약 ${projectedExitCalDays.toFixed(1)}일 후`
               : Math.abs(currentZ ?? 0) <= 0.3
-              ? '도달 (|z|<0.3)'
+              ? '청산권 도달'
               : '—'
           }
         />
@@ -468,10 +469,10 @@ export function StatArbPositionDetailPage() {
                 fmt={(v) => v.toFixed(1)}
               />
               <StatRow
-                label="half-life (d)"
-                entry={entry.half_life}
-                current={currentHalfLifeDays ?? undefined}
-                fmt={(v) => v.toFixed(2)}
+                label="half-life (달력일)"
+                entry={entry.half_life != null ? entry.half_life * CAL_PER_TRADING_DAY : undefined}
+                current={currentHalfLifeDays != null ? currentHalfLifeDays * CAL_PER_TRADING_DAY : undefined}
+                fmt={(v) => v.toFixed(1)}
               />
               <StatRow
                 label="ADF t-stat"
