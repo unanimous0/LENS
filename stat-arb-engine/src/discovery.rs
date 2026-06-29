@@ -31,6 +31,23 @@ const MIN_SAMPLES: usize = 150;
 const MIN_HALF_LIFE: f64 = 0.5;
 const MAX_HALF_LIFE: f64 = 90.0;
 const MIN_R_SQUARED: f64 = 0.5;
+// 최근창 안정성 (2026-06-26): 1년 OLS 관계가 "최근에도 평균회귀하나" 검정.
+// 1년 잔차의 최근 N영업일 tail(같은 β) ADF가 여전히 stationary여야 함 →
+// "과거엔 좋았으나 최근 깨진 페어"(false discovery의 실질 구멍) 제거.
+// 표본이 1년창(~252)보다 작아 검정력↓ → 임계는 ADF_CRIT(-3.0)보다 완화(-2.5). 최근 가장
+// 약해진 ~20%만 컷(측정 2026-06-26). 더 빡세면 검정력 부족으로 진짜 페어도 버림. env로 튜닝.
+const RECENT_WINDOW_DAYS: usize = 126; // ~6개월 영업일
+// 최근창 ADF 임계 — env로 튜닝(기본 -2.0). 표본 작아 검정력 약하므로 운영 중 조정 여지.
+fn recent_adf_crit() -> f64 {
+    use std::sync::OnceLock;
+    static CELL: OnceLock<f64> = OnceLock::new();
+    *CELL.get_or_init(|| {
+        std::env::var("STATARB_RECENT_ADF_CRIT")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(-2.5)
+    })
+}
 
 /// M:N 페어 한 쪽 최대 leg 수. stat-arb-engine.md §2 결정사항.
 /// PR-C (Sparse CCA) / PR-E (Sparse PCA) 진입 시 L1 sparsity 강도와 결과 leg 수 cap에 사용.
@@ -49,6 +66,8 @@ pub struct PairResult {
     pub hedge_ratio: f64,  // β
     pub alpha: f64,
     pub adf_tstat: f64,
+    /// 최근 ~6개월 잔차(같은 β) ADF — "최근에도 평균회귀하나" 안정성 지표. 게이트도 겸함.
+    pub recent_adf_tstat: f64,
     pub half_life: f64,
     pub r_squared: f64,
     pub z_score: f64,      // 현재 잔차의 z
@@ -136,6 +155,18 @@ fn evaluate_pair(
         return None;
     }
 
+    // 4.5 최근창 안정성 — 1년 잔차(같은 β)의 최근 N영업일 tail이 여전히 stationary한지.
+    //     "과거엔 묶였으나 최근 깨진" 페어를 제거. 표본 부족 시(데이터 짧음) 전체 ADF로 대체(통과).
+    let recent_adf = if r.residuals.len() >= RECENT_WINDOW_DAYS {
+        let tail = &r.residuals[r.residuals.len() - RECENT_WINDOW_DAYS..];
+        stats::adf_tstat(tail).unwrap_or(0.0)
+    } else {
+        adf
+    };
+    if recent_adf > recent_adf_crit() {
+        return None; // 최근창에서 관계 붕괴 — 발굴 제외
+    }
+
     // 5. 현재 z-score
     let z = stats::current_z(&r.residuals)?;
 
@@ -152,6 +183,7 @@ fn evaluate_pair(
         hedge_ratio: r.beta,
         alpha: r.alpha,
         adf_tstat: adf,
+        recent_adf_tstat: recent_adf,
         half_life: hl,
         r_squared: r.r_squared,
         z_score: z,

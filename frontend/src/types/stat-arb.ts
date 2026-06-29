@@ -50,6 +50,8 @@ export type PairRow = {
   hedge_ratio: number
   alpha: number
   adf_tstat: number
+  /** 최근 ~6개월 잔차(같은 β) ADF — 최근에도 평균회귀 유지하나 (안정성 게이트 겸 지표). */
+  recent_adf_tstat: number
   half_life: number
   r_squared: number
   z_score: number

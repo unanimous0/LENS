@@ -43,6 +43,7 @@ type Pair = {
   hedge_ratio: number
   alpha: number
   adf_tstat: number
+  recent_adf_tstat: number
   half_life: number
   r_squared: number
   z_score: number
@@ -79,7 +80,7 @@ const COL_TOOLTIPS: Record<SortKey | 'pair', string> = {
   beta: 'Hedge ratio β (right/left 비율) — 음수면 short pair',
   corr: '로그수익률 Pearson correlation — 사전 필터 (|r|>0.5)',
   r2: 'OLS 결정계수 — 잔차가 얼마나 작은지 (≥0.9 강한 cointegration)',
-  adf: 'Augmented Dickey-Fuller t-stat — 잔차 stationarity (<-3 cointegration 통과)',
+  adf: 'ADF t-stat — 1년 잔차 stationarity (<-3 통과). 괄호 = 최근 6개월 잔차 ADF(같은 β) — 최근에도 평균회귀 유지하나(>-2면 발굴 제외)',
   hl: 'Mean-reversion half-life (그 timeframe 단위, 1d 기준 일)',
   z: '현재 잔차 z-score — |z|≥2 진입 시그널',
   score: '발굴 점수 = -ADF × (1/hl) × |corr|',
@@ -416,7 +417,15 @@ export function StatArbPage() {
                   <td className="px-3 py-2 text-right text-t1">{p.hedge_ratio.toFixed(3)}</td>
                   <td className="px-3 py-2 text-right text-t2">{p.corr.toFixed(2)}</td>
                   <td className={`px-3 py-2 text-right ${r2Cls}`}>{p.r_squared.toFixed(3)}</td>
-                  <td className={`px-3 py-2 text-right ${adfCls}`}>{p.adf_tstat.toFixed(2)}</td>
+                  <td className={`px-3 py-2 text-right ${adfCls}`}>
+                    {p.adf_tstat.toFixed(2)}
+                    <span
+                      className={`ml-1 text-[10px] ${p.recent_adf_tstat <= -3 ? 'text-up' : 'text-t4'}`}
+                      title="최근 6개월 잔차 ADF (같은 β)"
+                    >
+                      ({p.recent_adf_tstat.toFixed(1)})
+                    </span>
+                  </td>
                   <td className="px-3 py-2 text-right text-t2">{p.half_life.toFixed(1)}d</td>
                   <td className={`px-3 py-2 text-right ${zClass}`}>
                     {z >= 0 ? '+' : ''}
