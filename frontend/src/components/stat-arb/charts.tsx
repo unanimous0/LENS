@@ -418,6 +418,76 @@ export function LegCompareChart({
 }
 
 // ---------------------------------------------------------------------------
+// 2c. 스프레드 비교 차트 (% 등락 차트와 z 차트 사이) — 두 스프레드를 %p로 겹쳐 비교.
+//   A) 수익률差(주황 실선) = right% − left% : 1:1 단순 차이, 직관적.
+//   B) β스프레드(회색 점선) = 잔차/right×100 : β-가중(z 차트와 같은 거동).
+//   data(spread_series)의 spread(=잔차)·left·right만으로 둘 다 계산(α·β 직접 불필요).
+// ---------------------------------------------------------------------------
+export function SpreadDualChart({
+  data,
+  register,
+}: {
+  data: SpreadPoint[]
+  register?: (chart: IChartApi | null, series?: ISeriesApi<'Line'> | null) => void
+}) {
+  const containerRef = useRef<HTMLDivElement>(null)
+  const chartRef = useRef<IChartApi | null>(null)
+
+  useEffect(() => {
+    if (!containerRef.current) return
+    const pts = data.filter((p) => p.left != null && p.right != null && p.left > 0 && p.right > 0)
+    const chart = createChart(containerRef.current, {
+      ...baseChartOpts,
+      timeScale: seriesTimeScale,
+      localization: seriesLocalization,
+      width: containerRef.current.clientWidth,
+      height: containerRef.current.clientHeight,
+    })
+    chartRef.current = chart
+    const baseL = pts[0]?.left ?? 0
+    const baseR = pts[0]?.right ?? 0
+    const pct = (v: number, base: number) => (base > 0 ? (v / base - 1) * 100 : 0)
+    const fmt = {
+      type: 'custom' as const,
+      formatter: (v: number) => `${v >= 0 ? '+' : ''}${v.toFixed(1)}%p`,
+      minMove: 0.01,
+    }
+    const aSeries = chart.addLineSeries({ color: C.warning, lineWidth: 2, priceFormat: fmt })
+    const bSeries = chart.addLineSeries({
+      color: C.t2,
+      lineWidth: 1,
+      lineStyle: LineStyle.Dotted,
+      priceFormat: fmt,
+    })
+    aSeries.setData(
+      pts.map((p) => ({ time: Math.floor(p.ts / 1000), value: pct(p.right!, baseR) - pct(p.left!, baseL) }))
+    )
+    bSeries.setData(
+      pts.map((p) => ({ time: Math.floor(p.ts / 1000), value: p.right! !== 0 ? (p.spread / p.right!) * 100 : 0 }))
+    )
+    // crosshair 동기화 primary = A(수익률差).
+    register?.(chart, aSeries)
+    aSeries.createPriceLine({
+      price: 0,
+      color: C.t4,
+      lineStyle: LineStyle.Dashed,
+      axisLabelVisible: false,
+      title: '',
+      lineWidth: 1,
+    })
+    chart.timeScale().fitContent()
+    return () => {
+      register?.(null)
+      chart.remove()
+    }
+  }, [data, register])
+
+  useResize(containerRef, chartRef)
+
+  return <div ref={containerRef} className="h-full w-full" />
+}
+
+// ---------------------------------------------------------------------------
 // 3. 잔차 분포 히스토그램 — σ(표준편차) 단위. 평균 0 중심 + ±1σ/±2σ 세로선.
 //    lightweight-charts는 시계열 전용이라 분포·세로선을 못 그려 커스텀 SVG로 렌더.
 //    x축 = z(σ), y축 = 빈도. 현재 위치는 빨강 막대 + 세로 마커.
