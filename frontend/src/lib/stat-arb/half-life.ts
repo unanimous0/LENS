@@ -39,7 +39,8 @@ export function toCalendarDays(timeframe: string, half_life: number): number | n
 }
 
 function fmtCalDays(d: number): string {
-  return d >= 1 ? `약 ${d.toFixed(1)}일` : `약 ${d.toFixed(2)}일`
+  // 정수 일수로 표기. 1일 미만은 반올림 0이 어색하므로 '<1일'.
+  return d < 0.5 ? '<1일' : `약 ${Math.round(d)}일`
 }
 
 /** half_life를 *봉 개수 + 달력일 환산* 으로. 예: ('10m', 104) → '104봉 (≈약 4.0일)' */

@@ -262,7 +262,7 @@ export function StatArbPositionDetailPage() {
             isClosed
               ? `${days}일`
               : projectedExitCalDays != null
-              ? `약 ${projectedExitCalDays.toFixed(1)}일 후`
+              ? `약 ${Math.round(projectedExitCalDays)}일 후`
               : Math.abs(currentZ ?? 0) <= 0.3
               ? '청산권 도달'
               : '—'

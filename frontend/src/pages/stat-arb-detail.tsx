@@ -309,7 +309,7 @@ export function StatArbDetailPage() {
             />
             <KpiCard
               label="전형 회귀 (2σ→±0.3σ)"
-              value={typicalReversionCalDays != null ? `약 ${typicalReversionCalDays.toFixed(1)}일` : '—'}
+              value={typicalReversionCalDays != null ? `약 ${Math.round(typicalReversionCalDays)}일` : '—'}
               cls="text-t1"
             />
             <KpiCard
