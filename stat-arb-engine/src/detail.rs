@@ -182,6 +182,8 @@ pub fn build_pair_detail(
     right_name: String,
     left_raw: &[Bar],
     right_raw: &[Bar],
+    left_daily: &[Bar],
+    right_daily: &[Bar],
 ) -> Option<PairDetail> {
     // 헤드라인 = 10분 버킷 시계열 (메인 차트 + KPI z 기준)
     let l10 = bucket_ohlc(left_raw, BUCKET_10M_MS);
@@ -242,6 +244,11 @@ pub fn build_pair_detail(
         &bucket_ohlc(left_raw, BUCKET_1H_MS),
         &bucket_ohlc(right_raw, BUCKET_1H_MS),
     ) {
+        timeframes.push(s);
+    }
+    // 일봉(1d) — 장기 관계(수일~수개월 회귀) + 발굴 기준과 일치. 캐시 bars_1d(adj_close, ~1년)
+    // 그대로 (버킷 불필요, 당일 stitch 안 함 — 일봉은 장 마감 후 확정). 차트는 인트라데이 유지.
+    if let Some(s) = timeframe_stat_from_bars("1d", left_daily, right_daily) {
         timeframes.push(s);
     }
 

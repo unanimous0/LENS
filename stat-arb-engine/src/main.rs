@@ -359,7 +359,7 @@ async fn pair_detail(
 ) -> Response {
     // 캐시 ref는 await 전에 필요한 것만 복사 후 drop (DashMap shard lock을 DB await 동안 잡지 않게).
     let left_meta = match state.cache.get(&q.left) {
-        Some(v) => (v.code.clone(), v.asset_type, v.bars_1m.clone()),
+        Some(v) => (v.code.clone(), v.asset_type, v.bars_1m.clone(), v.bars_1d.clone()),
         None => {
             return (
                 StatusCode::NOT_FOUND,
@@ -369,7 +369,7 @@ async fn pair_detail(
         }
     };
     let right_meta = match state.cache.get(&q.right) {
-        Some(v) => (v.code.clone(), v.asset_type, v.bars_1m.clone()),
+        Some(v) => (v.code.clone(), v.asset_type, v.bars_1m.clone(), v.bars_1d.clone()),
         None => {
             return (
                 StatusCode::NOT_FOUND,
@@ -392,8 +392,8 @@ async fn pair_detail(
     // 디테일은 인트라데이(일봉 종가 스파이크 배제). warmup 캐시의 30초는 5일치뿐이라
     // 이 페어만 30초를 길게(60일) on-demand 로드해 과거 1분봉과 stitch.
     const DETAIL_30S_DAYS: i32 = 60;
-    let (l_code, l_type, l_1m) = left_meta;
-    let (r_code, r_type, r_1m) = right_meta;
+    let (l_code, l_type, l_1m, l_1d) = left_meta;
+    let (r_code, r_type, r_1m, r_1d) = right_meta;
     let l_30s = data::bars::load_intraday_one(pool, l_type, &l_code, 30, DETAIL_30S_DAYS)
         .await
         .unwrap_or_default();
@@ -422,6 +422,8 @@ async fn pair_detail(
         right_name,
         &left_raw,
         &right_raw,
+        &l_1d,
+        &r_1d,
     ) {
         Some(d) => Json(d).into_response(),
         None => (
