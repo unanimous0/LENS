@@ -219,6 +219,8 @@ export function StatArbDetailPage() {
   // half-life는 평균치라 큰 충격은 더 걸릴 수 있음(근사).
   const ENTRY_Z_REF = 2.0
   const EXIT_Z = 0.3
+  // 선정 근거 — 발굴 기준(3년 일봉)과 같은 1d 통계로 게이트 통과 표시.
+  const selDaily = detail.timeframes.find((t) => t.timeframe === '1d')
   const hlTradingDays = dayStat ? toTradingDays(KPI_TF, dayStat.half_life) : null
   const typicalReversionCalDays =
     hlTradingDays != null && hlTradingDays > 0
@@ -353,6 +355,39 @@ export function StatArbDetailPage() {
               )}
             </div>
           </div>
+
+          {/* 선정 근거 — 이 페어가 발굴 게이트를 어떻게 통과했나 (3년 일봉) */}
+          {selDaily && (
+            <div className="panel p-3 text-xs">
+              <div className="mb-2 text-t3">발굴 기준 점검 (3년 일봉) — 목록의 페어는 모두 통과한 것</div>
+              <ul className="space-y-1">
+                <GateRow
+                  ok={Math.abs(selDaily.corr) >= 0.5}
+                  label="상관 |r| ≥ 0.5"
+                  val={selDaily.corr.toFixed(2)}
+                />
+                <GateRow
+                  ok={selDaily.r_squared >= 0.5}
+                  label="R² ≥ 0.5 (직선 관계)"
+                  val={selDaily.r_squared.toFixed(2)}
+                />
+                <GateRow
+                  ok={selDaily.adf_tstat <= -3}
+                  label="ADF ≤ −3.0 (평균회귀)"
+                  val={selDaily.adf_tstat.toFixed(2)}
+                />
+                <GateRow
+                  ok={selDaily.half_life >= 0.5 && selDaily.half_life <= 90}
+                  label="half-life 0.5~90거래일"
+                  val={`${selDaily.half_life.toFixed(0)}일`}
+                />
+              </ul>
+              <div className="mt-2 text-[10px] leading-relaxed text-t4">
+                + 같은 도메인 그룹(섹터·ETF) 후보 · 양방향 ADF(방향 대칭) · 최근 6개월 안정성까지
+                통과해 선정됨. 전반 과정은 페어 목록 상단 &ldquo;발굴 방법론&rdquo; 참고.
+              </div>
+            </div>
+          )}
         </div>
 
         {/* 우측 — 차트 3개 vertical stack */}
@@ -461,6 +496,18 @@ function KpiCard({ label, value, cls }: { label: string; value: string; cls: str
       <div className="text-[10px] text-t3">{label}</div>
       <div className={`text-base font-semibold tabular-nums ${cls}`}>{value}</div>
     </div>
+  )
+}
+
+/** 선정 근거 게이트 한 줄 — 통과 ✓ / 미달 ✗ + 실제 값. */
+function GateRow({ ok, label, val }: { ok: boolean; label: string; val: string }) {
+  return (
+    <li className="flex items-center justify-between">
+      <span className="text-t2">
+        <span className={ok ? 'text-up' : 'text-down'}>{ok ? '✓' : '✗'}</span> {label}
+      </span>
+      <span className="tabular-nums text-t1">{val}</span>
+    </li>
   )
 }
 

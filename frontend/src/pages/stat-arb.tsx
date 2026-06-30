@@ -351,6 +351,48 @@ export function StatArbPage() {
         </div>
       )}
 
+      {/* 발굴 방법론 — 접이식 (이 목록이 어떻게 만들어지나) */}
+      <details className="panel p-3 text-xs">
+        <summary className="cursor-pointer select-none font-medium text-t2">
+          📋 발굴 방법론 — 이 페어들은 어떻게 골라지나? <span className="text-t4">(클릭해서 펼치기)</span>
+        </summary>
+        <div className="mt-3 flex flex-col gap-2 text-t3">
+          <p className="text-t2">
+            전 종목을 무차별 비교하지 않고, <span className="text-t1">경제적 관계가 있는 후보</span>를 추린 뒤
+            여러 통계 게이트를 모두 통과한 페어만 남깁니다. 발굴 기준은{' '}
+            <span className="text-t1">3년 일봉</span>(장기 관계), 진입 타이밍은 10분·30초 인트라데이입니다.
+          </p>
+          <div>
+            <div className="font-medium text-t2">① 유니버스 &amp; 후보 그룹</div>
+            <p className="ml-3">
+              KOSPI200 + KOSDAQ150 구성종목 + 거래대금 상위 ETF + 주요 지수(~470종목) → 같은
+              섹터·지수·ETF 구성 관계로 묶어 후보를 한정 (가짜 페어의 근원인 무차별 비교 회피).
+            </p>
+          </div>
+          <div>
+            <div className="font-medium text-t2">② 1:1 페어 통계 게이트 (3년 일봉)</div>
+            <ul className="ml-3 list-disc pl-4">
+              <li><span className="text-t1">상관 |r| ≥ 0.5</span> — 로그수익률이 같이 움직이나 (사전 필터)</li>
+              <li><span className="text-t1">R² ≥ 0.5</span> — OLS 회귀 직선에 잘 붙나</li>
+              <li><span className="text-t1">양방향 ADF ≤ −3.0</span> — 벌어지면 다시 붙나(cointegration), 방향 바꿔도 성립(견고)</li>
+              <li><span className="text-t1">half-life 적정</span> — 회귀 속도가 너무 빠르지(우연)·느리지(활용 불가) 않나</li>
+              <li><span className="text-t1">최근창 안정성</span> — 최근 6개월에도 ADF ≤ −2.5 (과거만 좋고 최근 깨진 페어 제거)</li>
+              <li><span className="text-t1">score = −ADF × (1/half-life) × |상관|</span> 로 순위</li>
+            </ul>
+          </div>
+          <div>
+            <div className="font-medium text-t2">③ M:N 페어 (3종목+, 별도 화면)</div>
+            <p className="ml-3">
+              PCA로 공통 팩터 추출 → Sparse CCA로 양변 종목 구성 → 합성 스프레드의 cointegration 검정.
+            </p>
+          </div>
+          <p className="text-t4">
+            ※ 즉 "<span className="text-t3">경제적 관계 있고 + 오래 묶였고(3년) + 최근에도 안 깨졌고 + 방향 견고한</span>"
+            페어만 이 목록에 올라옵니다. 개별 페어의 통과 수치는 페어를 클릭하면 상세에서 볼 수 있습니다.
+          </p>
+        </div>
+      </details>
+
       {/* 페어 테이블 */}
       <div className="panel overflow-x-auto">
         <table className="w-full text-xs tabular-nums">
