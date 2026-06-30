@@ -48,8 +48,22 @@ const PCA_POOL_SIZE: usize = 30;
 /// factor당 표시할 top loading 종목 수.
 const PCA_TOP_LOADINGS: usize = 10;
 
-/// 일봉 워밍업 길이 (캘린더일). 1년 ≈ 252영업일 = 365캘린더일.
-const WARMUP_DAYS_DAILY: i32 = 365;
+/// 일봉 워밍업 길이 (캘린더일). 기본 3년(1095), env `STATARB_WARMUP_DAYS_DAILY`로 조정.
+/// 1년→3년 전환(2026-06-30, 측정 후): 페어 2028→1382(−32%)이나 ADF median −3.96→−5.01,
+/// R² 0.768→0.852로 질 급상승 — "1년만 우연히 좋던" 과적합 페어 제거(다중윈도우 robustness).
+/// 길수록 장기 cointegration 확신↑(표본 244→727)이고, 오래된·깨진 관계는 최근창 게이트
+/// (discovery.rs `recent_adf`)가 거름. 발굴 비용 부담 없음(20→22초).
+fn warmup_days_daily() -> i32 {
+    use std::sync::OnceLock;
+    static CELL: OnceLock<i32> = OnceLock::new();
+    *CELL.get_or_init(|| {
+        std::env::var("STATARB_WARMUP_DAYS_DAILY")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .filter(|&d| d > 0)
+            .unwrap_or(1095)
+    })
+}
 /// 1분봉 워밍업 길이 (캘린더일). PG에 4/24까지만 있음 — 더 길게 잡아 raw 가용분 다 가져오기.
 /// 4개월치 (~120일) 면 전체 1분봉 raw 커버.
 const WARMUP_DAYS_1M: i32 = 130;
@@ -795,17 +809,17 @@ async fn warmup_and_discover(
 
             let (stock_n, stock_b) = data::bars::warmup_universe_stocks_batch(
                 pool, cache, &stock_codes, AssetType::Stock,
-                WARMUP_DAYS_DAILY, WARMUP_DAYS_1M, WARMUP_DAYS_30S,
+                warmup_days_daily(), WARMUP_DAYS_1M, WARMUP_DAYS_30S,
             ).await.unwrap_or_else(|e| { warn!("[warmup] Stock 실패: {e}"); (0, 0) });
 
             let (etf_n, etf_b) = data::bars::warmup_universe_stocks_batch(
                 pool, cache, &etf_codes, AssetType::Etf,
-                WARMUP_DAYS_DAILY, WARMUP_DAYS_1M, WARMUP_DAYS_30S,
+                warmup_days_daily(), WARMUP_DAYS_1M, WARMUP_DAYS_30S,
             ).await.unwrap_or_else(|e| { warn!("[warmup] ETF 실패: {e}"); (0, 0) });
 
             let (idx_n, idx_b) = data::bars::warmup_universe_indices_batch(
                 pool, cache, &index_codes,
-                WARMUP_DAYS_DAILY, WARMUP_DAYS_1M, WARMUP_DAYS_30S,
+                warmup_days_daily(), WARMUP_DAYS_1M, WARMUP_DAYS_30S,
             ).await.unwrap_or_else(|e| { warn!("[warmup] Index 실패: {e}"); (0, 0) });
 
             stats.pg_queries.fetch_add(9, Ordering::Relaxed);

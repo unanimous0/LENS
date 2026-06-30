@@ -14,7 +14,8 @@ use serde::Serialize;
 use crate::data::bars::{AssetSeries, SeriesCache, Timeframe};
 use crate::stats;
 
-// 필터 임계값. 일봉 기준. 1년치 (영업일 ~252) 가정.
+// 필터 임계값. 일봉 기준. 기본 3년치(2026-06-30, 영업일 ~730 — `warmup_days_daily()`).
+// 임계는 1년 가정으로 튜닝됐으나 3년에서도 더 견고하게 작동(측정: ADF median −5.01).
 //
 // PR3 (90일/sample 60) → PR4a (365일/sample 250) 로 확장하면서 임계 강화:
 //   MIN_SAMPLES   60 → 150     — 통계 신뢰도 확보
