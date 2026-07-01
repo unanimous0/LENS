@@ -108,6 +108,7 @@ export function StatArbPage() {
   const [pca, setPca] = useState<GroupPcaResp | null>(null)
   const [pcaErr, setPcaErr] = useState<string | null>(null)
   const [pcaOpen, setPcaOpen] = useState(false)
+  const [showLogic, setShowLogic] = useState(false) // 발굴 방법론 토글
 
   // 대여요율 1회 로딩 (변경 시 페이지 재진입으로 갱신)
   useEffect(() => {
@@ -283,6 +284,15 @@ export function StatArbPage() {
           >
             {loading ? '...' : '새로고침'}
           </button>
+          <button
+            onClick={() => setShowLogic((v) => !v)}
+            className={`rounded-sm px-3 py-1 ${
+              showLogic ? 'bg-blue/25 text-blue' : 'bg-bg-surface text-t3 hover:text-t1'
+            }`}
+            title="이 페어들이 어떻게 골라지는지 발굴 로직 설명"
+          >
+            페어로직 {showLogic ? '▴' : '▾'}
+          </button>
         </div>
       </div>
 
@@ -351,15 +361,15 @@ export function StatArbPage() {
         </div>
       )}
 
-      {/* 발굴 방법론 — 접이식 (이 목록이 어떻게 만들어지나) */}
-      <details className="panel p-5">
-        <summary className="flex cursor-pointer select-none items-center gap-2 text-base font-semibold text-t1">
+      {/* 발굴 방법론 — "페어로직" 버튼 토글 */}
+      {showLogic && (
+      <div className="panel p-5">
+        <div className="mb-1 text-base font-semibold text-t1">
           📋 발굴 방법론 — 이 페어들은 어떻게 골라지나?
-          <span className="text-xs font-normal text-t4">클릭해서 펼치기 ▾</span>
-        </summary>
+        </div>
 
         {/* 한 줄 요약 */}
-        <p className="mt-4 text-sm leading-relaxed text-t2">
+        <p className="mt-3 text-sm leading-relaxed text-t2">
           전 종목을 무차별 비교하지 않고, <span className="font-semibold text-t1">경제적 관계가 있는 후보</span>를
           추린 뒤 여러 통계 게이트를 <span className="font-semibold text-t1">모두 통과</span>한 페어만 남깁니다.
           발굴 기준은 <span className="font-semibold text-accent">3년 일봉</span>(장기 관계), 진입 타이밍은{' '}
@@ -435,7 +445,8 @@ export function StatArbPage() {
           모두 만족한 페어만 이 목록에 올라옵니다. 개별 페어가 각 기준을 어떻게 통과했는지는{' '}
           <span className="text-t1">페어를 클릭 → 상세의 &ldquo;발굴 기준 점검&rdquo;</span>에서 수치로 확인할 수 있습니다.
         </div>
-      </details>
+      </div>
+      )}
 
       {/* 페어 테이블 */}
       <div className="panel overflow-x-auto">
