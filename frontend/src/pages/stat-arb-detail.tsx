@@ -402,6 +402,31 @@ export function StatArbDetailPage() {
             가격·z 차트 동기화 (시간축 + 십자선)
           </label>
           <div className="panel p-3">
+            <div className="mb-2 text-xs text-t3">
+              z-score 시계열 + ±1·±2σ 밴드  ·  현재{' '}
+              <span className={zCls}>
+                {displayZ >= 0 ? '+' : ''}
+                {displayZ.toFixed(2)}
+              </span>
+              {liveZ != null && <span className="ml-1 text-[10px] text-accent">실시간</span>}
+              {!signal.neutral && (
+                <span className="ml-2">
+                  → <span className="font-semibold text-up">롱 {signal.longName}</span>
+                  <span className="text-t4"> / </span>
+                  <span className="font-semibold text-down">숏 {signal.shortName}</span>
+                  {signal.entry && <span className="ml-1 text-warning">· 진입권</span>}
+                </span>
+              )}
+            </div>
+            <div className="h-[260px]">
+              <ZScoreChart
+                data={detail.spread_series}
+                live={liveZ}
+                register={registerZ}
+              />
+            </div>
+          </div>
+          <div className="panel p-3">
             <div className="mb-2 flex flex-wrap items-center gap-x-3 text-xs text-t3">
               <span>두 종목 % 등락 (시작점 0 기준)</span>
               <span className="flex items-center gap-1">
@@ -435,31 +460,6 @@ export function StatArbDetailPage() {
             </div>
             <div className="h-[260px]">
               <SpreadDualChart data={detail.spread_series} register={registerSpread} />
-            </div>
-          </div>
-          <div className="panel p-3">
-            <div className="mb-2 text-xs text-t3">
-              z-score 시계열 + ±1·±2σ 밴드  ·  현재{' '}
-              <span className={zCls}>
-                {displayZ >= 0 ? '+' : ''}
-                {displayZ.toFixed(2)}
-              </span>
-              {liveZ != null && <span className="ml-1 text-[10px] text-accent">실시간</span>}
-              {!signal.neutral && (
-                <span className="ml-2">
-                  → <span className="font-semibold text-up">롱 {signal.longName}</span>
-                  <span className="text-t4"> / </span>
-                  <span className="font-semibold text-down">숏 {signal.shortName}</span>
-                  {signal.entry && <span className="ml-1 text-warning">· 진입권</span>}
-                </span>
-              )}
-            </div>
-            <div className="h-[260px]">
-              <ZScoreChart
-                data={detail.spread_series}
-                live={liveZ}
-                register={registerZ}
-              />
             </div>
           </div>
           <div className="panel p-3">
