@@ -352,44 +352,88 @@ export function StatArbPage() {
       )}
 
       {/* 발굴 방법론 — 접이식 (이 목록이 어떻게 만들어지나) */}
-      <details className="panel p-3 text-xs">
-        <summary className="cursor-pointer select-none font-medium text-t2">
-          📋 발굴 방법론 — 이 페어들은 어떻게 골라지나? <span className="text-t4">(클릭해서 펼치기)</span>
+      <details className="panel p-5">
+        <summary className="flex cursor-pointer select-none items-center gap-2 text-base font-semibold text-t1">
+          📋 발굴 방법론 — 이 페어들은 어떻게 골라지나?
+          <span className="text-xs font-normal text-t4">클릭해서 펼치기 ▾</span>
         </summary>
-        <div className="mt-3 flex flex-col gap-2 text-t3">
-          <p className="text-t2">
-            전 종목을 무차별 비교하지 않고, <span className="text-t1">경제적 관계가 있는 후보</span>를 추린 뒤
-            여러 통계 게이트를 모두 통과한 페어만 남깁니다. 발굴 기준은{' '}
-            <span className="text-t1">3년 일봉</span>(장기 관계), 진입 타이밍은 10분·30초 인트라데이입니다.
-          </p>
-          <div>
-            <div className="font-medium text-t2">① 유니버스 &amp; 후보 그룹</div>
-            <p className="ml-3">
-              KOSPI200 + KOSDAQ150 구성종목 + 거래대금 상위 ETF + 주요 지수(~470종목) → 같은
-              섹터·지수·ETF 구성 관계로 묶어 후보를 한정 (가짜 페어의 근원인 무차별 비교 회피).
+
+        {/* 한 줄 요약 */}
+        <p className="mt-4 text-sm leading-relaxed text-t2">
+          전 종목을 무차별 비교하지 않고, <span className="font-semibold text-t1">경제적 관계가 있는 후보</span>를
+          추린 뒤 여러 통계 게이트를 <span className="font-semibold text-t1">모두 통과</span>한 페어만 남깁니다.
+          발굴 기준은 <span className="font-semibold text-accent">3년 일봉</span>(장기 관계), 진입 타이밍은{' '}
+          <span className="font-semibold text-blue">10분·30초 인트라데이</span>입니다.
+        </p>
+
+        {/* 3단계 카드 */}
+        <div className="mt-4 grid gap-3 lg:grid-cols-3">
+          {/* ① */}
+          <div className="rounded-sm bg-bg-surface p-4">
+            <div className="mb-3 flex items-center gap-2">
+              <span className="flex h-7 w-7 items-center justify-center rounded-full bg-accent/20 text-sm font-bold text-accent">
+                1
+              </span>
+              <span className="text-sm font-semibold text-t1">유니버스 &amp; 후보 그룹</span>
+            </div>
+            <p className="text-sm leading-relaxed text-t3">
+              KOSPI200 + KOSDAQ150 + 거래대금 상위 ETF + 주요 지수(<span className="text-t2">~470종목</span>)를
+              같은 <span className="text-t2">섹터·지수·ETF 구성</span> 관계로 묶어 후보를 한정합니다.
+              무차별 비교로 생기는 가짜 페어를 원천 차단.
             </p>
           </div>
-          <div>
-            <div className="font-medium text-t2">② 1:1 페어 통계 게이트 (3년 일봉)</div>
-            <ul className="ml-3 list-disc pl-4">
-              <li><span className="text-t1">상관 |r| ≥ 0.5</span> — 로그수익률이 같이 움직이나 (사전 필터)</li>
-              <li><span className="text-t1">R² ≥ 0.5</span> — OLS 회귀 직선에 잘 붙나</li>
-              <li><span className="text-t1">양방향 ADF ≤ −3.0</span> — 벌어지면 다시 붙나(cointegration), 방향 바꿔도 성립(견고)</li>
-              <li><span className="text-t1">half-life 적정</span> — 회귀 속도가 너무 빠르지(우연)·느리지(활용 불가) 않나</li>
-              <li><span className="text-t1">최근창 안정성</span> — 최근 6개월에도 ADF ≤ −2.5 (과거만 좋고 최근 깨진 페어 제거)</li>
-              <li><span className="text-t1">score = −ADF × (1/half-life) × |상관|</span> 로 순위</li>
+
+          {/* ② */}
+          <div className="rounded-sm bg-bg-surface p-4">
+            <div className="mb-3 flex items-center gap-2">
+              <span className="flex h-7 w-7 items-center justify-center rounded-full bg-accent/20 text-sm font-bold text-accent">
+                2
+              </span>
+              <span className="text-sm font-semibold text-t1">1:1 통계 게이트 (3년 일봉)</span>
+            </div>
+            <ul className="space-y-2 text-sm leading-snug text-t3">
+              <li>
+                <span className="font-semibold text-t1">상관 |r| ≥ 0.3</span> — 같이 움직이나 (사전 필터)
+              </li>
+              <li>
+                <span className="font-semibold text-t1">R² ≥ 0.5</span> — 회귀 직선에 잘 붙나
+              </li>
+              <li>
+                <span className="font-semibold text-t1">양방향 ADF ≤ −3.0</span> — 벌어지면 다시 붙나(cointegration), 방향 바꿔도 성립
+              </li>
+              <li>
+                <span className="font-semibold text-t1">half-life 적정</span> — 회귀가 너무 빠르지·느리지 않나
+              </li>
+              <li>
+                <span className="font-semibold text-t1">최근창 안정성</span> — 최근 6개월에도 유지되나(과거만 좋고 최근 깨진 페어 제거)
+              </li>
+              <li className="pt-1 text-t4">
+                → <span className="font-mono text-t2">score = −ADF × (1/half-life) × |상관|</span> 로 순위
+              </li>
             </ul>
           </div>
-          <div>
-            <div className="font-medium text-t2">③ M:N 페어 (3종목+, 별도 화면)</div>
-            <p className="ml-3">
-              PCA로 공통 팩터 추출 → Sparse CCA로 양변 종목 구성 → 합성 스프레드의 cointegration 검정.
+
+          {/* ③ */}
+          <div className="rounded-sm bg-bg-surface p-4">
+            <div className="mb-3 flex items-center gap-2">
+              <span className="flex h-7 w-7 items-center justify-center rounded-full bg-blue/20 text-sm font-bold text-blue">
+                3
+              </span>
+              <span className="text-sm font-semibold text-t1">M:N 페어 (3종목+)</span>
+            </div>
+            <p className="text-sm leading-relaxed text-t3">
+              3종목 이상의 바스켓 페어. <span className="text-t2">PCA</span>로 공통 팩터를 뽑고,{' '}
+              <span className="text-t2">Sparse CCA</span>로 양변 종목을 구성한 뒤 합성 스프레드의
+              cointegration을 검정합니다. <span className="text-t4">(별도 &ldquo;M:N 발굴&rdquo; 탭)</span>
             </p>
           </div>
-          <p className="text-t4">
-            ※ 즉 "<span className="text-t3">경제적 관계 있고 + 오래 묶였고(3년) + 최근에도 안 깨졌고 + 방향 견고한</span>"
-            페어만 이 목록에 올라옵니다. 개별 페어의 통과 수치는 페어를 클릭하면 상세에서 볼 수 있습니다.
-          </p>
+        </div>
+
+        {/* 결론 */}
+        <div className="mt-4 rounded-sm border-l-2 border-accent bg-bg-surface px-4 py-3 text-sm leading-relaxed text-t2">
+          ※ 즉 <span className="font-semibold text-t1">경제적 관계 + 오래 묶임(3년) + 최근에도 안 깨짐 + 방향 견고</span>를
+          모두 만족한 페어만 이 목록에 올라옵니다. 개별 페어가 각 기준을 어떻게 통과했는지는{' '}
+          <span className="text-t1">페어를 클릭 → 상세의 &ldquo;발굴 기준 점검&rdquo;</span>에서 수치로 확인할 수 있습니다.
         </div>
       </details>
 
