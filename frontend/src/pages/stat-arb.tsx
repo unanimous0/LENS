@@ -158,7 +158,8 @@ export function StatArbPage() {
   const loadPairs = useCallback(() => {
     setLoading(true)
     setError(null)
-    const params = new URLSearchParams({ limit: '500' })
+    // 전체 로드 — 검색이 score 낮은 페어까지 찾도록. 렌더는 visiblePairs에서 상위 500만.
+    const params = new URLSearchParams({ limit: '10000' })
     if (groupFilter) params.set('group', groupFilter)
     fetch(`/api/stat-arb/pairs?${params}`)
       .then((r) => r.json())
@@ -213,7 +214,9 @@ export function StatArbPage() {
       const vb = getter[sortKey](b)
       return sortAsc ? va - vb : vb - va
     })
-    return sorted
+    // 검색 없으면 상위 500만 렌더(테이블 성능). 검색 시엔 매칭 전체 표시
+    // — score 낮은 페어(예: 두산에너빌리티 3천위대)도 검색으로 찾을 수 있게.
+    return search.trim() ? sorted : sorted.slice(0, 500)
   }, [pairs, search, sortKey, sortAsc, loanRates])
 
   const sortClick = (k: SortKey) => {
@@ -287,7 +290,7 @@ export function StatArbPage() {
           <button
             onClick={() => setShowLogic((v) => !v)}
             className={`rounded-sm px-3 py-1 ${
-              showLogic ? 'bg-blue/25 text-blue' : 'bg-bg-surface text-t3 hover:text-t1'
+              showLogic ? 'bg-blue/25 text-blue' : 'bg-bg-surface text-t1'
             }`}
             title="이 페어들이 어떻게 골라지는지 발굴 로직 설명"
           >
