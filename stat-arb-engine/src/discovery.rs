@@ -26,7 +26,21 @@ use crate::stats;
 // PR-B.1 (PR-A 진단 결과 기반 완화):
 //   MIN_HALF_LIFE 3.0 → 0.5    — ETF 카테고리/짝 ETF 같은 빠른 수렴도 진짜 시그널
 //   MIN_R²        0.3 → 0.5    — 짧은 half-life 우연 거르기. R² 강화로 보완
-const MIN_CORR: f64 = 0.5;
+// corr 사전필터 임계 — env `STATARB_MIN_CORR`(기본 0.3, 2026-07-01 0.5→0.3).
+// corr는 cointegration의 필수조건이 아니라(Pearson −0.48로 부분예측만) 효율성 휴리스틱.
+// 4관점 에이전트 측정: elbow(0.35→0.30 ADF median 최대낙차 후 평탄)·ETF본업(0.5는 ETF-주식
+// 72% 탈락, 금·CD금리 ETF 소멸)이 0.3에 수렴. score=−adf×(1/hl)×|corr|가 corr를 이미
+// 반영해 상위 노출은 완화해도 불변(top200 corr median 0.9) — 완화 이득은 꼬리 페어(본업)에만.
+fn min_corr() -> f64 {
+    use std::sync::OnceLock;
+    static CELL: OnceLock<f64> = OnceLock::new();
+    *CELL.get_or_init(|| {
+        std::env::var("STATARB_MIN_CORR")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0.3)
+    })
+}
 const ADF_CRIT: f64 = -3.0;
 const MIN_SAMPLES: usize = 150;
 const MIN_HALF_LIFE: f64 = 0.5;
@@ -124,7 +138,7 @@ fn evaluate_pair(
     let a_ret = log_returns(&a);
     let b_ret = log_returns(&b);
     let corr = stats::pearson(&a_ret, &b_ret)?;
-    if corr.abs() < MIN_CORR {
+    if corr.abs() < min_corr() {
         return None;
     }
 
