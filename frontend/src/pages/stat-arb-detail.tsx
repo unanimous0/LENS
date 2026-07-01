@@ -227,6 +227,18 @@ export function StatArbDetailPage() {
       ? hlTradingDays * Math.log2(ENTRY_Z_REF / EXIT_Z) * CAL_PER_TRADING_DAY
       : null
 
+  // 베이시스(원 단위) — 두 표현을 함께(비교 후 하나 정리 예정).
+  //  ① 이탈 = 잔차(right − α − β·left) : 균형=0 중심, z 차트와 연동. "균형에서 얼마 벗어남".
+  //  ② 절대 = right − β·left (= 이탈 + α) : 평균이 α인 원값, 선물−현물 같은 절대 가격차 느낌.
+  //  실제 헤지 = right 1주 : left β주 → 이 포지션 손익 = 베이시스 변화. β≈1이면 거의 단순 가격차.
+  const dbLastSpread = detail.spread_series.length
+    ? detail.spread_series[detail.spread_series.length - 1].spread
+    : 0
+  const basisDev = liveSpread ?? dbLastSpread // ① 이탈(잔차)
+  const alphaWon = dayStat?.alpha ?? 0
+  const basisAbs = basisDev + alphaWon // ② 절대 = right − β·left
+  const basis2sigma = spreadStd * 2
+
   return (
     <div className="flex flex-col gap-1 p-1">
       {/* 헤더 */}
@@ -385,6 +397,62 @@ export function StatArbDetailPage() {
               <div className="mt-2 text-[10px] leading-relaxed text-t4">
                 + 같은 도메인 그룹(섹터·ETF) 후보 · 양방향 ADF(방향 대칭) · 최근 6개월 안정성까지
                 통과해 선정됨. 전반 과정은 페어 목록 상단 &ldquo;발굴 방법론&rdquo; 참고.
+              </div>
+            </div>
+          )}
+
+          {/* 베이시스 (원 단위) — ① 이탈(0중심, z연동) ② 절대(right−β·left). 비교 후 하나 정리 예정 */}
+          {dayStat && (
+            <div className="panel p-3 text-xs">
+              <div className="mb-2 flex items-center gap-2 text-t3">
+                베이시스 (원 단위)
+                {liveSpread != null ? (
+                  <span className="text-[10px] text-accent">실시간</span>
+                ) : (
+                  <span className="text-[10px] text-t4">DB 마지막</span>
+                )}
+              </div>
+              <div className="space-y-2.5 tabular-nums">
+                <div>
+                  <div className="text-[10px] text-t4">① 이탈 베이시스 (균형=0, z 차트와 연동)</div>
+                  <div className="mt-0.5">
+                    <span
+                      className={`text-base font-semibold ${
+                        Math.abs(basisDev) >= basis2sigma
+                          ? 'text-warning'
+                          : Math.abs(basisDev) >= spreadStd
+                          ? 'text-t1'
+                          : 'text-t3'
+                      }`}
+                    >
+                      {basisDev >= 0 ? '+' : ''}
+                      {Math.round(basisDev).toLocaleString()}원
+                    </span>
+                    <span className="ml-2 text-t4">
+                      ±2σ = ±{Math.round(basis2sigma).toLocaleString()}원
+                    </span>
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[10px] text-t4">② 절대 베이시스 (right − β·left)</div>
+                  <div className="mt-0.5">
+                    <span className="text-base font-semibold text-t1">
+                      {Math.round(basisAbs).toLocaleString()}원
+                    </span>
+                    <span className="ml-2 text-t4">
+                      평균 {Math.round(alphaWon).toLocaleString()} · ±2σ [
+                      {Math.round(alphaWon - basis2sigma).toLocaleString()} ~{' '}
+                      {Math.round(alphaWon + basis2sigma).toLocaleString()}]
+                    </span>
+                  </div>
+                </div>
+              </div>
+              <div className="mt-2 text-[10px] leading-relaxed text-t4">
+                실제 헤지 ={' '}
+                <span className="text-t3">
+                  right 1주 : left {Math.abs(dayStat.hedge_ratio).toFixed(2)}주
+                </span>
+                . 이 포지션 손익 = 베이시스 변화. β≈1(같은 지수 ETF 등)이면 ≈ 단순 가격차.
               </div>
             </div>
           )}
