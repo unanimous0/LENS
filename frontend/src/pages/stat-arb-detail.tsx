@@ -451,7 +451,7 @@ export function StatArbDetailPage() {
               <span>스프레드 (%p)</span>
               <span className="flex items-center gap-1" title="right% − left% (1:1 단순 수익률 차이) — 직관적">
                 <span className="inline-block h-1.5 w-3 rounded-sm bg-warning" />
-                <span className="text-t2">수익률差 (A)</span>
+                <span className="text-t2">수익률 차이 (A)</span>
               </span>
               <span className="flex items-center gap-1" title="잔차/right×100 (β-가중) — z 차트와 같은 거동">
                 <span className="inline-block h-1.5 w-3 rounded-sm bg-t2" />

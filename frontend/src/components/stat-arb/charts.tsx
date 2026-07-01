@@ -419,7 +419,7 @@ export function LegCompareChart({
 
 // ---------------------------------------------------------------------------
 // 2c. 스프레드 비교 차트 (% 등락 차트와 z 차트 사이) — 두 스프레드를 %p로 겹쳐 비교.
-//   A) 수익률差(주황 실선) = right% − left% : 1:1 단순 차이, 직관적.
+//   A) 수익률 차이(주황 실선) = right% − left% : 1:1 단순 차이, 직관적.
 //   B) β스프레드(회색 점선) = 잔차/right×100 : β-가중(z 차트와 같은 거동).
 //   data(spread_series)의 spread(=잔차)·left·right만으로 둘 다 계산(α·β 직접 불필요).
 // ---------------------------------------------------------------------------
@@ -465,7 +465,7 @@ export function SpreadDualChart({
     bSeries.setData(
       pts.map((p) => ({ time: Math.floor(p.ts / 1000), value: p.right! !== 0 ? (p.spread / p.right!) * 100 : 0 }))
     )
-    // crosshair 동기화 primary = A(수익률差).
+    // crosshair 동기화 primary = A(수익률 차이).
     register?.(chart, aSeries)
     aSeries.createPriceLine({
       price: 0,
