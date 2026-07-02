@@ -35,9 +35,12 @@ type FlowRow = {
   y_f_eok: number
   y_i_eok: number
   adv_20d_eok: number
+  ret_5d_pct: number | null
+  r_5d_eok: number
   both_20d: boolean
   entry_ok: boolean
   exit_ok: boolean
+  is_distribution: boolean
   is_new: boolean
 }
 
@@ -64,6 +67,23 @@ export function StockFlowPage() {
   const [direction, setDirection] = useState<'buy' | 'sell'>('buy')
   const [search, setSearch] = useState('')
   const [selected, setSelected] = useState<{ code: string; name: string } | null>(null)
+  // 관심종목 — localStorage. 트레이더 워크플로우 "내 종목 수급 살아있나" 상단 고정.
+  const [watchlist, setWatchlist] = useState<Set<string>>(() => {
+    try {
+      return new Set(JSON.parse(localStorage.getItem('flow.watchlist') || '[]'))
+    } catch {
+      return new Set()
+    }
+  })
+  const toggleWatch = (code: string) => {
+    setWatchlist((prev) => {
+      const next = new Set(prev)
+      if (next.has(code)) next.delete(code)
+      else next.add(code)
+      localStorage.setItem('flow.watchlist', JSON.stringify([...next]))
+      return next
+    })
+  }
 
   // 로딩은 파생값 — 요청한 preset의 응답이 아직 없으면 로딩 중 (effect 내 동기 setState 회피)
   const loading = !error && (!data || data.preset !== preset)
@@ -113,8 +133,15 @@ export function StockFlowPage() {
       entry: rows.filter((r) => r.entry_ok).length,
       exit: rows.filter((r) => r.exit_ok).length,
       both: rows.filter((r) => r.both_20d).length,
+      dist: rows.filter((r) => r.is_distribution).length,
     }
   }, [data])
+
+  // 관심종목 행 — 현재 로드된 랭킹(preset 적용)에서 매칭. 흐름 상태 판정 포함.
+  const watchRows = useMemo(() => {
+    if (!data || watchlist.size === 0) return []
+    return data.rows.filter((r) => watchlist.has(r.code))
+  }, [data, watchlist])
 
   const floatStale = useMemo(() => {
     if (!data || data.rows.length === 0) return null
@@ -195,6 +222,67 @@ export function StockFlowPage() {
           <span>
             외인·기관 동시매수 <span className="font-semibold text-accent">{summary.both}</span>
           </span>
+          <span>
+            분배 의심 <span className="font-semibold text-warning">{summary.dist}</span>
+          </span>
+        </div>
+      )}
+
+      {/* 관심종목 고정 섹션 — 내 종목 수급 브리핑 (흐름 깨진 것 강조) */}
+      {watchRows.length > 0 && (
+        <div className="panel p-3">
+          <div className="mb-2 text-xs font-medium text-t2">
+            관심종목 <span className="text-t3">({watchRows.length}) — 내 종목 수급 살아있나</span>
+          </div>
+          <table className="w-full text-xs tabular-nums">
+            <tbody>
+              {watchRows.map((r) => {
+                const broken = r.f_streak < 0 || r.f_20d_bp < 0 // 외인 이탈 or 20D 순매도 전환
+                return (
+                  <tr
+                    key={r.code}
+                    onClick={() => setSelected({ code: r.code, name: r.name })}
+                    className="cursor-pointer border-t border-bg-surface/40 hover:bg-bg-surface/30"
+                  >
+                    <td className="w-6 py-1.5 pl-1">
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          toggleWatch(r.code)
+                        }}
+                        className="text-warning hover:text-t1"
+                        title="관심종목 해제"
+                      >
+                        ★
+                      </button>
+                    </td>
+                    <td className="px-2 py-1.5">
+                      <span className="text-t1">{r.name}</span>
+                      <span className="ml-1.5 text-[10px] text-t3">{r.code}</span>
+                    </td>
+                    <td className={`px-3 py-1.5 text-right ${r.f_streak > 0 ? 'text-up' : r.f_streak < 0 ? 'text-down' : 'text-t3'}`}>
+                      외인 {r.f_streak > 0 ? `+${r.f_streak}D` : r.f_streak < 0 ? `${r.f_streak}D` : '—'}
+                    </td>
+                    <td className={`px-3 py-1.5 text-right font-semibold ${signCls(r.f_20d_bp)}`}>
+                      {fmtPct(r.f_20d_bp)}
+                    </td>
+                    <td className="whitespace-nowrap px-3 py-1.5 text-right text-t2">
+                      어제 <span className={signCls(r.y_f_eok)}>{fmtEok(r.y_f_eok)}</span>
+                      <span className="text-t3"> / </span>
+                      <span className={signCls(r.y_i_eok)}>{fmtEok(r.y_i_eok)}</span>
+                    </td>
+                    <td className="px-3 py-1.5 text-right">
+                      {broken ? (
+                        <span className="rounded-sm bg-down/15 px-1.5 py-0.5 text-[10px] text-down">흐름 약화</span>
+                      ) : (
+                        <span className="rounded-sm bg-accent/10 px-1.5 py-0.5 text-[10px] text-accent">유지</span>
+                      )}
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
         </div>
       )}
 
@@ -273,6 +361,16 @@ export function StockFlowPage() {
                     <td className="px-3 py-1.5 text-t3">{i + 1}</td>
                     <td className="px-3 py-1.5">
                       <div className="flex items-center gap-1.5">
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            toggleWatch(r.code)
+                          }}
+                          className={watchlist.has(r.code) ? 'text-warning' : 'text-t4 hover:text-t2'}
+                          title={watchlist.has(r.code) ? '관심종목 해제' : '관심종목 추가'}
+                        >
+                          {watchlist.has(r.code) ? '★' : '☆'}
+                        </button>
                         <span className="text-t1">{r.name}</span>
                         {r.is_new && (
                           <span className="rounded-sm bg-blue/20 px-1 text-[10px] text-blue">NEW</span>
@@ -299,6 +397,14 @@ export function StockFlowPage() {
                             title="매도권: 20D ≤ −15bp + 지속성 — 이벤트성 스파이크 배제"
                           >
                             매도권
+                          </span>
+                        )}
+                        {r.is_distribution && (
+                          <span
+                            className="rounded-sm bg-warning/20 px-1 text-[10px] text-warning"
+                            title="분배 의심: 외인 5일 순매도 + 주가 방어(5D −2% 이내) + 개인이 물량 받음 — 조용히 무너지기 전 신호"
+                          >
+                            분배
                           </span>
                         )}
                       </div>

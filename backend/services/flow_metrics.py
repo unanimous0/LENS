@@ -117,7 +117,7 @@ _RANKING_SQL = text(
         SELECT stock_code, investor_type, net_buy_value,
                row_number() OVER (PARTITION BY stock_code, investor_type ORDER BY time DESC) AS rn
         FROM investor_trading
-        WHERE investor_type IN ('FOREIGN', 'INSTITUTION')
+        WHERE investor_type IN ('FOREIGN', 'INSTITUTION', 'RETAIL')
           AND time <= CAST(:as_of AS date)
           AND time > CAST(:as_of AS date) - INTERVAL '130 days'
     ),
@@ -129,6 +129,7 @@ _RANKING_SQL = text(
             COALESCE(SUM(net_buy_value) FILTER (WHERE investor_type='INSTITUTION' AND rn<=5), 0)  AS i_5d,
             COALESCE(SUM(net_buy_value) FILTER (WHERE investor_type='INSTITUTION' AND rn<=20), 0) AS i_20d,
             COALESCE(SUM(net_buy_value) FILTER (WHERE investor_type='INSTITUTION' AND rn<=60), 0) AS i_60d,
+            COALESCE(SUM(net_buy_value) FILTER (WHERE investor_type='RETAIL' AND rn<=5), 0)  AS r_5d,
             COALESCE(MAX(net_buy_value) FILTER (WHERE investor_type='FOREIGN' AND rn=1), 0)     AS f_1d,
             COALESCE(MAX(net_buy_value) FILTER (WHERE investor_type='INSTITUTION' AND rn=1), 0) AS i_1d,
             -- 연속 순매수/순매도 일수: 최근일부터 부호가 끊기기 직전까지 (0 = 어제 반대부호/무거래)
@@ -143,6 +144,7 @@ _RANKING_SQL = text(
         SELECT stock_code,
             MAX(close_price) FILTER (WHERE rn=1)  AS close_raw,
             MAX(adj_close)   FILTER (WHERE rn=1)  AS adj_now,
+            MAX(adj_close)   FILTER (WHERE rn=6)  AS adj_5d_ago,
             MAX(adj_close)   FILTER (WHERE rn=21) AS adj_20d_ago,
             COALESCE(SUM(trading_value) FILTER (WHERE rn<=5), 0) AS tv_5d,
             AVG(trading_value) FILTER (WHERE rn<=20)             AS adv_20d
@@ -177,9 +179,9 @@ _RANKING_SQL = text(
     )
     SELECT f.stock_code, s.stock_name, s.market, sec.fics_sector,
            mc.market_cap, fs.floating_shares, fs.total_shares, fs.float_date,
-           px.close_raw, px.adj_now, px.adj_20d_ago, px.tv_5d, px.adv_20d,
+           px.close_raw, px.adj_now, px.adj_5d_ago, px.adj_20d_ago, px.tv_5d, px.adv_20d,
            f.f_1d, f.f_5d, f.f_20d, f.f_60d,
-           f.i_1d, f.i_5d, f.i_20d, f.i_60d,
+           f.i_1d, f.i_5d, f.i_20d, f.i_60d, f.r_5d,
            f.f_buy_streak, f.f_sell_streak
     FROM flow f
     JOIN stocks s ON s.stock_code = f.stock_code
@@ -213,9 +215,21 @@ def _row_to_metrics(r) -> dict | None:
     adv_20d = float(r.adv_20d or 0)
     adj_now = float(r.adj_now) if r.adj_now is not None else None
     adj_prev = float(r.adj_20d_ago) if r.adj_20d_ago is not None else None
+    adj_5d = float(r.adj_5d_ago) if r.adj_5d_ago is not None else None
+    ret_5d = (adj_now / adj_5d - 1) * 100 if adj_now and adj_5d else None
+    f_5d = float(r.f_5d)
+    r_5d = float(r.r_5d)
+    f_5d_bp = f_5d / float_mcap * 10_000
     f_1d, i_1d = float(r.f_1d), float(r.i_1d)
     # 부호 있는 연속일수: 어제 순매수면 +매수연속, 순매도면 -매도연속
     streak = int(r.f_buy_streak) if f_1d > 0 else (-int(r.f_sell_streak) if f_1d < 0 else 0)
+    # 분배 패턴 — "조용히 무너지기 전" 신호 (매수 부호반전으로 안 잡히는 3변수 조합):
+    #   외인 5일 순매도(≤ -10bp) + 주가 방어(5D 수익률 -2% 이내) + 개인이 물량 받음(순매수).
+    is_distribution = (
+        f_5d_bp <= -10
+        and ret_5d is not None and ret_5d >= -2
+        and r_5d > 0
+    )
     return {
         "code": r.stock_code,
         "name": r.stock_name,
@@ -230,13 +244,16 @@ def _row_to_metrics(r) -> dict | None:
         "f_60d_eok": round(float(r.f_60d) / eok, 1),
         "i_5d_eok": round(float(r.i_5d) / eok, 1),
         "i_20d_eok": round(float(r.i_20d) / eok, 1),
-        "f_5d_bp": round(float(r.f_5d) / float_mcap * 10_000, 1),
+        "r_5d_eok": round(r_5d / eok, 1),
+        "f_5d_bp": round(f_5d_bp, 1),
         "f_20d_bp": round(float(r.f_20d) / float_mcap * 10_000, 1),
         "f_60d_bp": round(float(r.f_60d) / float_mcap * 10_000, 1),
         "i_20d_bp": round(float(r.i_20d) / float_mcap * 10_000, 1),
         # 흡수율: 최근 5일 (외+기) 순매수가 거래대금의 몇 %를 차지했나 — 진성/소음 구분
         "absorb_5d_pct": round((float(r.f_5d) + float(r.i_5d)) / tv_5d * 100, 1) if tv_5d > 0 else None,
         "ret_20d_pct": round((adj_now / adj_prev - 1) * 100, 1) if adj_now and adj_prev else None,
+        "ret_5d_pct": round(ret_5d, 1) if ret_5d is not None else None,
+        "is_distribution": is_distribution,
         "y_f_eok": round(f_1d / eok, 1),
         "y_i_eok": round(i_1d / eok, 1),
         "adv_20d_eok": round(adv_20d / eok, 1),

@@ -34,6 +34,57 @@ const chartOpts = {
   crosshair: { mode: 0 },
 } as const
 
+/**
+ * 수급 해석을 오염시키는 이벤트 날짜 (하드코딩 캘린더 — 보정 말고 마커로만 표시).
+ * - 선물·옵션 만기: 매월 둘째 목요일 (memory reference_stock_futures_expiry)
+ * - MSCI 분기 리밸: 2·5·8·11월 마지막 영업일 근사 (실제는 월말 몇일 전이나 근사)
+ * rows 범위 내 해당 날짜만 반환. YYYY-MM-DD 문자열.
+ */
+function eventMarkers(rows: SeriesRow[]): { time: string; label: string; color: string }[] {
+  if (rows.length === 0) return []
+  const first = rows[0].d
+  const last = rows[rows.length - 1].d
+  const dates = new Set(rows.map((r) => r.d))
+  const out: { time: string; label: string; color: string }[] = []
+  const startY = Number(first.slice(0, 4))
+  const endY = Number(last.slice(0, 4))
+  for (let y = startY; y <= endY; y++) {
+    for (let m = 0; m < 12; m++) {
+      // 둘째 목요일 = 첫 목요일 + 7일. 1일의 요일로 첫 목요일 계산.
+      const first1 = new Date(Date.UTC(y, m, 1))
+      const firstThu = 1 + ((4 - first1.getUTCDay() + 7) % 7)
+      const secondThu = firstThu + 7
+      const exp = `${y}-${String(m + 1).padStart(2, '0')}-${String(secondThu).padStart(2, '0')}`
+      if (exp >= first && exp <= last) {
+        const near = nearestTradingDay(exp, dates)
+        if (near) out.push({ time: near, label: '만기', color: '#8e8e93' })
+      }
+      // MSCI 리밸 근사: 2·5·8·11월 25일 (실제 발효일 근사)
+      if ([1, 4, 7, 10].includes(m)) {
+        const msci = `${y}-${String(m + 1).padStart(2, '0')}-25`
+        if (msci >= first && msci <= last) {
+          const near = nearestTradingDay(msci, dates)
+          if (near) out.push({ time: near, label: 'MSCI', color: '#0a84ff' })
+        }
+      }
+    }
+  }
+  return out
+}
+
+/** 이벤트 날짜가 휴장이면 가장 가까운(±3일) 거래일로 스냅. */
+function nearestTradingDay(target: string, dates: Set<string>): string | null {
+  if (dates.has(target)) return target
+  const t = new Date(target + 'T00:00:00Z').getTime()
+  for (let d = 1; d <= 3; d++) {
+    for (const sign of [-1, 1]) {
+      const cand = new Date(t + sign * d * 86_400_000).toISOString().slice(0, 10)
+      if (dates.has(cand)) return cand
+    }
+  }
+  return null
+}
+
 /** 외인 평단 추정: 누적 순매수 저점 이후 매집 구간의 Σ금액 ÷ Σ(금액/종가). */
 function estimateAvgPrice(rows: SeriesRow[]): number | null {
   let minIdx = 0
@@ -114,6 +165,20 @@ export function FlowDetail({ code, name, onClose }: { code: string; name: string
         axisLabelVisible: true,
         title: '외인 평단(추정)',
       })
+    }
+
+    // 이벤트 마커 (만기·MSCI) — 수급 스파이크가 이벤트성인지 눈으로 할인
+    const markers = eventMarkers(rows)
+    if (markers.length > 0) {
+      priceSeries.setMarkers(
+        markers.map((m) => ({
+          time: t(m.time),
+          position: 'aboveBar' as const,
+          color: m.color,
+          shape: 'circle' as const,
+          text: m.label,
+        }))
+      )
     }
 
     // 아래: 일별 외인 순매수 막대(우축) + 외인/기관 누적선(좌축)
