@@ -1,5 +1,5 @@
 import { createChart, LineStyle, type IChartApi, type LogicalRange } from 'lightweight-charts'
-import { type ReactNode, type RefObject, useCallback, useEffect, useRef, useState } from 'react'
+import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
 
 // 4개 차트 시간축 동기화용 — mount 시 register(chart), 반환 cleanup으로 unregister.
 type RegisterFn = (chart: IChartApi | null) => () => void
@@ -110,8 +110,9 @@ export function FlowDetail({ code, name, onClose }: { code: string; name: string
   // 4개 차트 시간축 동기화 (통계차익 상세와 동일 패턴): 차트를 state로 모아
   // useEffect에서 일괄 subscribe. 모든 차트가 rows 같은 길이(주가는 whitespace 패딩)라
   // logical range 인덱스 일치.
-  // ⚠️ 차트는 세로 1열 스택으로 배치할 것 — 2열(grid-cols-2)에선 우측 열 차트가
-  // setVisibleLogicalRange를 받지 못해 동기화가 깨진다 (컨테이너 레이아웃 폭 타이밍).
+  // ⚠️ 각 차트는 createChart의 autoSize:true 필수 — 2열(grid-cols-2)에선 우측 열
+  // 차트가 생성 시 폭 0이면 setVisibleLogicalRange를 무시해 sync가 깨진다.
+  // autoSize 내부 ResizeObserver가 폭 확정 후 정상화 (수동 width/useResize 대체).
   const [charts, setCharts] = useState<IChartApi[]>([])
   const register = useCallback<RegisterFn>((chart) => {
     if (!chart) return () => {}
@@ -187,7 +188,7 @@ export function FlowDetail({ code, name, onClose }: { code: string; name: string
       {!rows && !error && <div className="py-4 text-xs text-t3">로딩 중…</div>}
 
       {rows && (
-        <div className="grid gap-3">
+        <div className="grid gap-3 lg:grid-cols-2">
           <PriceChart rows={rows} register={register} />
           <MomentumChart rows={rows} register={register} />
           <CumFlowPanel rows={rows} view={cumView} setView={setCumView} register={register} />
@@ -201,11 +202,9 @@ export function FlowDetail({ code, name, onClose }: { code: string; name: string
 // ── 1. 주가 (캔들 + 평단선 + 이평선) ────────────────────────────────────
 function PriceChart({ rows, register }: { rows: SeriesRow[]; register: RegisterFn }) {
   const ref = useRef<HTMLDivElement>(null)
-  const chartRef = useRef<IChartApi | null>(null)
   useEffect(() => {
     if (!ref.current) return
-    const chart = createChart(ref.current, { ...chartOpts, width: ref.current.clientWidth, height: 210 })
-    chartRef.current = chart
+    const chart = createChart(ref.current, { ...chartOpts, autoSize: true })
     const s = chart.addCandlestickSeries({
       upColor: C.up,
       downColor: C.down,
@@ -254,7 +253,6 @@ function PriceChart({ rows, register }: { rows: SeriesRow[]; register: RegisterF
       chart.remove()
     }
   }, [rows, register])
-  useResize(ref, chartRef)
   return (
     <ChartBox
       title="① 주가 (수정주가)"
@@ -274,11 +272,9 @@ function PriceChart({ rows, register }: { rows: SeriesRow[]; register: RegisterF
 // ── 2. 순매수 모멘텀 (외인 일별 순매수 막대 + 5/20 MA) ──────────────────
 function MomentumChart({ rows, register }: { rows: SeriesRow[]; register: RegisterFn }) {
   const ref = useRef<HTMLDivElement>(null)
-  const chartRef = useRef<IChartApi | null>(null)
   useEffect(() => {
     if (!ref.current) return
-    const chart = createChart(ref.current, { ...chartOpts, width: ref.current.clientWidth, height: 210 })
-    chartRef.current = chart
+    const chart = createChart(ref.current, { ...chartOpts, autoSize: true })
     const bars = chart.addHistogramSeries({ priceFormat: { type: 'price', precision: 0, minMove: 1 } })
     bars.setData(rows.map((r) => ({ time: t(r.d), value: r.f_eok, color: r.f_eok >= 0 ? '#30d15866' : '#ee382e66' })))
     const vals = rows.map((r) => r.f_eok)
@@ -295,7 +291,6 @@ function MomentumChart({ rows, register }: { rows: SeriesRow[]; register: Regist
       chart.remove()
     }
   }, [rows, register])
-  useResize(ref, chartRef)
   return (
     <ChartBox
       title="② 순매수 모멘텀 (외인, 억)"
@@ -313,11 +308,9 @@ function MomentumChart({ rows, register }: { rows: SeriesRow[]; register: Regist
 // ── 3. 순매수 (외/기/개 일별) — 차트 ↔ 테이블 ──────────────────────────
 function NetFlowPanel({ rows, view, setView, register }: { rows: SeriesRow[]; view: 'chart' | 'table'; setView: (v: 'chart' | 'table') => void; register: RegisterFn }) {
   const ref = useRef<HTMLDivElement>(null)
-  const chartRef = useRef<IChartApi | null>(null)
   useEffect(() => {
     if (view !== 'chart' || !ref.current) return
-    const chart = createChart(ref.current, { ...chartOpts, width: ref.current.clientWidth, height: 210 })
-    chartRef.current = chart
+    const chart = createChart(ref.current, { ...chartOpts, autoSize: true })
     // 외/기/개 일별 순매수 — 3개 라인 (0선 중심)
     const add = (color: string, w: number, get: (r: SeriesRow) => number) => {
       const s = chart.addLineSeries({ color, lineWidth: w as never, priceLineVisible: false, lastValueVisible: false })
@@ -334,7 +327,6 @@ function NetFlowPanel({ rows, view, setView, register }: { rows: SeriesRow[]; vi
       chart.remove()
     }
   }, [rows, view, register])
-  useResize(ref, chartRef)
   return (
     <ChartBox
       title="④ 순매수 (일별, 억)"
@@ -358,11 +350,9 @@ function NetFlowPanel({ rows, view, setView, register }: { rows: SeriesRow[]; vi
 // ── 4. 누적순매수 (외/기/개) — 차트 ↔ 테이블 ───────────────────────────
 function CumFlowPanel({ rows, view, setView, register }: { rows: SeriesRow[]; view: 'chart' | 'table'; setView: (v: 'chart' | 'table') => void; register: RegisterFn }) {
   const ref = useRef<HTMLDivElement>(null)
-  const chartRef = useRef<IChartApi | null>(null)
   useEffect(() => {
     if (view !== 'chart' || !ref.current) return
-    const chart = createChart(ref.current, { ...chartOpts, width: ref.current.clientWidth, height: 210 })
-    chartRef.current = chart
+    const chart = createChart(ref.current, { ...chartOpts, autoSize: true })
     const add = (color: string, w: number, get: (r: SeriesRow) => number) => {
       const s = chart.addLineSeries({ color, lineWidth: w as never, priceLineVisible: false, lastValueVisible: false })
       s.setData(rows.map((r) => ({ time: t(r.d), value: get(r) })))
@@ -378,7 +368,6 @@ function CumFlowPanel({ rows, view, setView, register }: { rows: SeriesRow[]; vi
       chart.remove()
     }
   }, [rows, view, register])
-  useResize(ref, chartRef)
   return (
     <ChartBox
       title="③ 누적순매수 (억)"
@@ -485,14 +474,3 @@ function FlowTable({ rows, kind }: { rows: SeriesRow[]; kind: 'net' | 'cum' }) {
 }
 
 // 차트 리사이즈 (컨테이너 폭 변경 시)
-function useResize(ref: RefObject<HTMLDivElement | null>, chartRef: RefObject<IChartApi | null>) {
-  useEffect(() => {
-    if (!ref.current) return
-    const ro = new ResizeObserver((entries) => {
-      const w = entries[0]?.contentRect.width
-      if (w && chartRef.current) chartRef.current.applyOptions({ width: Math.floor(w) })
-    })
-    ro.observe(ref.current)
-    return () => ro.disconnect()
-  }, [ref, chartRef])
-}
