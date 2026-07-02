@@ -424,7 +424,7 @@ export function StatArbDetailPage() {
                   val={`${selDaily.half_life.toFixed(0)}일`}
                 />
               </ul>
-              <div className="mt-2 text-[10px] leading-relaxed text-t3">
+              <div className="mt-2 text-xs leading-relaxed text-t3">
                 + 같은 도메인 그룹(섹터·ETF) 후보 · 양방향 ADF(방향 대칭) · 최근 6개월 안정성까지
                 통과해 선정됨. 전반 과정은 페어 목록 상단 &ldquo;발굴 방법론&rdquo; 참고.
               </div>
