@@ -1,5 +1,8 @@
-import { createChart, LineStyle, type IChartApi } from 'lightweight-charts'
-import { type ReactNode, type RefObject, useEffect, useRef, useState } from 'react'
+import { createChart, LineStyle, type IChartApi, type LogicalRange } from 'lightweight-charts'
+import { type ReactNode, type RefObject, useCallback, useEffect, useRef, useState } from 'react'
+
+// 4개 차트 시간축 동기화용 — mount 시 register(chart), 반환 cleanup으로 unregister.
+type RegisterFn = (chart: IChartApi | null) => () => void
 
 /**
  * 수급 종목 상세 — 4개 차트로 분리:
@@ -104,6 +107,37 @@ export function FlowDetail({ code, name, onClose }: { code: string; name: string
   const [netView, setNetView] = useState<'chart' | 'table'>('chart')
   const [cumView, setCumView] = useState<'chart' | 'table'>('chart')
 
+  // 4개 차트 시간축 동기화 (통계차익 상세와 동일 패턴): 차트를 state로 모아
+  // useEffect에서 일괄 subscribe. 모든 차트가 rows 같은 길이(주가는 whitespace 패딩)라
+  // logical range 인덱스 일치.
+  // ⚠️ 차트는 세로 1열 스택으로 배치할 것 — 2열(grid-cols-2)에선 우측 열 차트가
+  // setVisibleLogicalRange를 받지 못해 동기화가 깨진다 (컨테이너 레이아웃 폭 타이밍).
+  const [charts, setCharts] = useState<IChartApi[]>([])
+  const register = useCallback<RegisterFn>((chart) => {
+    if (!chart) return () => {}
+    setCharts((prev) => [...prev, chart])
+    return () => setCharts((prev) => prev.filter((c) => c !== chart))
+  }, [])
+
+  useEffect(() => {
+    if (charts.length < 2) return
+    let guard = false
+    const subs: Array<[IChartApi, (r: LogicalRange | null) => void]> = []
+    charts.forEach((src) => {
+      const h = (range: LogicalRange | null) => {
+        if (guard || !range) return
+        guard = true
+        charts.forEach((dst) => {
+          if (dst !== src) dst.timeScale().setVisibleLogicalRange(range)
+        })
+        guard = false
+      }
+      src.timeScale().subscribeVisibleLogicalRangeChange(h)
+      subs.push([src, h])
+    })
+    return () => subs.forEach(([c, h]) => c.timeScale().unsubscribeVisibleLogicalRangeChange(h))
+  }, [charts])
+
   useEffect(() => {
     let cancelled = false
     fetch(`/api/flow/stocks/${code}?days=${days}`)
@@ -153,26 +187,25 @@ export function FlowDetail({ code, name, onClose }: { code: string; name: string
       {!rows && !error && <div className="py-4 text-xs text-t3">로딩 중…</div>}
 
       {rows && (
-        <div className="grid gap-3 lg:grid-cols-2">
-          <PriceChart rows={rows} />
-          <MomentumChart rows={rows} />
-          <NetFlowPanel rows={rows} view={netView} setView={setNetView} />
-          <CumFlowPanel rows={rows} view={cumView} setView={setCumView} />
+        <div className="grid gap-3">
+          <PriceChart rows={rows} register={register} />
+          <MomentumChart rows={rows} register={register} />
+          <CumFlowPanel rows={rows} view={cumView} setView={setCumView} register={register} />
+          <NetFlowPanel rows={rows} view={netView} setView={setNetView} register={register} />
         </div>
       )}
     </div>
   )
 }
 
-// ── 1. 주가 (캔들 + 평단선 + 이벤트 마커) ───────────────────────────────
-function PriceChart({ rows }: { rows: SeriesRow[] }) {
+// ── 1. 주가 (캔들 + 평단선 + 이평선) ────────────────────────────────────
+function PriceChart({ rows, register }: { rows: SeriesRow[]; register: RegisterFn }) {
   const ref = useRef<HTMLDivElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
   useEffect(() => {
     if (!ref.current) return
     const chart = createChart(ref.current, { ...chartOpts, width: ref.current.clientWidth, height: 210 })
     chartRef.current = chart
-    const priced = rows.filter((r) => r.adj_close != null && r.o != null && r.h != null && r.l != null)
     const s = chart.addCandlestickSeries({
       upColor: C.up,
       downColor: C.down,
@@ -182,10 +215,17 @@ function PriceChart({ rows }: { rows: SeriesRow[] }) {
       wickDownColor: C.down,
       priceFormat: { type: 'price', precision: 0, minMove: 1 },
     })
-    s.setData(priced.map((r) => ({ time: t(r.d), open: r.o!, high: r.h!, low: r.l!, close: r.adj_close! })))
+    // rows 전체 사용 — OHLC 없는 날은 whitespace({time})로 패딩해 다른 차트와 인덱스 일치(동기화용)
+    s.setData(
+      rows.map((r) =>
+        r.o != null && r.h != null && r.l != null && r.adj_close != null
+          ? { time: t(r.d), open: r.o, high: r.h, low: r.l, close: r.adj_close }
+          : { time: t(r.d) }
+      )
+    )
     // 주가 이동평균선 (50·100·200일, 수정종가) + VWMA 200(거래량 가중)
-    const closes = priced.map((r) => r.adj_close!)
-    const vols = priced.map((r) => r.vol)
+    const closes = rows.map((r) => r.adj_close ?? NaN)
+    const vols = rows.map((r) => r.vol)
     const addLine = (series: (number | null)[], color: string, w: number, style?: LineStyle) => {
       const line = chart.addLineSeries({
         color,
@@ -194,7 +234,11 @@ function PriceChart({ rows }: { rows: SeriesRow[] }) {
         priceLineVisible: false,
         lastValueVisible: false,
       })
-      line.setData(priced.map((r, i) => ({ time: t(r.d), value: series[i] })).filter((x) => x.value != null) as never)
+      line.setData(
+        rows
+          .map((r, i) => ({ time: t(r.d), value: series[i] }))
+          .filter((x) => x.value != null && !Number.isNaN(x.value)) as never
+      )
     }
     addLine(sma(closes, 50), C.warning, 1)
     addLine(sma(closes, 100), C.blue, 1)
@@ -204,8 +248,12 @@ function PriceChart({ rows }: { rows: SeriesRow[] }) {
     if (avg != null)
       s.createPriceLine({ price: avg, color: '#ffd60a', lineStyle: LineStyle.Dashed, lineWidth: 2, axisLabelVisible: true, title: '외인 평단' }) // 노랑 대시 (이평선과 구분)
     chart.timeScale().fitContent()
-    return () => chart.remove()
-  }, [rows])
+    const unreg = register(chart)
+    return () => {
+      unreg()
+      chart.remove()
+    }
+  }, [rows, register])
   useResize(ref, chartRef)
   return (
     <ChartBox
@@ -224,7 +272,7 @@ function PriceChart({ rows }: { rows: SeriesRow[] }) {
 }
 
 // ── 2. 순매수 모멘텀 (외인 일별 순매수 막대 + 5/20 MA) ──────────────────
-function MomentumChart({ rows }: { rows: SeriesRow[] }) {
+function MomentumChart({ rows, register }: { rows: SeriesRow[]; register: RegisterFn }) {
   const ref = useRef<HTMLDivElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
   useEffect(() => {
@@ -241,8 +289,12 @@ function MomentumChart({ rows }: { rows: SeriesRow[] }) {
     const l20 = chart.addLineSeries({ color: C.blue, lineWidth: 2, priceLineVisible: false, lastValueVisible: false })
     l20.setData(rows.map((r, i) => ({ time: t(r.d), value: ma20[i] })).filter((x) => x.value != null) as never)
     chart.timeScale().fitContent()
-    return () => chart.remove()
-  }, [rows])
+    const unreg = register(chart)
+    return () => {
+      unreg()
+      chart.remove()
+    }
+  }, [rows, register])
   useResize(ref, chartRef)
   return (
     <ChartBox
@@ -259,7 +311,7 @@ function MomentumChart({ rows }: { rows: SeriesRow[] }) {
 }
 
 // ── 3. 순매수 (외/기/개 일별) — 차트 ↔ 테이블 ──────────────────────────
-function NetFlowPanel({ rows, view, setView }: { rows: SeriesRow[]; view: 'chart' | 'table'; setView: (v: 'chart' | 'table') => void }) {
+function NetFlowPanel({ rows, view, setView, register }: { rows: SeriesRow[]; view: 'chart' | 'table'; setView: (v: 'chart' | 'table') => void; register: RegisterFn }) {
   const ref = useRef<HTMLDivElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
   useEffect(() => {
@@ -276,12 +328,16 @@ function NetFlowPanel({ rows, view, setView }: { rows: SeriesRow[]; view: 'chart
     add(C.blue, 1, (r) => r.i_eok)
     add(C.retail, 1, (r) => r.r_eok)
     chart.timeScale().fitContent()
-    return () => chart.remove()
-  }, [rows, view])
+    const unreg = register(chart)
+    return () => {
+      unreg()
+      chart.remove()
+    }
+  }, [rows, view, register])
   useResize(ref, chartRef)
   return (
     <ChartBox
-      title="③ 순매수 (일별, 억)"
+      title="④ 순매수 (일별, 억)"
       legend={[
         ['외인', C.accent],
         ['기관', C.blue],
@@ -300,7 +356,7 @@ function NetFlowPanel({ rows, view, setView }: { rows: SeriesRow[]; view: 'chart
 }
 
 // ── 4. 누적순매수 (외/기/개) — 차트 ↔ 테이블 ───────────────────────────
-function CumFlowPanel({ rows, view, setView }: { rows: SeriesRow[]; view: 'chart' | 'table'; setView: (v: 'chart' | 'table') => void }) {
+function CumFlowPanel({ rows, view, setView, register }: { rows: SeriesRow[]; view: 'chart' | 'table'; setView: (v: 'chart' | 'table') => void; register: RegisterFn }) {
   const ref = useRef<HTMLDivElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
   useEffect(() => {
@@ -316,12 +372,16 @@ function CumFlowPanel({ rows, view, setView }: { rows: SeriesRow[]; view: 'chart
     add(C.blue, 1, (r) => r.cum_i_eok)
     add(C.retail, 1, (r) => r.cum_r_eok)
     chart.timeScale().fitContent()
-    return () => chart.remove()
-  }, [rows, view])
+    const unreg = register(chart)
+    return () => {
+      unreg()
+      chart.remove()
+    }
+  }, [rows, view, register])
   useResize(ref, chartRef)
   return (
     <ChartBox
-      title="④ 누적순매수 (억)"
+      title="③ 누적순매수 (억)"
       legend={[
         ['외인', C.accent],
         ['기관', C.blue],
