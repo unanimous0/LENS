@@ -45,6 +45,11 @@ export function StatArbDetailPage() {
   const [loanRates, setLoanRates] = useState<Map<string, number>>(new Map())
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  // 내 진입 포지션 입력 (베이시스·손익 계산기). 매수/매도 진입가·수량.
+  const [posBuyEntry, setPosBuyEntry] = useState('')
+  const [posBuyQty, setPosBuyQty] = useState('')
+  const [posSellEntry, setPosSellEntry] = useState('')
+  const [posSellQty, setPosSellQty] = useState('')
 
   // 가격·z 차트 동기화 (체크박스 토글). 차트+primary series를 모아 시간축·crosshair 연동.
   type ChartReg = { chart: IChartApi; series: ISeriesApi<'Line'> } | null
@@ -241,6 +246,28 @@ export function StatArbDetailPage() {
   // 진입 방향(signal)의 매수/매도 종목 현재가 매핑
   const longPrice = signal.longName === detail.left_name ? leftPrice : rightPrice
   const shortPrice = signal.shortName === detail.left_name ? leftPrice : rightPrice
+
+  // 내 진입 포지션 계산기 — z 부호로 매수/매도 종목 결정(z≥0: 매수 left/매도 right, z<0: 반대).
+  const zSign = displayZ >= 0
+  const posBuyName = zSign ? detail.left_name : detail.right_name
+  const posSellName = zSign ? detail.right_name : detail.left_name
+  const posBuyCur = zSign ? leftPrice : rightPrice // 매수 종목 현재가
+  const posSellCur = zSign ? rightPrice : leftPrice // 매도 종목 현재가
+  const betaWon = dayStat?.hedge_ratio ?? 0
+  const pBE = parseFloat(posBuyEntry) || 0
+  const pBQ = parseFloat(posBuyQty) || 0
+  const pSE = parseFloat(posSellEntry) || 0
+  const pSQ = parseFloat(posSellQty) || 0
+  const hasPos = pBE > 0 && pSE > 0 && (pBQ > 0 || pSQ > 0)
+  // 진입 시 left/right 가격 (매수/매도를 left/right로 환원)
+  const entLeft = zSign ? pBE : pSE
+  const entRight = zSign ? pSE : pBE
+  const posEntryDev = entRight - alphaWon - betaWon * entLeft // 진입 이탈 베이시스
+  const posEntryAbs = entRight - betaWon * entLeft // 진입 절대 베이시스
+  const posEntryZ = spreadStd > 0 ? (posEntryDev - spreadMean) / spreadStd : 0
+  // 현재 평가손익 = 매수분(현재-진입)×수량 + 매도분(진입-현재)×수량
+  const posPnL =
+    (posBuyCur > 0 ? (posBuyCur - pBE) * pBQ : 0) + (posSellCur > 0 ? (pSE - posSellCur) * pSQ : 0)
 
   return (
     <div className="flex flex-col gap-1 p-1">
@@ -484,6 +511,83 @@ export function StatArbDetailPage() {
                         {shortPrice > 0 ? `${shortPrice.toLocaleString()}원` : '—'}
                       </div>
                     </div>
+                  </div>
+                )}
+              </div>
+
+              {/* 내 진입 포지션 입력 → 손익·베이시스 계산기 */}
+              <div className="mt-2 rounded-sm bg-bg-surface p-2.5">
+                <div className="mb-1.5 text-xs text-t2">내 진입 포지션 입력 → 손익·베이시스</div>
+                <div className="grid grid-cols-2 gap-x-3 gap-y-1">
+                  <div className="col-span-2 text-xs text-t3">
+                    매수 <span className="font-medium text-up">{posBuyName}</span>
+                  </div>
+                  <label className="flex items-center gap-1 text-xs">
+                    <span className="w-8 shrink-0 text-t3">진입가</span>
+                    <input
+                      type="number"
+                      value={posBuyEntry}
+                      onChange={(e) => setPosBuyEntry(e.target.value)}
+                      placeholder={posBuyCur > 0 ? String(Math.round(posBuyCur)) : ''}
+                      className="w-full rounded-sm bg-bg-primary px-1.5 py-0.5 text-t1 placeholder:text-t4 focus:outline-none"
+                    />
+                  </label>
+                  <label className="flex items-center gap-1 text-xs">
+                    <span className="w-8 shrink-0 text-t3">수량</span>
+                    <input
+                      type="number"
+                      value={posBuyQty}
+                      onChange={(e) => setPosBuyQty(e.target.value)}
+                      className="w-full rounded-sm bg-bg-primary px-1.5 py-0.5 text-t1 focus:outline-none"
+                    />
+                  </label>
+                  <div className="col-span-2 mt-0.5 text-xs text-t3">
+                    매도 <span className="font-medium text-down">{posSellName}</span>
+                  </div>
+                  <label className="flex items-center gap-1 text-xs">
+                    <span className="w-8 shrink-0 text-t3">진입가</span>
+                    <input
+                      type="number"
+                      value={posSellEntry}
+                      onChange={(e) => setPosSellEntry(e.target.value)}
+                      placeholder={posSellCur > 0 ? String(Math.round(posSellCur)) : ''}
+                      className="w-full rounded-sm bg-bg-primary px-1.5 py-0.5 text-t1 placeholder:text-t4 focus:outline-none"
+                    />
+                  </label>
+                  <label className="flex items-center gap-1 text-xs">
+                    <span className="w-8 shrink-0 text-t3">수량</span>
+                    <input
+                      type="number"
+                      value={posSellQty}
+                      onChange={(e) => setPosSellQty(e.target.value)}
+                      className="w-full rounded-sm bg-bg-primary px-1.5 py-0.5 text-t1 focus:outline-none"
+                    />
+                  </label>
+                </div>
+                {hasPos ? (
+                  <div className="mt-2 border-t border-bg-primary pt-2 text-xs tabular-nums">
+                    <div className="text-t3">
+                      진입 시점:{' '}
+                      <span className="text-t1">
+                        z {posEntryZ >= 0 ? '+' : ''}
+                        {posEntryZ.toFixed(2)}
+                      </span>{' '}
+                      · 이탈 {Math.round(posEntryDev).toLocaleString()}원 · 절대{' '}
+                      {Math.round(posEntryAbs).toLocaleString()}원
+                    </div>
+                    <div className="mt-1 flex items-baseline gap-1">
+                      <span className="text-t3">현재 평가손익</span>
+                      <span
+                        className={`text-base font-semibold ${posPnL >= 0 ? 'text-up' : 'text-down'}`}
+                      >
+                        {posPnL >= 0 ? '+' : ''}
+                        {Math.round(posPnL).toLocaleString()}원
+                      </span>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="mt-1.5 text-[11px] text-t4">
+                    진입가·수량 입력 시 진입 z·베이시스와 현재 손익 표시
                   </div>
                 )}
               </div>
