@@ -280,7 +280,7 @@ export function StatArbDetailPage() {
           <span className="text-sm font-medium text-t1">{detail.left_name}</span>
           <span className="text-t3">↔</span>
           <span className="text-sm font-medium text-t1">{detail.right_name}</span>
-          <span className="text-xs text-t3">
+          <span className="text-[10px] text-t3">
             ({detail.left_key} / {detail.right_key})
           </span>
         </div>
@@ -305,7 +305,7 @@ export function StatArbDetailPage() {
         <div className="flex flex-col justify-center rounded-sm bg-bg-surface px-3 py-2.5 tabular-nums">
           <div className="flex items-baseline justify-between">
             <span className="text-[9px] font-semibold uppercase tracking-wider text-t3">Spread · Z</span>
-            <span className="text-xs text-t3">
+            <span className="text-[10px] text-t3">
               μ {Math.round(spreadMean).toLocaleString()} · σ {Math.round(spreadStd).toLocaleString()}
             </span>
           </div>
@@ -314,8 +314,8 @@ export function StatArbDetailPage() {
               <span className={`text-xl font-semibold leading-none ${zCls}`}>
                 {liveZ != null ? `${liveZ >= 0 ? '+' : ''}${liveZ.toFixed(2)}` : '—'}
               </span>
-              <span className="text-xs text-t3">σ</span>
-              <span className="ml-auto text-xs text-t3">
+              <span className="text-[11px] text-t3">σ</span>
+              <span className="ml-auto text-[11px] text-t3">
                 spread <span className="text-t2">{Math.round(liveSpread).toLocaleString()}</span>
               </span>
             </div>
@@ -325,11 +325,11 @@ export function StatArbDetailPage() {
           {/* 평균회귀 시그널 — 추세 해석 없이 트레이드 방향을 pill로 */}
           <div className="mt-1.5">
             {signal.neutral ? (
-              <span className="inline-flex rounded-sm bg-bg-base px-1.5 py-0.5 text-xs text-t3">
+              <span className="inline-flex rounded-sm bg-bg-base px-1.5 py-0.5 text-[10px] text-t3">
                 중립 · 평균 근처
               </span>
             ) : (
-              <span className="inline-flex items-center gap-1 rounded-sm bg-bg-base px-1.5 py-0.5 text-xs">
+              <span className="inline-flex items-center gap-1 rounded-sm bg-bg-base px-1.5 py-0.5 text-[11px]">
                 <span className="font-semibold text-up">롱 {signal.longName}</span>
                 <span className="text-t3">/</span>
                 <span className="font-semibold text-down">숏 {signal.shortName}</span>
@@ -424,7 +424,7 @@ export function StatArbDetailPage() {
                   val={`${selDaily.half_life.toFixed(0)}일`}
                 />
               </ul>
-              <div className="mt-2 text-xs leading-relaxed text-t3">
+              <div className="mt-2 text-[10px] leading-relaxed text-t3">
                 + 같은 도메인 그룹(섹터·ETF) 후보 · 양방향 ADF(방향 대칭) · 최근 6개월 안정성까지
                 통과해 선정됨. 전반 과정은 페어 목록 상단 &ldquo;발굴 방법론&rdquo; 참고.
               </div>
@@ -437,9 +437,9 @@ export function StatArbDetailPage() {
               <div className="mb-2 flex items-center gap-2 text-sm font-medium text-t1">
                 베이시스 (원 단위)
                 {liveSpread != null ? (
-                  <span className="text-xs font-normal text-accent">실시간</span>
+                  <span className="text-[11px] font-normal text-accent">실시간</span>
                 ) : (
-                  <span className="text-xs font-normal text-t3">DB 마지막</span>
+                  <span className="text-[11px] font-normal text-t3">DB 마지막</span>
                 )}
               </div>
               <div className="space-y-3 tabular-nums">
@@ -586,7 +586,7 @@ export function StatArbDetailPage() {
                     </div>
                   </div>
                 ) : (
-                  <div className="mt-1.5 text-xs text-t3">
+                  <div className="mt-1.5 text-[11px] text-t3">
                     진입가·수량 입력 시 진입 z·베이시스와 현재 손익 표시
                   </div>
                 )}
@@ -605,7 +605,7 @@ export function StatArbDetailPage() {
 
         {/* 우측 — 차트 3개 vertical stack */}
         <div className="flex flex-col gap-1 lg:col-span-3">
-          <label className="flex cursor-pointer select-none items-center gap-1.5 self-end px-1 text-xs text-t3">
+          <label className="flex cursor-pointer select-none items-center gap-1.5 self-end px-1 text-[11px] text-t3">
             <input
               type="checkbox"
               checked={syncCharts}
@@ -621,7 +621,7 @@ export function StatArbDetailPage() {
                 {displayZ >= 0 ? '+' : ''}
                 {displayZ.toFixed(2)}
               </span>
-              {liveZ != null && <span className="ml-1 text-xs text-accent">실시간</span>}
+              {liveZ != null && <span className="ml-1 text-[10px] text-accent">실시간</span>}
               {!signal.neutral && (
                 <span className="ml-2">
                   → <span className="font-semibold text-up">롱 {signal.longName}</span>
@@ -706,7 +706,7 @@ export function StatArbDetailPage() {
 function KpiCard({ label, value, cls }: { label: string; value: string; cls: string }) {
   return (
     <div className="rounded-sm bg-bg-surface px-3 py-2">
-      <div className="text-xs text-t3">{label}</div>
+      <div className="text-[10px] text-t3">{label}</div>
       <div className={`text-base font-semibold tabular-nums ${cls}`}>{value}</div>
     </div>
   )
@@ -751,12 +751,12 @@ function LiveLegCard({
         <span className="rounded-sm bg-bg-base px-1 py-px text-[9px] font-semibold uppercase tracking-wider text-t3">
           {role}
         </span>
-        <span className="text-xs font-medium text-t2">{name}</span>
+        <span className="text-[11px] font-medium text-t2">{name}</span>
       </div>
       <div className="mt-1 text-xl font-semibold leading-none tracking-tight text-t1 tabular-nums">
         {price > 0 ? price.toLocaleString() : '—'}
       </div>
-      <div className="mt-1 flex items-center justify-center gap-1.5 text-xs tabular-nums">
+      <div className="mt-1 flex items-center justify-center gap-1.5 text-[10px] tabular-nums">
         <span className="text-t3">{code}</span>
         {hasChange && (
           <span className={chgCls}>
