@@ -275,36 +275,55 @@ function PriceChart({ rows, register }: { rows: SeriesRow[]; register: RegisterF
   )
 }
 
-// ── 2. 순매수 모멘텀 (외인 일별 순매수 막대 + 5/20 MA) ──────────────────
+// ── 2. 순매수 모멘텀 (외인/기관 토글 + 50/100/200 MA) ──────────────────
 function MomentumChart({ rows, register }: { rows: SeriesRow[]; register: RegisterFn }) {
   const ref = useRef<HTMLDivElement>(null)
+  const [who, setWho] = useState<'f' | 'i'>('f') // 외인 / 기관
   useEffect(() => {
     if (!ref.current) return
     const chart = createChart(ref.current, { ...chartOpts, autoSize: true })
+    const pick = (r: SeriesRow) => (who === 'f' ? r.f_eok : r.i_eok)
     const bars = chart.addHistogramSeries({ priceFormat: { type: 'price', precision: 0, minMove: 1 } })
-    bars.setData(rows.map((r) => ({ time: t(r.d), value: r.f_eok, color: r.f_eok >= 0 ? '#30d15866' : '#ee382e66' })))
-    const vals = rows.map((r) => r.f_eok)
-    const ma5 = sma(vals, 5)
-    const ma20 = sma(vals, 20)
-    const l5 = chart.addLineSeries({ color: C.warning, lineWidth: 1, priceLineVisible: false, lastValueVisible: false })
-    l5.setData(rows.map((r, i) => ({ time: t(r.d), value: ma5[i] })).filter((x) => x.value != null) as never)
-    const l20 = chart.addLineSeries({ color: C.blue, lineWidth: 2, priceLineVisible: false, lastValueVisible: false })
-    l20.setData(rows.map((r, i) => ({ time: t(r.d), value: ma20[i] })).filter((x) => x.value != null) as never)
+    bars.setData(
+      rows.map((r) => {
+        const v = pick(r)
+        return { time: t(r.d), value: v, color: v >= 0 ? '#30d15866' : '#ee382e66' }
+      })
+    )
+    // 순매수 이동평균 50·100·200일 (f_net/i_net은 COALESCE 0이라 null 없음 → 러닝-합 안전)
+    const vals = rows.map(pick)
+    const addMa = (n: number, color: string) => {
+      const ma = sma(vals, n)
+      const line = chart.addLineSeries({ color, lineWidth: 1, priceLineVisible: false, lastValueVisible: false })
+      line.setData(rows.map((r, i) => ({ time: t(r.d), value: ma[i] })).filter((x) => x.value != null) as never)
+    }
+    addMa(50, C.warning)
+    addMa(100, C.blue)
+    addMa(200, C.t1) // 200일 = 흰색 (차트 ①과 통일)
     chart.timeScale().fitContent()
     const unreg = register(chart)
     return () => {
       unreg()
       chart.remove()
     }
-  }, [rows, register])
+  }, [rows, who, register])
   return (
     <ChartBox
-      title="② 순매수 모멘텀 (외인, 억)"
+      title={`② 순매수 모멘텀 (${who === 'f' ? '외인' : '기관'}, 억)`}
       legend={[
         ['일별', C.t3],
-        ['5일선', C.warning],
-        ['20일선', C.blue],
+        ['50일', C.warning],
+        ['100일', C.blue],
+        ['200일', C.t1],
       ]}
+      seg={{
+        value: who,
+        onChange: (v) => setWho(v as 'f' | 'i'),
+        options: [
+          ['f', '외인'],
+          ['i', '기관'],
+        ],
+      }}
     >
       <div ref={ref} className="h-[210px] w-full" />
     </ChartBox>
@@ -400,12 +419,14 @@ function ChartBox({
   legend,
   view,
   setView,
+  seg,
   children,
 }: {
   title: string
   legend: [string, string][]
   view?: 'chart' | 'table'
   setView?: (v: 'chart' | 'table') => void
+  seg?: { value: string; onChange: (v: string) => void; options: [string, string][] }
   children: ReactNode
 }) {
   return (
@@ -418,6 +439,19 @@ function ChartBox({
             <span className="text-t3">{label}</span>
           </span>
         ))}
+        {seg && (
+          <div className="ml-auto flex overflow-hidden rounded-sm border border-bg-surface">
+            {seg.options.map(([val, label]) => (
+              <button
+                key={val}
+                onClick={() => seg.onChange(val)}
+                className={`px-2 py-0.5 ${seg.value === val ? 'bg-accent/20 text-accent' : 'text-t3'}`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        )}
         {view && setView && (
           <div className="ml-auto flex overflow-hidden rounded-sm border border-bg-surface">
             <button onClick={() => setView('chart')} className={`px-2 py-0.5 ${view === 'chart' ? 'bg-accent/20 text-accent' : 'text-t3'}`}>
