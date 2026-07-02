@@ -32,6 +32,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **[stock-arbitrage.md](stock-arbitrage.md)** — 종목차익 기능 설계 (베이시스 모니터링 + ETF 차익 계산)
 - **[etf-arbitrage.md](etf-arbitrage.md)** — ETF 차익 기능 설계 + **실시간 페이지 reference 구현**의 성능 최적화 다층 방어 표
 - **[stat-arb-engine.md](stat-arb-engine.md)** — 통계 차익거래 엔진 + 화면 설계 (M:N 페어 발굴, 대여·매도차 통합, 포지션 추적). 별도 Rust binary `stat-arb-engine/` (port 8300)
+- **[supply-demand.md](supply-demand.md)** — 수급(외국인/기관) 종목 선정. 지표 정본은 `backend/services/flow_metrics.py` 1벌 (합성점수 없음·파라미터 상수). 설계 근거는 memory `project_supply_demand`/`reference_lpmm_supply_postmortem`
 - `docs/ETF Market Making Plans/` (00~07) — **참고용 외부 자료**. 실행 스펙 아님. 기술 스택·phase 구성 그대로 베끼지 말 것 (memory `reference_etf_mm_plans`)
 
 ## 데이터 흐름 / 책임 분할

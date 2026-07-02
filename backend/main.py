@@ -27,7 +27,7 @@ app.add_middleware(
 
 logger = logging.getLogger("uvicorn.error")
 
-for module_name in ("arbitrage", "borrowing", "dividends", "etfs", "health", "lending", "loan_rates", "lp", "permanent_sub", "positions", "repayment", "stat_arb", "stocks"):
+for module_name in ("arbitrage", "borrowing", "dividends", "etfs", "flow", "health", "lending", "loan_rates", "lp", "permanent_sub", "positions", "repayment", "stat_arb", "stocks"):
     try:
         module = __import__(f"routers.{module_name}", fromlist=["router"])
         app.include_router(module.router, prefix="/api")

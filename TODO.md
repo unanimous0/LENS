@@ -7,7 +7,7 @@
 - [ ] **대시보드 (`/dashboard`)** — 전체 시장 요약, KOSPI/KOSDAQ NAV, 주요 지수, 포지션 PnL. 첫 화면이라 ROI 높음
 - [ ] **시그널 (`/signals`)** — 베이시스갭 임계 초과 / 거래량 이상 자동 감지
 - [ ] **포지션 (`/position`)** — 보유 PnL (KBM 내부망 의존)
-- [ ] **수급 (`/supply-demand`)** — 외국인/기관 매매 (Finance_Data 활용 가능)
+- [x] **수급 (`/supply-demand`)** — v1 랭킹 완료 (supply-demand.md). v1.5 상세차트/v2 백테스트 남음
 - [ ] **백테스팅 (`/backtest`)** — 가장 큰 작업
 
 ## ⚙️ 인프라/품질 (홈 없는 글로벌 항목)

@@ -1,0 +1,52 @@
+# 수급 (외국인/기관 순매수 기반 종목 선정)
+
+> 설계 전문은 memory `project_supply_demand`(4관점 제로베이스 통합안) + `reference_lpmm_supply_postmortem`(과거 LP_MM_TRADING 실패 부검). 이 문서는 구현 스펙 요약.
+
+## 핵심 원칙 (부검 교훈 — 위반 금지)
+
+- **지표 정의는 1벌** — `backend/services/flow_metrics.py`가 유일한 정본. 화면/상세/백테스트 전부 이 모듈의 소비자. 프론트는 포맷팅만 (재계산 금지).
+- **합성 점수 없음** — 모든 컬럼이 HTS로 검산 가능한 raw 산수. 정렬 키 = 외인 20D bp 단일.
+- **파라미터는 코드 상수** (윈도우 5/20/60, 진입 임계, 필터 하한) — 사용자 노브는 필터 프리셋·방향·검색만.
+- "이상한 종목이 상위에" 문제가 생기면 보정 레이어 추가 금지 — 지표 정의 교체 + 백테스트 비교로 대응.
+
+## 지표 정의 (flow-v1)
+
+```
+수급강도(N일) = Σ순매수금액(N일) ÷ 유통시총 × 10,000  [bp]
+유통시총 = 유통비율(as-of floating_shares/total_shares) × 최신 market_cap
+```
+
+- N ∈ {5, 20, 60}, 주체 = FOREIGN / INSTITUTION.
+- **유통비율 × 최신 시총**인 이유: 유통주식수 절대값은 base_date에 묶여 증자·분할 시 왜곡 (실측: 027360 증자 → 절대값 분모가 bp 2배 왜곡). 비율은 완만, 시총은 매일 갱신.
+- 분모에 adj_close 금지 (분할 시 과거 소급 재작성 — point-in-time 위반). 수익률·차트에만 사용.
+- **PENSION은 INSTITUTION의 부분집합 — 합산 금지** (DB 검증: 외+기+개 일합 ≈ 0). 개인은 −(외+기) 근사라 독립 팩터로 쓰지 않음.
+
+## 시그널 규약
+
+- **D일 수급은 D일 장 마감 후 확정 → D 신호는 D+1 시가부터 실행 가능.** 백테스트 진입가는 반드시 D+1 open (look-ahead 금지).
+- **진입권/매도권 뱃지** (트레이더 설계 임계, 상수): `|20D| ≥ 15bp AND (연속 ≥ 3D or |5D| ≥ 0.3×ADV20)` — 증자·블록 등 단일 이벤트성 스파이크를 지속성 조건으로 배제. 필터가 아니라 뱃지 (행 숨김 없음).
+- 매도 후보 = 같은 지표의 오름차순 (별도 공식 없음). 동시 뱃지 = 외인∧기관 20D 동시 순매수. NEW = 전일 상위 50에 없던 신규 진입.
+
+## API (FastAPI, `routers/flow.py`)
+
+- `GET /api/flow/meta` — as_of·is_partial·파라미터·데이터버전·규약
+- `GET /api/flow/ranking?preset=default|large|all` — 랭킹 (f_20d_bp 내림차순 정렬됨)
+- `GET /api/flow/stocks/{code}?days=365` — 일별 외인/기관 순매수(억) + 누적 + 수정종가 (최대 3년)
+
+캐시 = 데이터 버전 기반 (시간 TTL 아님): 프로브(60s) = (max(time), 그 날짜 row수) → 바뀌면 자동 재계산. 크론/수동 무효화 없음. `is_complete` 게이트 = 최신일 종목 커버리지 < 직전 5일 중앙값의 90% → as_of 전일 강등.
+
+## 데이터 (Finance_Data PG, read-only)
+
+- `investor_trading`: time / stock_code / investor_type(FOREIGN·INSTITUTION·PENSION·RETAIL) / net_buy_value(원). 2022-01~, 장 마감 후 크롤러 갱신. **주식 전용 (ETF 없음)**.
+- 보조: `ohlcv_daily`(close_price raw·adj_close·trading_value), `market_cap_daily`, `floating_shares`(base_date 이력), `stocks`, `stock_sectors`.
+- ⚠️ **알려진 이슈**: `floating_shares`가 2026-05-21부터 NULL 적재 (Finance_Data 크롤러) — as-of 조인이 "가장 최근의 유효값"(현재 02-19)을 사용, 화면에 신선도 경고 표시. Finance_Data 측 수정 필요.
+
+## 화면 (`frontend/src/pages/stock-flow.tsx`, `/supply-demand`)
+
+컬럼 8개: 종목(이름·코드·섹터·유통시총) / 연속(부호) / 외인 5D / **외인 20D bp(정렬)** / 기관 5D / 흡수율(5D 순매수÷거래대금) / 20D 수익률(수정주가) / 어제(외/기). 매수·매도 토글, 프리셋 3종, 검색, 기준일·partial 배지, 데이터 품질 경고.
+
+## 로드맵
+
+- **v1 (완료)**: 랭킹 화면 + API.
+- **v1.5**: 종목 상세 차트(가격 + 일별 순매수 막대 + 누적선 1~3년 + 외인 평단 추정선 + 이벤트 마커), 분배 패턴 뱃지(외인 대량매도+주가 방어+개인 매수).
+- **v2 (백테스트 입증 조건부)**: z-score·EWMA·섹터중립·초과수급. 백테스트 = LP_MM 골격 이식 + T+1 시가 + Rank IC(h=5/20/60/**120**) + 모멘텀 통제 + holdout 1회 개봉. 장기보유 니즈는 창 확대가 아니라 h=120 측정으로 판단 (결정 로그 참조).
