@@ -37,6 +37,8 @@ const C = {
   warning: '#ff9f0a', // ±2 밴드 / 현재점 강조
   down: '#ff3b30',
   blue: '#0a84ff', // leg compare에서 right(y)
+  candleUp: '#089981', // 트레이딩뷰 기본 양봉 (청록) — σ 히스토그램 막대
+  candleDown: '#f23645', // 트레이딩뷰 기본 음봉 (코랄) — σ 히스토그램 현재 막대
 } as const
 
 const baseChartOpts = {
@@ -674,7 +676,7 @@ export function ResidualHistogram({
               y={top}
               width={barPx * 0.9}
               height={padT + plotH - top}
-              fill={isCur ? C.down : C.accent}
+              fill={isCur ? C.candleDown : C.candleUp}
               opacity={isCur || i === hoverIdx ? 1 : 0.85}
             />
           )
@@ -687,7 +689,7 @@ export function ResidualHistogram({
             textAnchor="middle"
             fontSize={11}
             fontWeight={700}
-            fill={C.down}
+            fill={C.candleDown}
           >
             {`${currentZ >= 0 ? '+' : ''}${currentZ.toFixed(2)}σ`}
           </text>
