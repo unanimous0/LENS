@@ -12,17 +12,22 @@ type SeriesRow = {
   i_eok: number
   cum_f_eok: number
   cum_i_eok: number
+  o: number | null
+  h: number | null
+  l: number | null
   adj_close: number | null
 }
 
+// globals.css 토큰과 동일 (종목차익 등 다른 화면과 색 통일)
 const C = {
   bg: '#111111',
   surface: '#1c1c1e',
   t1: '#ffffff',
   t3: '#8e8e93',
-  accent: '#34c759',
+  up: '#30d158',
+  accent: '#30d158',
   blue: '#0a84ff',
-  down: '#ff3b30',
+  down: '#ee382e',
   warning: '#ff9f0a',
 }
 
@@ -147,13 +152,20 @@ export function FlowDetail({ code, name, onClose }: { code: string; name: string
     })
 
     const t = (d: string) => d as never
-    const priced = rows.filter((r) => r.adj_close != null)
-    const priceSeries = priceChart.addLineSeries({
-      color: C.t1,
-      lineWidth: 2,
+    // 수정주가 캔들 (adj_open/high/low/close — 분할 spike 없음)
+    const priced = rows.filter((r) => r.adj_close != null && r.o != null && r.h != null && r.l != null)
+    const priceSeries = priceChart.addCandlestickSeries({
+      upColor: C.up,
+      downColor: C.down,
+      borderUpColor: C.up,
+      borderDownColor: C.down,
+      wickUpColor: C.up,
+      wickDownColor: C.down,
       priceFormat: { type: 'price', precision: 0, minMove: 1 },
     })
-    priceSeries.setData(priced.map((r) => ({ time: t(r.d), value: r.adj_close! })))
+    priceSeries.setData(
+      priced.map((r) => ({ time: t(r.d), open: r.o!, high: r.h!, low: r.l!, close: r.adj_close! }))
+    )
 
     const avg = estimateAvgPrice(rows)
     if (avg != null) {
@@ -186,7 +198,7 @@ export function FlowDetail({ code, name, onClose }: { code: string; name: string
       priceFormat: { type: 'price', precision: 0, minMove: 1 },
       priceScaleId: 'right',
     })
-    bars.setData(rows.map((r) => ({ time: t(r.d), value: r.f_eok, color: r.f_eok >= 0 ? '#34c75955' : '#ff3b3055' })))
+    bars.setData(rows.map((r) => ({ time: t(r.d), value: r.f_eok, color: r.f_eok >= 0 ? '#30d15855' : '#ee382e55' })))
     const cumF = flowChart.addLineSeries({ color: C.accent, lineWidth: 2, priceScaleId: 'left' })
     cumF.setData(rows.map((r) => ({ time: t(r.d), value: r.cum_f_eok })))
     const cumI = flowChart.addLineSeries({ color: C.blue, lineWidth: 1, priceScaleId: 'left' })

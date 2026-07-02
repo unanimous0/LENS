@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { type ReactNode, useEffect, useMemo, useState } from 'react'
 
 import { FlowDetail } from '@/components/flow/flow-detail'
 
@@ -64,6 +64,19 @@ const PRESET_LABELS: Record<string, string> = {
 
 const SHOW_LIMIT = 100
 
+// 정렬 가능 컬럼 → FlowRow에서 값 뽑는 함수
+type SortKey = 'f_20d_bp' | 'f_streak' | 'f_5d_eok' | 'i_20d_bp' | 'absorb_5d_pct' | 'ret_20d_pct' | 'y_f_eok' | 'f_120d_bp'
+const SORT_GETTER: Record<SortKey, (r: FlowRow) => number> = {
+  f_20d_bp: (r) => r.f_20d_bp,
+  f_120d_bp: (r) => r.f_120d_bp,
+  f_streak: (r) => r.f_streak,
+  f_5d_eok: (r) => r.f_5d_eok,
+  i_20d_bp: (r) => r.i_20d_bp,
+  absorb_5d_pct: (r) => r.absorb_5d_pct ?? -Infinity,
+  ret_20d_pct: (r) => r.ret_20d_pct ?? -Infinity,
+  y_f_eok: (r) => r.y_f_eok,
+}
+
 export function StockFlowPage() {
   const [data, setData] = useState<RankingResp | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -71,6 +84,17 @@ export function StockFlowPage() {
   const [direction, setDirection] = useState<'buy' | 'sell'>('buy')
   const [longOnly, setLongOnly] = useState(false) // 장기 정합(120일도 순매수)만
   const [search, setSearch] = useState('')
+  const [sortKey, setSortKey] = useState<SortKey>('f_20d_bp')
+  const [sortAsc, setSortAsc] = useState(false)
+
+  // 방향(매수/매도) 전환 시 기본 정렬 = 20D bp, 방향에 맞는 오름/내림
+  const sortClick = (k: SortKey) => {
+    if (sortKey === k) setSortAsc((v) => !v)
+    else {
+      setSortKey(k)
+      setSortAsc(false) // 새 컬럼은 내림차순 시작
+    }
+  }
   const [selected, setSelected] = useState<{ code: string; name: string } | null>(null)
   // 관심종목 — localStorage. 트레이더 워크플로우 "내 종목 수급 살아있나" 상단 고정.
   const [watchlist, setWatchlist] = useState<Set<string>>(() => {
@@ -123,10 +147,12 @@ export function StockFlowPage() {
     }
     // 장기 정합(장투 모드): 120일도 순매수인 종목만 — "장기 분산+단기 반등" 제거
     if (longOnly && direction === 'buy') rows = rows.filter((r) => r.long_up)
-    // 백엔드는 f_20d_bp 내림차순 — 매도 뷰는 뒤집기만 (지표 재계산 없음)
-    const sorted = direction === 'buy' ? rows : [...rows].reverse()
+    // 매도 뷰는 20D bp 정렬일 때만 오름차순이 자연스러움(약한 수급 위로). 그 외엔 sortKey 그대로.
+    const asc = sortKey === 'f_20d_bp' ? (direction === 'sell' ? !sortAsc : sortAsc) : sortAsc
+    const get = SORT_GETTER[sortKey]
+    const sorted = [...rows].sort((a, b) => (asc ? get(a) - get(b) : get(b) - get(a)))
     return search.trim() ? sorted : sorted.slice(0, SHOW_LIMIT)
-  }, [data, direction, longOnly, search])
+  }, [data, direction, longOnly, search, sortKey, sortAsc])
 
   // 요약 스트립 — 오늘 시장 수급의 전체 그림 (필터 전 전체 프리셋 기준)
   const summary = useMemo(() => {
@@ -323,42 +349,43 @@ export function StockFlowPage() {
         />
       )}
 
-      {/* 랭킹 테이블 */}
+      {/* 랭킹 테이블 — sticky thead (overflow-x-auto 없음: main이 스크롤 컨테이너) */}
       {data && !loading && (
-        <div className="panel overflow-x-auto">
+        <div className="panel">
           <table className="w-full text-xs tabular-nums">
             <thead className="sticky top-0 z-10 bg-bg-primary">
               <tr className="border-b border-bg-surface text-left text-t3">
                 <th className="px-3 py-2 font-normal">#</th>
                 <th className="px-3 py-2 font-normal">종목</th>
-                <th className="px-3 py-2 text-right font-normal" title="외인 연속 순매수(+)/순매도(−) 영업일 수">
+                <SortTh k="f_streak" cur={sortKey} asc={sortAsc} onClick={sortClick} title="외인 연속 순매수(+)/순매도(−) 영업일 수">
                   연속
-                </th>
-                <th className="px-3 py-2 text-right font-normal" title="외국인 최근 5일 순매수 합 (억원)">
+                </SortTh>
+                <SortTh k="f_5d_eok" cur={sortKey} asc={sortAsc} onClick={sortClick} title="외국인 최근 5일 순매수 합 (억원)">
                   외인 5D
-                </th>
-                <th
-                  className="px-3 py-2 text-right font-normal text-t1"
-                  title="외국인 20일 누적 순매수 ÷ 유통시총 (%) — 정렬 기준. 아래 작은 값 = 120일(반년) 장기 추세: 20D는 +인데 120D가 −면 단기 반등"
+                </SortTh>
+                <SortTh
+                  k="f_20d_bp"
+                  cur={sortKey}
+                  asc={sortAsc}
+                  onClick={sortClick}
+                  bright
+                  title="외국인 20일 누적 순매수 ÷ 유통시총 (%). 아래 작은 값 = 120일(반년) 장기 추세: 20D는 +인데 120D가 −면 단기 반등"
                 >
-                  외인 20D 매집% {direction === 'buy' ? '▼' : '▲'}
+                  외인 20D 매집%
                   <div className="text-[10px] font-normal text-t3">(아래 120D=장기)</div>
-                </th>
-                <th className="px-3 py-2 text-right font-normal" title="기관 20일 누적 순매수 ÷ 유통시총 (%) — 연기금 포함">
+                </SortTh>
+                <SortTh k="i_20d_bp" cur={sortKey} asc={sortAsc} onClick={sortClick} title="기관 20일 누적 순매수 ÷ 유통시총 (%) — 연기금 포함">
                   기관 20D%
-                </th>
-                <th
-                  className="px-3 py-2 text-right font-normal"
-                  title="흡수율: 최근 5일 (외인+기관) 순매수 ÷ 거래대금 (%) — 높을수록 진성 매집"
-                >
+                </SortTh>
+                <SortTh k="absorb_5d_pct" cur={sortKey} asc={sortAsc} onClick={sortClick} title="흡수율: 최근 5일 (외인+기관) 순매수 ÷ 거래대금 (%) — 높을수록 진성 매집">
                   흡수율
-                </th>
-                <th className="px-3 py-2 text-right font-normal" title="수정종가 기준 20일 수익률">
+                </SortTh>
+                <SortTh k="ret_20d_pct" cur={sortKey} asc={sortAsc} onClick={sortClick} title="수정종가 기준 20일 수익률">
                   20D 수익률
-                </th>
-                <th className="px-3 py-2 text-right font-normal" title="전일 외인/기관 순매수 (억원)">
+                </SortTh>
+                <SortTh k="y_f_eok" cur={sortKey} asc={sortAsc} onClick={sortClick} title="전일 외인/기관 순매수 (억원). 외인 기준 정렬">
                   어제 (외/기)
-                </th>
+                </SortTh>
               </tr>
             </thead>
             <tbody>
@@ -479,6 +506,37 @@ export function StockFlowPage() {
         오름차순. 행 클릭 시 상세 차트.
       </div>
     </div>
+  )
+}
+
+function SortTh({
+  k,
+  cur,
+  asc,
+  onClick,
+  title,
+  bright,
+  children,
+}: {
+  k: SortKey
+  cur: SortKey
+  asc: boolean
+  onClick: (k: SortKey) => void
+  title: string
+  bright?: boolean
+  children: ReactNode
+}) {
+  const active = cur === k
+  return (
+    <th
+      onClick={() => onClick(k)}
+      title={title}
+      className={`cursor-pointer select-none px-3 py-2 text-right font-normal hover:text-t1 ${
+        active || bright ? 'text-t1' : ''
+      }`}
+    >
+      {children} <span className="text-t3">{active ? (asc ? '▲' : '▼') : '↕'}</span>
+    </th>
   )
 }
 

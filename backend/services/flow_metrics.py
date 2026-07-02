@@ -316,6 +316,9 @@ _SERIES_SQL = text(
     SELECT it.time::text AS d,
            COALESCE(SUM(it.net_buy_value) FILTER (WHERE it.investor_type='FOREIGN'), 0)     AS f_net,
            COALESCE(SUM(it.net_buy_value) FILTER (WHERE it.investor_type='INSTITUTION'), 0) AS i_net,
+           MAX(o.adj_open)  AS adj_open,
+           MAX(o.adj_high)  AS adj_high,
+           MAX(o.adj_low)   AS adj_low,
            MAX(o.adj_close) AS adj_close
     FROM investor_trading it
     LEFT JOIN ohlcv_daily o ON o.stock_code = it.stock_code AND o.time = it.time
@@ -350,6 +353,9 @@ async def series(code: str, as_of: str, days: int) -> list[dict]:
             "i_eok": round(float(r.i_net) / eok, 1),
             "cum_f_eok": round(cum_f / eok, 1),
             "cum_i_eok": round(cum_i / eok, 1),
+            "o": float(r.adj_open) if r.adj_open is not None else None,
+            "h": float(r.adj_high) if r.adj_high is not None else None,
+            "l": float(r.adj_low) if r.adj_low is not None else None,
             "adj_close": float(r.adj_close) if r.adj_close is not None else None,
         })
     _result_cache[key] = out
