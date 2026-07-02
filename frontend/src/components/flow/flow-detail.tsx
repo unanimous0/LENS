@@ -41,6 +41,8 @@ const C = {
   down: '#ee382e',
   warning: '#ff9f0a',
   retail: '#8e8e93', // 개인
+  candleUp: '#089981', // 트레이딩뷰 기본 양봉 (청록)
+  candleDown: '#f23645', // 트레이딩뷰 기본 음봉 (코랄)
 }
 
 const chartOpts = {
@@ -206,12 +208,12 @@ function PriceChart({ rows, register }: { rows: SeriesRow[]; register: RegisterF
     if (!ref.current) return
     const chart = createChart(ref.current, { ...chartOpts, autoSize: true })
     const s = chart.addCandlestickSeries({
-      upColor: C.up,
-      downColor: C.down,
-      borderUpColor: C.up,
-      borderDownColor: C.down,
-      wickUpColor: C.up,
-      wickDownColor: C.down,
+      upColor: C.candleUp,
+      downColor: C.candleDown,
+      borderUpColor: C.candleUp,
+      borderDownColor: C.candleDown,
+      wickUpColor: C.candleUp,
+      wickDownColor: C.candleDown,
       priceFormat: { type: 'price', precision: 0, minMove: 1 },
     })
     // rows 전체 사용 — OHLC 없는 날은 whitespace({time})로 패딩해 다른 차트와 인덱스 일치(동기화용)
