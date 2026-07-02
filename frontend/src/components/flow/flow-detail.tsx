@@ -245,7 +245,8 @@ function PriceChart({ rows, register }: { rows: SeriesRow[]; register: RegisterF
     addLine(vwma(closes, vols, 200), '#a78bfa', 2, LineStyle.Dotted) // VWMA200 (보라 점선)
     const avg = estimateAvgPrice(rows)
     if (avg != null)
-      s.createPriceLine({ price: avg, color: '#ffd60a', lineStyle: LineStyle.Dashed, lineWidth: 2, axisLabelVisible: true, title: '외인 평단' }) // 노랑 대시 (이평선과 구분)
+      // 회색 얇은 대시. title은 비워 차트 위 텍스트 태그 제거 (축 가격값만 표시). 범례로 식별.
+      s.createPriceLine({ price: avg, color: C.t3, lineStyle: LineStyle.Dashed, lineWidth: 1, axisLabelVisible: true, title: '' })
     chart.timeScale().fitContent()
     const unreg = register(chart)
     return () => {
@@ -261,7 +262,7 @@ function PriceChart({ rows, register }: { rows: SeriesRow[]; register: RegisterF
         ['100일', C.blue],
         ['200일', C.t1],
         ['VWMA200', '#a78bfa'],
-        ['외인평단', '#ffd60a'],
+        ['외인평단', C.t3],
       ]}
     >
       <div ref={ref} className="h-[210px] w-full" />
