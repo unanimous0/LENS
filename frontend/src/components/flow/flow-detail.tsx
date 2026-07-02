@@ -23,6 +23,7 @@ type SeriesRow = {
   h: number | null
   l: number | null
   adj_close: number | null
+  vol: number | null
 }
 
 // globals.css 토큰과 동일 (다른 화면과 색 통일)
@@ -105,7 +106,7 @@ function estimateAvgPrice(rows: SeriesRow[]): number | null {
   return shares > 0 ? amount / shares : null
 }
 
-/** 단순 이동평균 (n일). 앞쪽 n-1개는 whatever 있는 만큼 평균. */
+/** 단순 이동평균 (n일). 데이터 < n이면 null. */
 function sma(vals: number[], n: number): (number | null)[] {
   const out: (number | null)[] = []
   let sum = 0
@@ -113,6 +114,25 @@ function sma(vals: number[], n: number): (number | null)[] {
     sum += vals[i]
     if (i >= n) sum -= vals[i - n]
     out.push(i >= n - 1 ? sum / n : null)
+  }
+  return out
+}
+
+/** 거래량 가중 이동평균 (n일). Σ(price×vol)/Σ(vol). vol 없으면 그 지점 null. */
+function vwma(prices: number[], vols: (number | null)[], n: number): (number | null)[] {
+  const out: (number | null)[] = []
+  let pv = 0
+  let vv = 0
+  for (let i = 0; i < prices.length; i++) {
+    const v = vols[i] ?? 0
+    pv += prices[i] * v
+    vv += v
+    if (i >= n) {
+      const ov = vols[i - n] ?? 0
+      pv -= prices[i - n] * ov
+      vv -= ov
+    }
+    out.push(i >= n - 1 && vv > 0 ? pv / vv : null)
   }
   return out
 }
@@ -203,16 +223,23 @@ function PriceChart({ rows }: { rows: SeriesRow[] }) {
       priceFormat: { type: 'price', precision: 0, minMove: 1 },
     })
     s.setData(priced.map((r) => ({ time: t(r.d), open: r.o!, high: r.h!, low: r.l!, close: r.adj_close! })))
-    // 주가 이동평균선 (5·20·60일, 수정종가 기준)
+    // 주가 이동평균선 (50·100·200일, 수정종가) + VWMA 200(거래량 가중)
     const closes = priced.map((r) => r.adj_close!)
-    const addMa = (n: number, color: string, w: number) => {
-      const ma = sma(closes, n)
-      const line = chart.addLineSeries({ color, lineWidth: w as never, priceLineVisible: false, lastValueVisible: false })
-      line.setData(priced.map((r, i) => ({ time: t(r.d), value: ma[i] })).filter((x) => x.value != null) as never)
+    const vols = priced.map((r) => r.vol)
+    const addLine = (series: (number | null)[], color: string, w: number, style?: LineStyle) => {
+      const line = chart.addLineSeries({
+        color,
+        lineWidth: w as never,
+        lineStyle: style,
+        priceLineVisible: false,
+        lastValueVisible: false,
+      })
+      line.setData(priced.map((r, i) => ({ time: t(r.d), value: series[i] })).filter((x) => x.value != null) as never)
     }
-    addMa(5, C.warning, 1)
-    addMa(20, C.blue, 1)
-    addMa(60, C.retail, 1)
+    addLine(sma(closes, 50), C.warning, 1)
+    addLine(sma(closes, 100), C.blue, 1)
+    addLine(sma(closes, 200), C.retail, 1)
+    addLine(vwma(closes, vols, 200), '#a78bfa', 2, LineStyle.Dotted) // VWMA200 (보라 점선)
     const avg = estimateAvgPrice(rows)
     if (avg != null)
       s.createPriceLine({ price: avg, color: C.warning, lineStyle: LineStyle.Dashed, lineWidth: 1, axisLabelVisible: true, title: '외인 평단' })
@@ -225,11 +252,12 @@ function PriceChart({ rows }: { rows: SeriesRow[] }) {
   useResize(ref, chartRef)
   return (
     <ChartBox
-      title="① 주가 (수정주가) · 점선=외인평단"
+      title="① 주가 (수정주가) · 대시=외인평단"
       legend={[
-        ['5일', C.warning],
-        ['20일', C.blue],
-        ['60일', C.retail],
+        ['50일', C.warning],
+        ['100일', C.blue],
+        ['200일', C.retail],
+        ['VWMA200', '#a78bfa'],
       ]}
     >
       <div ref={ref} className="h-[210px] w-full" />
