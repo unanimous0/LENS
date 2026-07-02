@@ -47,6 +47,27 @@ async def _ensure_schemas_on_startup() -> None:
 
 
 @app.on_event("startup")
+async def _warmup_flow_ranking() -> None:
+    """수급 랭킹 백그라운드 워밍업 — 콜д 계산(190일 lookback)을 미리 캐시에 채워
+    첫 사용자 진입 시 캐시 히트. 서버 부팅은 막지 않도록 create_task로 분리."""
+    import asyncio
+
+    async def _run() -> None:
+        try:
+            from services import flow_metrics as fm
+
+            info = await fm.resolve_as_of()
+            await fm.ranking(info.as_of)
+            if info.prev:
+                await fm.ranking(info.prev)  # NEW 뱃지 비교용
+            logger.info("flow ranking warmup done (as_of=%s)", info.as_of)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("flow ranking warmup skipped: %s", e)
+
+    asyncio.create_task(_run())
+
+
+@app.on_event("startup")
 async def _sync_permanent_subs_on_startup() -> None:
     """LENS 시작 시 LP 매트릭스 타겟 + active 포지션 leg를 realtime 영구 sub로 동기화.
 

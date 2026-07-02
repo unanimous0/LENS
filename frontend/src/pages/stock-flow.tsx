@@ -26,9 +26,11 @@ type FlowRow = {
   f_60d_eok: number
   i_5d_eok: number
   i_20d_eok: number
+  f_120d_eok: number
   f_5d_bp: number
   f_20d_bp: number
   f_60d_bp: number
+  f_120d_bp: number
   i_20d_bp: number
   absorb_5d_pct: number | null
   ret_20d_pct: number | null
@@ -41,6 +43,8 @@ type FlowRow = {
   entry_ok: boolean
   exit_ok: boolean
   is_distribution: boolean
+  short_bounce: boolean
+  long_up: boolean
   is_new: boolean
 }
 
@@ -65,6 +69,7 @@ export function StockFlowPage() {
   const [error, setError] = useState<string | null>(null)
   const [preset, setPreset] = useState('default')
   const [direction, setDirection] = useState<'buy' | 'sell'>('buy')
+  const [longOnly, setLongOnly] = useState(false) // 장기 정합(120일도 순매수)만
   const [search, setSearch] = useState('')
   const [selected, setSelected] = useState<{ code: string; name: string } | null>(null)
   // 관심종목 — localStorage. 트레이더 워크플로우 "내 종목 수급 살아있나" 상단 고정.
@@ -116,10 +121,12 @@ export function StockFlowPage() {
       const q = search.trim().toLowerCase()
       rows = rows.filter((r) => r.name.toLowerCase().includes(q) || r.code.includes(q))
     }
+    // 장기 정합(장투 모드): 120일도 순매수인 종목만 — "장기 분산+단기 반등" 제거
+    if (longOnly && direction === 'buy') rows = rows.filter((r) => r.long_up)
     // 백엔드는 f_20d_bp 내림차순 — 매도 뷰는 뒤집기만 (지표 재계산 없음)
     const sorted = direction === 'buy' ? rows : [...rows].reverse()
     return search.trim() ? sorted : sorted.slice(0, SHOW_LIMIT)
-  }, [data, direction, search])
+  }, [data, direction, longOnly, search])
 
   // 요약 스트립 — 오늘 시장 수급의 전체 그림 (필터 전 전체 프리셋 기준)
   const summary = useMemo(() => {
@@ -190,6 +197,15 @@ export function StockFlowPage() {
           placeholder="종목명 / 코드"
           className="rounded-sm bg-bg-surface px-2 py-1 text-t1 placeholder:text-t3 focus:outline-none"
         />
+        {direction === 'buy' && (
+          <label
+            className="flex cursor-pointer select-none items-center gap-1.5"
+            title="장기 정합: 120일(반년)도 순매수인 종목만 — '장기 분산+단기 반등' 제거 (장투 모드)"
+          >
+            <input type="checkbox" checked={longOnly} onChange={(e) => setLongOnly(e.target.checked)} />
+            <span className={longOnly ? 'text-accent' : 'text-t3'}>장기 정합만</span>
+          </label>
+        )}
         <div className="ml-auto flex items-center gap-3 text-t3">
           {data && (
             <>
@@ -323,9 +339,10 @@ export function StockFlowPage() {
                 </th>
                 <th
                   className="px-3 py-2 text-right font-normal text-t1"
-                  title="외국인 20일 누적 순매수 ÷ 유통시총 (%) — 유통물량 대비 매집 비율. 정렬 기준"
+                  title="외국인 20일 누적 순매수 ÷ 유통시총 (%) — 정렬 기준. 아래 작은 값 = 120일(반년) 장기 추세: 20D는 +인데 120D가 −면 단기 반등"
                 >
                   외인 20D 매집% {direction === 'buy' ? '▼' : '▲'}
+                  <div className="text-[10px] font-normal text-t3">(아래 120D=장기)</div>
                 </th>
                 <th className="px-3 py-2 text-right font-normal" title="기관 20일 누적 순매수 ÷ 유통시총 (%) — 연기금 포함">
                   기관 20D%
@@ -407,6 +424,14 @@ export function StockFlowPage() {
                             분배
                           </span>
                         )}
+                        {direction === 'buy' && r.short_bounce && (
+                          <span
+                            className="rounded-sm bg-down/15 px-1 text-[10px] text-down"
+                            title="단기반등: 20일은 순매수 상위지만 120일(반년)은 순매도 — 장기 분산 중 단기 반등. 장투 주의"
+                          >
+                            단기반등
+                          </span>
+                        )}
                       </div>
                       <div className="text-[10px] text-t3">
                         {r.code} · {r.sector ?? r.market} · 유통 {Math.round(r.float_mcap_eok).toLocaleString()}억
@@ -416,8 +441,11 @@ export function StockFlowPage() {
                       {r.f_streak > 0 ? `+${r.f_streak}D` : r.f_streak < 0 ? `${r.f_streak}D` : '—'}
                     </td>
                     <td className={`px-3 py-1.5 text-right ${signCls(r.f_5d_eok)}`}>{fmtEok(r.f_5d_eok)}</td>
-                    <td className={`px-3 py-1.5 text-right font-semibold ${signCls(r.f_20d_bp)}`}>
-                      {fmtPct(r.f_20d_bp)}
+                    <td className="px-3 py-1.5 text-right">
+                      <div className={`font-semibold ${signCls(r.f_20d_bp)}`}>{fmtPct(r.f_20d_bp)}</div>
+                      <div className={`text-[10px] ${signCls(r.f_120d_bp)}`}>
+                        120D {fmtPct(r.f_120d_bp)}
+                      </div>
                     </td>
                     <td className={`px-3 py-1.5 text-right ${signCls(r.i_20d_bp)}`}>{fmtPct(r.i_20d_bp)}</td>
                     <td className="px-3 py-1.5 text-right text-t2">

@@ -114,18 +114,25 @@ async def resolve_as_of() -> AsOfInfo:
 _RANKING_SQL = text(
     """
     WITH it AS (
+        -- 외인/기관: 120거래일(장기 추세)까지 → 190일 lookback으로 딱 커버.
+        -- RETAIL은 5D만 필요(분배 패턴) → 14일만 읽어 스캔량 축소.
         SELECT stock_code, investor_type, net_buy_value,
                row_number() OVER (PARTITION BY stock_code, investor_type ORDER BY time DESC) AS rn
         FROM investor_trading
-        WHERE investor_type IN ('FOREIGN', 'INSTITUTION', 'RETAIL')
-          AND time <= CAST(:as_of AS date)
-          AND time > CAST(:as_of AS date) - INTERVAL '130 days'
+        WHERE time <= CAST(:as_of AS date)
+          AND (
+              (investor_type IN ('FOREIGN', 'INSTITUTION')
+               AND time > CAST(:as_of AS date) - INTERVAL '190 days')
+              OR (investor_type = 'RETAIL'
+                  AND time > CAST(:as_of AS date) - INTERVAL '14 days')
+          )
     ),
     flow AS (
         SELECT stock_code,
             COALESCE(SUM(net_buy_value) FILTER (WHERE investor_type='FOREIGN' AND rn<=5), 0)  AS f_5d,
             COALESCE(SUM(net_buy_value) FILTER (WHERE investor_type='FOREIGN' AND rn<=20), 0) AS f_20d,
             COALESCE(SUM(net_buy_value) FILTER (WHERE investor_type='FOREIGN' AND rn<=60), 0) AS f_60d,
+            COALESCE(SUM(net_buy_value) FILTER (WHERE investor_type='FOREIGN' AND rn<=120), 0) AS f_120d,
             COALESCE(SUM(net_buy_value) FILTER (WHERE investor_type='INSTITUTION' AND rn<=5), 0)  AS i_5d,
             COALESCE(SUM(net_buy_value) FILTER (WHERE investor_type='INSTITUTION' AND rn<=20), 0) AS i_20d,
             COALESCE(SUM(net_buy_value) FILTER (WHERE investor_type='INSTITUTION' AND rn<=60), 0) AS i_60d,
@@ -180,7 +187,7 @@ _RANKING_SQL = text(
     SELECT f.stock_code, s.stock_name, s.market, sec.fics_sector,
            mc.market_cap, fs.floating_shares, fs.total_shares, fs.float_date,
            px.close_raw, px.adj_now, px.adj_5d_ago, px.adj_20d_ago, px.tv_5d, px.adv_20d,
-           f.f_1d, f.f_5d, f.f_20d, f.f_60d,
+           f.f_1d, f.f_5d, f.f_20d, f.f_60d, f.f_120d,
            f.i_1d, f.i_5d, f.i_20d, f.i_60d, f.r_5d,
            f.f_buy_streak, f.f_sell_streak
     FROM flow f
@@ -248,6 +255,8 @@ def _row_to_metrics(r) -> dict | None:
         "f_5d_bp": round(f_5d_bp, 1),
         "f_20d_bp": round(float(r.f_20d) / float_mcap * 10_000, 1),
         "f_60d_bp": round(float(r.f_60d) / float_mcap * 10_000, 1),
+        "f_120d_bp": round(float(r.f_120d) / float_mcap * 10_000, 1),
+        "f_120d_eok": round(float(r.f_120d) / eok, 1),
         "i_20d_bp": round(float(r.i_20d) / float_mcap * 10_000, 1),
         # 흡수율: 최근 5일 (외+기) 순매수가 거래대금의 몇 %를 차지했나 — 진성/소음 구분
         "absorb_5d_pct": round((float(r.f_5d) + float(r.i_5d)) / tv_5d * 100, 1) if tv_5d > 0 else None,
@@ -259,6 +268,10 @@ def _row_to_metrics(r) -> dict | None:
         "adv_20d_eok": round(adv_20d / eok, 1),
         # 뱃지 원료
         "both_20d": float(r.f_20d) > 0 and float(r.i_20d) > 0,
+        # 단기반등: 20일 순매수 상위지만 120일(장기)은 순매도 — "장기 분산+단기 반등".
+        # 장투 관점 경고 (정렬은 20일 유지, 이건 맥락 뱃지). 리노공업 사례.
+        "short_bounce": float(r.f_20d) > 0 and float(r.f_120d) < 0,
+        "long_up": float(r.f_120d) > 0,  # 장기 정합 필터용
         # 진입권/매도권 — 트레이더 설계의 지속성 임계 (상수, 튜닝 금지):
         #   20D ≥ ±15bp AND (연속 ≥ 3D or 5D 순매수가 20D 일평균 거래대금의 30% 이상)
         # 단일 이벤트성 스파이크(증자·블록 — 연속 끊김 + 5D 미미)를 뱃지 없음으로 구분.
