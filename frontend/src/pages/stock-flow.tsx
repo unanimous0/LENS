@@ -1,13 +1,15 @@
 import { useEffect, useMemo, useState } from 'react'
 
+import { FlowDetail } from '@/components/flow/flow-detail'
+
 /**
  * 수급 — 외국인/기관 순매수 기반 종목 랭킹.
  *
  * 설계 원칙 (memory project_supply_demand — 4관점 제로베이스 설계 통합안):
  *  - 지표는 백엔드 정본(services/flow_metrics.py) 하나뿐. 프론트는 포맷팅만.
- *  - 정렬 키 = 외인 20D/유통시총(bp) 단일. 매수 = 내림차순, 매도 = 오름차순 토글.
+ *  - 정렬 키 = 외인 20D/유통시총 단일. 매수 = 내림차순, 매도 = 오름차순 토글.
  *  - 합성 점수 없음 — 모든 컬럼이 HTS로 검산 가능한 raw 산수.
- *  - 뱃지: NEW(전일 상위권에 없던 신규 진입) · 동시(외인·기관 20D 둘 다 순매수).
+ *  - 표기: bp 대신 "유통%"(bp/100) — "유통물량의 몇 %를 순매수했나"가 직관적.
  */
 
 type FlowRow = {
@@ -61,6 +63,7 @@ export function StockFlowPage() {
   const [preset, setPreset] = useState('default')
   const [direction, setDirection] = useState<'buy' | 'sell'>('buy')
   const [search, setSearch] = useState('')
+  const [selected, setSelected] = useState<{ code: string; name: string } | null>(null)
 
   // 로딩은 파생값 — 요청한 preset의 응답이 아직 없으면 로딩 중 (effect 내 동기 setState 회피)
   const loading = !error && (!data || data.preset !== preset)
@@ -97,6 +100,21 @@ export function StockFlowPage() {
     const sorted = direction === 'buy' ? rows : [...rows].reverse()
     return search.trim() ? sorted : sorted.slice(0, SHOW_LIMIT)
   }, [data, direction, search])
+
+  // 요약 스트립 — 오늘 시장 수급의 전체 그림 (필터 전 전체 프리셋 기준)
+  const summary = useMemo(() => {
+    if (!data) return null
+    const rows = data.rows
+    const buyFav = rows.filter((r) => r.f_20d_bp > 0).length
+    return {
+      total: rows.length,
+      buyFav,
+      sellFav: rows.length - buyFav,
+      entry: rows.filter((r) => r.entry_ok).length,
+      exit: rows.filter((r) => r.exit_ok).length,
+      both: rows.filter((r) => r.both_20d).length,
+    }
+  }, [data])
 
   const floatStale = useMemo(() => {
     if (!data || data.rows.length === 0) return null
@@ -160,16 +178,46 @@ export function StockFlowPage() {
         </div>
       </div>
 
+      {/* 요약 스트립 */}
+      {summary && (
+        <div className="panel flex flex-wrap items-center gap-x-6 gap-y-1 px-3 py-2 text-xs text-t3">
+          <span className="font-medium text-t2">오늘의 수급</span>
+          <span>
+            외인 20D 순매수 <span className="font-semibold text-up">{summary.buyFav}</span>
+            <span className="text-t4"> / 순매도 </span>
+            <span className="font-semibold text-down">{summary.sellFav}</span>
+          </span>
+          <span>
+            진입권 <span className="font-semibold text-warning">{summary.entry}</span>
+            <span className="text-t4"> · 매도권 </span>
+            <span className="font-semibold text-down">{summary.exit}</span>
+          </span>
+          <span>
+            외인·기관 동시매수 <span className="font-semibold text-accent">{summary.both}</span>
+          </span>
+        </div>
+      )}
+
       {/* 데이터 품질 경고 */}
       {floatStale && (
         <div className="panel px-3 py-2 text-xs text-warning">
           ⚠ 유통주식수 기준일 {floatStale.date} ({floatStale.ageDays}일 경과) — Finance_Data
-          floating_shares 갱신 지연. bp 지표의 분모가 오래된 값입니다.
+          floating_shares 갱신 지연. 유통% 지표의 분모가 오래된 값입니다.
         </div>
       )}
 
       {error && <div className="panel p-3 text-xs text-down">로딩 실패: {error}</div>}
       {loading && <div className="panel p-3 text-xs text-t3">로딩 중…</div>}
+
+      {/* 선택 종목 상세 차트 */}
+      {selected && (
+        <FlowDetail
+          key={selected.code}
+          code={selected.code}
+          name={selected.name}
+          onClose={() => setSelected(null)}
+        />
+      )}
 
       {/* 랭킹 테이블 */}
       {data && !loading && (
@@ -187,16 +235,16 @@ export function StockFlowPage() {
                 </th>
                 <th
                   className="px-3 py-2 text-right font-normal text-t1"
-                  title="외국인 20일 누적 순매수 ÷ 유통시총 (bp) — 정렬 기준"
+                  title="외국인 20일 누적 순매수 ÷ 유통시총 (%) — 유통물량 대비 매집 비율. 정렬 기준"
                 >
-                  외인 20D bp {direction === 'buy' ? '▼' : '▲'}
+                  외인 20D 매집% {direction === 'buy' ? '▼' : '▲'}
                 </th>
-                <th className="px-3 py-2 text-right font-normal" title="기관 최근 5일 순매수 합 (억원) — 연기금 포함">
-                  기관 5D
+                <th className="px-3 py-2 text-right font-normal" title="기관 20일 누적 순매수 ÷ 유통시총 (%) — 연기금 포함">
+                  기관 20D%
                 </th>
                 <th
                   className="px-3 py-2 text-right font-normal"
-                  title="흡수율: 최근 5일 (외인+기관) 순매수 ÷ 거래대금 (%) — 높을수록 진성"
+                  title="흡수율: 최근 5일 (외인+기관) 순매수 ÷ 거래대금 (%) — 높을수록 진성 매집"
                 >
                   흡수율
                 </th>
@@ -213,8 +261,15 @@ export function StockFlowPage() {
                 const streakCls = r.f_streak > 0 ? 'text-up' : r.f_streak < 0 ? 'text-down' : 'text-t3'
                 const retCls =
                   r.ret_20d_pct == null ? 'text-t3' : r.ret_20d_pct > 0 ? 'text-up' : r.ret_20d_pct < 0 ? 'text-down' : 'text-t3'
+                const isSel = selected?.code === r.code
                 return (
-                  <tr key={r.code} className="border-t border-bg-surface/40 hover:bg-bg-surface/30">
+                  <tr
+                    key={r.code}
+                    onClick={() => setSelected(isSel ? null : { code: r.code, name: r.name })}
+                    className={`cursor-pointer border-t border-bg-surface/40 hover:bg-bg-surface/30 ${
+                      isSel ? 'bg-bg-surface/50' : ''
+                    }`}
+                  >
                     <td className="px-3 py-1.5 text-t3">{i + 1}</td>
                     <td className="px-3 py-1.5">
                       <div className="flex items-center gap-1.5">
@@ -256,10 +311,9 @@ export function StockFlowPage() {
                     </td>
                     <td className={`px-3 py-1.5 text-right ${signCls(r.f_5d_eok)}`}>{fmtEok(r.f_5d_eok)}</td>
                     <td className={`px-3 py-1.5 text-right font-semibold ${signCls(r.f_20d_bp)}`}>
-                      {r.f_20d_bp >= 0 ? '+' : ''}
-                      {r.f_20d_bp.toFixed(1)}
+                      {fmtPct(r.f_20d_bp)}
                     </td>
-                    <td className={`px-3 py-1.5 text-right ${signCls(r.i_5d_eok)}`}>{fmtEok(r.i_5d_eok)}</td>
+                    <td className={`px-3 py-1.5 text-right ${signCls(r.i_20d_bp)}`}>{fmtPct(r.i_20d_bp)}</td>
                     <td className="px-3 py-1.5 text-right text-t2">
                       {r.absorb_5d_pct != null ? `${r.absorb_5d_pct.toFixed(1)}%` : '—'}
                     </td>
@@ -284,9 +338,11 @@ export function StockFlowPage() {
 
       {/* 데이터 규약 안내 */}
       <div className="panel px-3 py-2 text-[11px] leading-relaxed text-t3">
-        수급강도(bp) = N일 누적 순매수 ÷ (유통주식수 × 종가) × 10,000. 기관에 연기금 포함(별도
-        가산 금지). D일 수급은 장 마감 후 확정 — 이 화면의 신호는 <span className="text-t2">D+1 시가부터 실행 가능</span>.
-        매도 후보는 같은 지표의 오름차순(별도 공식 없음).
+        매집% = N일 누적 순매수 ÷ 유통시총 × 100 —{' '}
+        <span className="text-t2">&ldquo;유통물량의 몇 %를 순매수했나&rdquo;</span> (예: +14.4% = 20일간
+        외인이 유통주식의 14.4%를 순매수). 기관에 연기금 포함(별도 가산 금지). D일 수급은 장 마감 후
+        확정 — 신호는 <span className="text-t2">D+1 시가부터 실행 가능</span>. 매도 후보는 같은 지표의
+        오름차순. 행 클릭 시 상세 차트.
       </div>
     </div>
   )
@@ -294,6 +350,11 @@ export function StockFlowPage() {
 
 function signCls(v: number): string {
   return v > 0 ? 'text-up' : v < 0 ? 'text-down' : 'text-t3'
+}
+
+/** bp → 유통% 표기. 1444bp = "+14.4%". */
+function fmtPct(bp: number): string {
+  return `${bp >= 0 ? '+' : ''}${(bp / 100).toFixed(1)}%`
 }
 
 function fmtEok(v: number): string {
