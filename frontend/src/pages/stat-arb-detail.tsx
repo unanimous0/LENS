@@ -238,6 +238,9 @@ export function StatArbDetailPage() {
   const alphaWon = dayStat?.alpha ?? 0
   const basisAbs = basisDev + alphaWon // ② 절대 = right − β·left
   const basis2sigma = spreadStd * 2
+  // 진입 방향(signal)의 매수/매도 종목 현재가 매핑
+  const longPrice = signal.longName === detail.left_name ? leftPrice : rightPrice
+  const shortPrice = signal.shortName === detail.left_name ? leftPrice : rightPrice
 
   return (
     <div className="flex flex-col gap-1 p-1">
@@ -401,20 +404,20 @@ export function StatArbDetailPage() {
             </div>
           )}
 
-          {/* 베이시스 (원 단위) — ① 이탈(0중심, z연동) ② 절대(right−β·left). 비교 후 하나 정리 예정 */}
+          {/* 베이시스 (원 단위) — ① 이탈(0중심, z연동) ② 절대(right−β·left) + 매수/매도 + 현재가 */}
           {dayStat && (
             <div className="panel p-3 text-xs">
-              <div className="mb-2 flex items-center gap-2 text-t3">
+              <div className="mb-2 flex items-center gap-2 text-sm font-medium text-t1">
                 베이시스 (원 단위)
                 {liveSpread != null ? (
-                  <span className="text-[10px] text-accent">실시간</span>
+                  <span className="text-[11px] font-normal text-accent">실시간</span>
                 ) : (
-                  <span className="text-[10px] text-t4">DB 마지막</span>
+                  <span className="text-[11px] font-normal text-t3">DB 마지막</span>
                 )}
               </div>
-              <div className="space-y-2.5 tabular-nums">
+              <div className="space-y-3 tabular-nums">
                 <div>
-                  <div className="text-[10px] text-t4">① 이탈 베이시스 (균형=0, z 차트와 연동)</div>
+                  <div className="text-xs text-t2">① 이탈 베이시스 <span className="text-t3">(균형=0, z 차트와 연동)</span></div>
                   <div className="mt-0.5">
                     <span
                       className={`text-base font-semibold ${
@@ -422,24 +425,24 @@ export function StatArbDetailPage() {
                           ? 'text-warning'
                           : Math.abs(basisDev) >= spreadStd
                           ? 'text-t1'
-                          : 'text-t3'
+                          : 'text-t2'
                       }`}
                     >
                       {basisDev >= 0 ? '+' : ''}
                       {Math.round(basisDev).toLocaleString()}원
                     </span>
-                    <span className="ml-2 text-t4">
+                    <span className="ml-2 text-t3">
                       ±2σ = ±{Math.round(basis2sigma).toLocaleString()}원
                     </span>
                   </div>
                 </div>
                 <div>
-                  <div className="text-[10px] text-t4">② 절대 베이시스 (right − β·left)</div>
+                  <div className="text-xs text-t2">② 절대 베이시스 <span className="text-t3">(right − β·left)</span></div>
                   <div className="mt-0.5">
                     <span className="text-base font-semibold text-t1">
                       {Math.round(basisAbs).toLocaleString()}원
                     </span>
-                    <span className="ml-2 text-t4">
+                    <span className="ml-2 text-t3">
                       평균 {Math.round(alphaWon).toLocaleString()} · ±2σ [
                       {Math.round(alphaWon - basis2sigma).toLocaleString()} ~{' '}
                       {Math.round(alphaWon + basis2sigma).toLocaleString()}]
@@ -447,9 +450,47 @@ export function StatArbDetailPage() {
                   </div>
                 </div>
               </div>
-              <div className="mt-2 text-[10px] leading-relaxed text-t4">
+
+              {/* 진입 방향 + 현재가 */}
+              <div className="mt-3 rounded-sm bg-bg-surface p-2.5">
+                <div className="mb-1.5 text-xs text-t2">
+                  지금 진입한다면
+                  {signal.entry ? (
+                    <span className="ml-1 text-warning">· ±2σ 진입권</span>
+                  ) : signal.neutral ? (
+                    <span className="ml-1 text-t3">· 균형 근처 (관망)</span>
+                  ) : (
+                    <span className="ml-1 text-t3">· 대기 (2σ 미도달)</span>
+                  )}
+                </div>
+                {signal.neutral ? (
+                  <div className="text-xs text-t3">
+                    {detail.left_name} {leftPrice > 0 ? leftPrice.toLocaleString() : '—'}원 ·{' '}
+                    {detail.right_name} {rightPrice > 0 ? rightPrice.toLocaleString() : '—'}원
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <span className="text-sm font-semibold text-up">매수</span>{' '}
+                      <span className="text-sm text-t1">{signal.longName}</span>
+                      <div className="text-t2">
+                        {longPrice > 0 ? `${longPrice.toLocaleString()}원` : '—'}
+                      </div>
+                    </div>
+                    <div>
+                      <span className="text-sm font-semibold text-down">매도</span>{' '}
+                      <span className="text-sm text-t1">{signal.shortName}</span>
+                      <div className="text-t2">
+                        {shortPrice > 0 ? `${shortPrice.toLocaleString()}원` : '—'}
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div className="mt-2 text-xs leading-relaxed text-t3">
                 실제 헤지 ={' '}
-                <span className="text-t3">
+                <span className="text-t2">
                   right 1주 : left {Math.abs(dayStat.hedge_ratio).toFixed(2)}주
                 </span>
                 . 이 포지션 손익 = 베이시스 변화. β≈1(같은 지수 ETF 등)이면 ≈ 단순 가격차.
