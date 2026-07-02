@@ -394,8 +394,9 @@ function CumFlowPanel({ rows, view, setView, register }: { rows: SeriesRow[]; vi
     }
     addMa(ma20, '#ffd60a') // 20일 (노랑)
     addMa(ma60, '#a78bfa') // 60일 (보라)
-    // 골든/데드크로스 마커 (MA20 × MA60)
+    // 골든/데드크로스 마커 (MA20 × MA60) + 호버 툴팁용 정보 맵
     const markers: SeriesMarker<Time>[] = []
+    const crossMap = new Map<string, { kind: string; color: string; value: number }>()
     for (let i = 1; i < rows.length; i++) {
       const a0 = ma20[i - 1]
       const a1 = ma20[i]
@@ -404,16 +405,59 @@ function CumFlowPanel({ rows, view, setView, register }: { rows: SeriesRow[]; vi
       if (a0 == null || a1 == null || b0 == null || b1 == null) continue
       const prev = a0 - b0
       const cur = a1 - b1
-      if (prev <= 0 && cur > 0)
+      if (prev <= 0 && cur > 0) {
         markers.push({ time: t(rows[i].d), position: 'belowBar', color: C.up, shape: 'arrowUp', text: 'G' })
-      else if (prev >= 0 && cur < 0)
+        crossMap.set(rows[i].d, { kind: '골든크로스', color: C.up, value: cum[i] })
+      } else if (prev >= 0 && cur < 0) {
         markers.push({ time: t(rows[i].d), position: 'aboveBar', color: C.down, shape: 'arrowDown', text: 'D' })
+        crossMap.set(rows[i].d, { kind: '데드크로스', color: C.down, value: cum[i] })
+      }
     }
     line.setMarkers(markers)
+
+    // 크로스 마커 호버 툴팁 — 커서가 크로스 날짜에 오면 날짜·종류·누적값 표시
+    const container = ref.current
+    container.style.position = 'relative'
+    const tip = document.createElement('div')
+    tip.style.cssText =
+      'position:absolute;display:none;pointer-events:none;z-index:10;padding:4px 7px;font-size:11px;line-height:1.4;border-radius:3px;background:#1c1c1eee;border:1px solid #3a3a3c;white-space:nowrap'
+    container.appendChild(tip)
+    const timeKey = (tm: Time | undefined): string | null => {
+      if (tm == null) return null
+      if (typeof tm === 'string') return tm
+      if (typeof tm === 'number') return String(tm)
+      return `${tm.year}-${String(tm.month).padStart(2, '0')}-${String(tm.day).padStart(2, '0')}`
+    }
+    const onMove = (param: { time?: Time; point?: { x: number; y: number } }) => {
+      const key = timeKey(param.time)
+      const hit = key ? crossMap.get(key) : undefined
+      if (!hit || !param.point) {
+        tip.style.display = 'none'
+        return
+      }
+      const v = Math.round(hit.value)
+      tip.innerHTML =
+        `<div style="color:#8e8e93">${key}</div>` +
+        `<div style="color:${hit.color};font-weight:600">${hit.kind}</div>` +
+        `<div style="color:#fff">누적 ${v >= 0 ? '+' : ''}${v.toLocaleString()}억</div>`
+      tip.style.display = 'block'
+      const cw = container.clientWidth
+      const ch = container.clientHeight
+      let left = param.point.x + 12
+      let top = param.point.y + 12
+      if (left + tip.offsetWidth > cw) left = param.point.x - tip.offsetWidth - 12
+      if (top + tip.offsetHeight > ch) top = ch - tip.offsetHeight - 4
+      tip.style.left = `${Math.max(4, left)}px`
+      tip.style.top = `${Math.max(4, top)}px`
+    }
+    chart.subscribeCrosshairMove(onMove)
+
     chart.timeScale().fitContent()
     const unreg = register(chart)
     return () => {
       unreg()
+      chart.unsubscribeCrosshairMove(onMove)
+      tip.remove()
       chart.remove()
     }
   }, [rows, view, who, register])
