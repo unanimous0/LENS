@@ -1,4 +1,4 @@
-import { createChart, LineStyle, type IChartApi, type LogicalRange } from 'lightweight-charts'
+import { createChart, LineStyle, type IChartApi, type LogicalRange, type SeriesMarker, type Time } from 'lightweight-charts'
 import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
 
 // 4개 차트 시간축 동기화용 — mount 시 register(chart), 반환 cleanup으로 unregister.
@@ -290,16 +290,16 @@ function MomentumChart({ rows, register }: { rows: SeriesRow[]; register: Regist
         return { time: t(r.d), value: v, color: v >= 0 ? '#30d15866' : '#ee382e66' }
       })
     )
-    // 순매수 이동평균 50·100·200일 (f_net/i_net은 COALESCE 0이라 null 없음 → 러닝-합 안전)
+    // 순매수 단기 이동평균 5·20일 = "최근 매수 강도" (일별은 0중심 진동이라 장기 MA는
+    // 평평 → 무의미. 추세·골든/데드크로스는 누적 차트 ③에서 다룸)
     const vals = rows.map(pick)
     const addMa = (n: number, color: string) => {
       const ma = sma(vals, n)
       const line = chart.addLineSeries({ color, lineWidth: 1, priceLineVisible: false, lastValueVisible: false })
       line.setData(rows.map((r, i) => ({ time: t(r.d), value: ma[i] })).filter((x) => x.value != null) as never)
     }
-    addMa(50, C.warning)
-    addMa(100, C.blue)
-    addMa(200, C.t1) // 200일 = 흰색 (차트 ①과 통일)
+    addMa(5, C.warning)
+    addMa(20, C.blue)
     chart.timeScale().fitContent()
     const unreg = register(chart)
     return () => {
@@ -312,9 +312,8 @@ function MomentumChart({ rows, register }: { rows: SeriesRow[]; register: Regist
       title={`② 순매수 모멘텀 (${who === 'f' ? '외인' : '기관'}, 억)`}
       legend={[
         ['일별', C.t3],
-        ['50일', C.warning],
-        ['100일', C.blue],
-        ['200일', C.t1],
+        ['5일선', C.warning],
+        ['20일선', C.blue],
       ]}
       seg={{
         value: who,
@@ -372,35 +371,69 @@ function NetFlowPanel({ rows, view, setView, register }: { rows: SeriesRow[]; vi
   )
 }
 
-// ── 4. 누적순매수 (외/기/개) — 차트 ↔ 테이블 ───────────────────────────
+// ── 3. 누적순매수 (외인/기관 토글) + 20·60일 이평 + 골든/데드크로스 ─────
+// 누적선은 주가처럼 추세를 갖는 시계열 → 이평 크로스가 의미 있음 (OBV+시그널선 개념).
+// 일별(②)엔 추세가 없어 장기 이평이 평평 → 크로스 신호는 여기 누적에서 잡는다.
 function CumFlowPanel({ rows, view, setView, register }: { rows: SeriesRow[]; view: 'chart' | 'table'; setView: (v: 'chart' | 'table') => void; register: RegisterFn }) {
   const ref = useRef<HTMLDivElement>(null)
+  const [who, setWho] = useState<'f' | 'i'>('f') // 외인 / 기관
   useEffect(() => {
     if (view !== 'chart' || !ref.current) return
     const chart = createChart(ref.current, { ...chartOpts, autoSize: true })
-    const add = (color: string, w: number, get: (r: SeriesRow) => number) => {
-      const s = chart.addLineSeries({ color, lineWidth: w as never, priceLineVisible: false, lastValueVisible: false })
-      s.setData(rows.map((r) => ({ time: t(r.d), value: get(r) })))
-      return s
+    const cum = rows.map((r) => (who === 'f' ? r.cum_f_eok : r.cum_i_eok))
+    // 선택 주체 누적선
+    const cumColor = who === 'f' ? C.accent : C.blue
+    const line = chart.addLineSeries({ color: cumColor, lineWidth: 2, priceLineVisible: false, lastValueVisible: false })
+    line.setData(rows.map((r, i) => ({ time: t(r.d), value: cum[i] })))
+    // 20·60일 이평
+    const ma20 = sma(cum, 20)
+    const ma60 = sma(cum, 60)
+    const addMa = (ma: (number | null)[], color: string) => {
+      const s = chart.addLineSeries({ color, lineWidth: 1, priceLineVisible: false, lastValueVisible: false })
+      s.setData(rows.map((r, i) => ({ time: t(r.d), value: ma[i] })).filter((x) => x.value != null) as never)
     }
-    add(C.accent, 2, (r) => r.cum_f_eok)
-    add(C.blue, 1, (r) => r.cum_i_eok)
-    add(C.retail, 1, (r) => r.cum_r_eok)
+    addMa(ma20, '#ffd60a') // 20일 (노랑)
+    addMa(ma60, '#a78bfa') // 60일 (보라)
+    // 골든/데드크로스 마커 (MA20 × MA60)
+    const markers: SeriesMarker<Time>[] = []
+    for (let i = 1; i < rows.length; i++) {
+      const a0 = ma20[i - 1]
+      const a1 = ma20[i]
+      const b0 = ma60[i - 1]
+      const b1 = ma60[i]
+      if (a0 == null || a1 == null || b0 == null || b1 == null) continue
+      const prev = a0 - b0
+      const cur = a1 - b1
+      if (prev <= 0 && cur > 0)
+        markers.push({ time: t(rows[i].d), position: 'belowBar', color: C.up, shape: 'arrowUp', text: 'G' })
+      else if (prev >= 0 && cur < 0)
+        markers.push({ time: t(rows[i].d), position: 'aboveBar', color: C.down, shape: 'arrowDown', text: 'D' })
+    }
+    line.setMarkers(markers)
     chart.timeScale().fitContent()
     const unreg = register(chart)
     return () => {
       unreg()
       chart.remove()
     }
-  }, [rows, view, register])
+  }, [rows, view, who, register])
   return (
     <ChartBox
-      title="③ 누적순매수 (억)"
+      title={`③ 누적순매수 (${who === 'f' ? '외인' : '기관'}, 억)`}
       legend={[
-        ['외인', C.accent],
-        ['기관', C.blue],
-        ['개인', C.retail],
+        [who === 'f' ? '외인 누적' : '기관 누적', who === 'f' ? C.accent : C.blue],
+        ['20일', '#ffd60a'],
+        ['60일', '#a78bfa'],
+        ['▲골든/▼데드', C.t3],
       ]}
+      seg={{
+        value: who,
+        onChange: (v) => setWho(v as 'f' | 'i'),
+        options: [
+          ['f', '외인'],
+          ['i', '기관'],
+        ],
+      }}
       view={view}
       setView={setView}
     >
@@ -439,27 +472,31 @@ function ChartBox({
             <span className="text-t3">{label}</span>
           </span>
         ))}
-        {seg && (
-          <div className="ml-auto flex overflow-hidden rounded-sm border border-bg-surface">
-            {seg.options.map(([val, label]) => (
-              <button
-                key={val}
-                onClick={() => seg.onChange(val)}
-                className={`px-2 py-0.5 ${seg.value === val ? 'bg-accent/20 text-accent' : 'text-t3'}`}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-        )}
-        {view && setView && (
-          <div className="ml-auto flex overflow-hidden rounded-sm border border-bg-surface">
-            <button onClick={() => setView('chart')} className={`px-2 py-0.5 ${view === 'chart' ? 'bg-accent/20 text-accent' : 'text-t3'}`}>
-              차트
-            </button>
-            <button onClick={() => setView('table')} className={`px-2 py-0.5 ${view === 'table' ? 'bg-accent/20 text-accent' : 'text-t3'}`}>
-              테이블
-            </button>
+        {(seg || (view && setView)) && (
+          <div className="ml-auto flex items-center gap-2">
+            {seg && (
+              <div className="flex overflow-hidden rounded-sm border border-bg-surface">
+                {seg.options.map(([val, label]) => (
+                  <button
+                    key={val}
+                    onClick={() => seg.onChange(val)}
+                    className={`px-2 py-0.5 ${seg.value === val ? 'bg-accent/20 text-accent' : 'text-t3'}`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            )}
+            {view && setView && (
+              <div className="flex overflow-hidden rounded-sm border border-bg-surface">
+                <button onClick={() => setView('chart')} className={`px-2 py-0.5 ${view === 'chart' ? 'bg-accent/20 text-accent' : 'text-t3'}`}>
+                  차트
+                </button>
+                <button onClick={() => setView('table')} className={`px-2 py-0.5 ${view === 'table' ? 'bg-accent/20 text-accent' : 'text-t3'}`}>
+                  테이블
+                </button>
+              </div>
+            )}
           </div>
         )}
       </div>
