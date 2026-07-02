@@ -316,6 +316,7 @@ _SERIES_SQL = text(
     SELECT it.time::text AS d,
            COALESCE(SUM(it.net_buy_value) FILTER (WHERE it.investor_type='FOREIGN'), 0)     AS f_net,
            COALESCE(SUM(it.net_buy_value) FILTER (WHERE it.investor_type='INSTITUTION'), 0) AS i_net,
+           COALESCE(SUM(it.net_buy_value) FILTER (WHERE it.investor_type='RETAIL'), 0)      AS r_net,
            MAX(o.adj_open)  AS adj_open,
            MAX(o.adj_high)  AS adj_high,
            MAX(o.adj_low)   AS adj_low,
@@ -342,17 +343,20 @@ async def series(code: str, as_of: str, days: int) -> list[dict]:
             {"code": code, "as_of": date.fromisoformat(as_of), "days": str(days)},
         )).all()
     eok = 100_000_000
-    cum_f = cum_i = 0.0
+    cum_f = cum_i = cum_r = 0.0
     out = []
     for r in rows:
         cum_f += float(r.f_net)
         cum_i += float(r.i_net)
+        cum_r += float(r.r_net)
         out.append({
             "d": r.d,
             "f_eok": round(float(r.f_net) / eok, 1),
             "i_eok": round(float(r.i_net) / eok, 1),
+            "r_eok": round(float(r.r_net) / eok, 1),
             "cum_f_eok": round(cum_f / eok, 1),
             "cum_i_eok": round(cum_i / eok, 1),
+            "cum_r_eok": round(cum_r / eok, 1),
             "o": float(r.adj_open) if r.adj_open is not None else None,
             "h": float(r.adj_high) if r.adj_high is not None else None,
             "l": float(r.adj_low) if r.adj_low is not None else None,
