@@ -198,23 +198,24 @@ function PriceChart({ rows }: { rows: SeriesRow[] }) {
     }
     addLine(sma(closes, 50), C.warning, 1)
     addLine(sma(closes, 100), C.blue, 1)
-    addLine(sma(closes, 200), C.retail, 1)
+    addLine(sma(closes, 200), C.t1, 1) // 200일 = 흰색
     addLine(vwma(closes, vols, 200), '#a78bfa', 2, LineStyle.Dotted) // VWMA200 (보라 점선)
     const avg = estimateAvgPrice(rows)
     if (avg != null)
-      s.createPriceLine({ price: avg, color: C.warning, lineStyle: LineStyle.Dashed, lineWidth: 1, axisLabelVisible: true, title: '외인 평단' })
+      s.createPriceLine({ price: avg, color: '#ffd60a', lineStyle: LineStyle.Dashed, lineWidth: 2, axisLabelVisible: true, title: '외인 평단' }) // 노랑 대시 (이평선과 구분)
     chart.timeScale().fitContent()
     return () => chart.remove()
   }, [rows])
   useResize(ref, chartRef)
   return (
     <ChartBox
-      title="① 주가 (수정주가) · 대시=외인평단"
+      title="① 주가 (수정주가)"
       legend={[
         ['50일', C.warning],
         ['100일', C.blue],
-        ['200일', C.retail],
+        ['200일', C.t1],
         ['VWMA200', '#a78bfa'],
+        ['외인평단', '#ffd60a'],
       ]}
     >
       <div ref={ref} className="h-[210px] w-full" />
