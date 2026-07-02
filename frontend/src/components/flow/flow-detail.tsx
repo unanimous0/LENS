@@ -223,8 +223,11 @@ function PriceChart({ rows, register }: { rows: SeriesRow[]; register: RegisterF
       )
     )
     // 주가 이동평균선 (50·100·200일, 수정종가) + VWMA 200(거래량 가중)
-    const closes = rows.map((r) => r.adj_close ?? NaN)
-    const vols = rows.map((r) => r.vol)
+    // 실제 거래일(adj_close 있는 날)만으로 계산 — null 날을 NaN으로 섞으면 러닝-합
+    // SMA가 그 지점 이후 영구 오염돼(3년 구간 거래정지 등) 이평선이 통째로 사라짐.
+    const priced = rows.filter((r) => r.adj_close != null)
+    const closes = priced.map((r) => r.adj_close as number)
+    const vols = priced.map((r) => r.vol)
     const addLine = (series: (number | null)[], color: string, w: number, style?: LineStyle) => {
       const line = chart.addLineSeries({
         color,
@@ -234,7 +237,7 @@ function PriceChart({ rows, register }: { rows: SeriesRow[]; register: RegisterF
         lastValueVisible: false,
       })
       line.setData(
-        rows
+        priced
           .map((r, i) => ({ time: t(r.d), value: series[i] }))
           .filter((x) => x.value != null && !Number.isNaN(x.value)) as never
       )
