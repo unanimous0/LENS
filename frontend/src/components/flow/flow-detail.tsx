@@ -203,6 +203,16 @@ function PriceChart({ rows }: { rows: SeriesRow[] }) {
       priceFormat: { type: 'price', precision: 0, minMove: 1 },
     })
     s.setData(priced.map((r) => ({ time: t(r.d), open: r.o!, high: r.h!, low: r.l!, close: r.adj_close! })))
+    // 주가 이동평균선 (5·20·60일, 수정종가 기준)
+    const closes = priced.map((r) => r.adj_close!)
+    const addMa = (n: number, color: string, w: number) => {
+      const ma = sma(closes, n)
+      const line = chart.addLineSeries({ color, lineWidth: w as never, priceLineVisible: false, lastValueVisible: false })
+      line.setData(priced.map((r, i) => ({ time: t(r.d), value: ma[i] })).filter((x) => x.value != null) as never)
+    }
+    addMa(5, C.warning, 1)
+    addMa(20, C.blue, 1)
+    addMa(60, C.retail, 1)
     const avg = estimateAvgPrice(rows)
     if (avg != null)
       s.createPriceLine({ price: avg, color: C.warning, lineStyle: LineStyle.Dashed, lineWidth: 1, axisLabelVisible: true, title: '외인 평단' })
@@ -214,7 +224,14 @@ function PriceChart({ rows }: { rows: SeriesRow[] }) {
   }, [rows])
   useResize(ref, chartRef)
   return (
-    <ChartBox title="① 주가 (수정주가)" legend={[['외인 평단', C.warning]]}>
+    <ChartBox
+      title="① 주가 (수정주가) · 점선=외인평단"
+      legend={[
+        ['5일', C.warning],
+        ['20일', C.blue],
+        ['60일', C.retail],
+      ]}
+    >
       <div ref={ref} className="h-[210px] w-full" />
     </ChartBox>
   )
