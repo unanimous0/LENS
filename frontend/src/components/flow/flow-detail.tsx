@@ -55,6 +55,70 @@ const chartOpts = {
 
 const t = (d: string) => d as never
 
+// ── 크로스헤어 호버 툴팁 (모든 차트 공통) ──────────────────────────────
+// lightweight-charts 시리즈엔 기본 툴팁이 없어 crosshair 위치의 날짜로 커스텀 카드를 그린다.
+type TipRow = { label: string; value: string; dot?: string; valueColor?: string; strong?: boolean }
+
+const timeKey = (tm: Time | undefined): string | null => {
+  if (tm == null) return null
+  if (typeof tm === 'string') return tm
+  if (typeof tm === 'number') return String(tm)
+  return `${tm.year}-${String(tm.month).padStart(2, '0')}-${String(tm.day).padStart(2, '0')}`
+}
+
+const eok = (v: number) => `${v >= 0 ? '+' : ''}${Math.round(v).toLocaleString()}억`
+const signColor = (v: number) => (v > 0 ? C.up : v < 0 ? C.down : C.t3)
+const won = (v: number) => Math.round(v).toLocaleString()
+
+/** 차트에 호버 툴팁을 붙인다. build(dateKey)가 null이면 그 지점은 숨김. 반환값은 cleanup. */
+function attachTooltip(
+  chart: IChartApi,
+  container: HTMLDivElement,
+  build: (dateKey: string) => { title: string; rows: TipRow[] } | null
+): () => void {
+  container.style.position = 'relative'
+  const tip = document.createElement('div')
+  tip.style.cssText =
+    'position:absolute;display:none;pointer-events:none;z-index:10;min-width:132px;padding:6px 8px;border-radius:4px;background:#1c1c1ef2;border:1px solid #3a3a3c;box-shadow:0 2px 10px #000a;font-size:11px;line-height:1.55'
+  container.appendChild(tip)
+  const onMove = (param: { time?: Time; point?: { x: number; y: number } }) => {
+    const key = timeKey(param.time)
+    const data = key ? build(key) : null
+    if (!data || !param.point) {
+      tip.style.display = 'none'
+      return
+    }
+    tip.innerHTML =
+      `<div style="color:#8e8e93;margin-bottom:4px;font-variant-numeric:tabular-nums">${data.title}</div>` +
+      data.rows
+        .map((r) => {
+          const dot = r.dot ? `<span style="width:8px;height:8px;border-radius:2px;background:${r.dot};flex:0 0 auto"></span>` : ''
+          const vc = r.valueColor ?? (r.strong ? (r.dot ?? '#fff') : '#fff')
+          return (
+            `<div style="display:flex;align-items:center;justify-content:space-between;gap:12px">` +
+            `<span style="display:flex;align-items:center;gap:5px;color:#8e8e93">${dot}${r.label}</span>` +
+            `<span style="color:${vc};font-weight:${r.strong ? 600 : 400};font-variant-numeric:tabular-nums">${r.value}</span>` +
+            `</div>`
+          )
+        })
+        .join('')
+    tip.style.display = 'block'
+    const cw = container.clientWidth
+    const ch = container.clientHeight
+    let left = param.point.x + 14
+    let top = param.point.y + 14
+    if (left + tip.offsetWidth > cw) left = param.point.x - tip.offsetWidth - 14
+    if (top + tip.offsetHeight > ch) top = ch - tip.offsetHeight - 4
+    tip.style.left = `${Math.max(4, left)}px`
+    tip.style.top = `${Math.max(4, top)}px`
+  }
+  chart.subscribeCrosshairMove(onMove)
+  return () => {
+    chart.unsubscribeCrosshairMove(onMove)
+    tip.remove()
+  }
+}
+
 /** 외인 평단 추정: 누적 순매수 저점 이후 매집 구간 Σ금액 ÷ Σ(금액/종가). */
 function estimateAvgPrice(rows: SeriesRow[]): number | null {
   let minIdx = 0
@@ -252,10 +316,34 @@ function PriceChart({ rows, register }: { rows: SeriesRow[]; register: RegisterF
     if (avg != null)
       // 회색 얇은 대시. title은 비워 차트 위 텍스트 태그 제거 (축 가격값만 표시). 범례로 식별.
       s.createPriceLine({ price: avg, color: C.t3, lineStyle: LineStyle.Dashed, lineWidth: 1, axisLabelVisible: true, title: '' })
+    // 호버 툴팁 — 날짜·시고저종·등락
+    const priceMap = new Map<string, { o: number; h: number; l: number; c: number; chg: number }>()
+    let pc: number | null = null
+    for (const r of rows) {
+      if (r.o == null || r.h == null || r.l == null || r.adj_close == null) continue
+      priceMap.set(r.d, { o: r.o, h: r.h, l: r.l, c: r.adj_close, chg: pc ? (r.adj_close / pc - 1) * 100 : 0 })
+      pc = r.adj_close
+    }
+    const cleanupTip = attachTooltip(chart, ref.current, (key) => {
+      const p = priceMap.get(key)
+      if (!p) return null
+      const col = p.chg >= 0 ? C.candleUp : C.candleDown
+      return {
+        title: key,
+        rows: [
+          { label: '시가', value: won(p.o) },
+          { label: '고가', value: won(p.h) },
+          { label: '저가', value: won(p.l) },
+          { label: '종가', value: won(p.c), valueColor: col, strong: true },
+          { label: '등락', value: `${p.chg >= 0 ? '+' : ''}${p.chg.toFixed(2)}%`, valueColor: col },
+        ],
+      }
+    })
     chart.timeScale().fitContent()
     const unreg = register(chart)
     return () => {
       unreg()
+      cleanupTip()
       chart.remove()
     }
   }, [rows, register])
@@ -293,17 +381,30 @@ function MomentumChart({ rows, register }: { rows: SeriesRow[]; register: Regist
     // 순매수 단기 이동평균 5·20일 = "최근 매수 강도" (일별은 0중심 진동이라 장기 MA는
     // 평평 → 무의미. 추세·골든/데드크로스는 누적 차트 ③에서 다룸)
     const vals = rows.map(pick)
-    const addMa = (n: number, color: string) => {
-      const ma = sma(vals, n)
+    const ma5 = sma(vals, 5)
+    const ma20 = sma(vals, 20)
+    const addMa = (ma: (number | null)[], color: string) => {
       const line = chart.addLineSeries({ color, lineWidth: 1, priceLineVisible: false, lastValueVisible: false })
       line.setData(rows.map((r, i) => ({ time: t(r.d), value: ma[i] })).filter((x) => x.value != null) as never)
     }
-    addMa(5, C.warning)
-    addMa(20, C.blue)
+    addMa(ma5, C.warning)
+    addMa(ma20, C.blue)
+    // 호버 툴팁 — 선택 주체 순매수·5·20일선
+    const idxByDate = new Map<string, number>(rows.map((r, i) => [r.d, i]))
+    const label = who === 'f' ? '외인 순매수' : '기관 순매수'
+    const cleanupTip = attachTooltip(chart, ref.current, (key) => {
+      const i = idxByDate.get(key)
+      if (i == null) return null
+      const out: TipRow[] = [{ label, value: eok(vals[i]), valueColor: signColor(vals[i]), strong: true }]
+      if (ma5[i] != null) out.push({ label: '5일선', value: eok(ma5[i] as number), dot: C.warning, valueColor: C.warning })
+      if (ma20[i] != null) out.push({ label: '20일선', value: eok(ma20[i] as number), dot: C.blue, valueColor: C.blue })
+      return { title: key, rows: out }
+    })
     chart.timeScale().fitContent()
     const unreg = register(chart)
     return () => {
       unreg()
+      cleanupTip()
       chart.remove()
     }
   }, [rows, who, register])
@@ -344,10 +445,25 @@ function NetFlowPanel({ rows, view, setView, register }: { rows: SeriesRow[]; vi
     add(C.accent, 2, (r) => r.f_eok)
     add(C.blue, 1, (r) => r.i_eok)
     add(C.retail, 1, (r) => r.r_eok)
+    // 호버 툴팁 — 외/기/개 일별 순매수
+    const byDate = new Map<string, SeriesRow>(rows.map((r) => [r.d, r]))
+    const cleanupTip = attachTooltip(chart, ref.current, (key) => {
+      const r = byDate.get(key)
+      if (!r) return null
+      return {
+        title: key,
+        rows: [
+          { label: '외인', value: eok(r.f_eok), dot: C.accent, valueColor: signColor(r.f_eok) },
+          { label: '기관', value: eok(r.i_eok), dot: C.blue, valueColor: signColor(r.i_eok) },
+          { label: '개인', value: eok(r.r_eok), dot: C.retail, valueColor: signColor(r.r_eok) },
+        ],
+      }
+    })
     chart.timeScale().fitContent()
     const unreg = register(chart)
     return () => {
       unreg()
+      cleanupTip()
       chart.remove()
     }
   }, [rows, view, register])
@@ -415,49 +531,25 @@ function CumFlowPanel({ rows, view, setView, register }: { rows: SeriesRow[]; vi
     }
     line.setMarkers(markers)
 
-    // 크로스 마커 호버 툴팁 — 커서가 크로스 날짜에 오면 날짜·종류·누적값 표시
-    const container = ref.current
-    container.style.position = 'relative'
-    const tip = document.createElement('div')
-    tip.style.cssText =
-      'position:absolute;display:none;pointer-events:none;z-index:10;padding:4px 7px;font-size:11px;line-height:1.4;border-radius:3px;background:#1c1c1eee;border:1px solid #3a3a3c;white-space:nowrap'
-    container.appendChild(tip)
-    const timeKey = (tm: Time | undefined): string | null => {
-      if (tm == null) return null
-      if (typeof tm === 'string') return tm
-      if (typeof tm === 'number') return String(tm)
-      return `${tm.year}-${String(tm.month).padStart(2, '0')}-${String(tm.day).padStart(2, '0')}`
-    }
-    const onMove = (param: { time?: Time; point?: { x: number; y: number } }) => {
-      const key = timeKey(param.time)
-      const hit = key ? crossMap.get(key) : undefined
-      if (!hit || !param.point) {
-        tip.style.display = 'none'
-        return
-      }
-      const v = Math.round(hit.value)
-      tip.innerHTML =
-        `<div style="color:#8e8e93">${key}</div>` +
-        `<div style="color:${hit.color};font-weight:600">${hit.kind}</div>` +
-        `<div style="color:#fff">누적 ${v >= 0 ? '+' : ''}${v.toLocaleString()}억</div>`
-      tip.style.display = 'block'
-      const cw = container.clientWidth
-      const ch = container.clientHeight
-      let left = param.point.x + 12
-      let top = param.point.y + 12
-      if (left + tip.offsetWidth > cw) left = param.point.x - tip.offsetWidth - 12
-      if (top + tip.offsetHeight > ch) top = ch - tip.offsetHeight - 4
-      tip.style.left = `${Math.max(4, left)}px`
-      tip.style.top = `${Math.max(4, top)}px`
-    }
-    chart.subscribeCrosshairMove(onMove)
+    // 호버 툴팁 — 누적(선택 주체)·20·60일선 + 크로스일이면 종류 강조
+    const idxByDate = new Map<string, number>(rows.map((r, i) => [r.d, i]))
+    const invLabel = who === 'f' ? '외인 누적' : '기관 누적'
+    const cleanupTip = attachTooltip(chart, ref.current, (key) => {
+      const i = idxByDate.get(key)
+      if (i == null) return null
+      const out: TipRow[] = [{ label: invLabel, value: eok(cum[i]), dot: cumColor, valueColor: cumColor, strong: true }]
+      if (ma20[i] != null) out.push({ label: '20일', value: eok(ma20[i] as number), dot: '#ffd60a', valueColor: '#ffd60a' })
+      if (ma60[i] != null) out.push({ label: '60일', value: eok(ma60[i] as number), dot: '#a78bfa', valueColor: '#a78bfa' })
+      const cx = crossMap.get(key)
+      if (cx) out.push({ label: '신호', value: cx.kind === '골든크로스' ? '▲ 골든크로스' : '▼ 데드크로스', valueColor: cx.color, strong: true })
+      return { title: key, rows: out }
+    })
 
     chart.timeScale().fitContent()
     const unreg = register(chart)
     return () => {
       unreg()
-      chart.unsubscribeCrosshairMove(onMove)
-      tip.remove()
+      cleanupTip()
       chart.remove()
     }
   }, [rows, view, who, register])
