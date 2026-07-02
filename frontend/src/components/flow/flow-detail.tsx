@@ -50,46 +50,6 @@ const chartOpts = {
 
 const t = (d: string) => d as never
 
-/** 이벤트 날짜 (하드코딩 캘린더): 선물 만기(둘째 목), MSCI 리밸(2·5·8·11월 근사). */
-function eventMarkers(rows: SeriesRow[]): { time: string; color: string; text: string }[] {
-  if (rows.length === 0) return []
-  const first = rows[0].d
-  const last = rows[rows.length - 1].d
-  const dates = new Set(rows.map((r) => r.d))
-  const out: { time: string; color: string; text: string }[] = []
-  for (let y = Number(first.slice(0, 4)); y <= Number(last.slice(0, 4)); y++) {
-    for (let m = 0; m < 12; m++) {
-      const first1 = new Date(Date.UTC(y, m, 1))
-      const secondThu = 1 + ((4 - first1.getUTCDay() + 7) % 7) + 7
-      const exp = `${y}-${String(m + 1).padStart(2, '0')}-${String(secondThu).padStart(2, '0')}`
-      if (exp >= first && exp <= last) {
-        const near = nearestTradingDay(exp, dates)
-        if (near) out.push({ time: near, color: C.t3, text: '만기' })
-      }
-      if ([1, 4, 7, 10].includes(m)) {
-        const msci = `${y}-${String(m + 1).padStart(2, '0')}-25`
-        if (msci >= first && msci <= last) {
-          const near = nearestTradingDay(msci, dates)
-          if (near) out.push({ time: near, color: C.blue, text: 'MSCI' })
-        }
-      }
-    }
-  }
-  return out
-}
-
-function nearestTradingDay(target: string, dates: Set<string>): string | null {
-  if (dates.has(target)) return target
-  const tm = new Date(target + 'T00:00:00Z').getTime()
-  for (let d = 1; d <= 3; d++) {
-    for (const sign of [-1, 1]) {
-      const cand = new Date(tm + sign * d * 86_400_000).toISOString().slice(0, 10)
-      if (dates.has(cand)) return cand
-    }
-  }
-  return null
-}
-
 /** 외인 평단 추정: 누적 순매수 저점 이후 매집 구간 Σ금액 ÷ Σ(금액/종가). */
 function estimateAvgPrice(rows: SeriesRow[]): number | null {
   let minIdx = 0
@@ -243,9 +203,6 @@ function PriceChart({ rows }: { rows: SeriesRow[] }) {
     const avg = estimateAvgPrice(rows)
     if (avg != null)
       s.createPriceLine({ price: avg, color: C.warning, lineStyle: LineStyle.Dashed, lineWidth: 1, axisLabelVisible: true, title: '외인 평단' })
-    const markers = eventMarkers(rows)
-    if (markers.length)
-      s.setMarkers(markers.map((m) => ({ time: t(m.time), position: 'aboveBar' as const, color: m.color, shape: 'circle' as const, text: m.text })))
     chart.timeScale().fitContent()
     return () => chart.remove()
   }, [rows])
