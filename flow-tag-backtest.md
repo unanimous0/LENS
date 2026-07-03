@@ -68,3 +68,14 @@ AI 요약이 "외인·기관 최근 순매도" 종목(예: 현대건설)에 붙�
 - 진입권·동시·분배·단기반등은 이미 필드·뱃지 존재 → 백테스트가 알파 확인만.
 - ❌ **`저점재매집`은 매수 태그로 만들지 않음** (반려). 경고로 넣으려면 랭킹 SQL에 200일선 필요(현 px CTE 130일 → 확장 비용) — 보류.
 - 가드레일 준수: 행 숨김 없는 뱃지 + 툴팁 근거, 정렬키 외인 20D 단일 유지, 동시표시 절제(동시↔추세순항 승격으로 개수 불변).
+
+## 주기 갱신 자동화 (2026-07-03)
+
+검증 결과를 코드 상수 대신 **JSON 파일로 저장 → 주기 재실행 → flow_ai가 소비**하도록 자동화:
+
+- **저장:** `flow_tag_backtest.py --save data/flow_backtest.json` — `_canonical_masks`(런타임 `_assess`와 **정확히 동일한** 조건)의 h60 초과수익·t·방향을 측정해 JSON 기록. `{generated_at, universe_n, patterns:{name:{h60_excess_pct,t,direction}}}`.
+- **소비:** `flow_ai._load_edges()` — JSON(mtime 캐시) 우선, 없으면 하드코딩 기본값 폴백. `_assess`는 **|t|≥2(유의) 패턴만** 주입(노이즈 방지). 요약에 `검증 기준일` 표기.
+- **갱신:** `main.py` startup 핸들러 `_refresh_flow_backtest_if_stale` — JSON이 없거나 30일 초과면 **백그라운드 subprocess**로 재실행(무거운 pandas라 이벤트 루프 격리, lock으로 중복 방지). 실패해도 기본값 degrade. Finance_Data read-only.
+- `data/`는 gitignore → JSON은 커밋 안 됨(각 배포가 자체 생성). 첫 배포는 기본값으로 시작 후 startup이 채움.
+
+**부수 교정:** 조건 일치 과정에서 `하락추세 매집`(런타임: f20>0·f120>0·ret20<0, 200MA 없음)의 실제 edge가 **+0.65%(t1.62, 유의성 미달)**로 측정됨 — 앞서 붙였던 −5.19%는 더 엄격한 저점재매집(200MA<가·흡수↑) 수치의 오귀속이었음. |t|≥2 필터로 자동 제외되어 요약에서 사라짐.

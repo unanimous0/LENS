@@ -11,6 +11,7 @@
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 from pathlib import Path
@@ -125,19 +126,40 @@ def _last_cross(rows: list[dict]) -> dict | None:
     return last
 
 
-# 백테스트(flow-tag-backtest.md) 검증 결과 — 패턴별 보유 60일 평균 초과수익(%).
-# LLM이 판단 근거로 쓰도록 사실로 주입. 이 숫자는 코드가 측정한 결정론적 값(창작 아님).
-_BACKTEST_H60 = {
-    "정석(동시+진입권)": (3.49, "강세"),
-    "진입권": (2.84, "강세"),
-    "매집주 눌림": (2.01, "강세"),  # 장기매집주가 최근 이탈(눌림) — 반직관적 강세
-    "추세순항": (1.52, "강세"),
-    "동시": (0.89, "강세"),
-    "하락추세 매집": (-5.19, "약세"),  # 반려된 '저점재매집' = 떨어지는 칼
-    "동반순매도": (-2.35, "약세"),  # 장기매집 없는 외·기 동반 이탈
-    "분배": (-1.61, "약세"),
-    "단기반등": (-1.08, "약세"),
+# 백테스트 검증 결과 — 패턴별 보유 60일 평균 초과수익. LLM 판단 근거로 주입(측정된 결정론적 값).
+# 주기 갱신: scripts/flow_tag_backtest.py --save가 data/flow_backtest.json 생성 → 아래 기본값 대체.
+# 기본값은 JSON 없을 때(첫 배포)의 폴백. 유의성(|t|≥2)인 패턴만 (하락추세 매집은 런타임 조건상 미달로 제외).
+_BACKTEST_PATH = _ROOT_ENV.parent / "data" / "flow_backtest.json"
+_BACKTEST_DEFAULT = {
+    "정석(동시+진입권)": {"edge": 3.49, "t": 5.16, "direction": "강세"},
+    "진입권": {"edge": 2.84, "t": 6.22, "direction": "강세"},
+    "매집주 눌림": {"edge": 2.01, "t": 4.81, "direction": "강세"},
+    "추세순항": {"edge": 1.52, "t": 3.42, "direction": "강세"},
+    "동시": {"edge": 0.89, "t": 3.01, "direction": "강세"},
+    "동반순매도": {"edge": -2.35, "t": -6.74, "direction": "약세"},
+    "분배": {"edge": -1.61, "t": -2.65, "direction": "약세"},
+    "단기반등": {"edge": -1.08, "t": -3.24, "direction": "약세"},
 }
+_edges_cache: dict = {"mtime": None, "edges": None, "as_of": None}
+
+
+def _load_edges() -> tuple[dict, str | None]:
+    """data/flow_backtest.json(주기 갱신본)을 읽어 패턴 edge 반환. 없으면 하드코딩 기본값.
+    반환: ({name: {edge, t, direction}}, 검증기준일 or None). mtime 캐시."""
+    try:
+        if _BACKTEST_PATH.exists():
+            mt = _BACKTEST_PATH.stat().st_mtime
+            if _edges_cache["mtime"] != mt:
+                data = json.loads(_BACKTEST_PATH.read_text(encoding="utf-8"))
+                edges = {
+                    name: {"edge": v["h60_excess_pct"], "t": v["t"], "direction": v["direction"]}
+                    for name, v in (data.get("patterns") or {}).items()
+                }
+                _edges_cache.update(mtime=mt, edges=edges, as_of=data.get("generated_at"))
+            return _edges_cache["edges"], _edges_cache["as_of"]
+    except Exception:  # noqa: BLE001 — 손상/부재 시 기본값으로 degrade
+        pass
+    return _BACKTEST_DEFAULT, None
 
 
 def _assess(row: dict) -> dict:
@@ -148,11 +170,14 @@ def _assess(row: dict) -> dict:
     f120 = row.get("f_120d_bp") or 0
     i20 = row.get("i_20d_bp") or 0
     ret20 = row.get("ret_20d_pct")
+    edges, as_of = _load_edges()
     sig: list[dict] = []
 
     def add(name: str) -> None:
-        edge, direction = _BACKTEST_H60[name]
-        sig.append({"패턴": name, "검증_60일_평균초과수익_pct": edge, "방향": direction})
+        e = edges.get(name)
+        if not e or abs(e["t"]) < 2.0:  # 미검증·유의성 미달 패턴은 주입 안 함(노이즈 방지)
+            return
+        sig.append({"패턴": name, "검증_60일_평균초과수익_pct": e["edge"], "방향": e["direction"]})
 
     # 매수 아키타입 — 가장 잘 맞는 것 하나 (중복 표시 방지)
     if entry and both:
@@ -168,20 +193,20 @@ def _assess(row: dict) -> dict:
         add("매집주 눌림")
     # 경고 신호 — 여러 개 동시 가능 (매수 아키타입과 상충 가능)
     if f20 > 0 and f120 > 0 and ret20 is not None and ret20 < 0:
-        add("하락추세 매집")
+        add("하락추세 매집")  # 런타임 조건상 대개 유의성 미달 → add()가 걸러냄
     if f20 < 0 and i20 < 0 and f120 <= 0:  # 장기매집 없는 순수 동반 이탈
         add("동반순매도")
     if row.get("is_distribution"):
         add("분배")
     if row.get("short_bounce"):
         add("단기반등")
-    return {
-        "applicable_signals": sig,
-        "note": (
-            "각 패턴의 검증 초과수익은 독립 측정치(보유 60일, 유니버스 평균 대비, look-ahead 차단)이며 "
-            "합산 불가·상충 가능. 정렬축(외인 20D 매집)은 Rank IC 유의(+). 개별 종목이 아닌 패턴 평균."
-        ),
-    }
+    note = (
+        "각 패턴의 검증 초과수익은 독립 측정치(보유 60일, 유니버스 평균 대비, look-ahead 차단)이며 "
+        "합산 불가·상충 가능. 정렬축(외인 20D 매집)은 Rank IC 유의(+). 개별 종목이 아닌 패턴 평균."
+    )
+    if as_of:
+        note += f" 검증 기준일 {as_of}."
+    return {"applicable_signals": sig, "note": note}
 
 
 async def _collect_facts(code: str, as_of: str) -> dict | None:

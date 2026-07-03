@@ -68,6 +68,41 @@ async def _warmup_flow_ranking() -> None:
 
 
 @app.on_event("startup")
+async def _refresh_flow_backtest_if_stale() -> None:
+    """수급 태그 검증(백테스트) 결과 주기 갱신 — data/flow_backtest.json이 없거나 30일 초과 시
+    백그라운드 subprocess로 재실행. 무거운 pandas 작업이라 이벤트 루프를 막지 않게 격리 실행.
+    실패해도 flow_ai는 하드코딩 기본값으로 degrade. Finance_Data read-only(SELECT만)."""
+    import os
+    import subprocess
+    import sys
+    import time
+    from pathlib import Path
+
+    try:
+        repo = Path(__file__).resolve().parents[1]
+        out = repo / "data" / "flow_backtest.json"
+        lock = repo / "data" / ".flow_backtest.running"
+        now = time.time()
+        fresh = out.exists() and (now - out.stat().st_mtime) < 30 * 86400
+        running = lock.exists() and (now - lock.stat().st_mtime) < 1200  # 20분 내 실행 중이면 스킵
+        if fresh or running:
+            return
+        out.parent.mkdir(parents=True, exist_ok=True)
+        lock.write_text(str(now))
+        env = {**os.environ, "PYTHONPATH": str(repo / "backend")}
+        subprocess.Popen(
+            [sys.executable, str(repo / "backend" / "scripts" / "flow_tag_backtest.py"), "--save", str(out)],
+            cwd=str(repo / "backend"),
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        logger.info("flow backtest refresh spawned (missing/stale)")
+    except Exception as e:  # noqa: BLE001
+        logger.warning("flow backtest refresh skipped: %s", e)
+
+
+@app.on_event("startup")
 async def _sync_permanent_subs_on_startup() -> None:
     """LENS 시작 시 LP 매트릭스 타겟 + active 포지션 leg를 realtime 영구 sub로 동기화.
 

@@ -21,6 +21,9 @@ Finance_Data는 read-only(SELECT만).
 from __future__ import annotations
 
 import asyncio
+import json
+import os
+import sys
 from datetime import date, timedelta
 
 import numpy as np
@@ -192,6 +195,71 @@ def _evaluate(df: pd.DataFrame) -> None:
             print(f"{tag:<18} {ex:>9.2f} {t:>7.2f} {hit:>7.1f} {cnt:>11.1f} {nd:>7}{flag}")
 
 
+# flow_ai `_assess`와 **정확히 동일한** 런타임 조건 — 저장 수치가 실제 적용 조건의 edge가 되도록.
+def _canonical_masks(df: pd.DataFrame) -> dict:
+    mc = df["mcap"].replace(0, np.nan)
+    f20mc = df["f20"] / mc
+    f5mc = df["f5"] / mc
+    both = (df["f20"] > 0) & (df["i20"] > 0)
+    entry_ok = (f20mc >= 0.0015) & (df["f5"] >= 0.3 * df["adv20"])
+    return {
+        "정석(동시+진입권)": both & entry_ok,
+        "진입권": entry_ok & (df["f20"] > 0),
+        "추세순항": both & (df["ret20"] > 0),
+        "동시": both,
+        "매집주 눌림": (df["f120"] > 0) & (df["f20"] < 0),
+        "하락추세 매집": (df["f20"] > 0) & (df["f120"] > 0) & (df["ret20"] < 0),
+        "동반순매도": (df["f20"] < 0) & (df["i20"] < 0) & (df["f120"] <= 0),
+        "분배": (f5mc <= -0.001) & (df["ret5"] >= -0.02) & (df["r5"] > 0),
+        "단기반등": (df["f20"] > 0) & (df["f120"] < 0),
+    }
+
+
+def save_results(path: str, df: pd.DataFrame, h: int = 60) -> None:
+    """canonical 패턴의 h일 초과수익을 측정해 JSON 저장 (flow_ai가 소비)."""
+    masks = _canonical_masks(df)
+    for name, m in masks.items():
+        df[f"__c::{name}"] = m
+    df["uni"] = (df["adv20"] >= ADV_MIN) & (df["mcap"] >= MCAP_MIN) & df["entry"].notna() & df["sig"].notna()
+    times = np.sort(df["time"].unique())
+    rebal = set(times[::REBAL_EVERY])
+    d = df[df["uni"] & df["time"].isin(rebal)].copy()
+
+    patterns: dict = {}
+    for name in masks:
+        col = f"__c::{name}"
+        spreads = []
+        for _, grp in d.groupby("time"):
+            u = grp[grp[f"fwd{h}"].notna()]
+            if len(u) < 20:
+                continue
+            tg = u[u[col]]
+            if len(tg) == 0:
+                continue
+            spreads.append(tg[f"fwd{h}"].mean() - u[f"fwd{h}"].mean())
+        if len(spreads) < 5:
+            continue
+        sp = np.array(spreads)
+        ex = round(float(sp.mean()) * 100, 2)
+        tval = round(float(sp.mean() / (sp.std(ddof=1) / np.sqrt(len(sp)))), 2)
+        patterns[name] = {
+            "h60_excess_pct": ex,
+            "t": tval,
+            "direction": "강세" if ex > 0 else "약세",
+            "n_dates": len(sp),
+        }
+    out = {
+        "generated_at": date.today().isoformat(),
+        "universe_n": int(df["stock"].nunique()),
+        "horizon_days": h,
+        "patterns": patterns,
+    }
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fp:
+        json.dump(out, fp, ensure_ascii=False, indent=2)
+    print(f"\n[saved] {path} — {len(patterns)}개 패턴 (기준일 {out['generated_at']})")
+
+
 async def main() -> None:
     it_df, ohlcv_df, mc_df = await _fetch()
     print(f"패널 rows — 수급 {len(it_df):,} / 시세 {len(ohlcv_df):,} / 시총 {len(mc_df):,}")
@@ -200,6 +268,11 @@ async def main() -> None:
     _evaluate(df)
     print("\n주: 초과수익 = 그날 유니버스 평균 대비. t>2 = 통계적으로 유의(✅). "
           "중첩·다중검정 감안해 t>2도 보수적으로 해석. 진입권은 연속일 대신 5D/ADV 근사.")
+    # --save PATH → flow_ai가 읽을 검증 결과 JSON 저장 (주기 갱신 자동화)
+    if "--save" in sys.argv:
+        i = sys.argv.index("--save")
+        path = sys.argv[i + 1] if i + 1 < len(sys.argv) else "data/flow_backtest.json"
+        save_results(path, df)
 
 
 if __name__ == "__main__":
