@@ -135,6 +135,9 @@ def _signals_tags(df: pd.DataFrame) -> pd.DataFrame:
     df["T_저점재매집"] = (df["f20"] > 0) & (df["f120"] > 0) & (df["adj_close"] < df["ma200"]) & (absorb >= 0.10)
     df["T_추세순항"] = both & (df["ret20"] > 0)
     df["T_동시함정"] = both & (df["i5"] < 0)
+    # 매도·이탈 후보
+    df["T_매집후이탈"] = (df["f120"] > 0) & (df["f20"] < 0)                  # 장기매집+ 최근 외인 이탈 → 검증상 강세(눌림)
+    df["T_동반순매도"] = (df["f20"] < 0) & (df["i20"] < 0) & (df["f120"] <= 0)  # 장기매집 없는 순수 동반 이탈 → 약세
     return df
 
 

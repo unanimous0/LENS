@@ -130,9 +130,11 @@ def _last_cross(rows: list[dict]) -> dict | None:
 _BACKTEST_H60 = {
     "정석(동시+진입권)": (3.49, "강세"),
     "진입권": (2.84, "강세"),
+    "매집주 눌림": (2.01, "강세"),  # 장기매집주가 최근 이탈(눌림) — 반직관적 강세
     "추세순항": (1.52, "강세"),
     "동시": (0.89, "강세"),
     "하락추세 매집": (-5.19, "약세"),  # 반려된 '저점재매집' = 떨어지는 칼
+    "동반순매도": (-2.35, "약세"),  # 장기매집 없는 외·기 동반 이탈
     "분배": (-1.61, "약세"),
     "단기반등": (-1.08, "약세"),
 }
@@ -144,6 +146,7 @@ def _assess(row: dict) -> dict:
     entry = bool(row.get("entry_ok"))
     f20 = row.get("f_20d_bp") or 0
     f120 = row.get("f_120d_bp") or 0
+    i20 = row.get("i_20d_bp") or 0
     ret20 = row.get("ret_20d_pct")
     sig: list[dict] = []
 
@@ -160,9 +163,14 @@ def _assess(row: dict) -> dict:
         add("추세순항")
     elif both:
         add("동시")
+    # 장기매집 후 최근 외인 이탈 — 검증상 강세(눌림). f20<0라 위 매수 아키타입과 배타적.
+    if f120 > 0 and f20 < 0:
+        add("매집주 눌림")
     # 경고 신호 — 여러 개 동시 가능 (매수 아키타입과 상충 가능)
     if f20 > 0 and f120 > 0 and ret20 is not None and ret20 < 0:
         add("하락추세 매집")
+    if f20 < 0 and i20 < 0 and f120 <= 0:  # 장기매집 없는 순수 동반 이탈
+        add("동반순매도")
     if row.get("is_distribution"):
         add("분배")
     if row.get("short_bounce"):
