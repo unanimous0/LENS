@@ -40,6 +40,7 @@ type FlowRow = {
   ret_5d_pct: number | null
   r_5d_eok: number
   both_20d: boolean
+  trend_ride: boolean
   entry_ok: boolean
   exit_ok: boolean
   is_distribution: boolean
@@ -166,6 +167,7 @@ export function StockFlowPage() {
       entry: rows.filter((r) => r.entry_ok).length,
       exit: rows.filter((r) => r.exit_ok).length,
       both: rows.filter((r) => r.both_20d).length,
+      trend: rows.filter((r) => r.trend_ride).length,
       dist: rows.filter((r) => r.is_distribution).length,
     }
   }, [data])
@@ -263,6 +265,9 @@ export function StockFlowPage() {
           </span>
           <span>
             외인·기관 동시매수 <span className="font-semibold text-accent">{summary.both}</span>
+          </span>
+          <span>
+            추세순항 <span className="font-semibold text-accent">{summary.trend}</span>
           </span>
           <span>
             분배 의심 <span className="font-semibold text-warning">{summary.dist}</span>
@@ -419,14 +424,21 @@ export function StockFlowPage() {
                         {r.is_new && (
                           <span className="rounded-sm bg-blue/20 px-1 text-[10px] text-blue">NEW</span>
                         )}
-                        {r.both_20d && (
+                        {r.trend_ride ? (
+                          <span
+                            className="rounded-sm bg-accent/25 px-1 text-[10px] font-medium text-accent"
+                            title="추세순항: 외인·기관 20D 동시 순매수 + 20D 주가 상승 — 상승추세 동반 매집 (백테스트 검증: h60 +1.5%, t3.4). 하락추세 매집(반려)과 반대"
+                          >
+                            추세순항
+                          </span>
+                        ) : r.both_20d ? (
                           <span
                             className="rounded-sm bg-accent/15 px-1 text-[10px] text-accent"
                             title="외인·기관 20D 동시 순매수"
                           >
                             동시
                           </span>
-                        )}
+                        ) : null}
                         {direction === 'buy' && r.entry_ok && (
                           <span
                             className="rounded-sm bg-warning/15 px-1 text-[10px] text-warning"

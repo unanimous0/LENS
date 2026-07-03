@@ -268,6 +268,13 @@ def _row_to_metrics(r) -> dict | None:
         "adv_20d_eok": round(adv_20d / eok, 1),
         # 뱃지 원료
         "both_20d": float(r.f_20d) > 0 and float(r.i_20d) > 0,
+        # 추세순항: 외+기 20D 동시 순매수 AND 20D 주가 상승 — "상승 추세 동반 매집".
+        # 백테스트 검증 통과(flow-tag-backtest.md: h60 +1.52%, t3.4). 하락추세 매집(반려된
+        # '저점재매집')의 반대 — 추세를 등에 업은 동시매수라 평균 초과수익 유의.
+        "trend_ride": (
+            float(r.f_20d) > 0 and float(r.i_20d) > 0
+            and adj_now is not None and adj_prev is not None and adj_now > adj_prev
+        ),
         # 단기반등: 20일 순매수 상위지만 120일(장기)은 순매도 — "장기 분산+단기 반등".
         # 장투 관점 경고 (정렬은 20일 유지, 이건 맥락 뱃지). 리노공업 사례.
         "short_bounce": float(r.f_20d) > 0 and float(r.f_120d) < 0,
