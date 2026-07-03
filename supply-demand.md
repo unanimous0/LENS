@@ -66,5 +66,5 @@
   - **"장기 정합만" 필터 기본 ON**.
 - **v2 (백테스트 입증 조건부)**: z-score·EWMA·섹터중립·초과수급. 배당락 마커. (아래 백테스트 계획 참조)
   - **[flow-tag-backtest.md](flow-tag-backtest.md)** — 태그 검증 게이트 1차 실행(2026-07-03). 정렬축(외인 20D) Rank IC 유의(+). 채택=진입권·정석(동시+진입권)·동시·추세순항. **반려=저점재매집(강한 언더퍼폼 — "떨어지는 칼" 실증)**. 스크립트 `backend/scripts/flow_tag_backtest.py`.
-  - **AI 수급 요약 버튼(프로토타입)**: `backend/services/flow_ai.py` + `/api/flow/ai-summary/{code}`. 사실(숫자)은 코드가 계산·LLM은 해석만(금지어 필터·면책·데이터버전 캐시). 외부망+`ANTHROPIC_API_KEY` 필요, 없으면 graceful degrade. 내부망은 비활성.
+  - **AI 수급 요약 버튼**: `backend/services/flow_ai.py` + `/api/flow/ai-summary/{code}`. 외부망 라이브 검증 완료(claude-sonnet-5). 사실(숫자)은 코드가 계산·LLM은 종합 판단만. **핵심: 백테스트 판정(`_assess`: 패턴별 검증 초과수익 ±%)을 사실로 주입** → 단순 나열이 아니라 **강세/약세 요인 분리 + 상충 지적**(예: 정석 +3.49% vs 하락추세매집 −5.19%). LLM 입력은 한국어 라벨 렌더(영문 키 누수 차단). 가드레일: 매매 지시어 금지(프롬프트+후처리 필터)·면책 문구·데이터버전 캐시. `ANTHROPIC_API_KEY` 없으면 graceful degrade(내부망 비활성). 키는 루트 `.env` 직접 폴백 조회.
 - **v2 (백테스트 입증 조건부)**: z-score·EWMA·섹터중립·초과수급. 백테스트 = LP_MM 골격 이식 + T+1 시가 + Rank IC(h=5/20/60/**120**) + 모멘텀 통제 + holdout 1회 개봉. 장기보유 니즈는 창 확대가 아니라 h=120 측정으로 판단 (결정 로그 참조).

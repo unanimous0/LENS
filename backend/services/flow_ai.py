@@ -21,7 +21,7 @@ from services import flow_metrics as fm
 
 _ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
 _MODEL = "claude-sonnet-5"
-_MAX_TOKENS = 1200  # 한국어는 토큰 밀도가 높아 700은 5~8문장에서 잘림 → 여유
+_MAX_TOKENS = 2200  # 한국어 토큰 밀도 + 강세/약세 종합 (프롬프트로 간결화, 안전망)
 
 # 레포 루트 .env (backend/services/flow_ai.py → parents[2] = 레포 루트).
 # config는 env_file="backend/.env"를 보는데 실제 .env는 루트에 있어 os.getenv가 못 봄 →
@@ -52,17 +52,22 @@ _BANNED_PATTERNS = [
 ]
 
 _SYSTEM_PROMPT = (
-    "너는 한국 주식 수급(투자자별 순매수) 데이터 해석 보조다. 다음 규칙을 반드시 지켜라.\n"
-    "(1) 아래 user 메시지에 제공된 숫자만 사용하고, 새로운 숫자를 계산·추정·창작하지 마라.\n"
-    "(2) 각 해석 문장에는 근거가 되는 숫자(값)를 자연스러운 한국어로 인용하라. "
-    "단 영문 필드명/JSON 키(foreign_20d_bp, entry_zone, is_distribution 등)는 절대 쓰지 말고 값만 써라. "
-    "괄호 안에도 영문을 넣지 마라. 예: '(foreign_20d_bp)'가 아니라 '외국인 20일 수급강도 295.9bp'. "
-    "불리언(true/false)도 필드명 없이 자연어로: '진입권 조건 충족', '분산 신호 없음', '장기추세 상승'처럼.\n"
-    "(3) '매수'·'매도'·'목표가'·'추천'·'사라'·'팔라' 등 매매 지시/권유 표현을 절대 쓰지 마라. "
-    "'매수세'·'매도세'도 쓰지 말고 '순매수'·'순매도' 데이터 용어로만 서술한다. "
-    "사실 해석과 관찰만 서술한다.\n"
-    "(4) 제공되지 않은 인과·뉴스·전망을 지어내지 마라.\n"
-    "(5) 한국어로, 5~8문장. 마지막에 '주의:' 로 시작하는 한 줄로 맥락 한계를 덧붙여라."
+    "너는 한국 주식 수급(투자자별 순매수) 데이터를 트레이더에게 해석해주는 분석 보조다. "
+    "단순 나열이 아니라 '종합 판단'을 제공한다. 다음 규칙을 반드시 지켜라.\n"
+    "(1) 제공된 숫자만 사용하고, 새로운 숫자를 계산·추정·창작하지 마라. "
+    "영문 필드명/JSON 키는 절대 쓰지 말고 값만 자연스러운 한국어로 써라(괄호 안에도 영문 금지). "
+    "예: '외국인 20일 수급강도 295.9bp'.\n"
+    "(2) **사실 나열 금지 — 종합 해석하라.** 지표들이 무엇을 의미하는지 엮어서 핵심 판단 2~3개로 제시하라. "
+    "특히 backtest_assessment(검증된 패턴별 보유 60일 평균 초과수익)를 판단의 핵심 근거로 적극 활용하라. "
+    "예: '진입권·동시 조건 충족 — 이 패턴은 검증상 평균 +3.5% 초과수익(강세 근거)'.\n"
+    "(3) **반드시 강세 요인과 약세 요인을 나눠 양면을 제시하라. 한쪽으로 몰지 마라.** "
+    "신호가 상충하면(예: 정석 +3.5%인데 하락추세 매집 −5.2%) 그 상충을 분명히 지적하라. "
+    "검증 초과수익은 독립 측정치라 절대 합산하지 마라.\n"
+    "(4) 판단(유리/불리한 자리, 강한/약한 신호 등)은 하되, '매수'·'매도'·'매수세'·'매도세'·'목표가'"
+    "·'추천'·'사라'·'팔라' 등 직접적 매매 지시/권유 표현은 절대 쓰지 마라. 관찰·해석 어조로만.\n"
+    "(5) 제공되지 않은 뉴스·전망·인과를 지어내지 마라.\n"
+    "(6) 한국어, **간결하게**. 구조: ①한 줄 핵심 판단 → ②강세 요인(핵심 2~3개) → "
+    "③약세 요인(핵심 2~3개) → ④'주의:'로 시작하는 맥락 한계 한 줄. 각 요인은 한 문장으로 짧게."
 )
 
 
@@ -120,6 +125,57 @@ def _last_cross(rows: list[dict]) -> dict | None:
     return last
 
 
+# 백테스트(flow-tag-backtest.md) 검증 결과 — 패턴별 보유 60일 평균 초과수익(%).
+# LLM이 판단 근거로 쓰도록 사실로 주입. 이 숫자는 코드가 측정한 결정론적 값(창작 아님).
+_BACKTEST_H60 = {
+    "정석(동시+진입권)": (3.49, "강세"),
+    "진입권": (2.84, "강세"),
+    "추세순항": (1.52, "강세"),
+    "동시": (0.89, "강세"),
+    "하락추세 매집": (-5.19, "약세"),  # 반려된 '저점재매집' = 떨어지는 칼
+    "분배": (-1.61, "약세"),
+    "단기반등": (-1.08, "약세"),
+}
+
+
+def _assess(row: dict) -> dict:
+    """랭킹 지표 → 백테스트 검증된 패턴 판정. 매수 아키타입 1개 + 경고 신호(중복 가능)."""
+    both = bool(row.get("both_20d"))
+    entry = bool(row.get("entry_ok"))
+    f20 = row.get("f_20d_bp") or 0
+    f120 = row.get("f_120d_bp") or 0
+    ret20 = row.get("ret_20d_pct")
+    sig: list[dict] = []
+
+    def add(name: str) -> None:
+        edge, direction = _BACKTEST_H60[name]
+        sig.append({"패턴": name, "검증_60일_평균초과수익_pct": edge, "방향": direction})
+
+    # 매수 아키타입 — 가장 잘 맞는 것 하나 (중복 표시 방지)
+    if entry and both:
+        add("정석(동시+진입권)")
+    elif entry:
+        add("진입권")
+    elif both and ret20 is not None and ret20 > 0:
+        add("추세순항")
+    elif both:
+        add("동시")
+    # 경고 신호 — 여러 개 동시 가능 (매수 아키타입과 상충 가능)
+    if f20 > 0 and f120 > 0 and ret20 is not None and ret20 < 0:
+        add("하락추세 매집")
+    if row.get("is_distribution"):
+        add("분배")
+    if row.get("short_bounce"):
+        add("단기반등")
+    return {
+        "applicable_signals": sig,
+        "note": (
+            "각 패턴의 검증 초과수익은 독립 측정치(보유 60일, 유니버스 평균 대비, look-ahead 차단)이며 "
+            "합산 불가·상충 가능. 정렬축(외인 20D 매집)은 Rank IC 유의(+). 개별 종목이 아닌 패턴 평균."
+        ),
+    }
+
+
 async def _collect_facts(code: str, as_of: str) -> dict | None:
     """랭킹 지표 + 시계열 파생값을 structured dict로. 종목 없으면 None."""
     rows = await fm.ranking(as_of)
@@ -160,6 +216,8 @@ async def _collect_facts(code: str, as_of: str) -> dict | None:
         "short_bounce": row.get("short_bounce"),
         "long_term_up": row.get("long_up"),
         "last_cross": cross,
+        # 백테스트 검증 판정 — 판단의 핵심 근거 (검증된 패턴별 평균 초과수익)
+        "backtest_assessment": _assess(row),
     }
 
 
@@ -177,6 +235,52 @@ def _sanitize(summary: str) -> tuple[str, bool]:
             continue
         kept.append(p.strip())
     return "\n".join(kept), flagged
+
+
+def _render_facts_korean(f: dict) -> str:
+    """LLM 입력을 한국어 라벨 텍스트로 렌더 — 영문 필드명이 아예 없어 모델이 못 베낌."""
+    def won(v):
+        return f"{int(v):,}원" if v is not None else "-"
+
+    def eok(v):
+        return f"{v:+,.1f}억" if v is not None else "-"
+
+    def bp(v):
+        return f"{v:+.1f}bp" if v is not None else "-"
+
+    def pct(v):
+        return f"{v:+.1f}%" if v is not None else "-"
+
+    def yn(v):
+        return "예" if v else "아니오"
+
+    fm_eok = f.get("float_mcap_eok")
+    absorb = f.get("absorb_5d_pct")
+    lines = [
+        f"종목: {f.get('name')} ({f.get('code')}, {f.get('sector') or '-'})",
+        f"유통시총: {fm_eok:,}억" if fm_eok is not None else "유통시총: -",
+        f"현재가: {won(f.get('current_price_won'))} / 외국인 추정 평단: {won(f.get('foreign_avg_price_est_won'))}",
+        f"외국인 수급강도: 20일 {bp(f.get('foreign_20d_bp'))}, 120일 {bp(f.get('foreign_120d_bp'))}",
+        f"기관 수급강도: 20일 {bp(f.get('institution_20d_bp'))}",
+        f"외국인 누적순매수: {eok(f.get('foreign_cum_net_eok'))} · 5일 순매수 {eok(f.get('foreign_5d_eok'))} · 연속 순매수 {f.get('foreign_streak_days')}일",
+        f"전일 순매수: 외국인 {eok(f.get('yesterday_foreign_eok'))}, 기관 {eok(f.get('yesterday_institution_eok'))}",
+        f"20일 수익률: {pct(f.get('ret_20d_pct'))} · 5일 흡수율 {absorb if absorb is not None else '-'}%",
+        f"신호: 진입권 {yn(f.get('entry_zone'))}, 이탈권 {yn(f.get('exit_zone'))}, "
+        f"분배의심 {yn(f.get('is_distribution'))}, 단기반등 {yn(f.get('short_bounce'))}, "
+        f"장기추세상승 {yn(f.get('long_term_up'))}",
+    ]
+    cross = f.get("last_cross")
+    if cross:
+        lines.append(f"최근 크로스: {cross.get('kind')} {cross.get('date')}")
+    ba = f.get("backtest_assessment") or {}
+    sigs = ba.get("applicable_signals") or []
+    if sigs:
+        lines.append("[검증 판정] 백테스트 보유 60일 평균 초과수익(유니버스 평균 대비):")
+        for s in sigs:
+            lines.append(f"  - {s['패턴']}: {s['검증_60일_평균초과수익_pct']:+.2f}% ({s['방향']})")
+        if ba.get("note"):
+            lines.append(f"  ※ {ba['note']}")
+    return "\n".join(lines)
 
 
 # ── 메인 엔트리 ───────────────────────────────────────────────────────────
@@ -199,12 +303,10 @@ async def summarize(code: str) -> dict:
     if facts is None:
         return {"available": False, "reason": f"{code} 수급 데이터 없음"}
 
-    import json
-
     user_msg = (
-        "다음은 코드가 계산한 이 종목의 수급 사실(JSON)이다. "
-        "이 종목의 수급 상황을 위 규칙대로 요약하라.\n\n"
-        + json.dumps(facts, ensure_ascii=False, indent=2)
+        "다음은 코드가 계산한 이 종목의 수급 사실이다. "
+        "이 종목의 수급 상황을 위 규칙대로 종합 판단하라.\n\n"
+        + _render_facts_korean(facts)
     )
 
     try:
