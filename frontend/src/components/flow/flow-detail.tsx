@@ -501,23 +501,27 @@ function CumFlowPanel({ rows, view, setView, register }: { rows: SeriesRow[]; vi
     const cumColor = who === 'f' ? C.accent : C.blue
     const line = chart.addLineSeries({ color: cumColor, lineWidth: 2, priceLineVisible: false, lastValueVisible: false })
     line.setData(rows.map((r, i) => ({ time: t(r.d), value: cum[i] })))
-    // 20·60일 이평
+    // 20·50·100·200일 이평 (색은 누적선 green/blue와 안 겹치게)
     const ma20 = sma(cum, 20)
-    const ma60 = sma(cum, 60)
+    const ma50 = sma(cum, 50)
+    const ma100 = sma(cum, 100)
+    const ma200 = sma(cum, 200)
     const addMa = (ma: (number | null)[], color: string) => {
       const s = chart.addLineSeries({ color, lineWidth: 1, priceLineVisible: false, lastValueVisible: false })
       s.setData(rows.map((r, i) => ({ time: t(r.d), value: ma[i] })).filter((x) => x.value != null) as never)
     }
     addMa(ma20, '#ffd60a') // 20일 (노랑)
-    addMa(ma60, '#a78bfa') // 60일 (보라)
-    // 골든/데드크로스 마커 (MA20 × MA60) + 호버 툴팁용 정보 맵
+    addMa(ma50, C.warning) // 50일 (주황)
+    addMa(ma100, '#a78bfa') // 100일 (보라)
+    addMa(ma200, C.t1) // 200일 (흰색)
+    // 골든/데드크로스 마커 (MA20 × MA50 — 기본 1년 뷰에서 신호 확보) + 툴팁용 맵
     const markers: SeriesMarker<Time>[] = []
     const crossMap = new Map<string, { kind: string; color: string; value: number }>()
     for (let i = 1; i < rows.length; i++) {
       const a0 = ma20[i - 1]
       const a1 = ma20[i]
-      const b0 = ma60[i - 1]
-      const b1 = ma60[i]
+      const b0 = ma50[i - 1]
+      const b1 = ma50[i]
       if (a0 == null || a1 == null || b0 == null || b1 == null) continue
       const prev = a0 - b0
       const cur = a1 - b1
@@ -531,7 +535,7 @@ function CumFlowPanel({ rows, view, setView, register }: { rows: SeriesRow[]; vi
     }
     line.setMarkers(markers)
 
-    // 호버 툴팁 — 누적(선택 주체)·20·60일선 + 크로스일이면 종류 강조
+    // 호버 툴팁 — 누적(선택 주체)·20·50·100·200일선 + 크로스일이면 종류 강조
     const idxByDate = new Map<string, number>(rows.map((r, i) => [r.d, i]))
     const invLabel = who === 'f' ? '외인 누적' : '기관 누적'
     const cleanupTip = attachTooltip(chart, ref.current, (key) => {
@@ -539,7 +543,9 @@ function CumFlowPanel({ rows, view, setView, register }: { rows: SeriesRow[]; vi
       if (i == null) return null
       const out: TipRow[] = [{ label: invLabel, value: eok(cum[i]), dot: cumColor, valueColor: cumColor, strong: true }]
       if (ma20[i] != null) out.push({ label: '20일', value: eok(ma20[i] as number), dot: '#ffd60a', valueColor: '#ffd60a' })
-      if (ma60[i] != null) out.push({ label: '60일', value: eok(ma60[i] as number), dot: '#a78bfa', valueColor: '#a78bfa' })
+      if (ma50[i] != null) out.push({ label: '50일', value: eok(ma50[i] as number), dot: C.warning, valueColor: C.warning })
+      if (ma100[i] != null) out.push({ label: '100일', value: eok(ma100[i] as number), dot: '#a78bfa', valueColor: '#a78bfa' })
+      if (ma200[i] != null) out.push({ label: '200일', value: eok(ma200[i] as number), dot: C.t1, valueColor: C.t1 })
       const cx = crossMap.get(key)
       if (cx) out.push({ label: '신호', value: cx.kind === '골든크로스' ? '▲ 골든크로스' : '▼ 데드크로스', valueColor: cx.color, strong: true })
       return { title: key, rows: out }
@@ -559,8 +565,10 @@ function CumFlowPanel({ rows, view, setView, register }: { rows: SeriesRow[]; vi
       legend={[
         [who === 'f' ? '외인 누적' : '기관 누적', who === 'f' ? C.accent : C.blue],
         ['20일', '#ffd60a'],
-        ['60일', '#a78bfa'],
-        ['▲골든/▼데드', C.t3],
+        ['50일', C.warning],
+        ['100일', '#a78bfa'],
+        ['200일', C.t1],
+        ['▲골든/▼데드(20×50)', C.t3],
       ]}
       seg={{
         value: who,
