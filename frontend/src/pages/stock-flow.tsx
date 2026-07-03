@@ -82,7 +82,7 @@ export function StockFlowPage() {
   const [error, setError] = useState<string | null>(null)
   const [preset, setPreset] = useState('default')
   const [direction, setDirection] = useState<'buy' | 'sell'>('buy')
-  const [longOnly, setLongOnly] = useState(false) // 장기 정합(120일도 순매수)만
+  const [longOnly, setLongOnly] = useState(true) // 장기 정합(120일도 순매수)만 — 기본 ON
   const [search, setSearch] = useState('')
   const [sortKey, setSortKey] = useState<SortKey>('f_20d_bp')
   const [sortAsc, setSortAsc] = useState(false)
