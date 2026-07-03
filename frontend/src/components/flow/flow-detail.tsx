@@ -514,14 +514,14 @@ function CumFlowPanel({ rows, view, setView, register }: { rows: SeriesRow[]; vi
     addMa(ma50, C.warning) // 50일 (주황)
     addMa(ma100, '#a78bfa') // 100일 (보라)
     addMa(ma200, C.t1) // 200일 (흰색)
-    // 골든/데드크로스 마커 (MA50 × MA200 — 정통 골든크로스, 200일치 필요) + 툴팁용 맵
+    // 골든/데드크로스 마커 (MA20 × MA100) + 툴팁용 맵
     const markers: SeriesMarker<Time>[] = []
     const crossMap = new Map<string, { kind: string; color: string; value: number }>()
     for (let i = 1; i < rows.length; i++) {
-      const a0 = ma50[i - 1]
-      const a1 = ma50[i]
-      const b0 = ma200[i - 1]
-      const b1 = ma200[i]
+      const a0 = ma20[i - 1]
+      const a1 = ma20[i]
+      const b0 = ma100[i - 1]
+      const b1 = ma100[i]
       if (a0 == null || a1 == null || b0 == null || b1 == null) continue
       const prev = a0 - b0
       const cur = a1 - b1
@@ -568,7 +568,7 @@ function CumFlowPanel({ rows, view, setView, register }: { rows: SeriesRow[]; vi
         ['50일', C.warning],
         ['100일', '#a78bfa'],
         ['200일', C.t1],
-        ['▲골든/▼데드(50×200)', C.t3],
+        ['▲골든/▼데드(20×100)', C.t3],
       ]}
       seg={{
         value: who,
