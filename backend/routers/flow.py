@@ -11,6 +11,18 @@ from services import flow_metrics as fm
 
 router = APIRouter(prefix="/flow", tags=["flow"])
 
+
+@router.get("/ai-summary/{code}")
+async def flow_ai_summary(code: str) -> dict:
+    """AI 수급 요약 (프로토타입, 외부망 전용).
+
+    사실(facts)은 전부 코드가 계산(flow_metrics 정본)하고 LLM엔 숫자 해석만 맡긴다.
+    키 없으면(내부망) available:false 로 graceful degrade. 데이터버전 캐시로 재호출 억제.
+    """
+    from services import flow_ai
+
+    return await flow_ai.summarize(code)
+
 # NEW 뱃지 비교 대상: 정렬 상위 N (전일 상위 N에 없던 종목만 NEW)
 _TOP_N_FOR_NEW = 50
 

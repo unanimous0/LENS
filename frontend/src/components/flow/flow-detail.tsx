@@ -166,12 +166,41 @@ function vwma(prices: number[], vols: (number | null)[], n: number): (number | n
   return out
 }
 
+type AiSummary = {
+  available: boolean
+  reason?: string
+  code?: string
+  as_of?: string
+  summary?: string
+  facts?: Record<string, number | null>
+  filtered?: boolean
+}
+
 export function FlowDetail({ code, name, onClose }: { code: string; name: string; onClose: () => void }) {
   const [rows, setRows] = useState<SeriesRow[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [days, setDays] = useState(365)
   const [netView, setNetView] = useState<'chart' | 'table'>('chart')
   const [cumView, setCumView] = useState<'chart' | 'table'>('chart')
+
+  // AI 수급 요약 — 종목 바뀌면 초기화
+  const [ai, setAi] = useState<AiSummary | null>(null)
+  const [aiLoading, setAiLoading] = useState(false)
+  useEffect(() => {
+    setAi(null)
+    setAiLoading(false)
+  }, [code])
+  const fetchAiSummary = useCallback(async () => {
+    setAiLoading(true)
+    try {
+      const r = await fetch(`/api/flow/ai-summary/${code}`)
+      setAi((await r.json()) as AiSummary)
+    } catch (e) {
+      setAi({ available: false, reason: String(e) })
+    } finally {
+      setAiLoading(false)
+    }
+  }, [code])
 
   // 4개 차트 시간축 동기화 (통계차익 상세와 동일 패턴): 차트를 state로 모아
   // useEffect에서 일괄 subscribe. 모든 차트가 rows 같은 길이(주가는 whitespace 패딩)라
@@ -233,6 +262,13 @@ export function FlowDetail({ code, name, onClose }: { code: string; name: string
           {name} <span className="text-t3">{code}</span>
         </span>
         <div className="ml-auto flex items-center gap-2">
+          <button
+            onClick={fetchAiSummary}
+            disabled={aiLoading}
+            className="rounded-sm bg-bg-surface px-2 py-0.5 text-t2 hover:text-t1 disabled:opacity-50"
+          >
+            {aiLoading ? '요약 중…' : '🧠 수급 요약'}
+          </button>
           <div className="flex overflow-hidden rounded-sm border border-bg-surface">
             {[365, 1095].map((d) => (
               <button
@@ -249,6 +285,24 @@ export function FlowDetail({ code, name, onClose }: { code: string; name: string
           </button>
         </div>
       </div>
+
+      {ai && (
+        <div className="mb-3 rounded-sm bg-bg-surface p-3">
+          <div className="mb-2 text-[11px] text-warning">
+            데이터 요약이며 매매 권유가 아닙니다. 판단·책임은 트레이더에게 있습니다.
+          </div>
+          {ai.available ? (
+            <>
+              <div className="whitespace-pre-wrap text-xs leading-relaxed text-t2">{ai.summary}</div>
+              {ai.filtered && (
+                <div className="mt-2 text-[10px] text-t4">일부 문장이 안전 필터로 제거되었습니다.</div>
+              )}
+            </>
+          ) : (
+            <div className="text-xs text-t3">{ai.reason ?? 'AI 요약은 외부망 + API 키 필요'}</div>
+          )}
+        </div>
+      )}
 
       {error && <div className="py-4 text-xs text-down">로딩 실패: {error}</div>}
       {!rows && !error && <div className="py-4 text-xs text-t3">로딩 중…</div>}

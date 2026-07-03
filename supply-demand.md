@@ -65,4 +65,6 @@
   - **3년 이평선 버그 수정** — 러닝-합 SMA가 null(거래정지)일에 NaN 오염 → 이후 전체 소실. 실거래일(priced rows)만으로 계산.
   - **"장기 정합만" 필터 기본 ON**.
 - **v2 (백테스트 입증 조건부)**: z-score·EWMA·섹터중립·초과수급. 배당락 마커. (아래 백테스트 계획 참조)
+  - **[flow-tag-backtest.md](flow-tag-backtest.md)** — 태그 검증 게이트 1차 실행(2026-07-03). 정렬축(외인 20D) Rank IC 유의(+). 채택=진입권·정석(동시+진입권)·동시·추세순항. **반려=저점재매집(강한 언더퍼폼 — "떨어지는 칼" 실증)**. 스크립트 `backend/scripts/flow_tag_backtest.py`.
+  - **AI 수급 요약 버튼(프로토타입)**: `backend/services/flow_ai.py` + `/api/flow/ai-summary/{code}`. 사실(숫자)은 코드가 계산·LLM은 해석만(금지어 필터·면책·데이터버전 캐시). 외부망+`ANTHROPIC_API_KEY` 필요, 없으면 graceful degrade. 내부망은 비활성.
 - **v2 (백테스트 입증 조건부)**: z-score·EWMA·섹터중립·초과수급. 백테스트 = LP_MM 골격 이식 + T+1 시가 + Rank IC(h=5/20/60/**120**) + 모멘텀 통제 + holdout 1회 개봉. 장기보유 니즈는 창 확대가 아니라 h=120 측정으로 판단 (결정 로그 참조).
