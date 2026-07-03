@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import os
 import re
+from pathlib import Path
 
 import httpx
 
@@ -20,7 +21,24 @@ from services import flow_metrics as fm
 
 _ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
 _MODEL = "claude-sonnet-5"
-_MAX_TOKENS = 700
+_MAX_TOKENS = 1200  # 한국어는 토큰 밀도가 높아 700은 5~8문장에서 잘림 → 여유
+
+# 레포 루트 .env (backend/services/flow_ai.py → parents[2] = 레포 루트).
+# config는 env_file="backend/.env"를 보는데 실제 .env는 루트에 있어 os.getenv가 못 봄 →
+# 여기서 루트 .env를 직접 폴백 조회 (export/os.environ 우선, 그다음 루트 .env).
+_ROOT_ENV = Path(__file__).resolve().parents[2] / ".env"
+
+
+def _read_api_key() -> str | None:
+    k = os.getenv("ANTHROPIC_API_KEY")
+    if k:
+        return k.strip()
+    if _ROOT_ENV.exists():
+        for line in _ROOT_ENV.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line.startswith("ANTHROPIC_API_KEY="):
+                return line.split("=", 1)[1].strip().strip('"').strip("'") or None
+    return None
 
 # 매매 지시/권유 금지어. '순매수/순매도'는 데이터 용어라 살려야 하므로
 # 매수/매도는 앞에 '순'이 없을 때만(=동사형 지시) 매칭.
@@ -36,9 +54,13 @@ _BANNED_PATTERNS = [
 _SYSTEM_PROMPT = (
     "너는 한국 주식 수급(투자자별 순매수) 데이터 해석 보조다. 다음 규칙을 반드시 지켜라.\n"
     "(1) 아래 user 메시지에 제공된 숫자만 사용하고, 새로운 숫자를 계산·추정·창작하지 마라.\n"
-    "(2) 각 해석 문장에는 근거가 되는 숫자를 그대로 인용하라.\n"
+    "(2) 각 해석 문장에는 근거가 되는 숫자(값)를 자연스러운 한국어로 인용하라. "
+    "단 영문 필드명/JSON 키(foreign_20d_bp, entry_zone, is_distribution 등)는 절대 쓰지 말고 값만 써라. "
+    "괄호 안에도 영문을 넣지 마라. 예: '(foreign_20d_bp)'가 아니라 '외국인 20일 수급강도 295.9bp'. "
+    "불리언(true/false)도 필드명 없이 자연어로: '진입권 조건 충족', '분산 신호 없음', '장기추세 상승'처럼.\n"
     "(3) '매수'·'매도'·'목표가'·'추천'·'사라'·'팔라' 등 매매 지시/권유 표현을 절대 쓰지 마라. "
-    "사실 해석과 관찰만 서술한다. (단 '순매수'·'순매도' 같은 데이터 용어는 허용)\n"
+    "'매수세'·'매도세'도 쓰지 말고 '순매수'·'순매도' 데이터 용어로만 서술한다. "
+    "사실 해석과 관찰만 서술한다.\n"
     "(4) 제공되지 않은 인과·뉴스·전망을 지어내지 마라.\n"
     "(5) 한국어로, 5~8문장. 마지막에 '주의:' 로 시작하는 한 줄로 맥락 한계를 덧붙여라."
 )
@@ -159,7 +181,7 @@ def _sanitize(summary: str) -> tuple[str, bool]:
 
 # ── 메인 엔트리 ───────────────────────────────────────────────────────────
 async def summarize(code: str) -> dict:
-    key = os.getenv("ANTHROPIC_API_KEY")
+    key = _read_api_key()
     if not key:
         return {
             "available": False,
