@@ -57,7 +57,9 @@ _SYSTEM_PROMPT = (
     "단순 나열이 아니라 '종합 판단'을 제공한다. 다음 규칙을 반드시 지켜라.\n"
     "(1) 제공된 숫자만 사용하고, 새로운 숫자를 계산·추정·창작하지 마라. "
     "영문 필드명/JSON 키는 절대 쓰지 말고 값만 자연스러운 한국어로 써라(괄호 안에도 영문 금지). "
-    "예: '외국인 20일 수급강도 295.9bp'.\n"
+    "수급강도는 bp가 아니라 %로 말하고(제공값이 이미 %), **모든 %는 무엇 대비인지 기준점을 함께 밝혀라** — "
+    "매집률=유통시총 대비, 흡수율=거래대금 대비, 주가수익률=20일 전 주가 대비, 검증 초과수익=유니버스 평균 대비. "
+    "예: '외국인 20일 매집률 +2.96%(유통시총 대비)'.\n"
     "(2) **사실 나열 금지 — 종합 해석하라.** 지표들이 무엇을 의미하는지 엮어서 핵심 판단 2~3개로 제시하라. "
     "특히 backtest_assessment(검증된 패턴별 보유 60일 평균 초과수익)를 판단의 핵심 근거로 적극 활용하라. "
     "예: '진입권·동시 조건 충족 — 이 패턴은 검증상 평균 +3.5% 초과수익(강세 근거)'.\n"
@@ -278,8 +280,8 @@ def _render_facts_korean(f: dict) -> str:
     def eok(v):
         return f"{v:+,.1f}억" if v is not None else "-"
 
-    def bp(v):
-        return f"{v:+.1f}bp" if v is not None else "-"
+    def mcpct(v):  # 매집률 = 순매수 ÷ 유통시총. bp→% (÷100). 화면 "매집%"와 동일.
+        return f"{v / 100:+.2f}%" if v is not None else "-"
 
     def pct(v):
         return f"{v:+.1f}%" if v is not None else "-"
@@ -293,11 +295,11 @@ def _render_facts_korean(f: dict) -> str:
         f"종목: {f.get('name')} ({f.get('code')}, {f.get('sector') or '-'})",
         f"유통시총: {fm_eok:,}억" if fm_eok is not None else "유통시총: -",
         f"현재가: {won(f.get('current_price_won'))} / 외국인 추정 평단: {won(f.get('foreign_avg_price_est_won'))}",
-        f"외국인 수급강도: 20일 {bp(f.get('foreign_20d_bp'))}, 120일 {bp(f.get('foreign_120d_bp'))}",
-        f"기관 수급강도: 20일 {bp(f.get('institution_20d_bp'))}",
+        f"외국인 매집률(20일·120일 누적순매수 ÷ 유통시총): 20일 {mcpct(f.get('foreign_20d_bp'))}, 120일 {mcpct(f.get('foreign_120d_bp'))}",
+        f"기관 매집률(20일 순매수 ÷ 유통시총): 20일 {mcpct(f.get('institution_20d_bp'))}",
         f"외국인 누적순매수: {eok(f.get('foreign_cum_net_eok'))} · 5일 순매수 {eok(f.get('foreign_5d_eok'))} · 연속 순매수 {f.get('foreign_streak_days')}일",
         f"전일 순매수: 외국인 {eok(f.get('yesterday_foreign_eok'))}, 기관 {eok(f.get('yesterday_institution_eok'))}",
-        f"20일 수익률: {pct(f.get('ret_20d_pct'))} · 5일 흡수율 {absorb if absorb is not None else '-'}%",
+        f"20일 주가수익률(20일 전 대비): {pct(f.get('ret_20d_pct'))} · 5일 흡수율(외+기 순매수 ÷ 거래대금): {absorb if absorb is not None else '-'}%",
         f"신호: 진입권 {yn(f.get('entry_zone'))}, 이탈권 {yn(f.get('exit_zone'))}, "
         f"분배의심 {yn(f.get('is_distribution'))}, 단기반등 {yn(f.get('short_bounce'))}, "
         f"장기추세상승 {yn(f.get('long_term_up'))}",
