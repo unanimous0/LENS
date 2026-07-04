@@ -254,9 +254,14 @@ def save_results(path: str, df: pd.DataFrame, h: int = 60) -> None:
         "horizon_days": h,
         "patterns": patterns,
     }
-    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    out_dir = os.path.dirname(os.path.abspath(path))
+    os.makedirs(out_dir, exist_ok=True)
     with open(path, "w", encoding="utf-8") as fp:
         json.dump(out, fp, ensure_ascii=False, indent=2)
+    # startup 핸들러(main.py)가 남긴 실행 lock 정리
+    lockp = os.path.join(out_dir, ".flow_backtest.running")
+    if os.path.exists(lockp):
+        os.remove(lockp)
     print(f"\n[saved] {path} — {len(patterns)}개 패턴 (기준일 {out['generated_at']})")
 
 
