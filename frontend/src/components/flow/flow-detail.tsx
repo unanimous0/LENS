@@ -265,9 +265,9 @@ export function FlowDetail({ code, name, onClose }: { code: string; name: string
           <button
             onClick={fetchAiSummary}
             disabled={aiLoading}
-            className="rounded-sm bg-bg-surface px-2 py-0.5 text-t2 hover:text-t1 disabled:opacity-50"
+            className="rounded-sm border border-bg-surface bg-accent/20 px-2 py-0.5 text-accent hover:bg-accent/30 disabled:opacity-50"
           >
-            {aiLoading ? '요약 중…' : '🧠 수급 요약'}
+            {aiLoading ? '요약 중…' : '수급 요약'}
           </button>
           <div className="flex overflow-hidden rounded-sm border border-bg-surface">
             {[365, 1095].map((d) => (
