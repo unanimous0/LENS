@@ -130,15 +130,15 @@ def _last_cross(rows: list[dict]) -> dict | None:
 # 주기 갱신: scripts/flow_tag_backtest.py --save가 data/flow_backtest.json 생성 → 아래 기본값 대체.
 # 기본값은 JSON 없을 때(첫 배포)의 폴백. 유의성(|t|≥2)인 패턴만 (하락추세 매집은 런타임 조건상 미달로 제외).
 _BACKTEST_PATH = _ROOT_ENV.parent / "data" / "flow_backtest.json"
-_BACKTEST_DEFAULT = {
-    "정석(동시+진입권)": {"edge": 3.49, "t": 5.16, "direction": "강세"},
-    "진입권": {"edge": 2.84, "t": 6.22, "direction": "강세"},
-    "매집주 눌림": {"edge": 2.01, "t": 4.81, "direction": "강세"},
-    "추세순항": {"edge": 1.52, "t": 3.42, "direction": "강세"},
-    "동시": {"edge": 0.89, "t": 3.01, "direction": "강세"},
-    "동반순매도": {"edge": -2.35, "t": -6.74, "direction": "약세"},
-    "분배": {"edge": -1.61, "t": -2.65, "direction": "약세"},
-    "단기반등": {"edge": -1.08, "t": -3.24, "direction": "약세"},
+_BACKTEST_DEFAULT = {  # 룩백 2년 canonical 기준(2026-07-04). JSON 없을 때만 쓰는 폴백.
+    "정석(동시+진입권)": {"edge": 3.53, "t": 5.07, "direction": "강세"},
+    "진입권": {"edge": 2.95, "t": 6.11, "direction": "강세"},
+    "매집주 눌림": {"edge": 2.32, "t": 3.91, "direction": "강세"},
+    "추세순항": {"edge": 2.09, "t": 4.59, "direction": "강세"},
+    "동시": {"edge": 1.20, "t": 3.22, "direction": "강세"},
+    "동반순매도": {"edge": -3.28, "t": -8.32, "direction": "약세"},
+    "분배": {"edge": -2.25, "t": -3.72, "direction": "약세"},
+    # 단기반등: 2년 기준 -0.87%(t-1.69) 유의성 미달 → 폴백에서도 제외.
 }
 _edges_cache: dict = {"mtime": None, "edges": None, "as_of": None}
 

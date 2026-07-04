@@ -32,16 +32,16 @@ from sqlalchemy import text
 
 from core.database import korea_async_session
 
-YEARS = 3.2
+YEARS = 2.0  # 룩백 기간. 0.5~3년 비교 결과 2년이 Rank IC 최강(t7.15)+패턴 edge 최선(스위트스팟).
 ADV_MIN = 1_000_000_000      # 일평균 거래대금 10억 이상 (거래 가능 유니버스)
 MCAP_MIN = 50_000_000_000    # 시총 500억 이상
 REBAL_EVERY = 5              # 리밸런스 간격 (거래일) — 주간
 HORIZONS = [5, 20, 60]       # 보유일수
 
 
-async def _fetch() -> tuple[pd.DataFrame, ...]:
+async def _fetch(years: float = YEARS) -> tuple[pd.DataFrame, ...]:
     end = date.today()
-    start = end - timedelta(days=int(YEARS * 365))
+    start = end - timedelta(days=int(years * 365))
     async with korea_async_session() as session:
         # 1) 유동성 유니버스 (활성 KOSPI/KOSDAQ + 평균 거래대금 하한)
         uni = (await session.execute(text(
@@ -266,7 +266,11 @@ def save_results(path: str, df: pd.DataFrame, h: int = 60) -> None:
 
 
 async def main() -> None:
-    it_df, ohlcv_df, mc_df = await _fetch()
+    years = YEARS
+    if "--years" in sys.argv:
+        years = float(sys.argv[sys.argv.index("--years") + 1])
+        print(f"[lookback override] {years}년")
+    it_df, ohlcv_df, mc_df = await _fetch(years)
     print(f"패널 rows — 수급 {len(it_df):,} / 시세 {len(ohlcv_df):,} / 시총 {len(mc_df):,}")
     df = _build_panel(it_df, ohlcv_df, mc_df)
     df = _signals_tags(df)
