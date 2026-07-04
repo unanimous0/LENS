@@ -176,6 +176,59 @@ type AiSummary = {
   filtered?: boolean
 }
 
+// AI 요약 렌더 — LLM이 [섹션] 헤더 + "- 불릿" + 단락 형식으로 주면 가독성 있게 그린다.
+function AiSummaryBody({ text }: { text: string }) {
+  const blocks: ReactNode[] = []
+  let bullets: string[] = []
+  const flush = (key: string) => {
+    if (!bullets.length) return
+    blocks.push(
+      <ul key={key} className="mb-1.5 space-y-1">
+        {bullets.map((b, i) => (
+          <li key={i} className="flex gap-1.5">
+            <span className="mt-[3px] h-1 w-1 flex-none rounded-full bg-t4" />
+            <span className="text-t2">{b}</span>
+          </li>
+        ))}
+      </ul>
+    )
+    bullets = []
+  }
+  text.split('\n').forEach((raw, idx) => {
+    const line = raw.trim()
+    const hdr = line.match(/^\[(.+)\]$/)
+    if (hdr) {
+      flush(`b${idx}`)
+      const name = hdr[1]
+      const color = name.includes('강세')
+        ? 'text-accent'
+        : name.includes('약세')
+          ? 'text-down'
+          : name.includes('쉽게')
+            ? 'text-blue'
+            : name.includes('주의')
+              ? 'text-t4'
+              : 'text-t1'
+      blocks.push(
+        <div key={idx} className={`mb-1 mt-3 text-[11px] font-semibold first:mt-0 ${color}`}>
+          {name}
+        </div>
+      )
+    } else if (line.startsWith('- ')) {
+      bullets.push(line.slice(2))
+    } else if (line) {
+      flush(`b${idx}`)
+      blocks.push(
+        <p key={idx} className="mb-1.5 text-t2">
+          {line}
+        </p>
+      )
+    }
+  })
+  flush('bend')
+  return <div className="text-xs leading-relaxed">{blocks}</div>
+}
+
 export function FlowDetail({ code, name, onClose }: { code: string; name: string; onClose: () => void }) {
   const [rows, setRows] = useState<SeriesRow[] | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -293,7 +346,7 @@ export function FlowDetail({ code, name, onClose }: { code: string; name: string
           </div>
           {ai.available ? (
             <>
-              <div className="whitespace-pre-wrap text-xs leading-relaxed text-t2">{ai.summary}</div>
+              <AiSummaryBody text={ai.summary ?? ''} />
               {ai.filtered && (
                 <div className="mt-2 text-[10px] text-t4">일부 문장이 안전 필터로 제거되었습니다.</div>
               )}
