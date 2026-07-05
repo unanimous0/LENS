@@ -12,6 +12,14 @@ import { FlowDetail } from '@/components/flow/flow-detail'
  *  - 표기: bp 대신 "유통%"(bp/100) — "유통물량의 몇 %를 순매수했나"가 직관적.
  */
 
+type VerdictPattern = {
+  pattern: string
+  edge: number // 검증 60일 평균 초과수익 (%, 유니버스 평균 대비)
+  t: number
+  direction: string // "강세" | "약세"
+}
+type Verdict = VerdictPattern & { others: VerdictPattern[] }
+
 type FlowRow = {
   code: string
   name: string
@@ -47,6 +55,7 @@ type FlowRow = {
   short_bounce: boolean
   long_up: boolean
   is_new: boolean
+  verdict: Verdict | null
 }
 
 type RankingResp = {
@@ -54,8 +63,22 @@ type RankingResp = {
   is_partial: boolean
   preset: string
   count: number
+  edges_as_of: string | null // 검증 기준일 (flow_backtest.json generated_at)
+  edges: Record<string, { edge: number; t: number; direction: string }> // 태그 범례용 측정값
   rows: FlowRow[]
 }
+
+// 태그 일상어 설명 — 화면 범례 정본. edge·t는 API의 edges에서 동적 주입(여기 하드코딩 금지).
+const TAG_LEGEND: { name: string; desc: string }[] = [
+  { name: '정석(동시+진입권)', desc: '외국인이 규모 있게 꾸준히 사는 중 + 기관도 동참 — 가장 강한 조합' },
+  { name: '진입권', desc: '외국인이 유통시총 대비 규모 있게(15bp↑) + 꾸준히(3일 연속 or 거래대금 30%↑) 사는 중' },
+  { name: '추세순항', desc: '주가가 오르는데도 외국인·기관이 계속 사 모음' },
+  { name: '동시', desc: '외국인·기관 20일 동반 순매수' },
+  { name: '매집주 눌림', desc: '반년간 사 모은 종목이 최근 20일 눌린 구간 — 과거엔 조정 매수 기회였음' },
+  { name: '분배', desc: '외국인은 팔고, 주가는 버티고, 개인이 받아줌 — 조용히 물량 넘기는 중' },
+  { name: '동반순매도', desc: '외국인·기관 둘 다 이탈 (장기 매집 맥락도 없음)' },
+  { name: '단기반등', desc: '20일은 순매수지만 반년으로는 순매도 — 반등에 속지 말라는 경고' },
+]
 
 const PRESET_LABELS: Record<string, string> = {
   default: '기본 (거래대금 10억·유통 500억↑)',
@@ -66,7 +89,7 @@ const PRESET_LABELS: Record<string, string> = {
 const SHOW_LIMIT = 100
 
 // 정렬 가능 컬럼 → FlowRow에서 값 뽑는 함수
-type SortKey = 'f_20d_bp' | 'f_streak' | 'f_5d_eok' | 'i_20d_bp' | 'absorb_5d_pct' | 'ret_20d_pct' | 'y_f_eok' | 'f_120d_bp'
+type SortKey = 'f_20d_bp' | 'f_streak' | 'f_5d_eok' | 'i_20d_bp' | 'absorb_5d_pct' | 'ret_20d_pct' | 'y_f_eok' | 'f_120d_bp' | 'verdict'
 const SORT_GETTER: Record<SortKey, (r: FlowRow) => number> = {
   f_20d_bp: (r) => r.f_20d_bp,
   f_120d_bp: (r) => r.f_120d_bp,
@@ -76,6 +99,7 @@ const SORT_GETTER: Record<SortKey, (r: FlowRow) => number> = {
   absorb_5d_pct: (r) => r.absorb_5d_pct ?? -Infinity,
   ret_20d_pct: (r) => r.ret_20d_pct ?? -Infinity,
   y_f_eok: (r) => r.y_f_eok,
+  verdict: (r) => r.verdict?.edge ?? 0, // 판정 없는 행은 0 취급
 }
 
 export function StockFlowPage() {
@@ -87,6 +111,7 @@ export function StockFlowPage() {
   const [search, setSearch] = useState('')
   const [sortKey, setSortKey] = useState<SortKey>('f_20d_bp')
   const [sortAsc, setSortAsc] = useState(false)
+  const [showLegend, setShowLegend] = useState(false) // 태그 설명 패널 토글
 
   // 방향(매수/매도) 전환 시 기본 정렬 = 20D bp, 방향에 맞는 오름/내림
   const sortClick = (k: SortKey) => {
@@ -154,6 +179,19 @@ export function StockFlowPage() {
     const sorted = [...rows].sort((a, b) => (asc ? get(a) - get(b) : get(b) - get(a)))
     return search.trim() ? sorted : sorted.slice(0, SHOW_LIMIT)
   }, [data, direction, longOnly, search, sortKey, sortAsc])
+
+  // 외인 20D 매집% 히트 컬러 임계값 — 표시 대상(visible) 내 분위 기준. 양/음 분리 대칭.
+  const heat = useMemo(() => {
+    const q = (arr: number[], p: number) => (arr.length ? arr[Math.floor(p * (arr.length - 1))] : null)
+    const pos = visible.map((r) => r.f_20d_bp).filter((v) => v > 0).sort((a, b) => a - b)
+    const neg = visible.map((r) => r.f_20d_bp).filter((v) => v < 0).sort((a, b) => a - b)
+    return {
+      posP90: q(pos, 0.9), // 상위 10% (진하게)
+      posP75: q(pos, 0.75), // 상위 25% (옅게)
+      negP10: q(neg, 0.1), // 하위 10% (진하게) — neg 오름차순이라 앞쪽이 가장 음수
+      negP25: q(neg, 0.25), // 하위 25% (옅게)
+    }
+  }, [visible])
 
   // 요약 스트립 — 오늘 시장 수급의 전체 그림 (필터 전 전체 프리셋 기준)
   const summary = useMemo(() => {
@@ -272,6 +310,49 @@ export function StockFlowPage() {
           <span>
             분배 의심 <span className="font-semibold text-warning">{summary.dist}</span>
           </span>
+          <button
+            onClick={() => setShowLegend((v) => !v)}
+            className="ml-auto rounded-sm border border-bg-surface bg-accent/20 px-2 py-0.5 text-accent hover:bg-accent/30"
+          >
+            {showLegend ? '태그 설명 닫기' : '태그 설명'}
+          </button>
+        </div>
+      )}
+
+      {/* 태그 범례 — 검증 edge·t는 API edges에서 동적 표시 (|t|<2면 유의성 미달 경고) */}
+      {showLegend && data && (
+        <div className="panel px-3 py-3 text-xs">
+          <div className="mb-2 font-medium text-t2">태그 설명 — 백테스트로 검증한 수급 패턴</div>
+          <div className="grid gap-x-6 gap-y-2 md:grid-cols-2">
+            {TAG_LEGEND.map((tag) => {
+              const e = data.edges?.[tag.name]
+              const weak = !e || Math.abs(e.t) < 2
+              return (
+                <div key={tag.name} className="flex flex-col gap-0.5">
+                  <div className="flex items-baseline gap-2">
+                    <span className="font-medium text-t1">{tag.name}</span>
+                    {e ? (
+                      <span className="tabular-nums">
+                        <span className={signCls(e.edge)}>
+                          {e.edge >= 0 ? '+' : ''}
+                          {e.edge.toFixed(1)}%
+                        </span>
+                        <span className="ml-1 text-t4">t {e.t.toFixed(1)}</span>
+                        {weak && <span className="ml-1 text-warning">· 유의성 미달 — 경고 참고용</span>}
+                      </span>
+                    ) : (
+                      <span className="text-t4">측정값 없음</span>
+                    )}
+                  </div>
+                  <div className="text-t3">{tag.desc}</div>
+                </div>
+              )
+            })}
+          </div>
+          <div className="mt-3 border-t border-bg-surface/50 pt-2 text-[11px] leading-relaxed text-t4">
+            초과수익 = 과거 2년, 해당 태그 종목의 이후 60일 시장(유니버스 평균) 대비. 검증 기준일{' '}
+            {data.edges_as_of ?? '기본값(미갱신)'}. 자동 월간 갱신.
+          </div>
         </div>
       )}
 
@@ -362,6 +443,15 @@ export function StockFlowPage() {
               <tr className="border-b border-bg-surface text-left text-t3">
                 <th className="px-3 py-2 font-normal">#</th>
                 <th className="px-3 py-2 font-normal">종목</th>
+                <SortTh
+                  k="verdict"
+                  cur={sortKey}
+                  asc={sortAsc}
+                  onClick={sortClick}
+                  title="백테스트 검증 판정: 이 종목에 해당하는 패턴의 과거 2년 이후 60일 시장 대비 평균 초과수익. 대표 패턴 1개 표시(|edge| 최대). '태그 설명' 버튼 참고"
+                >
+                  판정 (검증 초과수익)
+                </SortTh>
                 <SortTh k="f_streak" cur={sortKey} asc={sortAsc} onClick={sortClick} title="외인 연속 순매수(+)/순매도(−) 영업일 수">
                   연속
                 </SortTh>
@@ -476,11 +566,31 @@ export function StockFlowPage() {
                         {r.code} · {r.sector ?? r.market} · 유통 {Math.round(r.float_mcap_eok).toLocaleString()}억
                       </div>
                     </td>
+                    <td className="whitespace-nowrap px-3 py-1.5 text-right">
+                      {r.verdict ? (
+                        <span
+                          className="tabular-nums"
+                          title={`${r.verdict.pattern} — 과거 2년, 이 패턴 종목은 이후 60일 시장 대비 평균 ${
+                            r.verdict.edge >= 0 ? '+' : ''
+                          }${r.verdict.edge.toFixed(1)}% (t ${r.verdict.t.toFixed(1)}).${
+                            data?.edges_as_of ? ` 검증 기준일 ${data.edges_as_of}.` : ''
+                          }`}
+                        >
+                          <span className="text-t3">{r.verdict.pattern}</span>{' '}
+                          <span className={`font-semibold ${signCls(r.verdict.edge)}`}>
+                            {r.verdict.edge >= 0 ? '+' : ''}
+                            {r.verdict.edge.toFixed(1)}%
+                          </span>
+                        </span>
+                      ) : (
+                        <span className="text-t4">—</span>
+                      )}
+                    </td>
                     <td className={`px-3 py-1.5 text-right ${streakCls}`}>
                       {r.f_streak > 0 ? `+${r.f_streak}D` : r.f_streak < 0 ? `${r.f_streak}D` : '—'}
                     </td>
                     <td className={`px-3 py-1.5 text-right ${signCls(r.f_5d_eok)}`}>{fmtEok(r.f_5d_eok)}</td>
-                    <td className="px-3 py-1.5 text-right">
+                    <td className={`px-3 py-1.5 text-right ${heatCls(r.f_20d_bp, heat)}`}>
                       <div className={`font-semibold ${signCls(r.f_20d_bp)}`}>{fmtPct(r.f_20d_bp)}</div>
                       <div className={`text-[10px] ${signCls(r.f_120d_bp)}`}>
                         120D {fmtPct(r.f_120d_bp)}
@@ -554,6 +664,20 @@ function SortTh({
 
 function signCls(v: number): string {
   return v > 0 ? 'text-up' : v < 0 ? 'text-down' : 'text-t3'
+}
+
+type Heat = { posP90: number | null; posP75: number | null; negP10: number | null; negP25: number | null }
+/** 외인 20D 매집% 히트 배경 — 표시 대상 내 분위. 상위/하위 10%=진하게, 25%=옅게. 낮은 opacity로 가독성 유지. */
+function heatCls(v: number, h: Heat): string {
+  if (v > 0 && h.posP90 != null) {
+    if (v >= h.posP90) return 'bg-up/20'
+    if (h.posP75 != null && v >= h.posP75) return 'bg-up/[0.08]'
+  }
+  if (v < 0 && h.negP10 != null) {
+    if (v <= h.negP10) return 'bg-down/20'
+    if (h.negP25 != null && v <= h.negP25) return 'bg-down/[0.08]'
+  }
+  return ''
 }
 
 /** bp → 유통% 표기. 1444bp = "+14.4%". */

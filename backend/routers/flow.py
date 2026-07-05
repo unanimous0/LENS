@@ -60,16 +60,23 @@ async def flow_ranking(preset: str = "default") -> dict:
         prev_top = {r["code"] for r in prev_rows[:_TOP_N_FOR_NEW]}
         new_codes = {r["code"] for r in rows[:_TOP_N_FOR_NEW]} - prev_top
 
+    # 판정(verdict) = 백테스트가 측정한 태그별 초과수익 조회. edge는 요청당 1회 로드.
+    from services import flow_ai, flow_verdict
+    edges, edges_as_of = flow_ai._load_edges()
+
     out = []
     for r in rows:
         item = {k: v for k, v in r.items() if not k.startswith("_")}
         item["is_new"] = r["code"] in new_codes
+        item["verdict"] = flow_verdict.verdict(r, edges)
         out.append(item)
     return {
         "as_of": info.as_of,
         "is_partial": info.is_partial,
         "preset": preset,
         "count": len(out),
+        "edges_as_of": edges_as_of,  # 검증 기준일 (flow_backtest.json generated_at, 없으면 None)
+        "edges": edges,  # 태그 범례용: {패턴명: {edge, t, direction}} — 측정값 조회 (튜닝 없음)
         "rows": out,
     }
 

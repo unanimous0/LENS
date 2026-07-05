@@ -191,43 +191,20 @@ def _load_edges() -> tuple[dict, str | None]:
 
 
 def _assess(row: dict) -> dict:
-    """랭킹 지표 → 백테스트 검증된 패턴 판정. 매수 아키타입 1개 + 경고 신호(중복 가능)."""
-    both = bool(row.get("both_20d"))
-    entry = bool(row.get("entry_ok"))
-    f20 = row.get("f_20d_bp") or 0
-    f120 = row.get("f_120d_bp") or 0
-    i20 = row.get("i_20d_bp") or 0
-    ret20 = row.get("ret_20d_pct")
+    """랭킹 지표 → 백테스트 검증된 패턴 판정. 매수 아키타입 1개 + 경고 신호(중복 가능).
+
+    패턴 선택(멤버십)은 flow_verdict.applicable_patterns 정본에 위임 — 공식 2벌 방지.
+    여기서는 |t|≥2 유의성 필터 + 요약 입력용 한국어 라벨링만 담당(동작 불변).
+    """
+    from services import flow_verdict
+
     edges, as_of = _load_edges()
     sig: list[dict] = []
-
-    def add(name: str) -> None:
+    for name in flow_verdict.applicable_patterns(row):
         e = edges.get(name)
         if not e or abs(e["t"]) < 2.0:  # 미검증·유의성 미달 패턴은 주입 안 함(노이즈 방지)
-            return
+            continue
         sig.append({"패턴": name, "검증_60일_평균초과수익_pct": e["edge"], "방향": e["direction"]})
-
-    # 매수 아키타입 — 가장 잘 맞는 것 하나 (중복 표시 방지)
-    if entry and both:
-        add("정석(동시+진입권)")
-    elif entry:
-        add("진입권")
-    elif both and ret20 is not None and ret20 > 0:
-        add("추세순항")
-    elif both:
-        add("동시")
-    # 장기매집 후 최근 외인 이탈 — 검증상 강세(눌림). f20<0라 위 매수 아키타입과 배타적.
-    if f120 > 0 and f20 < 0:
-        add("매집주 눌림")
-    # 경고 신호 — 여러 개 동시 가능 (매수 아키타입과 상충 가능)
-    if f20 > 0 and f120 > 0 and ret20 is not None and ret20 < 0:
-        add("하락추세 매집")  # 런타임 조건상 대개 유의성 미달 → add()가 걸러냄
-    if f20 < 0 and i20 < 0 and f120 <= 0:  # 장기매집 없는 순수 동반 이탈
-        add("동반순매도")
-    if row.get("is_distribution"):
-        add("분배")
-    if row.get("short_bounce"):
-        add("단기반등")
     note = (
         "각 패턴의 검증 초과수익은 독립 측정치(보유 60일, 유니버스 평균 대비, look-ahead 차단)이며 "
         "합산 불가·상충 가능. 정렬축(외인 20D 매집)은 Rank IC 유의(+). 개별 종목이 아닌 패턴 평균."
