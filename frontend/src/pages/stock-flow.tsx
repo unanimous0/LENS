@@ -178,6 +178,63 @@ const SORT_GETTER: Record<SortKey, (r: FlowRow) => number> = {
   verdict: (r) => r.verdict?.edge ?? 0, // 판정 없는 행은 0 취급
 }
 
+// ── 관심종목 저장소 (localStorage) ──────────────────────────────────────────
+// v2: code → {added: 'YYYY-MM-DD'|null} 맵. 등록일로 D+n 보유 단계(PR-6 백테스트: 매수 태그
+// ~120거래일 보유 최적). 구버전 flow.watchlist(code 배열)은 최초 로드 시 added=null로 자동 마이그레이션.
+type WatchEntry = { added: string | null }
+type WatchMap = Map<string, WatchEntry>
+const WATCH_KEY = 'flow.watchlist.v2'
+const WATCH_KEY_OLD = 'flow.watchlist'
+
+function loadWatchlist(): WatchMap {
+  try {
+    const v2 = localStorage.getItem(WATCH_KEY)
+    if (v2) {
+      const obj = JSON.parse(v2) as Record<string, WatchEntry>
+      return new Map(Object.entries(obj).map(([c, e]) => [c, { added: e?.added ?? null }]))
+    }
+    const old = localStorage.getItem(WATCH_KEY_OLD)
+    if (old) {
+      const arr = JSON.parse(old) as string[]
+      // 구 별표는 등록일 미상 → added=null (D+n 미표시). 신규 클릭부터 오늘 날짜 기록.
+      return new Map(arr.map((c) => [c, { added: null }]))
+    }
+  } catch {
+    // 파싱 실패 시 빈 목록
+  }
+  return new Map()
+}
+
+function saveWatchlist(m: WatchMap): void {
+  localStorage.setItem(WATCH_KEY, JSON.stringify(Object.fromEntries(m)))
+}
+
+/** 오늘 날짜 (로컬, YYYY-MM-DD). */
+function todayISO(): string {
+  return new Date().toLocaleDateString('en-CA')
+}
+
+/**
+ * 등록일부터 경과 거래일 근사 — 주말(토·일) 제외 평일 수. 정확한 휴장일 계산은 하지 않음(근사).
+ * 등록일 당일 = D+0. added가 null이면(구 별표) null 반환 → 화면 "—".
+ */
+function tradingDaysSince(added: string | null): number | null {
+  if (!added) return null
+  const start = new Date(added + 'T00:00:00')
+  if (Number.isNaN(start.getTime())) return null
+  const end = new Date()
+  end.setHours(0, 0, 0, 0)
+  let count = 0
+  const cur = new Date(start)
+  cur.setDate(cur.getDate() + 1) // 등록일 다음날부터 카운트
+  while (cur <= end) {
+    const day = cur.getDay()
+    if (day !== 0 && day !== 6) count++
+    cur.setDate(cur.getDate() + 1)
+  }
+  return count
+}
+
 export function StockFlowPage() {
   const [data, setData] = useState<RankingResp | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -206,19 +263,14 @@ export function StockFlowPage() {
   }
   const [selected, setSelected] = useState<{ code: string; name: string } | null>(null)
   // 관심종목 — localStorage. 트레이더 워크플로우 "내 종목 수급 살아있나" 상단 고정.
-  const [watchlist, setWatchlist] = useState<Set<string>>(() => {
-    try {
-      return new Set(JSON.parse(localStorage.getItem('flow.watchlist') || '[]'))
-    } catch {
-      return new Set()
-    }
-  })
+  // v2: code → {added} 맵. 등록일 기록으로 D+n 보유 단계 표시(PR-6 백테스트: 매수 태그 ~120거래일 보유).
+  const [watchlist, setWatchlist] = useState<WatchMap>(loadWatchlist)
   const toggleWatch = (code: string) => {
     setWatchlist((prev) => {
-      const next = new Set(prev)
+      const next = new Map(prev)
       if (next.has(code)) next.delete(code)
-      else next.add(code)
-      localStorage.setItem('flow.watchlist', JSON.stringify([...next]))
+      else next.set(code, { added: todayISO() })
+      saveWatchlist(next)
       return next
     })
   }
@@ -482,21 +534,33 @@ export function StockFlowPage() {
         </div>
       )}
 
-      {/* 관심종목 고정 섹션 — 내 종목 수급 브리핑 (흐름 깨진 것 강조) */}
+      {/* 관심종목 고정 섹션 — 내 종목 수급 브리핑 (보유 단계 D+n · 경고 로테이션 강조) */}
       {watchRows.length > 0 && (
         <div className="panel p-3">
-          <div className="mb-2 text-xs font-medium text-t2">
-            관심종목 <span className="text-t3">({watchRows.length}) — 내 종목 수급 살아있나</span>
+          <div className="mb-2 flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+            <span className="text-xs font-medium text-t2">
+              관심종목 <span className="text-t3">({watchRows.length}) — 내 종목 수급 살아있나</span>
+            </span>
+            <span className="text-[10px] text-t3">
+              기본 보유 ~120거래일(약 반년) · 태그 며칠 꺼짐은 무시 · 경고 발생 시 대체 후보 있으면 교체
+            </span>
           </div>
           <table className="w-full text-xs tabular-nums">
             <tbody>
               {watchRows.map((r) => {
                 const broken = r.f_streak < 0 || r.f_20d_bp < 0 // 외인 이탈 or 20D 순매도 전환
+                const added = watchlist.get(r.code)?.added ?? null
+                const dn = tradingDaysSince(added) // 등록일부터 경과 거래일 근사(주말 제외)
+                // 경고 태그(분배·단기반등·동반순매도) — PR-6: 손절 아닌 로테이션 신호. 왼쪽 보더 주황 강조.
+                const warnTags = (r.patterns ?? []).filter((x) => WARN_PATTERNS.includes(x))
+                const hasWarn = warnTags.length > 0
                 return (
                   <tr
                     key={r.code}
                     onClick={() => setSelected({ code: r.code, name: r.name })}
-                    className="cursor-pointer border-t border-bg-surface/40 hover:bg-bg-surface/30"
+                    className={`cursor-pointer border-t border-bg-surface/40 hover:bg-bg-surface/30 ${
+                      hasWarn ? 'border-l-2 border-l-warning' : ''
+                    }`}
                   >
                     <td className="w-6 py-1.5 pl-1">
                       <button
@@ -514,6 +578,30 @@ export function StockFlowPage() {
                       <span className="text-t1">{r.name}</span>
                       <span className="ml-1.5 text-[10px] text-t3">{r.code}</span>
                     </td>
+                    <td className="px-2 py-1.5 text-right">
+                      {dn == null ? (
+                        <span
+                          className="text-[10px] text-t4"
+                          title="등록일 미기록(구 관심종목) — 별표를 다시 눌러 오늘 날짜로 재등록하면 D+n 표시"
+                        >
+                          —
+                        </span>
+                      ) : dn >= 120 ? (
+                        <span
+                          className="rounded-sm bg-warning/20 px-1.5 py-0.5 text-[10px] text-warning"
+                          title="백테스트상 평균 알파 소진 구간(~120거래일) 도달 — 교체 검토. 거래일 근사(주말 제외, 휴장일 미반영)"
+                        >
+                          D+{dn} ⚠
+                        </span>
+                      ) : (
+                        <span
+                          className="text-[10px] text-t3"
+                          title="등록일부터 경과 거래일 근사(주말 제외, 휴장일 미반영). PR-6 백테스트: 매수 태그는 ~120거래일(약 반년) 보유가 최적"
+                        >
+                          D+{dn}
+                        </span>
+                      )}
+                    </td>
                     <td className={`px-3 py-1.5 text-right ${r.f_streak > 0 ? 'text-up' : r.f_streak < 0 ? 'text-down' : 'text-t3'}`}>
                       외인 {r.f_streak > 0 ? `+${r.f_streak}D` : r.f_streak < 0 ? `${r.f_streak}D` : '—'}
                     </td>
@@ -525,12 +613,23 @@ export function StockFlowPage() {
                       <span className="text-t3"> / </span>
                       <span className={signCls(r.y_i_eok)}>{fmtEok(r.y_i_eok)}</span>
                     </td>
-                    <td className="px-3 py-1.5 text-right">
-                      {broken ? (
-                        <span className="rounded-sm bg-down/15 px-1.5 py-0.5 text-[10px] text-down">흐름 약화</span>
-                      ) : (
-                        <span className="rounded-sm bg-accent/10 px-1.5 py-0.5 text-[10px] text-accent">유지</span>
-                      )}
+                    <td className="px-2 py-1.5 text-right">
+                      <div className="flex flex-wrap items-center justify-end gap-1">
+                        {warnTags.map((name) => (
+                          <span
+                            key={name}
+                            className={`rounded-sm px-1 py-0.5 text-[10px] ${badgeCls(name)}`}
+                            title="경고 발생 — 백테스트상 잔여 초과수익 급감(+3.8→+0.7%). 손절 신호 아님: 핵심 후보에 대체 종목 있으면 교체 검토"
+                          >
+                            {name}
+                          </span>
+                        ))}
+                        {broken ? (
+                          <span className="rounded-sm bg-down/15 px-1.5 py-0.5 text-[10px] text-down">흐름 약화</span>
+                        ) : (
+                          <span className="rounded-sm bg-accent/10 px-1.5 py-0.5 text-[10px] text-accent">유지</span>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 )
