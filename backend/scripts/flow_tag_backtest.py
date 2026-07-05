@@ -10,6 +10,10 @@
   - Rank IC: 날짜별 횡단면 스피어만(신호 vs fwd), 날짜 평균 + t값.
   - 태그: 날짜별 (태그군 평균 - 유니버스 평균) 스프레드 → 날짜를 관측단위로 t검정
     (횡단면 상관 부풀림 방지). 주간(5거래일) 리밸런스로 중첩 완화.
+  - ③ 조건부 Rank IC: 정렬축(sig) IC를 전체 / f120>0(장기정합 게이트 ON) /
+    f120<=0 서브셋에서 각각 측정 → 장기 지속성 축이 정렬 품질을 실제로 개선하는지.
+  - ④ 일관성(순매수일 비율) 후보: cons120 단독 Rank IC + (f120>0 & cons120>=0.5)
+    이중 게이트 IC로 일관성 게이트가 합계 게이트에 추가 가치를 주는지 측정.
 
 정규화 주: 프로덕션 지표는 유통시총(유통비율×시총) 분모지만, 백테스트는
 floating_shares as-of 조인(2026-05-21~ NULL 이슈)을 피해 **market_cap**을 분모
@@ -36,7 +40,7 @@ YEARS = 2.0  # 룩백 기간. 0.5~3년 비교 결과 2년이 Rank IC 최강(t7.1
 ADV_MIN = 1_000_000_000      # 일평균 거래대금 10억 이상 (거래 가능 유니버스)
 MCAP_MIN = 50_000_000_000    # 시총 500억 이상
 REBAL_EVERY = 5              # 리밸런스 간격 (거래일) — 주간
-HORIZONS = [5, 20, 60]       # 보유일수
+HORIZONS = [5, 20, 60, 120]  # 보유일수 (120=중장기 지속성 축 측정용, 2년 룩백에선 마지막 ~6개월 fwd가 NaN → 날짜수 감소는 정상)
 
 
 async def _fetch(years: float = YEARS) -> tuple[pd.DataFrame, ...]:
@@ -108,6 +112,8 @@ def _build_panel(it_df, ohlcv_df, mc_df) -> pd.DataFrame:
         return g[col].transform(lambda s: s.rolling(n, min_periods=n).sum())
 
     df["f5"] = rsum("f", 5); df["f20"] = rsum("f", 20); df["f60"] = rsum("f", 60); df["f120"] = rsum("f", 120)
+    # 순매수일 비율(일관성): rolling 120일 중 외인 순매수일(f>0) 비율
+    df["cons120"] = g["f"].transform(lambda s: (s > 0).rolling(120, min_periods=120).mean())
     df["i5"] = rsum("i", 5); df["i20"] = rsum("i", 20)
     df["r5"] = rsum("r", 5)
     df["tv5"] = rsum("tv", 5)
@@ -140,8 +146,29 @@ def _signals_tags(df: pd.DataFrame) -> pd.DataFrame:
     df["T_동시함정"] = both & (df["i5"] < 0)
     # 매도·이탈 후보
     df["T_매집후이탈"] = (df["f120"] > 0) & (df["f20"] < 0)                  # 장기매집+ 최근 외인 이탈 → 검증상 강세(눌림)
+    df["T_지속매집"] = (df["f120"] > 0) & (df["cons120"] >= 0.5) & (df["f20"] > 0)  # 장기 순매수 + 과반수 매수일 + 최근도 매집 (지속성 후보)
     df["T_동반순매도"] = (df["f20"] < 0) & (df["i20"] < 0) & (df["f120"] <= 0)  # 장기매집 없는 순수 동반 이탈 → 약세
     return df
+
+
+def _rank_ic(d: pd.DataFrame, sig_col: str, h: int, mask: pd.Series | None = None) -> tuple[float, float, int, float]:
+    """날짜별 횡단면 Rank IC(sig_col vs fwd{h})의 (평균, t값, 날짜수, 평균종목수/일).
+
+    mask가 주어지면 해당 서브셋에 한정해 계산. 날짜별 최소 종목수 20 미달 날짜는 skip
+    (서브셋이라 미달 날짜가 늘 수 있으며 그대로 제외).
+    """
+    src = d if mask is None else d[mask]
+    ics, counts = [], []
+    for _, grp in src.groupby("time"):
+        sub = grp[[sig_col, f"fwd{h}"]].dropna()
+        if len(sub) >= 20:
+            ics.append(sub[sig_col].rank().corr(sub[f"fwd{h}"].rank()))
+            counts.append(len(sub))
+    ics = np.array(ics, dtype=float)
+    mean = float(ics.mean()) if len(ics) else np.nan
+    t = ics.mean() / (ics.std(ddof=1) / np.sqrt(len(ics))) if len(ics) > 1 else np.nan
+    avg_n = float(np.mean(counts)) if counts else 0.0
+    return mean, float(t), len(ics), avg_n
 
 
 def _evaluate(df: pd.DataFrame) -> None:
@@ -157,14 +184,8 @@ def _evaluate(df: pd.DataFrame) -> None:
     print("-" * 78)
     print(f"{'h(보유일)':>9} {'RankIC':>9} {'t값':>7} {'날짜수':>7}")
     for h in HORIZONS:
-        ics = []
-        for _, grp in d.groupby("time"):
-            sub = grp[["sig", f"fwd{h}"]].dropna()
-            if len(sub) >= 20:
-                ics.append(sub["sig"].rank().corr(sub[f"fwd{h}"].rank()))
-        ics = np.array(ics, dtype=float)
-        t = ics.mean() / (ics.std(ddof=1) / np.sqrt(len(ics))) if len(ics) > 1 else np.nan
-        print(f"{h:>9} {ics.mean():>9.4f} {t:>7.2f} {len(ics):>7}")
+        ic, t, nd, _ = _rank_ic(d, "sig", h)
+        print(f"{h:>9} {ic:>9.4f} {t:>7.2f} {nd:>7}")
 
     for h in HORIZONS:
         print("\n" + "=" * 78)
@@ -193,6 +214,39 @@ def _evaluate(df: pd.DataFrame) -> None:
         for tag, ex, t, hit, cnt, nd in sorted(rows, key=lambda x: -x[2]):
             flag = "  ✅" if t > 2 else ("  ~" if t > 1 else "")
             print(f"{tag:<18} {ex:>9.2f} {t:>7.2f} {hit:>7.1f} {cnt:>11.1f} {nd:>7}{flag}")
+
+    # ③ 조건부 Rank IC — 장기 정합(f120) 게이트가 정렬축(sig) 품질을 개선하는가
+    m_on = d["f120"] > 0            # 장기 정합 게이트 ON (화면 "장기 정합만" 필터)
+    m_off = d["f120"] <= 0         # 장기 비정합
+    print("\n" + "=" * 78)
+    print("③ 조건부 Rank IC  (정렬축 sig 를 f120 서브셋별로)  — (b)>(a)·유의면 장기게이트가 정렬 품질 개선")
+    print("-" * 78)
+    print(f"{'h':>4} │ {'(a)전체':>8} {'t':>6} {'날짜':>5} {'종목/일':>7} │ "
+          f"{'(b)f120>0':>9} {'t':>6} {'날짜':>5} {'종목/일':>7} │ "
+          f"{'(c)f120<=0':>10} {'t':>6} {'날짜':>5} {'종목/일':>7}")
+    for h in HORIZONS:
+        a = _rank_ic(d, "sig", h)
+        b = _rank_ic(d, "sig", h, m_on)
+        c = _rank_ic(d, "sig", h, m_off)
+        print(f"{h:>4} │ {a[0]:>8.4f} {a[1]:>6.2f} {a[2]:>5} {a[3]:>7.0f} │ "
+              f"{b[0]:>9.4f} {b[1]:>6.2f} {b[2]:>5} {b[3]:>7.0f} │ "
+              f"{c[0]:>10.4f} {c[1]:>6.2f} {c[2]:>5} {c[3]:>7.0f}")
+    print("해석: (b)의 IC가 (a)보다 높고 유의(|t|>2)하면 장기 게이트가 정렬 품질을 실제로 개선.")
+
+    # ④ 일관성(순매수일 비율) 후보 지표
+    print("\n" + "=" * 78)
+    print("④ 일관성 cons120 (외인 순매수일 비율, rolling120)  — 단독 예측력 + 이중 게이트 추가 가치")
+    print("-" * 78)
+    m_dbl = (d["f120"] > 0) & (d["cons120"] >= 0.5)   # 합계 게이트 + 일관성 게이트
+    print(f"{'h':>4} │ {'(i)cons120 IC':>13} {'t':>6} {'날짜':>5} {'종목/일':>7} │ "
+          f"{'(ii)이중게이트 sig IC':>20} {'t':>6} {'날짜':>5} {'종목/일':>7}")
+    for h in HORIZONS:
+        i = _rank_ic(d, "cons120", h)
+        ii = _rank_ic(d, "sig", h, m_dbl)
+        print(f"{h:>4} │ {i[0]:>13.4f} {i[1]:>6.2f} {i[2]:>5} {i[3]:>7.0f} │ "
+              f"{ii[0]:>20.4f} {ii[1]:>6.2f} {ii[2]:>5} {ii[3]:>7.0f}")
+    print("해석: (i) cons120 IC가 양·유의면 일관성 자체가 신호. "
+          "(ii)가 ③(b)보다 높으면 일관성 게이트가 합계 게이트에 추가 가치. 태그 T_지속매집은 ②표 참조.")
 
 
 # flow_ai `_assess`와 **정확히 동일한** 런타임 조건 — 저장 수치가 실제 적용 조건의 edge가 되도록.
