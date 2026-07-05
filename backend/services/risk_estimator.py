@@ -83,6 +83,7 @@ async def _fetch_stock_returns(
     rows = (await session.execute(text(
         "SELECT stock_code, time, adj_close FROM ohlcv_daily "
         "WHERE stock_code = ANY(:codes) AND time BETWEEN :s AND :e "
+        "AND adj_close IS NOT NULL "
         "ORDER BY stock_code, time"
     ), {"codes": stock_codes, "s": earliest, "e": latest})).all()
 

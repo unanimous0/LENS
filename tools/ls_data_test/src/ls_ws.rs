@@ -17,9 +17,9 @@ use crate::auth;
 use crate::config::Config;
 use crate::state::{now_us, WsEvent};
 
-/// rustls ClientConfig: TLS 1.2만 허용.
-/// LS API WS 서버(9443)가 TLS 1.3 ClientHello를 거부함.
-/// native-tls의 max_protocol_version 설정이 이 Linux/OpenSSL 환경에서 무효 → rustls로 교체.
+/// rustls ClientConfig: TLS 1.2 + 1.3 허용.
+/// 이전: TLS 1.2만 강제 → 2026-05-26 기준 LS API 서버가 TLS 1.2를 타임아웃으로 처리.
+/// TLS 1.3 ClientHello는 Server hello를 받아 핸드쉐이크 진행 → 양쪽 다 허용.
 ///
 /// rustls 0.23: builder() → WantsVerifier (프로토콜 선택 불가)
 ///              builder_with_provider() → WantsProtocol → with_protocol_versions() 가능
@@ -34,11 +34,13 @@ fn make_tls_config() -> Result<Arc<rustls::ClientConfig>, String> {
         root_store.add(cert).ok();
     }
 
-    // ring crypto provider로 TLS 1.2 전용 config 구성
+    // ring crypto provider로 TLS 1.2 + 1.3 config 구성.
+    // LS API 서버가 2026-05 기준으로 TLS 1.3으로 업그레이드된 것으로 보임.
+    // TLS 1.2만 강제하면 타임아웃 발생 → 양쪽 다 허용하여 서버 선택에 맡김.
     let provider = Arc::new(rustls::crypto::ring::default_provider());
     let config = rustls::ClientConfig::builder_with_provider(provider)
-        .with_protocol_versions(&[&rustls::version::TLS12])
-        .map_err(|e| format!("TLS 1.2 config error: {e}"))?
+        .with_protocol_versions(&[&rustls::version::TLS12, &rustls::version::TLS13])
+        .map_err(|e| format!("TLS config error: {e}"))?
         .with_root_certificates(root_store)
         .with_no_client_auth();
 
