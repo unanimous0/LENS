@@ -141,8 +141,14 @@ const BULL_PATTERNS = ['장기동시', '정석(동시+진입권)', '진입권', 
 const WARN_PATTERNS = ['분배', '단기반등', '동반순매도']
 
 // 요약 스트립 칩 필터 — 각 predicate는 summary 카운트 계산식과 동일해야 함(카운트=표시 행수 일치).
-type ChipId = 'strong' | 'entry' | 'exit' | 'both' | 'trend' | 'dist'
+type ChipId = 'core' | 'strong' | 'entry' | 'exit' | 'both' | 'trend' | 'dist'
 const CHIP_PRED: Record<ChipId, (r: FlowRow) => boolean> = {
+  // 핵심 후보 = 장기동시(4중 겹침) & 진입권 & 경고 태그 전무 — 백테스트 T_핵심A(h60 +5.3% t5.3,
+  // h120 +12.6% t6.5, ~31종목/일) 검증 게이트. 백엔드 정본 필드 조합이라 새 공식 아님.
+  core: (r) => {
+    const p = r.patterns ?? []
+    return p.includes('장기동시') && r.entry_ok && !WARN_PATTERNS.some((x) => p.includes(x))
+  },
   // 강세 후보 = 검증 강세 태그 1개 이상 존재 AND 경고 태그 전무. 정렬 아닌 후보 풀.
   strong: (r) => {
     const p = r.patterns ?? []
@@ -281,6 +287,7 @@ export function StockFlowPage() {
       total: rows.length,
       buyFav,
       sellFav: rows.length - buyFav,
+      core: rows.filter(CHIP_PRED.core).length,
       strong: rows.filter(CHIP_PRED.strong).length,
       entry: rows.filter((r) => r.entry_ok).length,
       exit: rows.filter((r) => r.exit_ok).length,
@@ -389,6 +396,13 @@ export function StockFlowPage() {
             <span className="text-t4"> / 순매도 </span>
             <span className="font-semibold text-down">{summary.sellFav}</span>
           </span>
+          <Chip
+            active={chip === 'core'}
+            onClick={() => toggleChip('core')}
+            title="장기동시(외인·기관 20일·120일 순매수) + 진입권(규모·지속성 임계) + 경고 없음 — 백테스트: 이후 60일 시장 대비 평균 +5.3%(t5.3), 120일 +12.6%(t6.5), 하루 평균 ~31종목. 풀 안 순위는 예측력 없음 — 후보 풀로 볼 것"
+          >
+            <span className="font-semibold text-accent">핵심 후보 {summary.core}</span>
+          </Chip>
           <Chip
             active={chip === 'strong'}
             onClick={() => toggleChip('strong')}
@@ -686,7 +700,12 @@ export function StockFlowPage() {
                 const isSel = selected?.code === r.code
                 // 태그·판정 통합 — canonical 패턴 멤버십(r.patterns, 백엔드 정본)을 verdict의
                 // 검증 edge로 매핑. 검증 통과분은 edge 병기, 미검증분은 정적 뱃지. NEW·매도권은 패턴 외 별도.
-                const patterns = r.patterns ?? []
+                // 검증 미달 패턴은 뱃지에서 제외 — edges에 없거나 |t|<2면 방향 주장 불가(노이즈).
+                // edges 기준 동적 필터(패턴명 하드코딩 금지) → 나중에 검증 통과하면 자동 재등장.
+                const patterns = (r.patterns ?? []).filter((name) => {
+                  const e = data?.edges?.[name]
+                  return !!e && Math.abs(e.t) >= 2
+                })
                 const vmap = new Map<string, VerdictPattern>()
                 if (r.verdict) {
                   vmap.set(r.verdict.pattern, r.verdict)
