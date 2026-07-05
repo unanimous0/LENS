@@ -135,9 +135,19 @@ const PATTERN_TIP: Record<string, string> = {
   NEW: '신규 진입 — 최근 편입 종목',
 }
 
+// 강세 후보 칩 — canonical 패턴 멤버십(r.patterns, 백엔드 flow_verdict.applicable_patterns 정본)
+// 기반. 새 공식 아님. 이름은 바이트 일치 필수(TAG_LEGEND·flow_verdict.py와 동일).
+const BULL_PATTERNS = ['장기동시', '정석(동시+진입권)', '진입권', '추세순항', '매집주 눌림']
+const WARN_PATTERNS = ['분배', '단기반등', '동반순매도']
+
 // 요약 스트립 칩 필터 — 각 predicate는 summary 카운트 계산식과 동일해야 함(카운트=표시 행수 일치).
-type ChipId = 'entry' | 'exit' | 'both' | 'trend' | 'dist'
+type ChipId = 'strong' | 'entry' | 'exit' | 'both' | 'trend' | 'dist'
 const CHIP_PRED: Record<ChipId, (r: FlowRow) => boolean> = {
+  // 강세 후보 = 검증 강세 태그 1개 이상 존재 AND 경고 태그 전무. 정렬 아닌 후보 풀.
+  strong: (r) => {
+    const p = r.patterns ?? []
+    return BULL_PATTERNS.some((x) => p.includes(x)) && !WARN_PATTERNS.some((x) => p.includes(x))
+  },
   entry: (r) => r.entry_ok,
   exit: (r) => r.exit_ok,
   both: (r) => r.both_20d,
@@ -257,18 +267,10 @@ export function StockFlowPage() {
     return chip || search.trim() ? sorted : sorted.slice(0, SHOW_LIMIT)
   }, [data, direction, longOnly, excludeLongAccum, search, sortKey, sortAsc, chip])
 
-  // 외인 20D 매집% 히트 컬러 임계값 — 표시 대상(visible) 내 분위 기준. 양/음 분리 대칭.
-  const heat = useMemo(() => {
-    const q = (arr: number[], p: number) => (arr.length ? arr[Math.floor(p * (arr.length - 1))] : null)
-    const pos = visible.map((r) => r.f_20d_bp).filter((v) => v > 0).sort((a, b) => a - b)
-    const neg = visible.map((r) => r.f_20d_bp).filter((v) => v < 0).sort((a, b) => a - b)
-    return {
-      posP90: q(pos, 0.9), // 상위 10% (진하게)
-      posP75: q(pos, 0.75), // 상위 25% (옅게)
-      negP10: q(neg, 0.1), // 하위 10% (진하게) — neg 오름차순이라 앞쪽이 가장 음수
-      negP25: q(neg, 0.25), // 하위 25% (옅게)
-    }
-  }, [visible])
+  // 20D 매집% 히트 컬러 임계값 — 표시 대상(visible) 내 분위 기준. 외인·기관 각각 별도 산출
+  // (정렬 상태와 무관하게 각 주체의 강도를 파악하기 위해 외인 분위를 기관에 재사용하지 않음).
+  const heatF = useMemo(() => computeHeat(visible, (r) => r.f_20d_bp), [visible])
+  const heatI = useMemo(() => computeHeat(visible, (r) => r.i_20d_bp), [visible])
 
   // 요약 스트립 — 오늘 시장 수급의 전체 그림 (필터 전 전체 프리셋 기준)
   const summary = useMemo(() => {
@@ -279,6 +281,7 @@ export function StockFlowPage() {
       total: rows.length,
       buyFav,
       sellFav: rows.length - buyFav,
+      strong: rows.filter(CHIP_PRED.strong).length,
       entry: rows.filter((r) => r.entry_ok).length,
       exit: rows.filter((r) => r.exit_ok).length,
       both: rows.filter((r) => r.both_20d).length,
@@ -386,6 +389,13 @@ export function StockFlowPage() {
             <span className="text-t4"> / 순매도 </span>
             <span className="font-semibold text-down">{summary.sellFav}</span>
           </span>
+          <Chip
+            active={chip === 'strong'}
+            onClick={() => toggleChip('strong')}
+            title="검증된 강세 태그가 있고 경고 태그가 없는 종목. 풀 안의 정렬 순서는 예측력이 없으므로(백테스트) 순위가 아니라 후보 풀로 볼 것."
+          >
+            강세 후보 <span className="font-semibold text-accent">{summary.strong}</span>
+          </Chip>
           <Chip active={chip === 'entry'} onClick={() => toggleChip('entry')}>
             진입권 <span className="font-semibold text-warning">{summary.entry}</span>
           </Chip>
@@ -577,7 +587,7 @@ export function StockFlowPage() {
                   cur={sortKey}
                   asc={sortAsc}
                   onClick={sortClick}
-                  tip={{ title: '연속', body: '외국인 순매수(+)/순매도(−) 연속 영업일 수. 지속성 판단.' }}
+                  tip={{ title: '연속', body: '외국인 순매수(+)/순매도(−) 연속 거래일 수. 지속성 판단.' }}
                 >
                   연속
                 </SortTh>
@@ -586,7 +596,7 @@ export function StockFlowPage() {
                   cur={sortKey}
                   asc={sortAsc}
                   onClick={sortClick}
-                  tip={{ title: '외인 5D', body: '외국인 최근 5일 순매수 합 (억원). 단기 유입 세기.' }}
+                  tip={{ title: '외인 5D', body: '외국인 최근 5거래일 순매수 합 (억원). 단기 유입 세기.' }}
                 >
                   외인 5D
                 </SortTh>
@@ -600,7 +610,8 @@ export function StockFlowPage() {
                     title: '외인 20D 매집% (정렬 기본축)',
                     body: (
                       <>
-                        <div>외국인 20일 누적 순매수 ÷ 유통시총. 아래 작은 값=120일(반년) 장기 추세: 20D는 +인데 120D가 −면 단기 반등.</div>
+                        <div>외국인 20거래일 누적 순매수 ÷ 유통시총. 아래 작은 값=120거래일(반년) 장기 추세: 20D는 +인데 120D가 −면 단기 반등.</div>
+                        <div className="mt-1 text-t3">배경 음영 = 현재 표시된 종목 내 분위(상·하위 10% 진하게, 25% 옅게).</div>
                         <div className="mt-1 text-warning">
                           정렬 ≠ 추천 — 수급 강도 순서일 뿐 매수 매력 순위가 아님. 상위권 내 세부 순위는 예측력이
                           없음이 측정됨(조건부 IC ≈ 0). 종목 판단은 판정·태그 기준.
@@ -621,7 +632,12 @@ export function StockFlowPage() {
                   align="right"
                   tip={{
                     title: '기관 20D 매집%',
-                    body: '기관 20일 누적 순매수 ÷ 유통시총 (연기금 포함). 아래 작은 값=120일(반년) 장기 추세.',
+                    body: (
+                      <>
+                        <div>기관 20거래일 누적 순매수 ÷ 유통시총 (연기금 포함). 아래 작은 값=120거래일(반년) 장기 추세.</div>
+                        <div className="mt-1 text-t3">배경 음영 = 현재 표시된 종목 내 분위(상·하위 10% 진하게, 25% 옅게). 외인과 별개로 기관 값 기준 산출.</div>
+                      </>
+                    ),
                   }}
                 >
                   기관 20D%
@@ -635,7 +651,7 @@ export function StockFlowPage() {
                   align="right"
                   tip={{
                     title: '흡수율',
-                    body: '최근 5일 (외인+기관) 순매수 ÷ 거래대금. 높을수록 진성 매집 — 낮으면 소음.',
+                    body: '최근 5거래일 (외인+기관) 순매수 ÷ 거래대금. 높을수록 진성 매집 — 낮으면 소음.',
                   }}
                 >
                   흡수율
@@ -646,7 +662,7 @@ export function StockFlowPage() {
                   asc={sortAsc}
                   onClick={sortClick}
                   align="right"
-                  tip={{ title: '20D 수익률', body: '수정종가 기준 20일 수익률 (20일 전 대비).' }}
+                  tip={{ title: '20D 수익률', body: '20거래일(약 한 달) 전 종가 대비 수익률, 수정주가 기준.' }}
                 >
                   20D 수익률
                 </SortTh>
@@ -707,7 +723,7 @@ export function StockFlowPage() {
                     <td className="whitespace-nowrap px-3 py-1.5 text-right text-t2">
                       {Math.round(r.float_mcap_eok).toLocaleString()}억
                     </td>
-                    <td className="px-3 py-1.5">
+                    <td className="py-1.5 pl-6 pr-3">
                       <div className="flex flex-wrap items-center gap-1">
                         {r.is_new && <Badge name="NEW" tip={PATTERN_TIP.NEW} />}
                         {patterns.map((name) => {
@@ -730,13 +746,13 @@ export function StockFlowPage() {
                       {r.f_streak > 0 ? `+${r.f_streak}D` : r.f_streak < 0 ? `${r.f_streak}D` : '—'}
                     </td>
                     <td className={`px-3 py-1.5 text-right ${signCls(r.f_5d_eok)}`}>{fmtEok(r.f_5d_eok)}</td>
-                    <td className={`px-3 py-1.5 text-right ${heatCls(r.f_20d_bp, heat)}`}>
+                    <td className={`px-3 py-1.5 text-right ${heatCls(r.f_20d_bp, heatF)}`}>
                       <div className={`font-semibold ${signCls(r.f_20d_bp)}`}>{fmtPct(r.f_20d_bp)}</div>
                       <div className={`text-[10px] ${signCls(r.f_120d_bp)}`}>
                         120D {fmtPct(r.f_120d_bp)}
                       </div>
                     </td>
-                    <td className="px-3 py-1.5 text-right">
+                    <td className={`px-3 py-1.5 text-right ${heatCls(r.i_20d_bp, heatI)}`}>
                       <div className={signCls(r.i_20d_bp)}>{fmtPct(r.i_20d_bp)}</div>
                       <div className={`text-[10px] ${signCls(r.i_120d_bp)}`}>
                         120D {fmtPct(r.i_120d_bp)}
@@ -801,8 +817,8 @@ function SortTh({
   return (
     <th
       onClick={() => onClick(k)}
-      className={`group relative cursor-pointer select-none px-3 py-2 font-normal hover:text-t1 ${
-        headLeft ? 'text-left' : 'text-right'
+      className={`group relative cursor-pointer select-none py-2 font-normal hover:text-t1 ${
+        headLeft ? 'pl-6 pr-3 text-left' : 'px-3 text-right'
       } ${active || bright ? 'text-t1' : ''}`}
     >
       {children} <span className="text-t3">{active ? (asc ? '▲' : '▼') : '↕'}</span>
@@ -870,15 +886,18 @@ function Badge({
 function Chip({
   active,
   onClick,
+  title,
   children,
 }: {
   active: boolean
   onClick: () => void
+  title?: string
   children: ReactNode
 }) {
   return (
     <button
       onClick={onClick}
+      title={title}
       className={`rounded-sm border px-1.5 py-0.5 transition-colors ${
         active
           ? 'border-accent bg-accent/20 text-t1'
@@ -913,7 +932,19 @@ function Tip({
 }
 
 type Heat = { posP90: number | null; posP75: number | null; negP10: number | null; negP25: number | null }
-/** 외인 20D 매집% 히트 배경 — 표시 대상 내 분위. 상위/하위 10%=진하게, 25%=옅게. 낮은 opacity로 가독성 유지. */
+/** 표시 대상 내 분위 임계값 산출 — 컬럼 값 getter를 받아 외인·기관 등 임의 컬럼에 재사용. 양/음 분리 대칭. */
+function computeHeat(rows: FlowRow[], get: (r: FlowRow) => number): Heat {
+  const q = (arr: number[], p: number) => (arr.length ? arr[Math.floor(p * (arr.length - 1))] : null)
+  const pos = rows.map(get).filter((v) => v > 0).sort((a, b) => a - b)
+  const neg = rows.map(get).filter((v) => v < 0).sort((a, b) => a - b)
+  return {
+    posP90: q(pos, 0.9), // 상위 10% (진하게)
+    posP75: q(pos, 0.75), // 상위 25% (옅게)
+    negP10: q(neg, 0.1), // 하위 10% (진하게) — neg 오름차순이라 앞쪽이 가장 음수
+    negP25: q(neg, 0.25), // 하위 25% (옅게)
+  }
+}
+/** 20D 매집% 히트 배경 — 표시 대상 내 분위. 상위/하위 10%=진하게, 25%=옅게. 낮은 opacity로 가독성 유지. */
 function heatCls(v: number, h: Heat): string {
   if (v > 0 && h.posP90 != null) {
     if (v >= h.posP90) return 'bg-up/20'
