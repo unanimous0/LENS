@@ -451,30 +451,137 @@ export function StockFlowPage() {
           <Chip
             active={chip === 'core'}
             onClick={() => toggleChip('core')}
-            title="장기동시(외인·기관 20일·120일 순매수) + 진입권(규모·지속성 임계) + 경고 없음 — 백테스트: 이후 60일 시장 대비 평균 +5.3%(t5.3), 120일 +12.6%(t6.5), 하루 평균 ~31종목. 풀 안 순위는 예측력 없음 — 후보 풀로 볼 것"
+            tip={{
+              title: '핵심 후보 — 검증된 최상위 풀',
+              body: (
+                <>
+                  <div>
+                    <span className="text-t4">조건 </span>장기동시(외인·기관 20일·120일 순매수) + 진입권(규모·지속성) + 경고 태그 없음
+                  </div>
+                  <div className="mt-1">
+                    <span className="text-t4">근거 </span>과거 2년, 이후 60일 시장 대비 평균 +5.3%(t5.3) · 120일 +12.6%(t6.5) · 하루 ~31종목
+                  </div>
+                  <div className="mt-1 text-t3">
+                    <span className="text-t4">주의 </span>풀 안 순위는 예측력 없음 — 순위표 아님, 후보 풀로 볼 것
+                  </div>
+                </>
+              ),
+            }}
           >
-            <span className="font-semibold text-accent">핵심 후보 {summary.core}</span>
+            핵심 후보 <span className="font-semibold text-accent">{summary.core}</span>
           </Chip>
           <Chip
             active={chip === 'strong'}
             onClick={() => toggleChip('strong')}
-            title="검증된 강세 태그가 있고 경고 태그가 없는 종목. 풀 안의 정렬 순서는 예측력이 없으므로(백테스트) 순위가 아니라 후보 풀로 볼 것."
+            tip={{
+              title: '강세 후보 — 검증 강세 태그 보유',
+              body: (
+                <>
+                  <div>
+                    <span className="text-t4">조건 </span>검증 강세 태그(장기동시·정석·진입권·추세순항·매집주 눌림) 1개↑ + 경고 태그 없음
+                  </div>
+                  <div className="mt-1">
+                    <span className="text-t4">근거 </span>풀 안 정렬 순위는 예측력 없음(조건부 IC≈0) — 순위 아닌 후보 풀
+                  </div>
+                </>
+              ),
+            }}
           >
-            강세 후보 <span className="font-semibold text-accent">{summary.strong}</span>
+            강세 후보 <span className="font-semibold text-t1">{summary.strong}</span>
           </Chip>
-          <Chip active={chip === 'entry'} onClick={() => toggleChip('entry')}>
-            진입권 <span className="font-semibold text-warning">{summary.entry}</span>
+          <Chip
+            active={chip === 'entry'}
+            onClick={() => toggleChip('entry')}
+            tip={{
+              title: '진입권 — 규모·지속성 게이트',
+              body: (
+                <>
+                  <div>
+                    <span className="text-t4">조건 </span>외인 20D ≥ 15bp + 지속성(연속 3D↑ 또는 5D가 일평균 거래대금 30%↑)
+                  </div>
+                  <div className="mt-1">
+                    <span className="text-t4">근거 </span>이벤트성 스파이크 배제 — 진성 매집만 통과
+                  </div>
+                </>
+              ),
+            }}
+          >
+            진입권 <span className="font-semibold text-t1">{summary.entry}</span>
           </Chip>
-          <Chip active={chip === 'exit'} onClick={() => toggleChip('exit')}>
-            매도권 <span className="font-semibold text-down">{summary.exit}</span>
+          <Chip
+            active={chip === 'exit'}
+            onClick={() => toggleChip('exit')}
+            tip={{
+              title: '매도권 — 이탈 게이트',
+              body: (
+                <>
+                  <div>
+                    <span className="text-t4">조건 </span>외인 20D ≤ −15bp + 지속성(연속 3D↓ 또는 5D 순매도가 일평균 거래대금 30%↑)
+                  </div>
+                  <div className="mt-1">
+                    <span className="text-t4">근거 </span>이벤트성 스파이크 배제 — 지속적 이탈만 표시
+                  </div>
+                </>
+              ),
+            }}
+          >
+            매도권 <span className="font-semibold text-warning">{summary.exit}</span>
           </Chip>
-          <Chip active={chip === 'both'} onClick={() => toggleChip('both')}>
-            외인·기관 동시매수 <span className="font-semibold text-accent">{summary.both}</span>
+          <Chip
+            active={chip === 'both'}
+            onClick={() => toggleChip('both')}
+            tip={{
+              title: '동시매수 — 외인·기관 동반',
+              body: (
+                <>
+                  <div>
+                    <span className="text-t4">조건 </span>외인·기관 20D 동반 순매수
+                  </div>
+                  <div className="mt-1">
+                    <span className="text-t4">근거 </span>단독보다 강한 동반 수급 — 정석·추세순항의 토대
+                  </div>
+                </>
+              ),
+            }}
+          >
+            외인·기관 동시매수 <span className="font-semibold text-t1">{summary.both}</span>
           </Chip>
-          <Chip active={chip === 'trend'} onClick={() => toggleChip('trend')}>
-            추세순항 <span className="font-semibold text-accent">{summary.trend}</span>
+          <Chip
+            active={chip === 'trend'}
+            onClick={() => toggleChip('trend')}
+            tip={{
+              title: '추세순항 — 상승 동반 매집',
+              body: (
+                <>
+                  <div>
+                    <span className="text-t4">조건 </span>외인·기관 20D 동시 순매수 + 20D 주가 상승
+                  </div>
+                  <div className="mt-1">
+                    <span className="text-t4">근거 </span>상승추세에도 매집 지속 — 검증 통과한 양의 강세 태그
+                  </div>
+                </>
+              ),
+            }}
+          >
+            추세순항 <span className="font-semibold text-t1">{summary.trend}</span>
           </Chip>
-          <Chip active={chip === 'dist'} onClick={() => toggleChip('dist')}>
+          <Chip
+            active={chip === 'dist'}
+            onClick={() => toggleChip('dist')}
+            tip={{
+              title: '분배 의심 — 조용한 물량 이전',
+              body: (
+                <>
+                  <div>
+                    <span className="text-t4">조건 </span>최근 5일 외인 순매도 + 주가 방어(5D −2% 이내) + 개인이 물량 받음
+                  </div>
+                  <div className="mt-1">
+                    <span className="text-t4">근거 </span>경고 태그 — 이후 60일 초과수익 급감(로테이션 신호). 20·120일 매집과 공존 가능
+                  </div>
+                </>
+              ),
+            }}
+          >
             분배 의심 <span className="font-semibold text-warning">{summary.dist}</span>
           </Chip>
           {chip && (
@@ -526,6 +633,27 @@ export function StockFlowPage() {
                 </div>
               )
             })}
+          </div>
+          <div className="mt-4 border-t border-bg-surface pt-3">
+            <div className="mb-2 font-medium text-t2">보유·매도 가이드 (백테스트)</div>
+            <ul className="flex flex-col gap-1.5 text-t3">
+              <li>
+                <span className="text-t2">매수 태그 종목은 ~120거래일(약 반년) 보유가 최적</span> — 알파가 120거래일까지
+                계속 쌓임(핵심 후보는 61~120일 구간이 처음 60일보다 더 큼: +6.5% vs +5.3%).
+              </li>
+              <li>
+                <span className="text-t2">태그가 며칠 꺼지는 건 소음</span> — 20일 합계가 0 근처에서 토글되는 것.
+                무시하고 보유 유지.
+              </li>
+              <li>
+                <span className="text-warning">경고 태그(분배·동반순매도·단기반등) 발생 = 손절 아닌 로테이션 신호</span> —
+                이후 60일 초과수익 +3.8%→+0.7%로 급감하지만 마이너스는 아님. 핵심 후보에 대체 종목 있으면 교체,
+                없으면 보유.
+              </li>
+              <li className="text-t4">
+                위 % 는 모두 &ldquo;같은 기간 시장(유니버스 평균) 대비 초과수익&rdquo;.
+              </li>
+            </ul>
           </div>
           <div className="mt-3 border-t border-bg-surface/50 pt-2 text-[11px] leading-relaxed text-t4">
             초과수익 = 과거 2년, 해당 태그 종목의 이후 60일 시장(유니버스 평균) 대비. 검증 기준일{' '}
@@ -609,9 +737,9 @@ export function StockFlowPage() {
                       {fmtPct(r.f_20d_bp)}
                     </td>
                     <td className="whitespace-nowrap px-3 py-1.5 text-right text-t2">
-                      어제 <span className={signCls(r.y_f_eok)}>{fmtEok(r.y_f_eok)}</span>
+                      어제 {fmtEok(r.y_f_eok)}
                       <span className="text-t3"> / </span>
-                      <span className={signCls(r.y_i_eok)}>{fmtEok(r.y_i_eok)}</span>
+                      {fmtEok(r.y_i_eok)}
                     </td>
                     <td className="px-2 py-1.5 text-right">
                       <div className="flex flex-wrap items-center justify-end gap-1">
@@ -686,8 +814,7 @@ export function StockFlowPage() {
                   cur={sortKey}
                   asc={sortAsc}
                   onClick={sortClick}
-                  align="center"
-                  headLeft
+                  align="right"
                   tip={{
                     title: '태그·판정 (검증 초과수익)',
                     body: '백테스트로 검증한 수급 패턴 뱃지. 초록=강세 검증(장기동시가 최상위), 빨강=약세, 주황=경고, 파랑=신규. 검증 통과(|t|≥2) 패턴은 뱃지 안에 초과수익 %(과거 2년, 이후 60일 유니버스 평균 대비)를 병기하며 hover 시 t값·근거 표시. 정렬은 대표 패턴 초과수익 기준. 개별 종목 보장이 아닌 패턴 평균.',
@@ -709,9 +836,12 @@ export function StockFlowPage() {
                   cur={sortKey}
                   asc={sortAsc}
                   onClick={sortClick}
-                  tip={{ title: '외인 5D', body: '외국인 최근 5거래일 순매수 합 (억원). 단기 유입 세기.' }}
+                  tip={{
+                    title: '5D (외/기)',
+                    body: '외국인 / 기관 최근 5거래일 순매수 합 (억원). 단기 유입 세기 — 외인 기준 정렬.',
+                  }}
                 >
-                  외인 5D
+                  5D (외/기)
                 </SortTh>
                 <SortTh
                   k="f_20d_bp"
@@ -841,8 +971,8 @@ export function StockFlowPage() {
                     <td className="whitespace-nowrap px-3 py-1.5 text-right text-t2">
                       {Math.round(r.float_mcap_eok).toLocaleString()}억
                     </td>
-                    <td className="py-1.5 pl-6 pr-3">
-                      <div className="flex flex-wrap items-center gap-1">
+                    <td className="px-3 py-1.5">
+                      <div className="flex flex-wrap items-center justify-end gap-1">
                         {r.is_new && <Badge name="NEW" tip={PATTERN_TIP.NEW} />}
                         {patterns.map((name) => {
                           const vp = vmap.get(name)
@@ -863,18 +993,18 @@ export function StockFlowPage() {
                     <td className={`px-3 py-1.5 text-right ${streakCls}`}>
                       {r.f_streak > 0 ? `+${r.f_streak}D` : r.f_streak < 0 ? `${r.f_streak}D` : '—'}
                     </td>
-                    <td className={`px-3 py-1.5 text-right ${signCls(r.f_5d_eok)}`}>{fmtEok(r.f_5d_eok)}</td>
+                    <td className="whitespace-nowrap px-3 py-1.5 text-right text-t2">
+                      {fmtEok(r.f_5d_eok)}
+                      <span className="text-t3"> / </span>
+                      {fmtEok(r.i_5d_eok)}
+                    </td>
                     <td className={`px-3 py-1.5 text-right ${heatCls(r.f_20d_bp, heatF)}`}>
                       <div className={`font-semibold ${signCls(r.f_20d_bp)}`}>{fmtPct(r.f_20d_bp)}</div>
-                      <div className={`text-[10px] ${signCls(r.f_120d_bp)}`}>
-                        120D {fmtPct(r.f_120d_bp)}
-                      </div>
+                      <div className="text-[10px] text-t3">120D {fmtPct(r.f_120d_bp)}</div>
                     </td>
                     <td className={`px-3 py-1.5 text-right ${heatCls(r.i_20d_bp, heatI)}`}>
                       <div className={signCls(r.i_20d_bp)}>{fmtPct(r.i_20d_bp)}</div>
-                      <div className={`text-[10px] ${signCls(r.i_120d_bp)}`}>
-                        120D {fmtPct(r.i_120d_bp)}
-                      </div>
+                      <div className="text-[10px] text-t3">120D {fmtPct(r.i_120d_bp)}</div>
                     </td>
                     <td className="px-3 py-1.5 text-right text-t2">
                       {r.absorb_5d_pct != null ? `${r.absorb_5d_pct.toFixed(1)}%` : '—'}
@@ -883,9 +1013,9 @@ export function StockFlowPage() {
                       {r.ret_20d_pct != null ? `${r.ret_20d_pct > 0 ? '+' : ''}${r.ret_20d_pct.toFixed(1)}%` : '—'}
                     </td>
                     <td className="whitespace-nowrap px-3 py-1.5 text-right text-t2">
-                      <span className={signCls(r.y_f_eok)}>{fmtEok(r.y_f_eok)}</span>
+                      {fmtEok(r.y_f_eok)}
                       <span className="text-t3"> / </span>
-                      <span className={signCls(r.y_i_eok)}>{fmtEok(r.y_i_eok)}</span>
+                      {fmtEok(r.y_i_eok)}
                     </td>
                   </tr>
                 )
@@ -918,7 +1048,6 @@ function SortTh({
   tip,
   align = 'center',
   bright,
-  headLeft,
   children,
 }: {
   k: SortKey
@@ -928,16 +1057,15 @@ function SortTh({
   tip?: { title: string; body: ReactNode }
   align?: 'center' | 'right'
   bright?: boolean
-  headLeft?: boolean // 텍스트 컬럼(태그·판정) — 헤더도 좌측 정렬해 셀 내용과 맞춤
   children: ReactNode
 }) {
   const active = cur === k
   return (
     <th
       onClick={() => onClick(k)}
-      className={`group relative cursor-pointer select-none py-2 font-normal hover:text-t1 ${
-        headLeft ? 'pl-6 pr-3 text-left' : 'px-3 text-right'
-      } ${active || bright ? 'text-t1' : ''}`}
+      className={`group relative cursor-pointer select-none px-3 py-2 text-right font-normal hover:text-t1 ${
+        active || bright ? 'text-t1' : ''
+      }`}
     >
       {children} <span className="text-t3">{active ? (asc ? '▲' : '▼') : '↕'}</span>
       {tip && <Tip title={tip.title} body={tip.body} align={align} />}
@@ -1004,25 +1132,25 @@ function Badge({
 function Chip({
   active,
   onClick,
-  title,
+  tip,
   children,
 }: {
   active: boolean
   onClick: () => void
-  title?: string
+  tip?: { title: string; body: ReactNode }
   children: ReactNode
 }) {
   return (
     <button
       onClick={onClick}
-      title={title}
-      className={`rounded-sm border px-1.5 py-0.5 transition-colors ${
+      className={`group relative rounded-sm border px-1.5 py-0.5 transition-colors ${
         active
           ? 'border-accent bg-accent/20 text-t1'
           : 'border-transparent hover:bg-bg-surface/60'
       }`}
     >
       {children}
+      {tip && <Tip title={tip.title} body={tip.body} />}
     </button>
   )
 }
