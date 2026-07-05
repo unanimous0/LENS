@@ -58,6 +58,7 @@ type FlowRow = {
   short_bounce: boolean
   long_up: boolean
   is_new: boolean
+  patterns: string[] // canonical 패턴 멤버십 (백엔드 flow_verdict.applicable_patterns 정본, 배타 체인 순서)
   verdict: Verdict | null
 }
 
@@ -97,6 +98,7 @@ const TAG_STYLE: Record<string, string> = {
   동반순매도: 'bg-down/15 text-down',
   분배: 'bg-warning/20 text-warning',
   단기반등: 'bg-warning/15 text-warning',
+  '하락추세 매집': 'bg-warning/15 text-warning',
   NEW: 'bg-blue/20 text-blue',
 }
 
@@ -115,6 +117,33 @@ const PRESET_LABELS: Record<string, string> = {
 }
 
 const SHOW_LIMIT = 100
+
+// 뱃지 정적 설명 — 미검증(|t|<2) 패턴·edge 없는 뱃지(NEW/매도권)용 hover 텍스트.
+// 검증 통과 패턴은 여기 대신 PatternLine식 백테스트 툴팁(edge·t)을 뱃지 안에 표시.
+const PATTERN_TIP: Record<string, string> = {
+  장기동시: '장기동시: 외인·기관이 20일·120일 모두 순매수 (4중 겹침) — 검증된 최상위 조합',
+  '정석(동시+진입권)': '정석: 외인·기관 20D 동반 순매수 + 진입권(규모·지속성) 동시 충족 — 가장 강한 조합',
+  진입권: '진입권: 20D ≥ 15bp + 지속성(연속 3D↑ 또는 5D가 일평균 거래대금의 30%↑) — 이벤트성 스파이크 배제',
+  추세순항: '추세순항: 외인·기관 20D 동시 순매수 + 20D 주가 상승 — 상승추세 동반 매집',
+  동시: '동시: 외인·기관 20D 동반 순매수',
+  '매집주 눌림': '매집주 눌림: 반년간 순매수한 종목의 최근 20일 외인 이탈 — 과거엔 조정 매수 기회(강세)',
+  '하락추세 매집': '하락추세 매집: 외인·기관 장기 순매수 중 최근 20일 주가 하락 — 유의성 대개 미달, 참고용',
+  동반순매도: '동반순매도: 외국인·기관 둘 다 20D 이탈 (장기 매집 맥락 없음)',
+  분배: '분배 의심: 외인 5일 순매도 + 주가 방어(5D −2% 이내) + 개인이 물량 받음 — 조용히 무너지기 전 신호',
+  단기반등: '단기반등: 20일은 순매수지만 120일(반년)은 순매도 — 장기 분산 중 단기 반등. 장투 주의',
+  매도권: '매도권: 20D ≤ −15bp + 지속성(연속 3D↓ 또는 5D 순매도가 일평균 거래대금의 30%↑) — 이벤트성 스파이크 배제',
+  NEW: '신규 진입 — 최근 편입 종목',
+}
+
+// 요약 스트립 칩 필터 — 각 predicate는 summary 카운트 계산식과 동일해야 함(카운트=표시 행수 일치).
+type ChipId = 'entry' | 'exit' | 'both' | 'trend' | 'dist'
+const CHIP_PRED: Record<ChipId, (r: FlowRow) => boolean> = {
+  entry: (r) => r.entry_ok,
+  exit: (r) => r.exit_ok,
+  both: (r) => r.both_20d,
+  trend: (r) => r.trend_ride,
+  dist: (r) => r.is_distribution,
+}
 
 // 정렬 가능 컬럼 → FlowRow에서 값 뽑는 함수
 type SortKey =
@@ -144,6 +173,12 @@ export function StockFlowPage() {
   const [sortKey, setSortKey] = useState<SortKey>('f_20d_bp')
   const [sortAsc, setSortAsc] = useState(false)
   const [showLegend, setShowLegend] = useState(false) // 태그 설명 패널 토글
+  const [chip, setChip] = useState<ChipId | null>(null) // 요약 스트립 칩 필터 (라디오식, 한 번에 하나)
+  const toggleChip = (id: ChipId) => setChip((c) => (c === id ? null : id))
+  const pickDirection = (d: 'buy' | 'sell') => {
+    setDirection(d)
+    setChip(null) // 방향 전환 시 칩 필터 해제
+  }
 
   // 방향(매수/매도) 전환 시 기본 정렬 = 20D bp, 방향에 맞는 오름/내림
   const sortClick = (k: SortKey) => {
@@ -203,17 +238,24 @@ export function StockFlowPage() {
       const q = search.trim().toLowerCase()
       rows = rows.filter((r) => r.name.toLowerCase().includes(q) || r.code.includes(q))
     }
-    // 장기 정합(장투 모드): 120일도 순매수인 종목만 — "장기 분산+단기 반등" 제거
-    if (longOnly && direction === 'buy') rows = rows.filter((r) => r.long_up)
-    // 매도 뷰 장기매집 제외: 120D 순매수(f120>0) 종목 숨김 — 백테스트상 장기매집주의 단기
-    // 이탈은 오히려 +2.5% 강세(매집주 눌림)라 매도후보로 부적격. 해제 시 다시 노출.
-    if (excludeLongAccum && direction === 'sell') rows = rows.filter((r) => !(r.f_120d_bp > 0))
+    // 칩 필터 활성: 전체 모집단(data.rows=summary와 동일) 대상으로 카운트 predicate만 적용.
+    // longOnly/excludeLongAccum·SHOW_LIMIT slice는 건너뛴다 → 표시 행수 = 요약 카운트와 일치.
+    if (chip) {
+      rows = rows.filter(CHIP_PRED[chip])
+    } else {
+      // 장기 정합(장투 모드): 120일도 순매수인 종목만 — "장기 분산+단기 반등" 제거
+      if (longOnly && direction === 'buy') rows = rows.filter((r) => r.long_up)
+      // 매도 뷰 장기매집 제외: 120D 순매수(f120>0) 종목 숨김 — 백테스트상 장기매집주의 단기
+      // 이탈은 오히려 +2.5% 강세(매집주 눌림)라 매도후보로 부적격. 해제 시 다시 노출.
+      if (excludeLongAccum && direction === 'sell') rows = rows.filter((r) => !(r.f_120d_bp > 0))
+    }
     // 매도 뷰는 20D bp 정렬일 때만 오름차순이 자연스러움(약한 수급 위로). 그 외엔 sortKey 그대로.
     const asc = sortKey === 'f_20d_bp' ? (direction === 'sell' ? !sortAsc : sortAsc) : sortAsc
     const get = SORT_GETTER[sortKey]
     const sorted = [...rows].sort((a, b) => (asc ? get(a) - get(b) : get(b) - get(a)))
-    return search.trim() ? sorted : sorted.slice(0, SHOW_LIMIT)
-  }, [data, direction, longOnly, excludeLongAccum, search, sortKey, sortAsc])
+    // 칩 필터·검색 시엔 전부 표시(모집단 제한적), 기본 뷰만 SHOW_LIMIT slice
+    return chip || search.trim() ? sorted : sorted.slice(0, SHOW_LIMIT)
+  }, [data, direction, longOnly, excludeLongAccum, search, sortKey, sortAsc, chip])
 
   // 외인 20D 매집% 히트 컬러 임계값 — 표시 대상(visible) 내 분위 기준. 양/음 분리 대칭.
   const heat = useMemo(() => {
@@ -268,13 +310,13 @@ export function StockFlowPage() {
         <span className="text-sm font-medium text-t1">수급 랭킹</span>
         <div className="flex overflow-hidden rounded-sm border border-bg-surface">
           <button
-            onClick={() => setDirection('buy')}
+            onClick={() => pickDirection('buy')}
             className={`px-3 py-1 ${direction === 'buy' ? 'bg-up/20 text-up' : 'text-t3'}`}
           >
             매수 후보
           </button>
           <button
-            onClick={() => setDirection('sell')}
+            onClick={() => pickDirection('sell')}
             className={`px-3 py-1 ${direction === 'sell' ? 'bg-down/20 text-down' : 'text-t3'}`}
           >
             매도 후보
@@ -344,20 +386,26 @@ export function StockFlowPage() {
             <span className="text-t4"> / 순매도 </span>
             <span className="font-semibold text-down">{summary.sellFav}</span>
           </span>
-          <span>
+          <Chip active={chip === 'entry'} onClick={() => toggleChip('entry')}>
             진입권 <span className="font-semibold text-warning">{summary.entry}</span>
-            <span className="text-t4"> · 매도권 </span>
-            <span className="font-semibold text-down">{summary.exit}</span>
-          </span>
-          <span>
+          </Chip>
+          <Chip active={chip === 'exit'} onClick={() => toggleChip('exit')}>
+            매도권 <span className="font-semibold text-down">{summary.exit}</span>
+          </Chip>
+          <Chip active={chip === 'both'} onClick={() => toggleChip('both')}>
             외인·기관 동시매수 <span className="font-semibold text-accent">{summary.both}</span>
-          </span>
-          <span>
+          </Chip>
+          <Chip active={chip === 'trend'} onClick={() => toggleChip('trend')}>
             추세순항 <span className="font-semibold text-accent">{summary.trend}</span>
-          </span>
-          <span>
+          </Chip>
+          <Chip active={chip === 'dist'} onClick={() => toggleChip('dist')}>
             분배 의심 <span className="font-semibold text-warning">{summary.dist}</span>
-          </span>
+          </Chip>
+          {chip && (
+            <button onClick={() => setChip(null)} className="text-t4 hover:text-t2" title="칩 필터 해제">
+              필터 해제 ✕
+            </button>
+          )}
           <button
             onClick={() => setShowLegend((v) => !v)}
             className="ml-auto rounded-sm border border-bg-surface bg-accent/20 px-2 py-0.5 text-accent hover:bg-accent/30"
@@ -510,24 +558,19 @@ export function StockFlowPage() {
                 >
                   유통시총
                 </SortTh>
-                <th className="group relative px-3 py-2 text-left font-normal">
-                  태그
-                  <Tip
-                    title="태그"
-                    body="백테스트로 검증한 수급 패턴 뱃지. 초록=강세 검증(장기동시가 최상위), 빨강=약세, 주황=경고, 파랑=신규 진입."
-                  />
-                </th>
                 <SortTh
                   k="verdict"
                   cur={sortKey}
                   asc={sortAsc}
                   onClick={sortClick}
+                  align="center"
+                  headLeft
                   tip={{
-                    title: '판정 (검증 초과수익)',
-                    body: '이 종목에 해당하는 패턴의 과거 2년 이후 60일 시장(유니버스 평균) 대비 평균 초과수익. 복수 패턴 해당 시 전부 표시(대표 = 초과수익 절대값 최대). 각 패턴 색은 초과수익 부호(초록=+, 빨강=−). 개별 종목 보장이 아닌 패턴 평균.',
+                    title: '태그·판정 (검증 초과수익)',
+                    body: '백테스트로 검증한 수급 패턴 뱃지. 초록=강세 검증(장기동시가 최상위), 빨강=약세, 주황=경고, 파랑=신규. 검증 통과(|t|≥2) 패턴은 뱃지 안에 초과수익 %(과거 2년, 이후 60일 유니버스 평균 대비)를 병기하며 hover 시 t값·근거 표시. 정렬은 대표 패턴 초과수익 기준. 개별 종목 보장이 아닌 패턴 평균.',
                   }}
                 >
-                  판정
+                  태그·판정
                 </SortTh>
                 <SortTh
                   k="f_streak"
@@ -625,12 +668,15 @@ export function StockFlowPage() {
                 const retCls =
                   r.ret_20d_pct == null ? 'text-t3' : r.ret_20d_pct > 0 ? 'text-up' : r.ret_20d_pct < 0 ? 'text-down' : 'text-t3'
                 const isSel = selected?.code === r.code
-                // 매수 아키타입 뱃지 — 배타 단일 (장기동시 > 추세순항 > 동시). verdict 우선순위와 동일 승격.
-                const archetype = r.long_both ? '장기동시' : r.trend_ride ? '추세순항' : r.both_20d ? '동시' : null
-                const showEntry = direction === 'buy' && r.entry_ok && !r.long_both
-                const showExit = direction === 'sell' && r.exit_ok
-                const showShort = direction === 'buy' && r.short_bounce
-                const hasTag = r.is_new || archetype || showEntry || showExit || r.is_distribution || showShort
+                // 태그·판정 통합 — canonical 패턴 멤버십(r.patterns, 백엔드 정본)을 verdict의
+                // 검증 edge로 매핑. 검증 통과분은 edge 병기, 미검증분은 정적 뱃지. NEW·매도권은 패턴 외 별도.
+                const patterns = r.patterns ?? []
+                const vmap = new Map<string, VerdictPattern>()
+                if (r.verdict) {
+                  vmap.set(r.verdict.pattern, r.verdict)
+                  r.verdict.others.forEach((o) => vmap.set(o.pattern, o))
+                }
+                const hasBadge = r.is_new || patterns.length > 0 || r.exit_ok
                 return (
                   <tr
                     key={r.code}
@@ -663,69 +709,22 @@ export function StockFlowPage() {
                     </td>
                     <td className="px-3 py-1.5">
                       <div className="flex flex-wrap items-center gap-1">
-                        {r.is_new && (
-                          <span className={`rounded-sm px-1 text-[10px] ${badgeCls('NEW')}`}>NEW</span>
-                        )}
-                        {archetype && (
-                          <span
-                            className={`rounded-sm px-1 text-[10px] ${badgeCls(archetype)}`}
-                            title={
-                              archetype === '장기동시'
-                                ? '장기동시: 외인·기관이 20일·120일 모두 순매수 (4중 겹침) — 검증된 최상위 조합'
-                                : archetype === '추세순항'
-                                  ? '추세순항: 외인·기관 20D 동시 순매수 + 20D 주가 상승 — 상승추세 동반 매집'
-                                  : '동시: 외인·기관 20D 동반 순매수'
-                            }
-                          >
-                            {archetype}
-                          </span>
-                        )}
-                        {showEntry && (
-                          <span
-                            className={`rounded-sm px-1 text-[10px] ${badgeCls('진입권')}`}
-                            title="진입권: 20D ≥ 15bp + 지속성(연속 3D↑ 또는 5D가 일평균 거래대금의 30%↑) — 이벤트성 스파이크 배제"
-                          >
-                            진입권
-                          </span>
-                        )}
-                        {showExit && (
-                          <span
-                            className={`rounded-sm px-1 text-[10px] ${badgeCls('매도권')}`}
-                            title="매도권: 20D ≤ −15bp + 지속성 — 이벤트성 스파이크 배제"
-                          >
-                            매도권
-                          </span>
-                        )}
-                        {r.is_distribution && (
-                          <span
-                            className={`rounded-sm px-1 text-[10px] ${badgeCls('분배')}`}
-                            title="분배 의심: 외인 5일 순매도 + 주가 방어(5D −2% 이내) + 개인이 물량 받음 — 조용히 무너지기 전 신호"
-                          >
-                            분배
-                          </span>
-                        )}
-                        {showShort && (
-                          <span
-                            className={`rounded-sm px-1 text-[10px] ${badgeCls('단기반등')}`}
-                            title="단기반등: 20일은 순매수 상위지만 120일(반년)은 순매도 — 장기 분산 중 단기 반등. 장투 주의"
-                          >
-                            단기반등
-                          </span>
-                        )}
-                        {!hasTag && <span className="text-t4">—</span>}
+                        {r.is_new && <Badge name="NEW" tip={PATTERN_TIP.NEW} />}
+                        {patterns.map((name) => {
+                          const vp = vmap.get(name)
+                          return (
+                            <Badge
+                              key={name}
+                              name={name}
+                              pattern={vp}
+                              tip={vp ? undefined : PATTERN_TIP[name]}
+                              asOf={data?.edges_as_of ?? undefined}
+                            />
+                          )
+                        })}
+                        {r.exit_ok && <Badge name="매도권" tip={PATTERN_TIP['매도권']} />}
+                        {!hasBadge && <span className="text-t4">—</span>}
                       </div>
-                    </td>
-                    <td className="whitespace-nowrap px-3 py-1.5 text-right">
-                      {r.verdict ? (
-                        <div className="flex flex-col items-end gap-0.5">
-                          <PatternLine p={r.verdict} asOf={data?.edges_as_of} lead />
-                          {r.verdict.others.map((o, i) => (
-                            <PatternLine key={`${o.pattern}-${i}`} p={o} asOf={data?.edges_as_of} />
-                          ))}
-                        </div>
-                      ) : (
-                        <span className="text-t4">—</span>
-                      )}
                     </td>
                     <td className={`px-3 py-1.5 text-right ${streakCls}`}>
                       {r.f_streak > 0 ? `+${r.f_streak}D` : r.f_streak < 0 ? `${r.f_streak}D` : '—'}
@@ -785,6 +784,7 @@ function SortTh({
   tip,
   align = 'center',
   bright,
+  headLeft,
   children,
 }: {
   k: SortKey
@@ -794,15 +794,16 @@ function SortTh({
   tip?: { title: string; body: ReactNode }
   align?: 'center' | 'right'
   bright?: boolean
+  headLeft?: boolean // 텍스트 컬럼(태그·판정) — 헤더도 좌측 정렬해 셀 내용과 맞춤
   children: ReactNode
 }) {
   const active = cur === k
   return (
     <th
       onClick={() => onClick(k)}
-      className={`group relative cursor-pointer select-none px-3 py-2 text-right font-normal hover:text-t1 ${
-        active || bright ? 'text-t1' : ''
-      }`}
+      className={`group relative cursor-pointer select-none px-3 py-2 font-normal hover:text-t1 ${
+        headLeft ? 'text-left' : 'text-right'
+      } ${active || bright ? 'text-t1' : ''}`}
     >
       {children} <span className="text-t3">{active ? (asc ? '▲' : '▼') : '↕'}</span>
       {tip && <Tip title={tip.title} body={tip.body} align={align} />}
@@ -820,29 +821,72 @@ function fmtEdge(v: number): string {
 }
 
 /**
- * 판정 셀의 패턴 한 줄. 대표(lead)는 기본 크기, 나머지(others)는 작게.
- * edge 부호 색 유지 + 각자 백테스트 근거 Tip. 자체 `group`이라 hover가 줄 단위 격리됨.
+ * 태그·판정 통합 뱃지. 검증 통과(pattern 주입) 시 edge % 병기 + 백테스트 근거 Tip,
+ * 미검증(NEW/매도권/유의성 미달)은 정적 tip 텍스트. 색은 badgeCls(패턴 방향 폴백).
+ * 자체 `group`이라 hover가 뱃지 단위로 격리됨.
  */
-function PatternLine({ p, asOf, lead = false }: { p: VerdictPattern; asOf?: string; lead?: boolean }) {
+function Badge({
+  name,
+  pattern,
+  tip,
+  asOf,
+}: {
+  name: string
+  pattern?: VerdictPattern
+  tip?: string
+  asOf?: string
+}) {
   return (
-    <span className={`group relative inline-block tabular-nums ${lead ? '' : 'text-[11px]'}`}>
-      <span className={lead ? 'text-t3' : 'text-t4'}>{p.pattern}</span>{' '}
-      <span className={`font-semibold ${signCls(p.edge)}`}>{fmtEdge(p.edge)}</span>
-      <Tip
-        align="right"
-        title={`${p.pattern} · 검증 초과수익`}
-        body={
-          <>
-            <div>
-              과거 2년, 이 패턴 종목은 이후 60일 시장(유니버스 평균) 대비 평균{' '}
-              <span className={signCls(p.edge)}>{fmtEdge(p.edge)}</span> (t {p.t.toFixed(1)}). 개별 종목 보장이
-              아닌 패턴 평균.
-            </div>
-            {asOf && <div className="mt-1 text-t4">검증 기준일 {asOf}</div>}
-          </>
-        }
-      />
+    <span
+      className={`group relative inline-block cursor-default rounded-sm px-1 text-[10px] tabular-nums ${badgeCls(
+        name,
+        pattern?.direction
+      )}`}
+    >
+      {name}
+      {pattern && <span className="ml-0.5 font-semibold">{fmtEdge(pattern.edge)}</span>}
+      {pattern ? (
+        <Tip
+          title={`${pattern.pattern} · 검증 초과수익`}
+          body={
+            <>
+              <div>
+                과거 2년, 이 패턴 종목은 이후 60일 시장(유니버스 평균) 대비 평균{' '}
+                <span className={signCls(pattern.edge)}>{fmtEdge(pattern.edge)}</span> (t {pattern.t.toFixed(1)}). 개별
+                종목 보장이 아닌 패턴 평균.
+              </div>
+              {asOf && <div className="mt-1 text-t4">검증 기준일 {asOf}</div>}
+            </>
+          }
+        />
+      ) : (
+        tip && <Tip title={name} body={tip} />
+      )}
     </span>
+  )
+}
+
+/** 요약 스트립 칩 — 클릭 시 테이블을 해당 카운트 종목으로 필터(라디오식). active=강조. */
+function Chip({
+  active,
+  onClick,
+  children,
+}: {
+  active: boolean
+  onClick: () => void
+  children: ReactNode
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={`rounded-sm border px-1.5 py-0.5 transition-colors ${
+        active
+          ? 'border-accent bg-accent/20 text-t1'
+          : 'border-transparent hover:bg-bg-surface/60'
+      }`}
+    >
+      {children}
+    </button>
   )
 }
 
@@ -858,7 +902,7 @@ function Tip({
 }) {
   return (
     <div
-      className={`pointer-events-none absolute top-full z-30 mt-1 hidden w-64 rounded-sm bg-bg-surface-2 p-2 text-left text-[11px] font-normal normal-case leading-relaxed text-t2 shadow-lg group-hover:block ${
+      className={`pointer-events-none absolute top-full z-30 mt-1 hidden w-64 whitespace-normal break-keep rounded-sm bg-bg-surface-2 p-2 text-left text-[11px] font-normal normal-case leading-relaxed text-t2 shadow-lg group-hover:block ${
         align === 'right' ? 'right-0' : 'left-1/2 -translate-x-1/2'
       }`}
     >

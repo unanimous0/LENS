@@ -68,6 +68,9 @@ async def flow_ranking(preset: str = "default") -> dict:
     for r in rows:
         item = {k: v for k, v in r.items() if not k.startswith("_")}
         item["is_new"] = r["code"] in new_codes
+        # 전체 멤버십 목록 (배타 체인 순서, 유의성 미달 포함) — 프론트 태그·판정 통합 열의
+        # 뱃지 정본. 프론트 미러링 금지(공식 2벌 방지) — 여기 한 벌만.
+        item["patterns"] = flow_verdict.applicable_patterns(r)
         item["verdict"] = flow_verdict.verdict(r, edges)
         out.append(item)
     return {
