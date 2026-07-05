@@ -524,7 +524,7 @@ export function StockFlowPage() {
                   onClick={sortClick}
                   tip={{
                     title: '판정 (검증 초과수익)',
-                    body: '이 종목에 해당하는 패턴의 과거 2년 이후 60일 시장(유니버스 평균) 대비 평균 초과수익. 대표 패턴 1개 표시(|edge| 최대). 개별 종목 보장이 아닌 패턴 평균.',
+                    body: '이 종목에 해당하는 패턴의 과거 2년 이후 60일 시장(유니버스 평균) 대비 평균 초과수익. 복수 패턴 해당 시 전부 표시(대표 = 초과수익 절대값 최대). 각 패턴 색은 초과수익 부호(초록=+, 빨강=−). 개별 종목 보장이 아닌 패턴 평균.',
                   }}
                 >
                   판정
@@ -715,40 +715,14 @@ export function StockFlowPage() {
                         {!hasTag && <span className="text-t4">—</span>}
                       </div>
                     </td>
-                    <td className="group relative whitespace-nowrap px-3 py-1.5 text-right">
+                    <td className="whitespace-nowrap px-3 py-1.5 text-right">
                       {r.verdict ? (
-                        <>
-                          <span className="tabular-nums">
-                            <span className="text-t3">{r.verdict.pattern}</span>{' '}
-                            <span className={`font-semibold ${signCls(r.verdict.edge)}`}>
-                              {fmtEdge(r.verdict.edge)}
-                            </span>
-                          </span>
-                          <Tip
-                            align="right"
-                            title={`${r.verdict.pattern} · 검증 초과수익`}
-                            body={
-                              <>
-                                <div>
-                                  과거 2년, 이 패턴 종목은 이후 60일 시장(유니버스 평균) 대비 평균{' '}
-                                  <span className={signCls(r.verdict.edge)}>{fmtEdge(r.verdict.edge)}</span> (t{' '}
-                                  {r.verdict.t.toFixed(1)}). 개별 종목 보장이 아닌 패턴 평균.
-                                </div>
-                                {r.verdict.others.length > 0 && (
-                                  <div className="mt-1 text-t3">
-                                    동시 태그:{' '}
-                                    {r.verdict.others
-                                      .map((o) => `${o.pattern} ${fmtEdge(o.edge)}`)
-                                      .join(', ')}
-                                  </div>
-                                )}
-                                {data?.edges_as_of && (
-                                  <div className="mt-1 text-t4">검증 기준일 {data.edges_as_of}</div>
-                                )}
-                              </>
-                            }
-                          />
-                        </>
+                        <div className="flex flex-col items-end gap-0.5">
+                          <PatternLine p={r.verdict} asOf={data?.edges_as_of} lead />
+                          {r.verdict.others.map((o, i) => (
+                            <PatternLine key={`${o.pattern}-${i}`} p={o} asOf={data?.edges_as_of} />
+                          ))}
+                        </div>
                       ) : (
                         <span className="text-t4">—</span>
                       )}
@@ -843,6 +817,33 @@ function signCls(v: number): string {
 /** 검증 초과수익 표기. +3.6% / −2.1%. */
 function fmtEdge(v: number): string {
   return `${v >= 0 ? '+' : ''}${v.toFixed(1)}%`
+}
+
+/**
+ * 판정 셀의 패턴 한 줄. 대표(lead)는 기본 크기, 나머지(others)는 작게.
+ * edge 부호 색 유지 + 각자 백테스트 근거 Tip. 자체 `group`이라 hover가 줄 단위 격리됨.
+ */
+function PatternLine({ p, asOf, lead = false }: { p: VerdictPattern; asOf?: string; lead?: boolean }) {
+  return (
+    <span className={`group relative inline-block tabular-nums ${lead ? '' : 'text-[11px]'}`}>
+      <span className={lead ? 'text-t3' : 'text-t4'}>{p.pattern}</span>{' '}
+      <span className={`font-semibold ${signCls(p.edge)}`}>{fmtEdge(p.edge)}</span>
+      <Tip
+        align="right"
+        title={`${p.pattern} · 검증 초과수익`}
+        body={
+          <>
+            <div>
+              과거 2년, 이 패턴 종목은 이후 60일 시장(유니버스 평균) 대비 평균{' '}
+              <span className={signCls(p.edge)}>{fmtEdge(p.edge)}</span> (t {p.t.toFixed(1)}). 개별 종목 보장이
+              아닌 패턴 평균.
+            </div>
+            {asOf && <div className="mt-1 text-t4">검증 기준일 {asOf}</div>}
+          </>
+        }
+      />
+    </span>
+  )
 }
 
 /** 스타일된 hover 툴팁 — native title 대체 (CSS만). 부모에 `group relative` 필요. */
