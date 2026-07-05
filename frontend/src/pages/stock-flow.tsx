@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useMemo, useState } from 'react'
+import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
 
 import { FlowDetail } from '@/components/flow/flow-detail'
 
@@ -262,6 +262,13 @@ export function StockFlowPage() {
     }
   }
   const [selected, setSelected] = useState<{ code: string; name: string } | null>(null)
+  // 선택 종목 상세 차트로 스크롤 — 아래쪽 행을 눌러도 차트+지표를 한 화면에서 같이 보게(main이 스크롤 컨테이너).
+  const detailRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (selected && detailRef.current) {
+      detailRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    }
+  }, [selected])
   // 관심종목 — localStorage. 트레이더 워크플로우 "내 종목 수급 살아있나" 상단 고정.
   // v2: code → {added} 맵. 등록일 기록으로 D+n 보유 단계 표시(PR-6 백테스트: 매수 태그 ~120거래일 보유).
   const [watchlist, setWatchlist] = useState<WatchMap>(loadWatchlist)
@@ -324,6 +331,17 @@ export function StockFlowPage() {
     // 칩 필터·검색 시엔 전부 표시(모집단 제한적), 기본 뷰만 SHOW_LIMIT slice
     return chip || search.trim() ? sorted : sorted.slice(0, SHOW_LIMIT)
   }, [data, direction, longOnly, excludeLongAccum, search, sortKey, sortAsc, chip])
+
+  // 표시 행 — 정렬 순위(rank)는 보존하되, 선택된 종목만 맨 위로 pin해 상세 차트와 나란히 보게 한다.
+  // 선택 해제 시 원래 정렬 순서로 복귀. rank는 원 정렬 위치라 pin해도 # 번호는 실제 순위 유지.
+  const displayRows = useMemo(() => {
+    const ranked = visible.map((r, i) => ({ r, rank: i + 1 }))
+    if (!selected) return ranked
+    const idx = ranked.findIndex((x) => x.r.code === selected.code)
+    if (idx <= 0) return ranked
+    const [sel] = ranked.splice(idx, 1)
+    return [sel, ...ranked]
+  }, [visible, selected])
 
   // 20D 매집% 히트 컬러 임계값 — 표시 대상(visible) 내 분위 기준. 외인·기관 각각 별도 산출
   // (정렬 상태와 무관하게 각 주체의 강도를 파악하기 위해 외인 분위를 기관에 재사용하지 않음).
@@ -456,13 +474,13 @@ export function StockFlowPage() {
               body: (
                 <>
                   <div>
-                    <span className="text-t4">조건 </span>장기동시(외인·기관 20일·120일 순매수) + 진입권(규모·지속성) + 경고 태그 없음
+                    <span className="font-medium text-t2">조건 </span>장기동시(외인·기관 20일·120일 순매수) + 진입권(규모·지속성) + 경고 태그 없음
                   </div>
                   <div className="mt-1">
-                    <span className="text-t4">근거 </span>과거 2년, 이후 60일 시장 대비 평균 +5.3%(t5.3) · 120일 +12.6%(t6.5) · 하루 ~31종목
+                    <span className="font-medium text-t2">근거 </span>과거 2년, 이후 60일 시장 대비 평균 +5.3%(t5.3) · 120일 +12.6%(t6.5) · 하루 ~31종목
                   </div>
                   <div className="mt-1 text-t3">
-                    <span className="text-t4">주의 </span>풀 안 순위는 예측력 없음 — 순위표 아님, 후보 풀로 볼 것
+                    <span className="font-medium text-t2">주의 </span>풀 안 순위는 예측력 없음 — 순위표 아님, 후보 풀로 볼 것
                   </div>
                 </>
               ),
@@ -478,10 +496,10 @@ export function StockFlowPage() {
               body: (
                 <>
                   <div>
-                    <span className="text-t4">조건 </span>검증 강세 태그(장기동시·정석·진입권·추세순항·매집주 눌림) 1개↑ + 경고 태그 없음
+                    <span className="font-medium text-t2">조건 </span>검증 강세 태그(장기동시·정석·진입권·추세순항·매집주 눌림) 1개↑ + 경고 태그 없음
                   </div>
                   <div className="mt-1">
-                    <span className="text-t4">근거 </span>풀 안 정렬 순위는 예측력 없음(조건부 IC≈0) — 순위 아닌 후보 풀
+                    <span className="font-medium text-t2">근거 </span>풀 안 정렬 순위는 예측력 없음(조건부 IC≈0) — 순위 아닌 후보 풀
                   </div>
                 </>
               ),
@@ -497,54 +515,16 @@ export function StockFlowPage() {
               body: (
                 <>
                   <div>
-                    <span className="text-t4">조건 </span>외인 20D ≥ 15bp + 지속성(연속 3D↑ 또는 5D가 일평균 거래대금 30%↑)
+                    <span className="font-medium text-t2">조건 </span>외인 20D ≥ 15bp + 지속성(연속 3D↑ 또는 5D가 일평균 거래대금 30%↑)
                   </div>
                   <div className="mt-1">
-                    <span className="text-t4">근거 </span>이벤트성 스파이크 배제 — 진성 매집만 통과
+                    <span className="font-medium text-t2">근거 </span>이벤트성 스파이크 배제 — 진성 매집만 통과
                   </div>
                 </>
               ),
             }}
           >
             진입권 <span className="font-semibold text-t1">{summary.entry}</span>
-          </Chip>
-          <Chip
-            active={chip === 'exit'}
-            onClick={() => toggleChip('exit')}
-            tip={{
-              title: '매도권 — 이탈 게이트',
-              body: (
-                <>
-                  <div>
-                    <span className="text-t4">조건 </span>외인 20D ≤ −15bp + 지속성(연속 3D↓ 또는 5D 순매도가 일평균 거래대금 30%↑)
-                  </div>
-                  <div className="mt-1">
-                    <span className="text-t4">근거 </span>이벤트성 스파이크 배제 — 지속적 이탈만 표시
-                  </div>
-                </>
-              ),
-            }}
-          >
-            매도권 <span className="font-semibold text-warning">{summary.exit}</span>
-          </Chip>
-          <Chip
-            active={chip === 'both'}
-            onClick={() => toggleChip('both')}
-            tip={{
-              title: '동시매수 — 외인·기관 동반',
-              body: (
-                <>
-                  <div>
-                    <span className="text-t4">조건 </span>외인·기관 20D 동반 순매수
-                  </div>
-                  <div className="mt-1">
-                    <span className="text-t4">근거 </span>단독보다 강한 동반 수급 — 정석·추세순항의 토대
-                  </div>
-                </>
-              ),
-            }}
-          >
-            외인·기관 동시매수 <span className="font-semibold text-t1">{summary.both}</span>
           </Chip>
           <Chip
             active={chip === 'trend'}
@@ -554,16 +534,54 @@ export function StockFlowPage() {
               body: (
                 <>
                   <div>
-                    <span className="text-t4">조건 </span>외인·기관 20D 동시 순매수 + 20D 주가 상승
+                    <span className="font-medium text-t2">조건 </span>외인·기관 20D 동시 순매수 + 20D 주가 상승
                   </div>
                   <div className="mt-1">
-                    <span className="text-t4">근거 </span>상승추세에도 매집 지속 — 검증 통과한 양의 강세 태그
+                    <span className="font-medium text-t2">근거 </span>상승추세에도 매집 지속 — 검증 통과한 양의 강세 태그
                   </div>
                 </>
               ),
             }}
           >
             추세순항 <span className="font-semibold text-t1">{summary.trend}</span>
+          </Chip>
+          <Chip
+            active={chip === 'both'}
+            onClick={() => toggleChip('both')}
+            tip={{
+              title: '동시매수 — 외인·기관 동반',
+              body: (
+                <>
+                  <div>
+                    <span className="font-medium text-t2">조건 </span>외인·기관 20D 동반 순매수
+                  </div>
+                  <div className="mt-1">
+                    <span className="font-medium text-t2">근거 </span>단독보다 강한 동반 수급 — 정석·추세순항의 토대
+                  </div>
+                </>
+              ),
+            }}
+          >
+            외인·기관 동시매수 <span className="font-semibold text-t1">{summary.both}</span>
+          </Chip>
+          <Chip
+            active={chip === 'exit'}
+            onClick={() => toggleChip('exit')}
+            tip={{
+              title: '매도권 — 이탈 게이트',
+              body: (
+                <>
+                  <div>
+                    <span className="font-medium text-t2">조건 </span>외인 20D ≤ −15bp + 지속성(연속 3D↓ 또는 5D 순매도가 일평균 거래대금 30%↑)
+                  </div>
+                  <div className="mt-1">
+                    <span className="font-medium text-t2">근거 </span>이벤트성 스파이크 배제 — 지속적 이탈만 표시
+                  </div>
+                </>
+              ),
+            }}
+          >
+            매도권 <span className="font-semibold text-t1">{summary.exit}</span>
           </Chip>
           <Chip
             active={chip === 'dist'}
@@ -573,16 +591,16 @@ export function StockFlowPage() {
               body: (
                 <>
                   <div>
-                    <span className="text-t4">조건 </span>최근 5일 외인 순매도 + 주가 방어(5D −2% 이내) + 개인이 물량 받음
+                    <span className="font-medium text-t2">조건 </span>최근 5일 외인 순매도 + 주가 방어(5D −2% 이내) + 개인이 물량 받음
                   </div>
                   <div className="mt-1">
-                    <span className="text-t4">근거 </span>경고 태그 — 이후 60일 초과수익 급감(로테이션 신호). 20·120일 매집과 공존 가능
+                    <span className="font-medium text-t2">근거 </span>경고 태그 — 이후 60일 초과수익 급감(로테이션 신호). 20·120일 매집과 공존 가능
                   </div>
                 </>
               ),
             }}
           >
-            분배 의심 <span className="font-semibold text-warning">{summary.dist}</span>
+            분배 의심 <span className="font-semibold text-t1">{summary.dist}</span>
           </Chip>
           {chip && (
             <button onClick={() => setChip(null)} className="text-t4 hover:text-t2" title="칩 필터 해제">
@@ -656,8 +674,10 @@ export function StockFlowPage() {
             </ul>
           </div>
           <div className="mt-3 border-t border-bg-surface/50 pt-2 text-[11px] leading-relaxed text-t4">
-            초과수익 = 과거 2년, 해당 태그 종목의 이후 60일 시장(유니버스 평균) 대비. 검증 기준일{' '}
-            {data.edges_as_of ?? '기본값(미갱신)'}. 자동 월간 갱신.
+            초과수익 = 해당 태그 종목의 이후 60일 시장(유니버스 평균) 대비. 검증 수치는{' '}
+            <span className="text-t3">최근 2년 룩백</span>으로 계산되며, 결과가 30일 이상 오래되면 서버 시작 시
+            자동 재계산(약 월 1회 갱신). 현재 검증 기준일은{' '}
+            <span className="text-t3">{data.edges_as_of ?? '기본값(미갱신)'}</span>.
           </div>
         </div>
       )}
@@ -769,8 +789,8 @@ export function StockFlowPage() {
 
       {/* 데이터 품질 경고 */}
       {floatStale && (
-        <div className="panel px-3 py-2 text-xs text-warning">
-          ⚠ 유통주식수 기준일 {floatStale.date} ({floatStale.ageDays}일 경과) — Finance_Data
+        <div className="panel px-3 py-2 text-xs text-accent">
+          유통주식수 기준일 {floatStale.date} ({floatStale.ageDays}일 경과) — Finance_Data
           floating_shares 갱신 지연. 유통% 지표의 분모가 오래된 값입니다.
         </div>
       )}
@@ -778,14 +798,16 @@ export function StockFlowPage() {
       {error && <div className="panel p-3 text-xs text-down">로딩 실패: {error}</div>}
       {loading && <div className="panel p-3 text-xs text-t3">로딩 중…</div>}
 
-      {/* 선택 종목 상세 차트 */}
+      {/* 선택 종목 상세 차트 — 선택 시 이 위치로 스크롤(detailRef), 해당 종목 행은 테이블 최상단 pin */}
       {selected && (
-        <FlowDetail
-          key={selected.code}
-          code={selected.code}
-          name={selected.name}
-          onClose={() => setSelected(null)}
-        />
+        <div ref={detailRef}>
+          <FlowDetail
+            key={selected.code}
+            code={selected.code}
+            name={selected.name}
+            onClose={() => setSelected(null)}
+          />
+        </div>
       )}
 
       {/* 랭킹 테이블 — sticky thead (overflow-x-auto 없음: main이 스크롤 컨테이너) */}
@@ -922,7 +944,7 @@ export function StockFlowPage() {
               </tr>
             </thead>
             <tbody>
-              {visible.map((r, i) => {
+              {displayRows.map(({ r, rank }) => {
                 const streakCls = r.f_streak > 0 ? 'text-up' : r.f_streak < 0 ? 'text-down' : 'text-t3'
                 const retCls =
                   r.ret_20d_pct == null ? 'text-t3' : r.ret_20d_pct > 0 ? 'text-up' : r.ret_20d_pct < 0 ? 'text-down' : 'text-t3'
@@ -946,10 +968,10 @@ export function StockFlowPage() {
                     key={r.code}
                     onClick={() => setSelected(isSel ? null : { code: r.code, name: r.name })}
                     className={`cursor-pointer border-t border-bg-surface/40 hover:bg-bg-surface/30 ${
-                      isSel ? 'bg-bg-surface/50' : ''
+                      isSel ? 'border-l-2 border-l-accent bg-accent/10' : ''
                     }`}
                   >
-                    <td className="px-3 py-1.5 text-t3">{i + 1}</td>
+                    <td className="px-3 py-1.5 text-t3">{rank}</td>
                     <td className="w-6 py-1.5 text-center">
                       <button
                         onClick={(e) => {
@@ -1067,7 +1089,8 @@ function SortTh({
         active || bright ? 'text-t1' : ''
       }`}
     >
-      {children} <span className="text-t3">{active ? (asc ? '▲' : '▼') : '↕'}</span>
+      {children}
+      {active && <span className="ml-1 text-[9px] text-t3 opacity-60">{asc ? '▲' : '▼'}</span>}
       {tip && <Tip title={tip.title} body={tip.body} align={align} />}
     </th>
   )
