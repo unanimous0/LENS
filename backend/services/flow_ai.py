@@ -158,7 +158,8 @@ def _last_cross(rows: list[dict]) -> dict | None:
 # 주기 갱신: scripts/flow_tag_backtest.py --save가 data/flow_backtest.json 생성 → 아래 기본값 대체.
 # 기본값은 JSON 없을 때(첫 배포)의 폴백. 유의성(|t|≥2)인 패턴만 (하락추세 매집은 런타임 조건상 미달로 제외).
 _BACKTEST_PATH = _ROOT_ENV.parent / "data" / "flow_backtest.json"
-_BACKTEST_DEFAULT = {  # 룩백 2년 canonical 기준(2026-07-04). JSON 없을 때만 쓰는 폴백.
+_BACKTEST_DEFAULT = {  # 룩백 2년 canonical 기준(2026-07-05). JSON 없을 때만 쓰는 폴백.
+    "장기동시": {"edge": 3.63, "t": 6.70, "direction": "강세"},
     "정석(동시+진입권)": {"edge": 3.53, "t": 5.07, "direction": "강세"},
     "진입권": {"edge": 2.95, "t": 6.11, "direction": "강세"},
     "매집주 눌림": {"edge": 2.32, "t": 3.91, "direction": "강세"},
@@ -243,6 +244,7 @@ async def _collect_facts(code: str, as_of: str) -> dict | None:
         "foreign_20d_bp": row.get("f_20d_bp"),
         "foreign_120d_bp": row.get("f_120d_bp"),
         "institution_20d_bp": row.get("i_20d_bp"),
+        "institution_120d_bp": row.get("i_120d_bp"),
         "absorb_5d_pct": row.get("absorb_5d_pct"),
         "ret_20d_pct": row.get("ret_20d_pct"),
         "yesterday_foreign_eok": row.get("y_f_eok"),
@@ -304,7 +306,7 @@ def _render_facts_korean(f: dict) -> str:
         f"유통시총: {fm_eok:,}억" if fm_eok is not None else "유통시총: -",
         f"현재가: {won(f.get('current_price_won'))} / 외국인 추정 평단: {won(f.get('foreign_avg_price_est_won'))}",
         f"외국인 매집률(20일·120일 누적순매수 ÷ 유통시총): 20일 {mcpct(f.get('foreign_20d_bp'))}, 120일 {mcpct(f.get('foreign_120d_bp'))}",
-        f"기관 매집률(20일 순매수 ÷ 유통시총): 20일 {mcpct(f.get('institution_20d_bp'))}",
+        f"기관 매집률(20일·120일 누적순매수 ÷ 유통시총): 20일 {mcpct(f.get('institution_20d_bp'))}, 120일 {mcpct(f.get('institution_120d_bp'))}",
         f"외국인 누적순매수: {eok(f.get('foreign_cum_net_eok'))} · 5일 순매수 {eok(f.get('foreign_5d_eok'))} · 연속 순매수 {f.get('foreign_streak_days')}일",
         f"전일 순매수: 외국인 {eok(f.get('yesterday_foreign_eok'))}, 기관 {eok(f.get('yesterday_institution_eok'))}",
         f"20일 주가수익률(20일 전 대비): {pct(f.get('ret_20d_pct'))} · 5일 흡수율(외+기 순매수 ÷ 거래대금): {absorb if absorb is not None else '-'}%",

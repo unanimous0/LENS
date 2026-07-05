@@ -19,7 +19,7 @@ def applicable_patterns(row: dict) -> list[str]:
     """행의 기존 계산 필드로 적용 가능한 canonical 패턴명 목록을 반환.
 
     `_assess`의 조건·배타 규칙과 **정확히 동일**하다. 매수 아키타입은 배타적으로
-    1개만(정석 > 진입권 > 추세순항 > 동시), 그 뒤 경고/맥락 패턴은 중복 가능.
+    1개만(장기동시 > 정석 > 진입권 > 추세순항 > 동시), 그 뒤 경고/맥락 패턴은 중복 가능.
     edge·유의성(|t|) 필터는 여기서 하지 않는다 — 순수 멤버십만.
     """
     both = bool(row.get("both_20d"))
@@ -27,12 +27,18 @@ def applicable_patterns(row: dict) -> list[str]:
     f20 = row.get("f_20d_bp") or 0
     f120 = row.get("f_120d_bp") or 0
     i20 = row.get("i_20d_bp") or 0
+    i120 = row.get("i_120d_bp") or 0
     ret20 = row.get("ret_20d_pct")
+
+    # 장기동시: 외+기 20D·120D 4중 양수 (부호 게이트, 임계값 없음). _canonical_masks와 바이트 일치.
+    long_both = f20 > 0 and i20 > 0 and f120 > 0 and i120 > 0
 
     names: list[str] = []
 
-    # 매수 아키타입 — 가장 잘 맞는 것 하나 (중복 표시 방지)
-    if entry and both:
+    # 매수 아키타입 — 가장 잘 맞는 것 하나 (중복 표시 방지). edge 크기 순 배타.
+    if long_both:
+        names.append("장기동시")
+    elif entry and both:
         names.append("정석(동시+진입권)")
     elif entry:
         names.append("진입권")

@@ -114,7 +114,7 @@ def _build_panel(it_df, ohlcv_df, mc_df) -> pd.DataFrame:
     df["f5"] = rsum("f", 5); df["f20"] = rsum("f", 20); df["f60"] = rsum("f", 60); df["f120"] = rsum("f", 120)
     # 순매수일 비율(일관성): rolling 120일 중 외인 순매수일(f>0) 비율
     df["cons120"] = g["f"].transform(lambda s: (s > 0).rolling(120, min_periods=120).mean())
-    df["i5"] = rsum("i", 5); df["i20"] = rsum("i", 20)
+    df["i5"] = rsum("i", 5); df["i20"] = rsum("i", 20); df["i120"] = rsum("i", 120)
     df["r5"] = rsum("r", 5)
     df["tv5"] = rsum("tv", 5)
     df["adv20"] = g["tv"].transform(lambda s: s.rolling(20, min_periods=20).mean())
@@ -148,6 +148,9 @@ def _signals_tags(df: pd.DataFrame) -> pd.DataFrame:
     df["T_매집후이탈"] = (df["f120"] > 0) & (df["f20"] < 0)                  # 장기매집+ 최근 외인 이탈 → 검증상 강세(눌림)
     df["T_지속매집"] = (df["f120"] > 0) & (df["cons120"] >= 0.5) & (df["f20"] > 0)  # 장기 순매수 + 과반수 매수일 + 최근도 매집 (지속성 후보)
     df["T_동반순매도"] = (df["f20"] < 0) & (df["i20"] < 0) & (df["f120"] <= 0)  # 장기매집 없는 순수 동반 이탈 → 약세
+    # PR-4a 측정 후보 (사전 등록, 스윕 금지)
+    df["T_장기동시"] = (df["f20"] > 0) & (df["i20"] > 0) & (df["f120"] > 0) & (df["i120"] > 0)      # 외+기 20D·120D 4중 동반 매집 (사용자 가설)
+    df["T_동반순매도_장기"] = (df["f20"] < 0) & (df["i20"] < 0) & (df["f120"] <= 0) & (df["i120"] <= 0)  # 매도측 강화 (기관 장기까지 이탈)
     return df
 
 
@@ -257,6 +260,9 @@ def _canonical_masks(df: pd.DataFrame) -> dict:
     both = (df["f20"] > 0) & (df["i20"] > 0)
     entry_ok = (f20mc >= 0.0015) & (df["f5"] >= 0.3 * df["adv20"])
     return {
+        # 장기동시: 외+기 20D·120D 4중 동반 순매수 (부호 게이트, 임계값 없음) — 검증 최상위 매수 태그.
+        # flow_verdict.applicable_patterns의 배타 체인 맨 앞과 바이트 일치.
+        "장기동시": (df["f20"] > 0) & (df["i20"] > 0) & (df["f120"] > 0) & (df["i120"] > 0),
         "정석(동시+진입권)": both & entry_ok,
         "진입권": entry_ok & (df["f20"] > 0),
         "추세순항": both & (df["ret20"] > 0),

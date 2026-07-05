@@ -136,6 +136,7 @@ _RANKING_SQL = text(
             COALESCE(SUM(net_buy_value) FILTER (WHERE investor_type='INSTITUTION' AND rn<=5), 0)  AS i_5d,
             COALESCE(SUM(net_buy_value) FILTER (WHERE investor_type='INSTITUTION' AND rn<=20), 0) AS i_20d,
             COALESCE(SUM(net_buy_value) FILTER (WHERE investor_type='INSTITUTION' AND rn<=60), 0) AS i_60d,
+            COALESCE(SUM(net_buy_value) FILTER (WHERE investor_type='INSTITUTION' AND rn<=120), 0) AS i_120d,
             COALESCE(SUM(net_buy_value) FILTER (WHERE investor_type='RETAIL' AND rn<=5), 0)  AS r_5d,
             COALESCE(MAX(net_buy_value) FILTER (WHERE investor_type='FOREIGN' AND rn=1), 0)     AS f_1d,
             COALESCE(MAX(net_buy_value) FILTER (WHERE investor_type='INSTITUTION' AND rn=1), 0) AS i_1d,
@@ -188,7 +189,7 @@ _RANKING_SQL = text(
            mc.market_cap, fs.floating_shares, fs.total_shares, fs.float_date,
            px.close_raw, px.adj_now, px.adj_5d_ago, px.adj_20d_ago, px.tv_5d, px.adv_20d,
            f.f_1d, f.f_5d, f.f_20d, f.f_60d, f.f_120d,
-           f.i_1d, f.i_5d, f.i_20d, f.i_60d, f.r_5d,
+           f.i_1d, f.i_5d, f.i_20d, f.i_60d, f.i_120d, f.r_5d,
            f.f_buy_streak, f.f_sell_streak
     FROM flow f
     JOIN stocks s ON s.stock_code = f.stock_code
@@ -258,6 +259,8 @@ def _row_to_metrics(r) -> dict | None:
         "f_120d_bp": round(float(r.f_120d) / float_mcap * 10_000, 1),
         "f_120d_eok": round(float(r.f_120d) / eok, 1),
         "i_20d_bp": round(float(r.i_20d) / float_mcap * 10_000, 1),
+        "i_120d_bp": round(float(r.i_120d) / float_mcap * 10_000, 1),
+        "i_120d_eok": round(float(r.i_120d) / eok, 1),
         # 흡수율: 최근 5일 (외+기) 순매수가 거래대금의 몇 %를 차지했나 — 진성/소음 구분
         "absorb_5d_pct": round((float(r.f_5d) + float(r.i_5d)) / tv_5d * 100, 1) if tv_5d > 0 else None,
         "ret_20d_pct": round((adj_now / adj_prev - 1) * 100, 1) if adj_now and adj_prev else None,
@@ -268,6 +271,12 @@ def _row_to_metrics(r) -> dict | None:
         "adv_20d_eok": round(adv_20d / eok, 1),
         # 뱃지 원료
         "both_20d": float(r.f_20d) > 0 and float(r.i_20d) > 0,
+        # 장기동시: 외+기 20D·120D 4중 동반 순매수 — 백테스트 검증 최상위 매수 태그
+        # (h20 +1.81/h60 +3.63/h120 +7.53, t 모두 높음). 부호 4중 게이트라 튜닝 파라미터 없음.
+        "long_both": (
+            float(r.f_20d) > 0 and float(r.i_20d) > 0
+            and float(r.f_120d) > 0 and float(r.i_120d) > 0
+        ),
         # 추세순항: 외+기 20D 동시 순매수 AND 20D 주가 상승 — "상승 추세 동반 매집".
         # 백테스트 검증 통과(flow-tag-backtest.md: h60 +1.52%, t3.4). 하락추세 매집(반려된
         # '저점재매집')의 반대 — 추세를 등에 업은 동시매수라 평균 초과수익 유의.
