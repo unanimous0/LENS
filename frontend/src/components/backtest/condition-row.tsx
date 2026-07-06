@@ -99,7 +99,7 @@ export function ConditionRow({
                 step={0.1}
                 value={cond.mult}
                 onChange={(e) => onChange({ ...cond, mult: e.target.value })}
-                className="w-14 rounded-sm border border-bg-surface bg-bg-input px-1.5 py-1 text-xs tabular-nums text-t1 outline-none focus:border-accent"
+                className="w-14 rounded-sm border border-bg-surface bg-bg-input px-1.5 py-1 text-[13px] tabular-nums text-t1 outline-none focus:border-accent"
               />
             </>
           ) : (
@@ -108,14 +108,14 @@ export function ConditionRow({
               value={cond.value}
               placeholder="값"
               onChange={(e) => onChange({ ...cond, value: e.target.value })}
-              className="w-20 rounded-sm border border-bg-surface bg-bg-input px-1.5 py-1 text-xs tabular-nums text-t1 outline-none focus:border-accent"
+              className="w-20 rounded-sm border border-bg-surface bg-bg-input px-1.5 py-1 text-[13px] tabular-nums text-t1 outline-none focus:border-accent"
             />
           )}
           <button
             type="button"
             onClick={() => onChange({ ...cond, useRef: !cond.useRef })}
             title={cond.useRef ? '상수 값과 비교' : '다른 지표와 비교 (ref×배수)'}
-            className="rounded-sm border border-bg-surface px-1 py-1 text-[10px] text-t3 hover:text-t1"
+            className="rounded-sm border border-bg-surface px-1 py-1 text-[11px] text-t3 hover:text-t1"
           >
             {cond.useRef ? '지표' : '값'}
           </button>
@@ -154,7 +154,7 @@ export function ConditionList({
       <button
         type="button"
         onClick={add}
-        className="self-start rounded-sm border border-dashed border-bg-surface px-2 py-0.5 text-[11px] text-t3 hover:border-accent hover:text-accent"
+        className="self-start rounded-sm border border-dashed border-bg-surface px-2 py-0.5 text-xs text-t3 hover:border-accent hover:text-accent"
       >
         + 조건 추가
       </button>

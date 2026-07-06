@@ -15,7 +15,7 @@ export function ResultView({ result }: { result: BacktestResult }) {
   return (
     <div className="flex flex-col gap-3">
       {/* 실행 메타 */}
-      <div className="panel px-3 py-2 text-[11px] leading-relaxed text-t3">
+      <div className="panel px-3 py-2 text-xs leading-relaxed text-t3">
         <span className="tabular-nums text-t2">
           {meta.period.start} ~ {meta.period.end}
         </span>{' '}
@@ -43,7 +43,7 @@ export function ResultView({ result }: { result: BacktestResult }) {
             return (
               <div
                 key={i}
-                className={`rounded-sm px-2 py-1.5 text-[11px] leading-relaxed ${
+                className={`rounded-sm px-2 py-1.5 text-xs leading-relaxed ${
                   strong ? 'bg-warning/10 text-warning' : 'bg-bg-surface/40 text-t4'
                 }`}
               >
@@ -78,7 +78,7 @@ export function ResultView({ result }: { result: BacktestResult }) {
 
       {/* 초과수익 분포 */}
       <div className="panel p-3">
-        <div className="mb-1 text-[11px] text-t3">
+        <div className="mb-1 text-xs text-t3">
           초과수익 분포 — 에피소드별 {meta.benchmark === 'universe_avg' ? '유니버스 평균 대비' : '절대'} 수익%.
           0 기준 왼쪽=열위·오른쪽=우위.
         </div>
@@ -95,7 +95,7 @@ export function ResultView({ result }: { result: BacktestResult }) {
       <EpisodeTable episodes={episodes} names={meta.stock_names ?? {}} />
 
       {/* 방법론 각주 */}
-      <div className="panel px-3 py-2.5 text-[11px] leading-relaxed text-t4">
+      <div className="panel px-3 py-2.5 text-xs leading-relaxed text-t4">
         방법론 레일 (사용자 변경 불가): 신호는 D 종가 데이터로만(trailing) · 가격은 수정주가 · 진입/청산은
         선택한 체결 시점(기본 D+1 시가) · 손절/익절은 종가 판정 후 다음날 체결 · 벤치마크는 유니버스
         adj_open 로그수익 평균 기하 누적(Blume-Stambaugh). t값은 에피소드 중첩으로 팽창하니 보수적으로
@@ -118,7 +118,7 @@ function Stat({
 }) {
   return (
     <div className="bg-bg-primary px-3 py-2" title={tip}>
-      <div className="text-[10px] text-t4">{label}</div>
+      <div className="text-[11px] text-t4">{label}</div>
       <div className={`tabular-nums text-sm font-medium ${cls}`}>{value}</div>
     </div>
   )
@@ -151,8 +151,8 @@ function ReasonBreakdown({
 
   return (
     <div className="panel p-3">
-      <div className="mb-1.5 text-[11px] text-t3">청산 사유 분해</div>
-      <table className="w-full text-xs tabular-nums">
+      <div className="mb-1.5 text-xs text-t3">청산 사유 분해</div>
+      <table className="w-full text-[13px] tabular-nums">
         <thead>
           <tr className="text-t4">
             <th className="py-0.5 text-left font-normal">사유</th>
@@ -192,16 +192,16 @@ function PeriodTables({
   return (
     <div className="panel p-3">
       <div className="mb-1.5 flex items-center justify-between">
-        <span className="text-[11px] text-t3">기간별 평균 초과수익</span>
+        <span className="text-xs text-t3">기간별 평균 초과수익</span>
         <button
           onClick={() => setShowMonth((v) => !v)}
-          className="rounded-sm border border-bg-surface px-1.5 py-0.5 text-[10px] text-t3 hover:text-t1"
+          className="rounded-sm border border-bg-surface px-1.5 py-0.5 text-[11px] text-t3 hover:text-t1"
         >
           {showMonth ? '연도별' : '월별'}
         </button>
       </div>
       <div className="max-h-48 overflow-y-auto">
-        <table className="w-full text-xs tabular-nums">
+        <table className="w-full text-[13px] tabular-nums">
           <tbody>
             {(showMonth ? months : years).map(([k, v]) => (
               <tr key={k} className="border-t border-bg-surface/30">
@@ -253,12 +253,12 @@ function EpisodeTable({ episodes, names }: { episodes: Episode[]; names: Record<
 
   return (
     <div className="panel p-3">
-      <div className="mb-1.5 text-[11px] text-t3">
+      <div className="mb-1.5 text-xs text-t3">
         에피소드 <span className="tabular-nums">{episodes.length.toLocaleString()}</span>건 (상위{' '}
         {Math.min(shown, episodes.length).toLocaleString()} 표시)
       </div>
       <div className="overflow-x-auto">
-        <table className="w-full text-xs tabular-nums">
+        <table className="w-full text-[13px] tabular-nums">
           <thead className="text-t4">
             <tr>
               <th className="px-2 py-1 text-left font-normal">종목</th>
@@ -287,14 +287,14 @@ function EpisodeTable({ episodes, names }: { episodes: Episode[]; names: Record<
               <tr key={`${e.stock}-${e.entry_date}-${i}`} className="border-t border-bg-surface/30 hover:bg-bg-surface/20">
                 <td className="px-2 py-1">
                   <span className="text-t1">{names[e.stock] ?? e.stock}</span>
-                  <span className="ml-1.5 text-[10px] text-t4">{e.stock}</span>
+                  <span className="ml-1.5 text-[11px] text-t4">{e.stock}</span>
                 </td>
                 <td className="px-2 py-1 text-right text-t3">{e.entry_date}</td>
                 <td className="px-2 py-1 text-right text-t3">{e.exit_date}</td>
                 <td className="px-2 py-1">
                   <span className="text-t2">{REASON_LABEL[e.exit_reason] ?? e.exit_reason}</span>
                   {e.ongoing && (
-                    <span className="ml-1 rounded-sm bg-blue/20 px-1 text-[10px] text-blue">보유중</span>
+                    <span className="ml-1 rounded-sm bg-blue/20 px-1 text-[11px] text-blue">보유중</span>
                   )}
                 </td>
                 <td className="px-2 py-1 text-right text-t2">{e.holding_days}</td>
@@ -308,7 +308,7 @@ function EpisodeTable({ episodes, names }: { episodes: Episode[]; names: Record<
       {shown < episodes.length && (
         <button
           onClick={() => setShown((v) => v + 100)}
-          className="mt-2 w-full rounded-sm border border-bg-surface py-1 text-[11px] text-t3 hover:text-t1"
+          className="mt-2 w-full rounded-sm border border-bg-surface py-1 text-xs text-t3 hover:text-t1"
         >
           더보기 (+100)
         </button>

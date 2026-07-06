@@ -29,7 +29,7 @@ export function ExcessHistogram({ values }: { values: number[] }) {
   const bw = plotW / Math.max(1, n)
 
   if (!values.length || n === 0) {
-    return <div className="py-6 text-center text-xs text-t4">표시할 에피소드가 없습니다.</div>
+    return <div className="py-6 text-center text-[13px] text-t4">표시할 에피소드가 없습니다.</div>
   }
 
   const yAt = (c: number) => M.top + plotH * (1 - c / (maxCount || 1))

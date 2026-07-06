@@ -130,12 +130,12 @@ function BacktestInner({ catalog }: { catalog: Catalog }) {
       <div className="flex flex-wrap items-baseline justify-between gap-2 px-1">
         <div className="flex items-baseline gap-2">
           <h1 className="text-sm font-semibold text-t1">백테스팅 — 전략 실험실</h1>
-          <span className="text-[11px] text-t3">
+          <span className="text-xs text-t3">
             수급·가격 조건을 조합해 진입/청산 전략의 이벤트 스터디 성과를 측정. 방법론은 고정 레일.
           </span>
         </div>
         {panelMeta && (
-          <span className="text-[10px] text-t4 tabular-nums">
+          <span className="text-[11px] text-t4 tabular-nums">
             패널 {panelMeta.period.start}~{panelMeta.period.end} · {panelMeta.n_stocks.toLocaleString()}종목 ·{' '}
             {panelMeta.n_rows.toLocaleString()}행
           </span>
@@ -146,7 +146,7 @@ function BacktestInner({ catalog }: { catalog: Catalog }) {
         {/* 좌: 빌더 */}
         <div className="flex flex-col gap-2">
           {clientErrors.length > 0 && (
-            <div className="panel flex flex-col gap-0.5 p-3 text-[11px] text-warning">
+            <div className="panel flex flex-col gap-0.5 p-3 text-xs text-warning">
               {clientErrors.map((e, i) => (
                 <div key={i}>· {e}</div>
               ))}
@@ -166,16 +166,16 @@ function BacktestInner({ catalog }: { catalog: Catalog }) {
         {/* 우: 결과 */}
         <div className="flex flex-col gap-2">
           {running && (
-            <div className="panel px-3 py-2 text-xs text-t3">
+            <div className="panel px-3 py-2 text-[13px] text-t3">
               실행 중… <span className="tabular-nums text-t2">{progress}%</span>
               <div className="mt-1 h-1 w-full overflow-hidden rounded-full bg-bg-surface">
                 <div className="h-full bg-accent transition-all" style={{ width: `${progress}%` }} />
               </div>
-              {progress < 55 && <div className="mt-1 text-[10px] text-t4">패널 준비 중일 수 있습니다(콜드 빌드 시 수십 초).</div>}
+              {progress < 55 && <div className="mt-1 text-[11px] text-t4">패널 준비 중일 수 있습니다(콜드 빌드 시 수십 초).</div>}
             </div>
           )}
           {runError && (
-            <div className="panel px-3 py-2 text-xs text-down">엔진 오류: {runError}</div>
+            <div className="panel px-3 py-2 text-[13px] text-down">엔진 오류: {runError}</div>
           )}
           {result ? (
             <ResultView result={result} />
@@ -192,7 +192,7 @@ function EmptyState({ onPreset }: { onPreset: (make: (i: CatalogIndex) => Builde
   return (
     <div className="panel flex flex-col gap-3 p-5 text-sm text-t3">
       <div className="text-t2">전략을 구성하고 [실행]을 누르면 결과가 여기 표시됩니다.</div>
-      <div className="text-[11px] text-t4">
+      <div className="text-xs text-t4">
         조건 = 네임스페이스.지표 · 연산 · 값(또는 다른 지표 참조). 진입 onset마다 에피소드를 만들어
         청산 규칙 중 먼저 발동하는 시점에 청산합니다. 검증된 예시로 시작해 보세요:
       </div>
@@ -203,8 +203,8 @@ function EmptyState({ onPreset }: { onPreset: (make: (i: CatalogIndex) => Builde
             onClick={() => onPreset(p.make)}
             className="group relative rounded-sm border border-bg-surface bg-bg-surface/40 px-3 py-2 text-left hover:border-accent"
           >
-            <div className="text-xs font-medium text-t1">{p.label}</div>
-            <div className="mt-0.5 max-w-xs text-[10px] leading-relaxed text-t4">{p.desc}</div>
+            <div className="text-[13px] font-medium text-t1">{p.label}</div>
+            <div className="mt-0.5 max-w-xs text-[11px] leading-relaxed text-t4">{p.desc}</div>
           </button>
         ))}
       </div>

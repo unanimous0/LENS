@@ -35,7 +35,7 @@ export function StrategyBuilder({
       {/* 유니버스 */}
       <section className="panel flex flex-col gap-2 p-3">
         <SectionTitle>유니버스</SectionTitle>
-        <div className="flex items-center gap-3 text-xs text-t2">
+        <div className="flex items-center gap-3 text-[13px] text-t2">
           {(['KOSPI', 'KOSDAQ'] as const).map((m) => (
             <label key={m} className="flex items-center gap-1.5">
               <input
@@ -62,7 +62,7 @@ export function StrategyBuilder({
         <ConditionList idx={idx} rows={state.andConds} onChange={(rows) => patch({ andConds: rows })} />
 
         <div className="mt-1 flex items-center gap-2 border-t border-bg-surface/50 pt-2">
-          <label className="flex items-center gap-1.5 text-[11px] text-t3">
+          <label className="flex items-center gap-1.5 text-xs text-t3">
             <input
               type="checkbox"
               checked={state.orEnabled}
@@ -76,7 +76,7 @@ export function StrategyBuilder({
         </div>
         {state.orEnabled && (
           <div className="rounded-sm border border-bg-surface/60 p-2">
-            <div className="mb-1 text-[11px] text-t3">아래 중 하나라도 충족 (OR)</div>
+            <div className="mb-1 text-xs text-t3">아래 중 하나라도 충족 (OR)</div>
             <ConditionList idx={idx} rows={state.orConds} onChange={(rows) => patch({ orConds: rows })} />
           </div>
         )}
@@ -105,7 +105,7 @@ export function StrategyBuilder({
           <NumberInput value={state.costBps} onChange={(v) => patch({ costBps: v })} min={0} />
         </Field>
         {sameClose && (
-          <div className="rounded-sm bg-warning/10 px-2 py-1.5 text-[11px] leading-relaxed text-warning">
+          <div className="rounded-sm bg-warning/10 px-2 py-1.5 text-xs leading-relaxed text-warning">
             ⚠ 당일 종가(same_close) 체결은 &ldquo;D일 데이터를 보고 D일 종가에 산다&rdquo;는 낙관
             가정입니다 — 실현 불가능할 수 있으며(look-ahead) 결과에 영구 경고 배지가 붙습니다.
           </div>
@@ -122,13 +122,13 @@ export function StrategyBuilder({
           label="고정 보유일"
         >
           <NumberInput value={state.fixedDays} onChange={(v) => patch({ fixedDays: v })} min={1} />
-          <span className="text-[11px] text-t4">거래일</span>
+          <span className="text-xs text-t4">거래일</span>
         </ExitToggle>
 
         <ExitToggle checked={state.stopEnabled} onToggle={(v) => patch({ stopEnabled: v })} label="손절 %">
           <span className="text-t4">−</span>
           <NumberInput value={state.stopPct} onChange={(v) => patch({ stopPct: v })} min={0} />
-          <span className="text-[11px] text-t4">종가 판정→익일 체결</span>
+          <span className="text-xs text-t4">종가 판정→익일 체결</span>
         </ExitToggle>
 
         <ExitToggle checked={state.takeEnabled} onToggle={(v) => patch({ takeEnabled: v })} label="익절 %">
@@ -158,7 +158,7 @@ export function StrategyBuilder({
             <ConditionList idx={idx} rows={state.condExitRows} onChange={(rows) => patch({ condExitRows: rows })} />
           </div>
         )}
-        <div className="text-[11px] leading-relaxed text-t4">
+        <div className="text-xs leading-relaxed text-t4">
           여러 규칙을 켜면 각 에피소드는 가장 먼저 발동하는 규칙에서 청산됩니다. 손절/익절은 종가로
           판정 후 다음날 체결(장중 저가 터치 금지 — 부검 레일).
         </div>
@@ -172,7 +172,7 @@ export function StrategyBuilder({
             type="date"
             value={state.start}
             onChange={(e) => patch({ start: e.target.value })}
-            className="rounded-sm border border-bg-surface bg-bg-input px-1.5 py-1 text-xs text-t1 outline-none focus:border-accent"
+            className="rounded-sm border border-bg-surface bg-bg-input px-1.5 py-1 text-[13px] text-t1 outline-none focus:border-accent"
           />
         </Field>
         <Field label="종료 (비우면 최대)">
@@ -180,7 +180,7 @@ export function StrategyBuilder({
             type="date"
             value={state.end}
             onChange={(e) => patch({ end: e.target.value })}
-            className="rounded-sm border border-bg-surface bg-bg-input px-1.5 py-1 text-xs text-t1 outline-none focus:border-accent"
+            className="rounded-sm border border-bg-surface bg-bg-input px-1.5 py-1 text-[13px] text-t1 outline-none focus:border-accent"
           />
         </Field>
         <Field label="벤치마크">
@@ -198,7 +198,7 @@ export function StrategyBuilder({
 
       {/* 필드 에러 (422) */}
       {fieldErrors.length > 0 && (
-        <div className="panel flex flex-col gap-1 p-3 text-[11px] text-down">
+        <div className="panel flex flex-col gap-1 p-3 text-xs text-down">
           <div className="font-medium">검증 오류</div>
           {fieldErrors.map((e, i) => (
             <div key={i}>
@@ -242,7 +242,7 @@ function ExitToggle({
   children: React.ReactNode
 }) {
   return (
-    <div className="flex items-center gap-2 text-xs">
+    <div className="flex items-center gap-2 text-[13px]">
       <label className="flex w-28 shrink-0 items-center gap-1.5 text-t2">
         <input type="checkbox" checked={checked} onChange={(e) => onToggle(e.target.checked)} className="accent-accent" />
         {label}
