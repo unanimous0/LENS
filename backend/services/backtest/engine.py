@@ -25,13 +25,25 @@ import numpy as np
 import pandas as pd
 
 from .adapters import field_column_map
-from .schema import Condition, Group, Strategy
+from .schema import Condition, Group, Strategy, iter_condition_fields
 
 _FOOTNOTES = {
     "survivorship": "생존편향: 상장폐지 종목이 유니버스에 없어 수익률이 낙관 편향된다(구조적 한계).",
     "overlap": "에피소드 중첩: 같은 종목 연속 onset·동시 다종목으로 t값이 팽창 — 보수적으로 해석.",
     "same_close": "same_close 체결: D일 데이터로 D일 종가에 매수한다는 낙관 가정 — 실현 불가능할 수 있음(look-ahead).",
 }
+
+
+def _ns_coverage_start(df: pd.DataFrame, prefix: str) -> str | None:
+    """네임스페이스(prefix, 예 'fin.') 컬럼 중 하나라도 non-NaN인 첫 날짜 (실질 커버리지 시작)."""
+    cmap = field_column_map()
+    cols = [col for key, col in cmap.items() if key.startswith(prefix) and col in df.columns]
+    if not cols:
+        return None
+    mask = df[cols].notna().any(axis=1).to_numpy()
+    if not mask.any():
+        return None
+    return pd.Timestamp(df["time"].to_numpy()[mask].min()).date().isoformat()
 
 
 # ── 조건 → boolean ndarray ─────────────────────────────────────────────────
@@ -415,6 +427,22 @@ def _summarize(episodes, spec, panel, uni, df) -> dict:
         if effective_start > period_start:
             warnings.append(
                 f"가격 데이터(수정시가) 가용 시작 {effective_start} — 그 이전 신호는 측정 불가.")
+
+    # 재무(fin)·외인보유율(own) 조건은 공시 지연 근사·후발 커버리지라, 전략에 해당 네임스페이스
+    # 필드가 있을 때만 실질 커버리지 시작을 경고에 명시 (effective_start 경고와 동일 방식).
+    # portfolio.rank_by(슬롯 우선순위 지표)도 같은 데이터를 소비하므로 포함.
+    used_ns = {f.split(".", 1)[0] for _p, f in iter_condition_fields(spec)}
+    if spec.portfolio.rank_by:
+        used_ns.add(spec.portfolio.rank_by.split(".", 1)[0])
+    if "fin" in used_ns:
+        cov = _ns_coverage_start(df, "fin.")
+        warnings.append(
+            "재무 조건 사용 — 공시 지연 근사(45/90일)·actual만"
+            + (f", 실질 커버리지 {cov}~" if cov else ", 실질 커버리지 데이터 없음"))
+    if "own" in used_ns:
+        cov = _ns_coverage_start(df, "own.")
+        warnings.append(
+            "외인보유율 조건 사용 — 실질 커버리지 " + (f"{cov}~" if cov else "데이터 없음"))
 
     n_uni_stocks = int(df.loc[uni, "stock"].nunique()) if uni.any() else 0
     meta = {

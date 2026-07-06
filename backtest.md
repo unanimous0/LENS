@@ -65,8 +65,8 @@ frontend/src/pages/backtest.tsx (+ components/backtest/)
 |---|---|---|---|
 | `price` | ohlcv_daily, market_cap_daily | adj open/close, ret_5/20/60/120d, adv_20d, mcap, 52주 고저 대비, MA20/60/120/200 및 이격도 | **C1** |
 | `flow` | investor_trading (+유통시총 분모) | f/i 5·20·60·120d (억·bp), streak, absorb_5d, **태그**(장기동시·진입권·분배 등 — `flow_verdict` 정본 재호출, PR-B 방식) | **C1** |
-| `fin` | financial_metrics_quarterly | PER, PBR, ROE, ROA, EPS/BPS 증감, 영업이익률 | C3 (§3.1 주의) |
-| `own` | foreign_ownership | 외인 보유율, 보유율 20d 변화 | C3 |
+| `fin` | financial_metrics_quarterly | PER·PBR(일별 재계산)·EPS_ttm·BPS·ROE·ROA·영업이익률·영업이익/매출 YoY | **C3 ✅** (§3.1) |
+| `own` | foreign_ownership | 외인 보유율, 보유율 5d/20d 변화(pp), 한도소진율 | **C3 ✅** |
 | `index` | index_ohlcv_daily | (벤치마크 전용 — 조건 참조는 v2) | C2 |
 | (미래) `etf`/`statarb` | ETF 괴리·베이시스·페어 z-score | — | C3+ |
 
@@ -79,8 +79,10 @@ frontend/src/pages/backtest.tsx (+ components/backtest/)
   자본시장법 제출기한, 보수적 고정). as-of 조인은 available_from 기준.
 - **`data_type='actual'`만 사용.** preliminary/estimate는 "언제 그 추정치가 존재했나"를 알 수 없어
   (스냅샷 1회분) 백테스트 사용 자체가 look-ahead — 어댑터가 원천 차단.
-- 커버리지: 2,611종목 · period_end 2023-12-31~ → **fin 조건을 쓰면 실질 시작이 2024-05경으로 단축**
-  됨을 리포트에 자동 표기.
+- 커버리지(2026-07 실측): actual 2,611종목이나 **광범위(>1000종목) 첫 분기는 2024-12-31**
+  (그 이전 actual은 각 분기 2~6행뿐). → as-of 레벨 지표(pbr/bps/roe…)는 **2025-03-31~**,
+  TTM(per/eps_ttm)은 4분기창 완성 후 **2025-11-14~**, 전년동기(YoY)는 **2026-03-31~**.
+  `fin` 조건 사용 시 실질 커버리지 시작을 리포트 warnings에 자동 표기(구현: C3 노트).
 
 ### 3.2 패널 빌드·캐시
 
@@ -471,3 +473,93 @@ frontend/src/pages/backtest.tsx  # StrategyBar(헤더 하단)·RunHistory(결과
 - `npx tsc --noEmit` 0, `eslint src/pages/backtest.tsx src/components/backtest/` 0(기존 타 파일 에러는 무관).
 - 라이브 E2E: portfolio(장기동시·kospi) run — mode=portfolio·CAGR·MDD·equity_curve(bench 포함)·attempts{same_spec,total_runs} 수신. rank_pct_top+portfolio+rank_by(flow.f_20d_bp)+kosdaq run 정상(entered 135·curve 512·bench 동봉). strategies POST/GET/DELETE·runs 이력 응답 확인.
 - 백엔드 추가 수정 **없음**(C2 백엔드 계약 그대로 소비).
+
+## 구현 노트 (C3 백엔드 — fin·own 네임스페이스)
+
+> 2026-07-06 구현·검증 완료. **백엔드만**. 프론트 수정 불요(카탈로그가 네임스페이스를
+> 동적 생성 — `idx.namespaces.map`. fin/own 드롭다운 자동 노출·조건 선택 확인). C1/C2 회귀 없음.
+
+### DB 실측 결과 (구현 근거 — Finance_Data read-only)
+
+- **`financial_metrics_quarterly`**
+  - **순분기(누적 아님)**: 005930 CFS revenue Q1'25 79.1T > Q2'25 74.6T — 누적이면 불가능 →
+    단일분기 확정. ∴ EPS_ttm = 순분기 EPS 4개 **단순 합**(차분 불필요).
+  - **정본 fs_type = CFS(연결) 우선, 결측만 OFS 폴백**(per-field `combine_first`). actual에서
+    CFS revenue non-null 77.5% vs OFS 93.9%; **CFS eps NULL·OFS 존재가 2,000 (종목,분기)** →
+    OFS 폴백이 실질적으로 구제. 모든 종목이 CFS·OFS 두 행을 다 가짐(OFS-only 0).
+  - **저장 `per` 100% NULL**, `pbr`은 collected_at(2026-05~06) 시점 가격 기반(point-in-time 아님)
+    → per·pbr **저장값 폐기, raw종가(close_price) 일별 재계산**. 음수/0 EPS·BPS → NaN(관례).
+  - `data_type`: actual 30,014 / estimate 15,594 / preliminary 72. **actual만** 원천 SQL 차단.
+  - actual **광범위(>1000종목) 커버리지 첫 분기 = 2024-12-31**(2,056종목); 이전 actual은 각 2~6행.
+    5개 광범위 분기(2025-03/06/09/12, 2026-03).
+- **`foreign_ownership`**(하이퍼테이블 236청크): 일별 전종목 **2022-01-03~ 완전 커버리지**(2,657종목,
+  ratio/limit/vol 전부 non-null). `frn_limit_ratio` 대다수 100(무제한)이나 은행·통신·유틸은
+  49/49.99/30/40(유효). limit=0 (1,830행) → 소진율 NaN 가드.
+
+### FinAdapter (`fin`, adapters.py) — 9 지표
+
+- 지표: `per`·`pbr`(일별 재계산) / `eps_ttm`·`bps`·`roe`·`roa`·`operating_margin`(as-of) /
+  `op_yoy`·`revenue_yoy`(전년동기, 직전 흑자 기준·적자→NaN).
+- **available_from = period_end + 45일**(분기·반기), **12월 결산(FY말=Q4) 90일**(자본시장법 제출기한).
+  비12월 결산 소수 종목(각 ~4행) 사업보고서는 +45로 근사(§3.1). period_end 단조↑ → available_from
+  단조↑ → **as-of backward merge**가 point-in-time 보장. EPS_ttm/YoY는 분기 레벨에서 4Q rolling
+  합·shift(4)로 선계산 후 as-of 조인(available_from 기준이라 무결).
+- **required_sources = {ohlcv, fin}**(ohlcv는 per/pbr용 raw종가). 카탈로그 available_from:
+  pbr/bps/roe/roa/op_margin=2025-03-31, per/eps_ttm=2025-11-14, op_yoy/rev_yoy=2026-03-31.
+
+### OwnAdapter (`own`) — 4 지표
+
+- `frn_ratio`(%) / `frn_ratio_5d_chg`·`frn_ratio_20d_chg`(pp, 종목내 shift) / `frn_limit_util`
+  (한도소진율 = 보유율÷한도×100, limit>0 가드). foreign_ownership은 이미 일별이라 스파인에 직접
+  left-join. required_sources = {foreign}(RawFetcher `_foreign`, 연도 청크).
+
+### panel/engine 배선
+
+- panel `adapter_versions()`에 **fin**(=max(collected_at):actual행수)·**own**(=max(time):당일행수)
+  프로브 추가 → 캐시 버전 키 4벌. **구 pickle(2벌 키)은 버전 불일치로 자동 재빌드**(C2 indices 방식).
+- `_compute`: price 스파인에 flow에 이어 fin/own을 left-join(각 (time,stock) 유일 → 행 증식 없음,
+  없는 날 NaN). 기존 price/flow 컬럼·행 불변.
+- engine `_summarize`: 전략이 `fin.*`/`own.*` 필드를 참조할 때만 warnings에 실질 커버리지 자동 표기
+  ("재무 조건 사용 — 공시 지연 근사(45/90일)·actual만, 실질 커버리지 YYYY-MM-DD~" / "외인보유율
+  조건 사용 — 실질 커버리지 YYYY-MM-DD~"). effective_start 경고와 동일 방식.
+
+### 검증 결과
+
+1. **look-ahead 실측(005930)**: eps_ttm 첫 non-NaN = **2025-11-14**(2025-09-30 Q3+45). 직전
+   거래일(2025-11-06) NaN → onset(11-14)부터 값 **4817**(=1115+1186+733+1783, CFS 4Q 합)이며
+   다음 공시 전까지 상수 유지. bps(as-of)는 2025-03-31부터. → 공시 지연 이전 미래정보 미사용 확인.
+2. **PER 재계산 새니티(005930 2026-07-03)**: per=**25.01**(raw종가 309,500 ÷ eps_ttm 12,373)로
+   내부 정합. 재계산 pbr 4.28 vs 저장 pbr 2.31 — collected_at 시점 가격 차이(point-in-time이 맞음).
+   ※ 본 DB는 합성/미래일자 데이터(지수·주가 스케일 확대)라 실 HTS 배수와 직접 비교는 무의미.
+3. **E2E(라이브 8100)**: `fin.pbr<=1.0 AND flow.tag.장기동시` fixed120 — **n=1571·avg_excess
+   +1.17%·t 0.99**, warnings에 재무 경고(실질 커버리지 2024-11-14~) 등장. `own.frn_ratio_20d_chg>=1`
+   스모크 n=7298·own 경고(2022-01-03~) 등장. catalog에 fin(9)·own(4) 노출·가용일 정확.
+4. **회귀**: C1 장기동시 fixed120 = **n=7164·+1.58%·t2.37 불변**. C2 포트폴리오(cost0) final
+   = **1.361951 불변**(entered100/missed6803/dup261 동일), 결정적. → fin/own 추가가 price/flow
+   경로 무영향 확인.
+5. **콜드 재빌드**: 벽시계 **112초**(기존 ~100초), pickle **600MB**(기존 458MB, fin/own 컬럼
+   +142MB). rows 2,727,876·2,719종목 불변.
+6. `python3 -c "import main"` 통과. 프론트 무수정(tsc 불요).
+
+### C3.1 보정 (독립 검증 지적 반영, 2026-07-06)
+
+1. **[Medium] per/pbr 분할·병합 basis 브리지** — 저장 eps/bps는 **collected_at 스냅샷 주식수
+   기준으로 이력 전체 소급 재표시**됨을 실측(042510 5:1 병합·117670 12.1× 전후
+   shares_outstanding 불변). raw종가(t)와 기준 불일치 → (t, collected일] 사이 이벤트 시 factor배
+   왜곡. **corporate_actions는 브리지 불가 판정**: share_factor/ratio/cash 100% NULL, 전 행이
+   가격 gap 자동감지(`UNKNOWN_FROM_FACTOR`) price_factor뿐 — 대신 그 price_factor와 동일 정보인
+   **adjfac(t)=adj_close/close_price**(분할·병합 전용 누적 factor — 배당주 005930 전구간 1.0000,
+   042510 5.0026 실측)로 `value_basis(t) = value × adjfac(collected일)/adjfac(t)` 환산 후 나눈다.
+   collected_at **이후** 이벤트(예: 011330 10:1 2026-06-30)도 같은 식으로 보정. eps_ttm/bps 패널
+   컬럼도 basis(t) 값으로 노출. 검증: **042510 pbr 이벤트 전후 연속**(05-02 1.951 → 05-07 2.012,
+   보정 전 0.39로 5× 왜곡) / **011330** bps 1,412→14,120 전환·pbr 연속(0.280→0.273) /
+   **005930(CA 없음) 소수점까지 불변**(per 25.0141·pbr 4.2799).
+2. **[Low] TTM/YoY 분기 연속성 게이트** — rolling(4)/shift(4)의 행 연속 가정 제거: 4분기창 스팬
+   (pe−pe.shift(3)) 250~290일·전년동기 스팬(pe−pe.shift(4)) 350~380일 벗어나면 NaN
+   (실측 488900 gap 184일 케이스 차단).
+3. **[Info] 네임스페이스 경고가 portfolio.rank_by 커버** — rank_by만 fin 지표여도 재무 경고 주입
+   (검증: rank_by=fin.pbr 단독 실행에 경고 등장).
+- **panel `PANEL_SCHEMA_VERSION`(=2) 도입**: DB 프로브는 어댑터 산식 변경을 감지 못함 →
+  공식 버전을 버전 키에 포함해 구 pickle 자동 무효화 (수동 삭제 불요).
+- 회귀: C1 n=7164·+1.58·t2.37 / C2 final 1.361951 **불변**. fin E2E 헤드라인은 왜곡 제거로 변동
+  (n=1571→1563·avg +1.17→+1.69·t 0.99→1.43). 재빌드 112.6초·pickle 600MB 동일.

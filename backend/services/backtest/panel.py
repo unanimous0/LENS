@@ -66,9 +66,38 @@ async def _price_version() -> str:
     return f"{row[0]}:{int(row[1])}"
 
 
+async def _fin_version() -> str:
+    """financial_metrics_quarterly actual 스냅샷 버전 = max(collected_at):actual행수."""
+    async with korea_async_session() as s:
+        row = (await s.execute(text(
+            "SELECT max(collected_at)::text, count(*) "
+            "FROM financial_metrics_quarterly WHERE data_type = 'actual'"
+        ))).one()
+    return f"{row[0]}:{int(row[1])}"
+
+
+async def _own_version() -> str:
+    """foreign_ownership 버전 = max(time):그날 행수 (price 프로브와 동형)."""
+    async with korea_async_session() as s:
+        row = (await s.execute(text(
+            """
+            WITH m AS (SELECT max(time) AS d FROM foreign_ownership)
+            SELECT m.d::text, (SELECT count(*) FROM foreign_ownership f WHERE f.time = m.d) FROM m
+            """
+        ))).one()
+    return f"{row[0]}:{int(row[1])}"
+
+
+# 어댑터 **공식** 버전 — DB 프로브는 데이터 변경만 감지하므로, 어댑터 산식이 바뀌면
+# 여기를 올려 구 pickle을 무효화한다 (2 = C3.1: fin 분할 브리지·TTM/YoY 연속성 게이트).
+PANEL_SCHEMA_VERSION = 2
+
+
 async def adapter_versions() -> dict:
     fv = await fm.data_version()
-    return {"price": await _price_version(), "flow": f"{fv[0]}:{fv[1]}"}
+    return {"schema": PANEL_SCHEMA_VERSION,
+            "price": await _price_version(), "flow": f"{fv[0]}:{fv[1]}",
+            "fin": await _fin_version(), "own": await _own_version()}
 
 
 async def _fetch_indices(start: date, end: date) -> dict[str, dict]:
@@ -184,6 +213,34 @@ class RawFetcher:
             df["total_shares"] = pd.to_numeric(df["total_shares"], errors="coerce")
         return df
 
+    async def _fin(self) -> pd.DataFrame:
+        # financial_metrics_quarterly는 하이퍼테이블 아님(소형·~3만 actual행) → 단일 SELECT.
+        # actual만 조회 = look-ahead 원천 차단(preliminary/estimate 제외). CFS+OFS 둘 다(어댑터가 coalesce).
+        async with korea_async_session() as s:
+            rows = (await s.execute(text(
+                "SELECT stock_code AS stock, period_end, fs_type, revenue, operating_profit, "
+                "net_income, eps, bps, roe, roa, operating_margin, collected_at "
+                "FROM financial_metrics_quarterly WHERE data_type = 'actual' AND stock_code = ANY(:codes)"
+            ), {"codes": self.ctx.codes})).all()
+        cols = ["stock", "period_end", "fs_type", "revenue", "operating_profit",
+                "net_income", "eps", "bps", "roe", "roa", "operating_margin", "collected_at"]
+        df = pd.DataFrame(rows, columns=cols)
+        for c in ("revenue", "operating_profit", "net_income", "eps", "bps",
+                  "roe", "roa", "operating_margin"):
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+        return df
+
+    async def _foreign(self) -> pd.DataFrame:
+        # foreign_ownership = 하이퍼테이블(236 청크) → 연도 청크(ohlcv와 동일 패턴).
+        df = await _fetch_chunked(
+            "SELECT time, stock_code AS stock, frn_ownership_ratio, frn_limit_ratio "
+            "FROM foreign_ownership WHERE time BETWEEN :start AND :end AND stock_code = ANY(:codes)",
+            self.ctx, ["time", "stock", "frn_ownership_ratio", "frn_limit_ratio"])
+        df["time"] = pd.to_datetime(df["time"])
+        for c in ("frn_ownership_ratio", "frn_limit_ratio"):
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+        return df
+
 
 # ── 빌드 + join ────────────────────────────────────────────────────────────
 async def _build(progress_cb=None) -> dict:
@@ -222,6 +279,11 @@ async def _build(progress_cb=None) -> dict:
             base = frames["price"].sort_values(["stock", "time"])
             flow = frames["flow"]
             df = base.merge(flow, on=["time", "stock"], how="left")
+            # fin/own은 price 스파인에 left-join(각 (time,stock) 유일 → 행 증식 없음). 없는 날 = NaN
+            # (수치 지표 비교는 NaN→False로 신호 안 냄 — 기존 price/flow 행·값 불변, C1/C2 회귀 안전).
+            for ns in ("fin", "own"):
+                if ns in frames:
+                    df = df.merge(frames[ns], on=["time", "stock"], how="left")
             # flow 없는 (종목,일)은 태그 False·수치 NaN — is_true가 정상 동작하도록 태그 fillna(False).
             tag_cols = [c for c in df.columns if c.startswith("tag_")]
             if tag_cols:

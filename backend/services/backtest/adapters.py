@@ -236,7 +236,202 @@ class FlowAdapter:
         return out
 
 
-ADAPTERS: list[DataAdapter] = [PriceAdapter(), FlowAdapter()]
+# ─────────────────────────────── fin ───────────────────────────────
+# 재무 point-in-time (backtest.md §3.1). DB 실측(2026-07):
+#  - 분기 값은 **순분기**(누적 아님) — 005930 CFS revenue Q2<Q1 로 확인.
+#  - 정본 fs_type = **CFS(연결) 우선, 결측만 OFS 폴백** (per-field combine_first).
+#    CFS eps 결측이나 OFS는 있는 (종목,분기) 2000건을 OFS가 구제 (실측).
+#  - `data_type='actual'`만 (원천 SQL 차단) — preliminary/estimate는 존재 시점 불명 → look-ahead.
+#  - 저장 `per` 컬럼은 100% NULL, `pbr`은 collected_at 시점 가격 기반(point-in-time 아님) →
+#    per·pbr은 저장값 버리고 **raw종가 기준 일별 재계산** (flow 분모와 동일 논리).
+#
+# ── 주식수 기준(basis) 브리지 — 분할·병합 왜곡 보정 (C3.1) ──
+# 저장 eps/bps는 **collected_at 스냅샷 시점 주식수 기준으로 이력 전체가 소급 재표시**돼 있다
+# (실측: 042510 5:1 병합·117670 12.1× 이벤트 전후 shares_outstanding 불변 = 단일 현재 기준).
+# 반면 close_raw(t)는 t 시점 기준 → 이벤트가 (t, collected일] 사이면 per/pbr이 factor배 왜곡.
+# corporate_actions는 share_factor 100% NULL(가격 gap 자동감지 price_factor뿐)이라 브리지로
+# 못 쓰고, 대신 **adjfac(t) = adj_close(t)/close_price(t)** (= t 이후 이벤트 누적 price factor;
+# 배당 미반영·분할/병합 전용 — 005930 배당주 전 구간 1.0000, 042510 5.0026 실측)를 쓴다:
+#   value_basis(t) = value_stored × adjfac(collected일) / adjfac(t)
+# 이벤트 없으면 비율 1 → 결과 불변. collected_at **이후** 이벤트(예: 011330 10:1 2026-06-30)는
+# adjfac(collected일)≠1이 되어 같은 식으로 보정. collected일 = 종목별 max(collected_at)
+# (스냅샷 창 2026-05-20~06-06 내 이벤트로 인한 행간 기준 혼재는 창 17일이라 근사 무시).
+# eps_ttm·bps 패널 컬럼도 basis(t) 값으로 노출 → per/pbr = close_raw(t) ÷ basis(t) 값.
+#
+# 공시 지연 상수 (자본시장법 제출기한): 분기·반기보고서 45일, 사업보고서(FY말=Q4) 90일. 보수 고정.
+FIN_LAG_Q = 45
+FIN_LAG_ANNUAL = 90
+# 카탈로그 가용 시작일 — actual 광범위(>1000 종목) 첫 분기 2024-12-31 기준 실측(2026-07):
+#   as-of 레벨(pbr/bps/roe/roa/op_margin): 2024-12-31(Q4)+90 = 2025-03-31
+#   TTM(per/eps_ttm): 첫 4분기창 종료 2025-09-30(+45) = 2025-11-14
+#   전년동기(op_yoy/rev_yoy): 첫 전년비교 가능 분기 2025-12-31(Q4)+90 = 2026-03-31
+FIN_ASOF_AVAIL = "2025-03-31"
+FIN_TTM_AVAIL = "2025-11-14"
+FIN_YOY_AVAIL = "2026-03-31"
+
+# combine_first 대상 원천 필드 (CFS 우선 coalesce OFS).
+_FIN_SRC_FIELDS = ["revenue", "operating_profit", "net_income", "eps", "bps",
+                   "roe", "roa", "operating_margin"]
+_FIN_OUT = ["per", "pbr", "eps_ttm", "bps", "roe", "roa", "operating_margin",
+            "op_yoy", "revenue_yoy"]
+
+
+class FinAdapter:
+    namespace = "fin"
+
+    def required_sources(self) -> set[str]:
+        return {"ohlcv", "fin"}  # ohlcv = per/pbr 재계산용 raw종가(close_price)
+
+    def catalog(self) -> list[dict]:
+        def m(key, label, unit, desc, avail):
+            return {"key": f"fin.{key}", "column": key, "label": label,
+                    "unit": unit, "desc": desc, "available_from": avail}
+        return [
+            m("per", "PER (TTM·point-in-time)", "배",
+              "raw종가 ÷ TTM 주당순이익(최근 공시 4개 **연속** 순분기 EPS 합, 당일 주식수 기준 환산). "
+              "**음수 EPS의 PER는 NaN**(관례). 분기 누락 시 NaN.",
+              FIN_TTM_AVAIL),
+            m("pbr", "PBR (point-in-time)", "배",
+              "raw종가 ÷ 최근 공시 BPS(당일 주식수 기준 환산 — 분할·병합 브리지). "
+              "수정주가 아닌 raw종가(소급 방지, flow 분모와 동일).",
+              FIN_ASOF_AVAIL),
+            m("eps_ttm", "EPS (TTM)", "원",
+              "최근 공시 4개 연속 순분기 EPS 합 — 당일 주식수 기준 (4분기 미확보·분기 누락 시 NaN)", FIN_TTM_AVAIL),
+            m("bps", "BPS", "원", "최근 공시 주당순자산 (as-of, 당일 주식수 기준)", FIN_ASOF_AVAIL),
+            m("roe", "ROE", "%", "최근 공시 자기자본이익률 (as-of, CFS 우선)", FIN_ASOF_AVAIL),
+            m("roa", "ROA", "%", "최근 공시 총자산이익률 (as-of, CFS 우선)", FIN_ASOF_AVAIL),
+            m("operating_margin", "영업이익률", "%", "최근 공시 영업이익률 (순분기, as-of)", FIN_ASOF_AVAIL),
+            m("op_yoy", "영업이익 증감률 (YoY)", "%", "영업이익 전년동기 대비 증감률 (직전 흑자 기준, 적자→NaN)", FIN_YOY_AVAIL),
+            m("revenue_yoy", "매출 증감률 (YoY)", "%", "매출 전년동기 대비 증감률", FIN_YOY_AVAIL),
+        ]
+
+    def build(self, raw: dict, ctx) -> pd.DataFrame:
+        oh = raw["ohlcv"]   # time, stock, close_price(raw)·adj_close (adjfac 브리지용)
+        fin = raw["fin"]    # actual만, CFS+OFS+collected_at (RawFetcher._fin)
+        spine = oh[["time", "stock", "close_price", "adj_close"]].copy()
+        # adjfac(t) = t 이후 분할·병합 누적 price factor (배당 미반영 — 실측 주석 참조).
+        cp = pd.to_numeric(spine["close_price"], errors="coerce").to_numpy(dtype=float)
+        ac = pd.to_numeric(spine["adj_close"], errors="coerce").to_numpy(dtype=float)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            spine["adjfac"] = np.where((cp > 0) & (ac > 0), ac / cp, np.nan)
+        if fin.empty:
+            for c in _FIN_OUT:
+                spine[c] = np.nan
+            return spine[["time", "stock", *_FIN_OUT]]
+
+        # 1) CFS 우선 coalesce OFS (per-field). PK(stock,period_end,fs_type) → 각 fs_type 1행.
+        cfs = fin[fin["fs_type"] == "CFS"].set_index(["stock", "period_end"])[_FIN_SRC_FIELDS]
+        ofs = fin[fin["fs_type"] == "OFS"].set_index(["stock", "period_end"])[_FIN_SRC_FIELDS]
+        q = cfs.combine_first(ofs).reset_index()
+        q["period_end"] = pd.to_datetime(q["period_end"])
+        q = q.sort_values(["stock", "period_end"]).reset_index(drop=True)
+        g = q.groupby("stock", sort=False)
+
+        # TTM EPS = 4 순분기 합 (min_periods=4 → 결측 분기 있으면 NaN). 값이 순분기임을 실측(2026-07).
+        q["eps_ttm"] = g["eps"].transform(lambda s: s.rolling(4, min_periods=4).sum())
+        # 분기 **연속성 게이트**: 행 존재 ≠ 연속 분기 (실측 488900 gap 184일). 4분기창 스팬
+        # (pe − pe.shift(3)) = 정상 267~276일, 전년동기 스팬 (pe − pe.shift(4)) = 365~366일.
+        # 창이 스팬 허용범위 밖이면 결산기 누락/변경 → TTM·YoY 각각 NaN.
+        span3 = (q["period_end"] - g["period_end"].shift(3)).dt.days.to_numpy(dtype=float)
+        span4 = (q["period_end"] - g["period_end"].shift(4)).dt.days.to_numpy(dtype=float)
+        ttm_ok = (span3 >= 250) & (span3 <= 290)
+        yoy_ok = (span4 >= 350) & (span4 <= 380)
+        q.loc[~ttm_ok, "eps_ttm"] = np.nan
+        op_prev = g["operating_profit"].shift(4).to_numpy(dtype=float)
+        rev_prev = g["revenue"].shift(4).to_numpy(dtype=float)
+        op_now = pd.to_numeric(q["operating_profit"], errors="coerce").to_numpy(dtype=float)
+        rev_now = pd.to_numeric(q["revenue"], errors="coerce").to_numpy(dtype=float)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            q["op_yoy"] = np.where((op_prev > 0) & yoy_ok, (op_now / op_prev - 1.0) * 100, np.nan)
+            q["revenue_yoy"] = np.where((rev_prev > 0) & yoy_ok, (rev_now / rev_prev - 1.0) * 100, np.nan)
+
+        # 1.5) 종목별 collected일의 adjfac (= fac_c) — basis 브리지 분자.
+        #      collected일이 휴장일이면 직전 거래일 (merge_asof backward).
+        coll = (fin.groupby("stock", sort=False)["collected_at"].max()
+                .reset_index().rename(columns={"collected_at": "time"}))
+        coll["time"] = (pd.to_datetime(coll["time"]).dt.tz_localize(None).dt.normalize()
+                        .astype(spine["time"].dtype))  # merge_asof는 양쪽 M8 단위 일치 요구
+        fac_src = spine[["time", "stock", "adjfac"]].dropna(subset=["adjfac"]).sort_values("time")
+        coll = pd.merge_asof(coll.sort_values("time"), fac_src, on="time", by="stock",
+                             direction="backward")
+        fac_c_map = dict(zip(coll["stock"], coll["adjfac"]))
+        q["fac_c"] = q["stock"].map(fac_c_map)
+
+        # 2) 공시 지연 → available_from (분기 45일 / Q4=FY말 90일). Q4는 12월 결산 대다수;
+        #    비12월 결산 소수 종목(각 ~4행)의 사업보고서는 +45로 근사됨(§3.1 근사 명시).
+        month = q["period_end"].dt.month.to_numpy()
+        lag = np.where(month == 12, FIN_LAG_ANNUAL, FIN_LAG_Q)
+        q["available_from"] = q["period_end"] + pd.to_timedelta(lag, unit="D")
+
+        # 3) as-of backward 조인 (available_from 기준) → 일별 값. available_from은 period_end 단조↑.
+        asof_cols = ["eps_ttm", "bps", "roe", "roa", "operating_margin", "op_yoy", "revenue_yoy", "fac_c"]
+        qa = (q[["available_from", "stock", *asof_cols]]
+              .dropna(subset=["available_from"]).sort_values("available_from")
+              .rename(columns={"available_from": "time"}))
+        spine = spine.sort_values("time")
+        merged = pd.merge_asof(spine, qa, on="time", by="stock", direction="backward")
+
+        # 4) basis 브리지: 저장 eps/bps(collected일 주식수 기준) → t 시점 기준.
+        #    value_basis(t) = value × fac_c / adjfac(t). 이벤트 없으면 비율 1 → 불변.
+        fac_t = merged["adjfac"].to_numpy(dtype=float)
+        fac_c = merged["fac_c"].to_numpy(dtype=float)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            basis = np.where((fac_t > 0) & (fac_c > 0), fac_c / fac_t, np.nan)
+        merged["eps_ttm"] = merged["eps_ttm"].to_numpy(dtype=float) * basis
+        merged["bps"] = merged["bps"].to_numpy(dtype=float) * basis
+
+        # 5) per/pbr 일별 재계산 (raw종가 ÷ basis(t) 주당값). 음수/0 EPS·BPS → NaN.
+        close = pd.to_numeric(merged["close_price"], errors="coerce").to_numpy(dtype=float)
+        eps_ttm = merged["eps_ttm"].to_numpy(dtype=float)
+        bps = merged["bps"].to_numpy(dtype=float)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            merged["per"] = np.where(eps_ttm > 0, close / eps_ttm, np.nan)
+            merged["pbr"] = np.where(bps > 0, close / bps, np.nan)
+        return merged[["time", "stock", *_FIN_OUT]]
+
+
+# ─────────────────────────────── own ───────────────────────────────
+# 외인 보유율 (foreign_ownership, hypertable). 실측(2026-07): 일별 전종목 커버리지 2022-01-03~,
+# ratio/limit/vol 전부 non-null. frn_limit_ratio는 대다수 100(무제한)이나 은행·통신·유틸 등은
+# 49/49.99/30/40 (한도 유효). limit=0 종목은 소진율 NaN 가드.
+_OWN_OUT = ["frn_ratio", "frn_ratio_5d_chg", "frn_ratio_20d_chg", "frn_limit_util"]
+
+
+class OwnAdapter:
+    namespace = "own"
+
+    def required_sources(self) -> set[str]:
+        return {"foreign"}
+
+    def catalog(self) -> list[dict]:
+        def m(key, label, unit, desc, avail):
+            return {"key": f"own.{key}", "column": key, "label": label,
+                    "unit": unit, "desc": desc, "available_from": avail}
+        return [
+            m("frn_ratio", "외국인 보유율", "%", "외국인 보유 주식수 비율", DATA_START.isoformat()),
+            m("frn_ratio_5d_chg", "외인 보유율 5D 변화", "pp", "외국인 보유율 5거래일 변화(%p)", _avail(5)),
+            m("frn_ratio_20d_chg", "외인 보유율 20D 변화", "pp", "외국인 보유율 20거래일 변화(%p)", _avail(20)),
+            m("frn_limit_util", "외인 한도소진율", "%", "보유율 ÷ 외인한도 × 100 (한도 0/무 → NaN)", DATA_START.isoformat()),
+        ]
+
+    def build(self, raw: dict, ctx) -> pd.DataFrame:
+        fo = raw["foreign"]   # time, stock, frn_ownership_ratio, frn_limit_ratio
+        if fo.empty:
+            return pd.DataFrame(columns=["time", "stock", *_OWN_OUT])
+        df = fo.sort_values(["stock", "time"]).reset_index(drop=True)
+        g = df.groupby("stock", sort=False)
+        ratio = pd.to_numeric(df["frn_ownership_ratio"], errors="coerce")
+        df["frn_ratio"] = ratio
+        df["frn_ratio_5d_chg"] = ratio - g["frn_ownership_ratio"].shift(5)
+        df["frn_ratio_20d_chg"] = ratio - g["frn_ownership_ratio"].shift(20)
+        limit = pd.to_numeric(df["frn_limit_ratio"], errors="coerce").to_numpy(dtype=float)
+        rr = ratio.to_numpy(dtype=float)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            df["frn_limit_util"] = np.where(limit > 0, rr / limit * 100.0, np.nan)
+        return df[["time", "stock", *_OWN_OUT]]
+
+
+ADAPTERS: list[DataAdapter] = [PriceAdapter(), FlowAdapter(), FinAdapter(), OwnAdapter()]
 
 
 def full_catalog() -> list[dict]:
