@@ -44,6 +44,12 @@ async def _ensure_schemas_on_startup() -> None:
             await module.ensure_schema()
         except Exception as e:  # noqa: BLE001
             logger.warning("startup schema ensure %s skipped: %s", module_name, e)
+    # backtest 전략·실행 이력 (lens.db 공유) — backtest.md §6.
+    try:
+        from services.backtest import store as backtest_store
+        await backtest_store.ensure_schema()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("startup schema ensure backtest store skipped: %s", e)
 
 
 @app.on_event("startup")

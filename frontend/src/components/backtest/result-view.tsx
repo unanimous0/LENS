@@ -1,19 +1,29 @@
 import { useMemo, useState } from 'react'
 
+import type { CatalogIndex } from './catalog'
 import { ExcessHistogram } from './histogram'
 import { fmtPct, fmtSigned, signCls } from './format'
-import { type BacktestResult, type Episode, REASON_LABEL } from './types'
+import { PortfolioView } from './portfolio-view'
+import { type Attempts, type BacktestResult, type Benchmark, type Episode, REASON_LABEL } from './types'
 
 /** 우측 결과 뷰 — 백엔드 결과 포맷팅만 (지표 재계산 없음). */
-export function ResultView({ result }: { result: BacktestResult }) {
+export function ResultView({ result, idx }: { result: BacktestResult; idx?: CatalogIndex }) {
   const { summary, episodes, warnings, meta } = result
+  const isPortfolio = result.mode === 'portfolio' && result.portfolio != null
   const excessValues = useMemo(
     () => episodes.map((e) => e.excess_pct).filter((v): v is number => v != null),
     [episodes],
   )
+  const rankByLabel =
+    result.portfolio?.rank_by != null
+      ? idx?.byKey.get(result.portfolio.rank_by)?.label ?? result.portfolio.rank_by
+      : null
 
   return (
     <div className="flex flex-col gap-3">
+      {/* 다중검정 카운터 */}
+      {result.attempts && <AttemptsBanner attempts={result.attempts} />}
+
       {/* 실행 메타 */}
       <div className="panel px-3 py-2 text-xs leading-relaxed text-t3">
         <span className="tabular-nums text-t2">
@@ -28,7 +38,7 @@ export function ResultView({ result }: { result: BacktestResult }) {
         · 에피소드 <span className="tabular-nums text-t2">{summary.n_episodes.toLocaleString()}</span>
         <span className="text-t4">
           {' '}
-          · 벤치마크 {meta.benchmark === 'universe_avg' ? '유니버스 평균' : '없음'} · 패널{' '}
+          · 벤치마크 {BENCH_LABELS[meta.benchmark] ?? meta.benchmark} · 패널{' '}
           {Object.entries(meta.panel_versions)
             .map(([k, v]) => `${k} ${v}`)
             .join(' / ')}
@@ -52,6 +62,22 @@ export function ResultView({ result }: { result: BacktestResult }) {
               </div>
             )
           })}
+        </div>
+      )}
+
+      {/* 포트폴리오 성과 (자본 제약) */}
+      {isPortfolio && result.portfolio && (
+        <PortfolioView portfolio={result.portfolio} benchmark={meta.benchmark as Benchmark} rankByLabel={rankByLabel} />
+      )}
+
+      {/* 이벤트 스터디 관점 — portfolio 모드에선 자본 무제약 산출을 구분 표기 */}
+      {isPortfolio && (
+        <div className="mt-1 px-1">
+          <h2 className="text-[13px] font-semibold text-t1">용량 제약 없는 이벤트 스터디 관점</h2>
+          <p className="text-[11px] leading-relaxed text-t4">
+            아래는 자본 제약을 걸지 않고 모든 진입 신호를 잡았을 때의 순수 edge — 방향·유의성 판단용
+            (위 포트폴리오와 별개).
+          </p>
         </div>
       )}
 
@@ -101,6 +127,29 @@ export function ResultView({ result }: { result: BacktestResult }) {
         adj_open 로그수익 평균 기하 누적(Blume-Stambaugh). t값은 에피소드 중첩으로 팽창하니 보수적으로
         해석. 절대치보다 상대 비교용(단일 레짐·생존편향 — backtest.md §4·§9).
       </div>
+    </div>
+  )
+}
+
+const BENCH_LABELS: Record<string, string> = {
+  universe_avg: '유니버스 평균',
+  kospi: 'KOSPI 종합',
+  kosdaq: 'KOSDAQ 종합',
+  none: '없음',
+}
+
+function AttemptsBanner({ attempts }: { attempts: Attempts }) {
+  const repeated = attempts.same_spec > 1
+  return (
+    <div
+      className={`rounded-sm px-3 py-2 text-xs leading-relaxed ${
+        repeated ? 'bg-warning/10 text-warning' : 'bg-bg-surface/40 text-t4'
+      }`}
+    >
+      {repeated ? '⚠ ' : ''}이 전략(동일 조건) 시도{' '}
+      <span className="font-medium tabular-nums">{attempts.same_spec.toLocaleString()}</span>회 · 전체 실험{' '}
+      <span className="tabular-nums">{attempts.total_runs.toLocaleString()}</span>회
+      {repeated && ' — 반복 튜닝으로 얻은 결과임을 감안하세요 (다중검정).'}
     </div>
   )
 }

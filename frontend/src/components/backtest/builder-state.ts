@@ -6,7 +6,7 @@ import {
   fromCondition,
   toCondition,
 } from './catalog'
-import type { Condition, ExitRule, Group, Strategy } from './types'
+import type { Benchmark, Condition, ExitRule, Group, PortfolioMode, Strategy } from './types'
 
 export type BuilderState = {
   name: string
@@ -31,10 +31,14 @@ export type BuilderState = {
   condExitEnabled: boolean
   condExitMode: 'all' | 'any'
   condExitRows: EditCond[]
+  // 모드·자본 (portfolio 전용 필드는 event_study에선 무시)
+  mode: PortfolioMode
+  maxPositions: string
+  rankBy: string // '' = 없음(선착순)
   // 기간·벤치마크
   start: string
   end: string
-  benchmark: 'universe_avg' | 'none'
+  benchmark: Benchmark
 }
 
 export function defaultState(idx: CatalogIndex): BuilderState {
@@ -58,6 +62,9 @@ export function defaultState(idx: CatalogIndex): BuilderState {
     condExitEnabled: false,
     condExitMode: 'any',
     condExitRows: [blankCond(idx)],
+    mode: 'event_study',
+    maxPositions: '20',
+    rankBy: '',
     start: '',
     end: '',
     benchmark: 'universe_avg',
@@ -119,11 +126,24 @@ export function serialize(idx: CatalogIndex, s: BuilderState): SerializeResult {
   }
   if (!rules.length) errors.push('청산 규칙이 최소 1개 필요합니다.')
 
+  // 포트폴리오 파라미터
+  let maxPos = 20
+  if (s.mode === 'portfolio') {
+    const mp = parseInt(s.maxPositions, 10)
+    if (!Number.isFinite(mp) || mp < 1) errors.push('최대 보유 종목수는 1 이상이어야 합니다.')
+    else maxPos = mp
+  }
+
   if (errors.length || !entry) return { strategy: null, errors }
 
   const minAdv = Number(s.minAdv)
   const minMcap = Number(s.minMcap)
   const cost = Number(s.costBps)
+
+  const portfolio: Strategy['portfolio'] =
+    s.mode === 'portfolio'
+      ? { mode: 'portfolio', max_positions: maxPos, weighting: 'equal', rank_by: s.rankBy || null }
+      : { mode: 'event_study' }
 
   const strategy: Strategy = {
     name: s.name.trim() || 'untitled',
@@ -139,11 +159,103 @@ export function serialize(idx: CatalogIndex, s: BuilderState): SerializeResult {
       cost_bps: Number.isFinite(cost) ? cost : 25,
     },
     exit: { rules },
-    portfolio: { mode: 'event_study' },
+    portfolio,
     benchmark: s.benchmark,
     period: { start: s.start || null, end: s.end || null },
   }
   return { strategy, errors: [] }
+}
+
+// ── 전략 JSON → 편집 상태 (저장 전략 로드용) ──────────────────────────────────
+/** serialize의 역변환. 저장된 spec을 빌더에 채운다 (serialize 산출물 기준으로 견고, 그 외 degrade). */
+export function stateFromStrategy(idx: CatalogIndex, spec: Strategy): BuilderState {
+  const base = defaultState(idx)
+
+  // 진입 트리: {all:[...conds, {any:[...]}?]} 또는 {any:[...]}.
+  const andConds: EditCond[] = []
+  const orConds: EditCond[] = []
+  let orEnabled = false
+  const collect = (items: Array<Condition | Group> | undefined, into: EditCond[]) => {
+    for (const it of items ?? []) {
+      if ('field' in it) into.push(fromCondition(it))
+      else if (it.all) {
+        // 중첩 AND 그룹 → 최상위 AND 리스트로 평탄화 (AND 결합법칙상 의미 동일).
+        // OR 그룹으로 로드하면 재저장 시 AND→OR로 의미가 바뀐다 (손으로 쓴 중첩 spec 보호).
+        collect(it.all, andConds)
+      } else {
+        // 중첩 OR 그룹만 OR 그룹으로 (serialize 산출물 형태)
+        orEnabled = true
+        collect(it.any, orConds)
+      }
+    }
+  }
+  if (spec.entry.all) collect(spec.entry.all, andConds)
+  else if (spec.entry.any) {
+    orEnabled = true
+    collect(spec.entry.any, orConds)
+  }
+
+  // 청산 규칙 → 토글 (기본 전부 off 후 규칙별 on)
+  let fixedEnabled = false
+  let fixedDays = base.fixedDays
+  let stopEnabled = false
+  let stopPct = base.stopPct
+  let takeEnabled = false
+  let takePct = base.takePct
+  let condExitEnabled = false
+  let condExitMode: 'all' | 'any' = 'any'
+  let condExitRows: EditCond[] = base.condExitRows
+  for (const r of spec.exit.rules) {
+    if (r.type === 'fixed_holding') {
+      fixedEnabled = true
+      fixedDays = String(r.days)
+    } else if (r.type === 'stop_loss_pct') {
+      stopEnabled = true
+      stopPct = String(Math.abs(r.value))
+    } else if (r.type === 'take_profit_pct') {
+      takeEnabled = true
+      takePct = String(Math.abs(r.value))
+    } else if (r.type === 'condition') {
+      condExitEnabled = true
+      condExitMode = r.all ? 'all' : 'any'
+      const leaves = (r.all ?? r.any ?? []).map((c) => fromCondition(c))
+      condExitRows = leaves.length ? leaves : base.condExitRows
+    }
+  }
+
+  const mode: PortfolioMode = spec.portfolio.mode === 'portfolio' ? 'portfolio' : 'event_study'
+
+  return {
+    ...base,
+    name: spec.name || 'untitled',
+    markets: {
+      KOSPI: spec.universe.markets.includes('KOSPI'),
+      KOSDAQ: spec.universe.markets.includes('KOSDAQ'),
+    },
+    minAdv: String(spec.universe.min_adv_eok),
+    minMcap: String(spec.universe.min_mcap_eok),
+    andConds: andConds.length ? andConds : [],
+    orEnabled,
+    orConds: orConds.length ? orConds : base.orConds,
+    entryFill: spec.execution.entry_fill,
+    exitFill: spec.execution.exit_fill,
+    costBps: String(spec.execution.cost_bps),
+    fixedEnabled,
+    fixedDays,
+    stopEnabled,
+    stopPct,
+    takeEnabled,
+    takePct,
+    condExitEnabled,
+    condExitMode,
+    condExitRows,
+    mode,
+    maxPositions: String(spec.portfolio.max_positions ?? 20),
+    rankBy: spec.portfolio.rank_by ?? '',
+    start: spec.period.start ?? '',
+    end: spec.period.end ?? '',
+    benchmark: spec.benchmark,
+  }
 }
 
 // ── 프리셋 (검증된 조합만 — backtest.md §검증) ────────────────────────────────

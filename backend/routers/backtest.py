@@ -1,16 +1,16 @@
-"""범용 전략 백테스트 API (PR-C1) — catalog / run / jobs.
+"""범용 전략 백테스트 API (PR-C1/C2) — catalog / run / jobs / strategies / runs.
 
 - 지표 정의·태그 판정은 services/backtest 어댑터(공식 1벌)에만. 라우터는 얇은 소비자.
 - run은 전략 JSON을 검증(422 필드 에러) 후 job 제출 → job_id 반환. 무거운 빌드/시뮬은
-  백그라운드 job (동시 1개). strategies CRUD·실행 이력은 C2 (여기 없음).
+  백그라운드 job (동시 1개). strategies CRUD·실행 이력은 lens.db(store.py).
 """
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException
 from pydantic import ValidationError
 
-from services.backtest import adapters, jobs, panel
-from services.backtest.schema import Strategy, iter_condition_fields
+from services.backtest import adapters, jobs, panel, store
+from services.backtest.schema import Strategy, iter_condition_fields, iter_conditions
 
 router = APIRouter(prefix="/backtest", tags=["backtest"])
 
@@ -26,35 +26,62 @@ async def catalog() -> dict:
     return {
         "namespaces": list(namespaces.keys()),
         "metrics": cat,
-        "operators": [">", ">=", "<", "<=", "==", "is_true", "is_false"],
+        "operators": [">", ">=", "<", "<=", "==", "is_true", "is_false",
+                      "rank_pct_top", "rank_pct_bottom"],
         "panel_meta": panel.get_cached_meta(),  # 빌드 전이면 None
         "notes": {
             "cost_bps_default": 25,
-            "portfolio_modes": ["event_study"],
-            "benchmarks": ["universe_avg", "none"],
+            "portfolio_modes": ["event_study", "portfolio"],
+            "benchmarks": ["universe_avg", "kospi", "kosdaq", "none"],
+            "max_positions_default": 20,
         },
     }
 
 
+def _validate_fields(spec: Strategy) -> None:
+    """카탈로그 대조 필드 검증 (422). 지표 존재 + rank_pct/rank_by 지표 유형 제약."""
+    cat = adapters.full_catalog()
+    valid = {c["key"] for c in cat}
+    bool_fields = {c["key"] for c in cat if c.get("unit") == "bool"}
+
+    errors = [
+        {"loc": path.split("."), "field": fkey, "msg": f"알 수 없는 지표 '{fkey}'"}
+        for path, fkey in iter_condition_fields(spec)
+        if fkey not in valid
+    ]
+    # rank_pct는 bool(태그) 지표에 불허 — 횡단면 순위는 수치 지표만.
+    for path, c in iter_conditions(spec):
+        if c.op in ("rank_pct_top", "rank_pct_bottom") and c.field in bool_fields:
+            errors.append({"loc": path.split("."), "field": c.field,
+                           "msg": f"'{c.op}'는 bool 지표에 사용할 수 없다 (수치 지표만)"})
+    # portfolio rank_by도 카탈로그에 있어야 (있으면 검증; 없으면 코드순).
+    rb = spec.portfolio.rank_by
+    if rb is not None and rb not in valid:
+        errors.append({"loc": ["portfolio", "rank_by"], "field": rb,
+                       "msg": f"알 수 없는 rank_by 지표 '{rb}'"})
+    if errors:
+        raise HTTPException(422, detail=errors)
+
+
 @router.post("/run")
 async def run(payload: dict) -> dict:
-    """전략 JSON → job_id. 스키마/필드 검증 실패 시 422 + 필드 단위 메시지."""
+    """전략 JSON → job_id. 스키마/필드 검증 실패 시 422 + 필드 단위 메시지.
+
+    payload에 optional `strategy_id`(전략과 run 연결). Strategy 스키마 밖 키라 검증 전 분리.
+    """
+    payload = dict(payload)
+    strategy_id = payload.pop("strategy_id", None)
     try:
         spec = Strategy.model_validate(payload)
     except ValidationError as e:
         raise HTTPException(422, detail=e.errors(include_url=False))
 
-    # 지표 키가 카탈로그에 존재하는지 (필드 단위)
-    valid = set(adapters.field_column_map().keys())
-    field_errors = [
-        {"loc": path.split("."), "field": fkey, "msg": f"알 수 없는 지표 '{fkey}'"}
-        for path, fkey in iter_condition_fields(spec)
-        if fkey not in valid
-    ]
-    if field_errors:
-        raise HTTPException(422, detail=field_errors)
+    _validate_fields(spec)
 
-    job_id = jobs.submit(spec)
+    if strategy_id is not None and await store.get_strategy(strategy_id) is None:
+        raise HTTPException(404, f"unknown strategy: {strategy_id}")
+
+    job_id = jobs.submit(spec, strategy_id=strategy_id)
     return {"job_id": job_id, "status": "queued"}
 
 
@@ -69,3 +96,54 @@ async def job_status(job_id: str) -> dict:
     elif job.status == "error":
         out["error"] = job.error
     return out
+
+
+# ── 전략 저장 (lens.db) ──────────────────────────────────────────────────────
+@router.post("/strategies")
+async def save_strategy(payload: dict) -> dict:
+    """전략 저장 — {name, spec}. 이름 중복이면 단순 upsert(새 버전 아님, updated_at 갱신).
+
+    spec은 Strategy 스키마로 검증(422). name은 payload.name 우선, 없으면 spec.name.
+    """
+    spec_payload = payload.get("spec")
+    if not isinstance(spec_payload, dict):
+        raise HTTPException(422, detail=[{"loc": ["spec"], "msg": "spec(dict)이 필요하다"}])
+    try:
+        spec = Strategy.model_validate(spec_payload)
+    except ValidationError as e:
+        raise HTTPException(422, detail=e.errors(include_url=False))
+    _validate_fields(spec)
+
+    name = (payload.get("name") or spec.name or "").strip()
+    if not name:
+        raise HTTPException(422, detail=[{"loc": ["name"], "msg": "name이 필요하다"}])
+
+    return await store.upsert_strategy(name, spec.model_dump(mode="json"))
+
+
+@router.get("/strategies")
+async def list_strategies() -> list[dict]:
+    return await store.list_strategies()
+
+
+@router.get("/strategies/{sid}")
+async def get_strategy(sid: str) -> dict:
+    s = await store.get_strategy(sid)
+    if s is None:
+        raise HTTPException(404, f"unknown strategy: {sid}")
+    return s
+
+
+@router.delete("/strategies/{sid}")
+async def delete_strategy(sid: str) -> dict:
+    ok = await store.delete_strategy(sid)
+    if not ok:
+        raise HTTPException(404, f"unknown strategy: {sid}")
+    return {"deleted": sid}
+
+
+@router.get("/runs")
+async def list_runs(strategy_id: str | None = None, limit: int = 50) -> list[dict]:
+    """실행 이력 (최신순). strategy_id 필터·limit."""
+    limit = max(1, min(int(limit), 200))
+    return await store.list_runs(strategy_id, limit)

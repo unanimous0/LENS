@@ -339,3 +339,135 @@ frontend/src/components/backtest/
 - `panel.fetch_stock_names(codes)` + `jobs._run_backtest`가 **에피소드 등장 코드만** 종목명 조인 →
   `result.meta.stock_names`(code→name). 패널 pickle(458MB) 불변·경량 단일 SELECT. 에피소드 테이블
   종목명 표시용(없으면 코드만). 라이브 확인: 정석 전략 n=7817, stock_names 1566개, 000050→경방.
+
+## 구현 노트 (C2 백엔드)
+
+> 2026-07-06 구현·검증 완료. **백엔드만** (프론트는 다음 단계). portfolio 모드 + rank_pct +
+> kospi/kosdaq 벤치마크 + 전략 저장·실행 이력(lens.db) + 다중검정 카운터.
+
+### 패키지 추가/변경 (실제)
+
+```
+backend/services/backtest/
+  engine.py            # 리팩터: _prepare/_run_episodes 추출(포트폴리오와 공유),
+                       #   rank_pct 평가(_eval_rank_pct), 벤치마크 일반화(_build_bmap)
+  engine_portfolio.py  # NEW — run_portfolio: 이벤트 스터디 산출 + 자본 제약 시뮬(N 슬리브)
+  store.py             # NEW — lens.db 전략 CRUD + 실행 이력 + spec_hash + attempts (positions.py 관례)
+  panel.py             # +_fetch_indices(KGG01P/QGG01P) → panel["indices"]; 캐시에 indices 포함
+  schema.py            # portfolio.mode=portfolio·max_positions(20)·weighting·rank_by;
+                       #   Condition op rank_pct_top/bottom(value 0~100); benchmark kospi/kosdaq; iter_conditions
+  jobs.py              # submit(spec, strategy_id); 모드별 runner; 완료 시 store.record_run + attempts 주입
+backend/routers/backtest.py  # +/strategies(POST/GET/DELETE)·/runs; run에 strategy_id·rank_pct bool 금지 검증
+backend/main.py        # startup에서 backtest store.ensure_schema()
+```
+
+### portfolio 모드 (engine_portfolio.py)
+
+- **자본 모델 = N 슬리브(sub-account).** 각 슬리브 1/N 시작, 비면 당일 진입 후보를 담아 슬리브
+  전액 투자, 청산 실현액이 그 슬리브 현금이 되어 재사용(리밸런스 없음=슬리브 독립).
+  일별 에쿼티 = Σ현금슬리브 + Σ투자슬리브 시가평가(adj_close). 비용은 진입·청산 각 (1−cost_bps/1e4)
+  곱(왕복 ≈ C1의 2×cost_bps 가법과 2차항 차이).
+- **에피소드 후보 = C1 `_run_episodes` 결과 그대로** (청산은 자본과 무관 — 규칙만으로 결정). 포트폴리오는
+  "어느 onset을 잡을지"만 자본으로 제약. 그래서 result에 **이벤트 스터디 산출(자본 무제약)도 함께** 담아
+  방향/edge를 별도 측정(§검증1 부호 정합).
+- 일별 루프: (1) 당일 exit 슬리브 회수→슬롯 반환 (2) 빈 슬롯에 당일 진입후보를 rank_by 내림차순
+  (None이면 코드순) 채움, 동일 종목 중복 보유 금지 (3) 시가평가로 에쿼티 1점. `entered+missed+dup
+  == n_candidate` 항등(회계 무결성).
+- **종가 실현 현금의 당일 재사용 금지** (혼합 체결 look-ahead 가드): 청산이 종가 체결(next_close·
+  same_close·ongoing 마감)인 슬리브는 실현 현금을 **다음 di부터** 진입에 사용(`sleeve_lock_di`) —
+  시가 진입이 당일 종가 매도 대금을 쓰는 look-ahead 차단. 시가 청산 대금은 동시 체결이라 당일 재사용
+  유지 → 기본 next_open/next_open 결과 불변(final 1.361951), next_open/next_close는 1.3495→**1.3212**
+  (낙관 제거 방향).
+- **실효 커버리지 표기**: meta에 `effective_start`(첫 유효 adj_open 날짜) 추가, period.start보다 늦으면
+  warnings에 "가격 데이터(수정시가) 가용 시작 YYYY-MM-DD — 그 이전 신호는 측정 불가" 자동 추가
+  (이벤트 스터디·포트폴리오 공통, `_summarize`). 현 패널 effective_start=2024-04-23.
+- **에쿼티 커브 시작 t0 = 첫 진입일**(자본 배치 시작, 워밍업 flat-cash prefix 제거). 벤치마크도 t0에서
+  1.0 정규화 → 동일 창 비교. 커브 = `[{date, equity, benchmark?}]` (lightweight-charts용).
+- **정의**: CAGR = final_eq^(365.25/일수)−1. MDD = 커브 running-max 대비 최저(peak/trough 날짜 포함).
+  Sharpe = 일별 초과수익(전략−벤치, 벤치 없으면 절대) 평균/표준편차 × √252. **회전율(연간)** =
+  Σ진입 notional / 평균에쿼티 / 연수(편도 배치 비율). 연도표 = 커브 연말/직전연말(첫해 1.0) 대비 전략·벤치·초과.
+
+### rank_pct (횡단면 순위) + 벤치마크
+
+- `rank_pct_top/bottom value` = 그날 **유니버스 내**(uni & non-NaN) 지표 percentile 상·하위 value%.
+  `groupby(time).rank(pct=True, method='min')` 벡터화. bool(태그) 지표엔 라우터가 422.
+  `rank_by`도 동일 카탈로그 키 공간(포트폴리오 우선순위).
+- 벤치마크 kospi=`KGG01P`, kosdaq=`QGG01P`(index_ohlcv_daily, 코스피/코스닥 **종합**지수 — 분할 없어 raw
+  close). panel 빌드 시 2 시계열(각 ~1,100행) 함께 캐시(`panel["indices"]`, 무시 가능 크기). excess는
+  지수 비율로 차감. **C2 이전 캐시엔 indices 부재 → `_load_cache`가 재빌드 유도**(1회 100s).
+
+### store.py / lens.db (positions.py 관례)
+
+- 테이블 `backtest_strategies(id,name UNIQUE,spec_json,created_at,updated_at)` /
+  `backtest_runs(id,strategy_id nullable,spec_json,spec_hash,summary_json,panel_version,started_at,finished_at,status)`.
+  **summary(스탯·경고·메타)만 저장** — 에쿼티·에피소드 배열 제외(재실행 재현 가능, spec 사본 보존).
+- **spec_hash** = `model_dump(json)`에서 **name 제외** → `json.dumps(sort_keys)` → sha256. 같은 조건이면
+  이름 달라도 같은 계열. **attempts** = {same_spec(동일 hash run 수), total_runs}. jobs 완료 시(성공/실패
+  모두) record_run → result에 `attempts` 주입(status=done 승격 **전에** 주입해 poll 경합 방지).
+- 이름 중복 = 새 버전 아님(단순 upsert, updated_at 갱신). API: POST/GET/DELETE `/strategies[/{id}]`,
+  GET `/runs?strategy_id=&limit=`, POST `/run` body에 optional `strategy_id`.
+
+### 검증 결과 (§10 C2 기준)
+
+1. **portfolio**(장기동시·fixed120·max20, universe_avg): 실행 **2.6초**(<10s). event-study avg_excess
+   **+1.58%**(동일)와 부호 정합. final_eq **1.362**·CAGR **15.13%**·MDD **−35.94%**(2026-05-08→06-26)·
+   Sharpe 0.18·회전율 2.31·avg_pos 19.9. entered 100 / **missed 6803** / dup 261 (합 7164=후보수 — fixed120
+   장기보유라 20슬롯이 반년씩 점유 → 대부분 미체결, 용량 제약 가시화).
+2. **자본 보존**(cost0·bench none): 순수 보유일 3개에서 `equity 증분 == Σ value_prev×일별수익`이 **1e-16
+   일치**. 가중평균 vs 등가중 차 ~1e-3(슬리브 값 발산 — 진입 시점 등가중, 이후 drift; 설계대로).
+3. **rank_pct** `price.ret_20d rank_pct_top 10`: 날짜별 선택/유니버스 비율 **mean 0.100·median 0.100**(≈10%).
+4. **kospi 벤치마크**: avg_excess universe_avg +1.58 / **kospi −29.96** / kosdaq +4.02 — 명확히 상이.
+   지수값 정렬 확인(KGG01P 2022-01-03=2988.77 … 2026-07-03=8088.34, 합성 데이터라 대폭 상승 → 큰 음의 초과).
+5. **store E2E**(라이브 8100): 저장→목록→run 연결→runs 이력→**attempts same_spec 1→2·total 1→2**·동일
+   spec_hash. rank_pct-of-bool 422. lens.db 스키마 전후 불변(positions·loan_rates rows 보존).
+6. **C1 회귀**: event_study(장기동시 fixed120 전 구간) **n=7164·+1.58%·t2.37 불변**(직접·풀스택 양쪽).
+7. `python3 -c "import main"` 통과.
+
+### 설계와 달라진 점
+
+- **에쿼티 커브 시작 = 첫 진입일**(period start 아님): 지표 워밍업으로 첫 onset이 수개월 뒤라, period
+  start부터 시작하면 flat-cash prefix가 CAGR·MDD를 왜곡. 자본 배치 시작점부터 벤치마크와 동일 창 비교.
+- **max_positions 기본 20을 항상 부여**(event_study는 무시): C1의 `max_positions: None`을 20으로. 스키마
+  단순화 — 모드 무관 유효값.
+- **portfolio 결과에 이벤트 스터디 블록 동봉**: "이벤트 스터디 산출에 추가"를 결과 dict 병합으로 구현
+  (result = C1 summary/episodes/warnings/meta + `portfolio` 블록 + `mode`). 방향 정합 검증이 직접 가능.
+- **회전율 정의 = 편도 진입 notional / 평균에쿼티 / 연수**: 왕복이 아닌 편도 배치 비율(진입=청산이라 편도로
+  충분). 짧은 보유(20d)일수록 커짐(검증 rank_by run 15.7 vs fixed120 2.31)로 직관 부합.
+
+## 구현 노트 (C2 프론트엔드)
+
+> 2026-07-06 구현·검증(tsc/lint 0, 라이브 E2E). C1 프론트 구조 확장 — 회귀 없음(이벤트 스터디 모드 결과 불변).
+
+### 컴포넌트 구조 (추가/변경)
+
+```
+frontend/src/components/backtest/
+  types.ts          # +Op(rank_pct_top/bottom)·Benchmark·PortfolioMode; Strategy.portfolio 확장·benchmark 확장;
+                    #   +Attempts·EquityPoint·PortfolioYear·PortfolioResult; BacktestResult에 mode/attempts/portfolio;
+                    #   +StrategyRecord(/strategies)·RunRecord+RunSummaryHead(/runs)
+  catalog.ts        # +isRankOp; toCondition에 rank_pct 분기(value 0<v<=100, ref 금지)
+  condition-row.tsx # NUMERIC_OPS=COMPARE+RANK, OP_LABEL(상위/하위 N%); rank op일 때 % 값 입력·ref토글 숨김; ns/field 전환 keep-op를 NUMERIC_OPS로
+  builder-state.ts  # BuilderState +mode/maxPositions/rankBy; serialize가 portfolio 블록 생성(+max_positions 검증);
+                    #   NEW stateFromStrategy(spec→BuilderState) 역변환(저장 전략 로드)
+  strategy-builder.tsx # NEW "모드" 섹션(칩 이벤트/포트폴리오 + max_positions·rank_by 셀렉트 Tip); 벤치마크 kospi/kosdaq 추가
+  equity-curve.tsx  # NEW — lightweight-charts v4 autoSize(flow-detail 관례). 전략 accent/벤치 회색 2라인(t0=1.0), 자체 크로스헤어 툴팁(누적수익%)
+  portfolio-view.tsx # NEW — 포트폴리오 스탯 스트립(누적/CAGR/MDD(구간 Tip)/샤프/회전율/평균보유/미체결(entered·missed·dup Tip)) + 에쿼티 커브 + 연도별표(전략/벤치/초과)
+  strategy-bar.tsx  # NEW — 상단 저장 전략 바: GET /strategies 셀렉트·로드, [저장](이름 입력 upsert)·[삭제], 선택 전략 최근 실행 요약(GET /runs?strategy_id=)
+  run-history.tsx   # NEW — 실행 이력 접이식 패널(GET /runs?limit=30): 시각·모드·해시8·n·초과·CAGR·MDD·상태
+  result-view.tsx   # +AttemptsBanner(N>1 주황); portfolio 모드면 PortfolioView 먼저 + "용량 제약 없는 이벤트 스터디 관점" 제목; 벤치 라벨 4종
+frontend/src/pages/backtest.tsx  # StrategyBar(헤더 하단)·RunHistory(결과 하단) 배선; selectedStrategyId(run body에 strategy_id 주입)·refreshToken(실행 완료 시 bump→바/이력 갱신); currentSpec=serialize 결과(저장용); loadStrategy/reset이 선택 해제
+```
+
+### 설계 결정
+
+- **strategy_id는 Strategy 스키마 밖 키**: 라우터가 검증 전 pop → run body에 `{...strategy, strategy_id}`로 주입(선택 전략 있을 때만).
+- **rank_pct UI 가드**: bool(태그) 지표엔 연산 셀렉트에 rank op 미노출(백엔드 422와 정합) — opOptions가 bool이면 BOOL_OPS만.
+- **stateFromStrategy round-trip**: serialize 산출물(`{all}`/`{all,{any}}`/`{any}`) 역변환 불변(esbuild 런타임 왕복 테스트로 확인). 손으로 쓴 중첩 `{all:[…,{all:[…]}]}`은 최상위 AND 리스트로 **평탄화**(AND 결합법칙상 의미 동일 — OR로 로드하면 재저장 시 AND→OR 의미 변형), `{any}` 하위그룹만 OR 그룹으로. 청산 규칙은 전부 off 후 규칙별 on, 손절/익절은 abs로 복원.
+- **에쿼티 커브 = lightweight-charts**(시계열), 스탯·연도표는 인라인. 벤치 none이면 1라인. 색 절제(전략 accent·벤치 회색).
+- **재계산 금지 준수**: 포트폴리오 스탯·커브·연도표 모두 백엔드 `portfolio` 블록 값 그대로 표시(프론트 집계는 히스토그램·사유별 평균처럼 표시용만).
+
+### 검증
+
+- `npx tsc --noEmit` 0, `eslint src/pages/backtest.tsx src/components/backtest/` 0(기존 타 파일 에러는 무관).
+- 라이브 E2E: portfolio(장기동시·kospi) run — mode=portfolio·CAGR·MDD·equity_curve(bench 포함)·attempts{same_spec,total_runs} 수신. rank_pct_top+portfolio+rank_by(flow.f_20d_bp)+kosdaq run 정상(entered 135·curve 512·bench 동봉). strategies POST/GET/DELETE·runs 이력 응답 확인.
+- 백엔드 추가 수정 **없음**(C2 백엔드 계약 그대로 소비).

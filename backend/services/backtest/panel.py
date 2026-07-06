@@ -35,6 +35,9 @@ logger = logging.getLogger("uvicorn.error")
 _CACHE_DIR = Path(__file__).resolve().parents[3] / "data" / "backtest_panel"
 _INVESTOR_TYPES = ("FOREIGN", "INSTITUTION", "RETAIL")
 
+# 벤치마크 지수 (index_ohlcv_daily) — KRX 코스피/코스닥 종합지수. 분할 없어 raw close 사용.
+_INDEX_CODES = {"kospi": "KGG01P", "kosdaq": "QGG01P"}
+
 # 프로세스 메모리 캐시 + 동시 빌드 가드
 _PANEL: dict | None = None          # {"df", "versions", "meta"}
 _build_lock = asyncio.Lock()
@@ -66,6 +69,26 @@ async def _price_version() -> str:
 async def adapter_versions() -> dict:
     fv = await fm.data_version()
     return {"price": await _price_version(), "flow": f"{fv[0]}:{fv[1]}"}
+
+
+async def _fetch_indices(start: date, end: date) -> dict[str, dict]:
+    """벤치마크 지수 종가 (KGG01P/QGG01P) → {"kospi": {Timestamp: close}, "kosdaq": {...}}.
+
+    2 시계열·각 ~1,100행이라 부하 무시 가능. 지수는 분할 없어 raw close 그대로(CLAUDE.md 룰).
+    """
+    codes = list(_INDEX_CODES.values())
+    async with korea_async_session() as s:
+        rows = (await s.execute(text(
+            "SELECT code, time, close FROM index_ohlcv_daily "
+            "WHERE code = ANY(:codes) AND time BETWEEN :start AND :end ORDER BY time"
+        ), {"codes": codes, "start": start, "end": end})).all()
+    rev = {v: k for k, v in _INDEX_CODES.items()}
+    out: dict[str, dict] = {k: {} for k in _INDEX_CODES}
+    for code, t, close in rows:
+        if close is None:
+            continue
+        out[rev[code]][pd.Timestamp(t)] = float(close)
+    return out
 
 
 # ── 유니버스 + 벌크 조회 (연도 청크 · 테이블별 세션) ────────────────────────
@@ -214,6 +237,8 @@ async def _build(progress_cb=None) -> dict:
         df = await asyncio.to_thread(_compute)
         prog(52)
 
+        indices = await _fetch_indices(ctx.start, ctx.end)  # 벤치마크 kospi/kosdaq (경량)
+
         meta = {
             "period": {"start": ctx.start.isoformat(), "end": ctx.end.isoformat()},
             "n_stocks": int(df["stock"].nunique()),
@@ -221,7 +246,7 @@ async def _build(progress_cb=None) -> dict:
             "built_at": date.today().isoformat(),
             "build_secs": round(_time.monotonic() - t0, 1),
         }
-        panel = {"df": df, "versions": versions, "meta": meta}
+        panel = {"df": df, "versions": versions, "meta": meta, "indices": indices}
         # pickle dump ~460MB — 동기 실행 시 이벤트 루프 수 초 블로킹 → 스레드로 격리.
         await asyncio.to_thread(_save_cache, panel)
         _set_panel(panel)
@@ -241,7 +266,8 @@ def _save_cache(panel: dict) -> None:
     try:
         _CACHE_DIR.mkdir(parents=True, exist_ok=True)
         with open(_CACHE_DIR / "panel.pkl", "wb") as f:
-            pickle.dump({"versions": panel["versions"], "meta": panel["meta"], "df": panel["df"]},
+            pickle.dump({"versions": panel["versions"], "meta": panel["meta"],
+                         "df": panel["df"], "indices": panel.get("indices", {})},
                         f, protocol=pickle.HIGHEST_PROTOCOL)
     except Exception as e:  # noqa: BLE001 — 캐시 실패는 치명적 아님 (메모리로 서빙)
         logger.warning("backtest panel cache save skipped: %s", e)
@@ -254,8 +280,10 @@ def _load_cache(versions: dict) -> dict | None:
     try:
         with open(p, "rb") as f:
             obj = pickle.load(f)
-        if obj.get("versions") == versions:
-            return {"df": obj["df"], "versions": obj["versions"], "meta": obj["meta"]}
+        # "indices" 부재 = C2 이전 캐시 → 재빌드 유도(벤치마크 kospi/kosdaq에 필요).
+        if obj.get("versions") == versions and "indices" in obj:
+            return {"df": obj["df"], "versions": obj["versions"], "meta": obj["meta"],
+                    "indices": obj["indices"]}
     except Exception as e:  # noqa: BLE001 — 손상 캐시면 무시하고 재빌드
         logger.warning("backtest panel cache load skipped: %s", e)
     return None

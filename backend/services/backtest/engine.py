@@ -1,4 +1,4 @@
-"""이벤트 스터디 엔진 — backtest.md §5 (C1).
+"""이벤트 스터디 + 포트폴리오 엔진 — backtest.md §5.
 
 진입 조건 **onset**(전일 False→당일 True, 유니버스 내)마다 에피소드 생성 → 청산 규칙 중
 먼저 발동(whichever-first)하는 시점에 청산 → 에피소드별 수익/초과수익.
@@ -7,9 +7,15 @@
   - 신호는 D 종가 데이터로만 (모든 패널 지표가 trailing — 어댑터에서 shift 방향 보장).
   - 진입/청산은 execution.entry_fill/exit_fill 가격. same_close는 look-ahead 경고 배지.
   - 손절/익절은 **종가 기준 판정 후 다음날 체결** (장중 low 터치 금지 — LP_MM 부검).
-  - 벤치마크(universe_avg)는 엔진 유니버스의 adj_open 로그수익 평균 기하 누적(Blume-Stambaugh).
+  - 벤치마크: universe_avg=엔진 유니버스 adj_open 로그수익 평균 기하 누적(Blume-Stambaugh),
+    kospi/kosdaq=지수 종가(panel["indices"]). excess는 벤치마크 비율로 차감.
 
-flow_exit_backtest.py의 onset 에피소드 시뮬을 임의 조건·청산으로 일반화한 것.
+C2:
+  - rank_pct_top/bottom: 그날 유니버스 내 지표 횡단면 percentile 상·하위 value%.
+  - run_portfolio(engine_portfolio): 이벤트 스터디 산출 + 자본 제약 시뮬(에쿼티/CAGR/…).
+
+이벤트 스터디 산출은 `run_event_study`. 포트폴리오는 `_prepare`/`_run_episodes`를 재사용하는
+`engine_portfolio.run_portfolio`가 담당한다 (에피소드 후보 = 자본 무제약 onset 전부).
 """
 from __future__ import annotations
 
@@ -29,13 +35,38 @@ _FOOTNOTES = {
 
 
 # ── 조건 → boolean ndarray ─────────────────────────────────────────────────
-def _eval_condition(df: pd.DataFrame, col_map: dict, c: Condition) -> np.ndarray:
+def _eval_rank_pct(df: pd.DataFrame, col_map: dict, c: Condition,
+                   times: np.ndarray, uni: np.ndarray) -> np.ndarray:
+    """횡단면 순위 — 날짜별 유니버스 내 percentile 상·하위 value%.
+
+    top: 값이 큰 쪽 value%, bottom: 값이 작은 쪽 value%. NaN·유니버스 밖은 순위 제외.
+    method='min'으로 동점은 함께 포함(비율 보수적). 유니버스 수천 종목이라 ~value% 근사.
+    """
+    col = col_map[c.field]
+    vals = pd.to_numeric(df[col], errors="coerce").to_numpy(dtype=float)
+    res = np.zeros(len(df), dtype=bool)
+    mask = uni & ~np.isnan(vals)
+    if not mask.any():
+        return res
+    frac = float(c.value) / 100.0
+    ascending = c.op == "rank_pct_bottom"
+    sub = pd.DataFrame({"t": times[mask], "v": vals[mask]})
+    rank = sub.groupby("t", sort=False)["v"].rank(pct=True, ascending=ascending, method="min").to_numpy()
+    idx = np.nonzero(mask)[0]
+    res[idx[rank <= frac]] = True
+    return res
+
+
+def _eval_condition(df: pd.DataFrame, col_map: dict, c: Condition,
+                    times: np.ndarray, uni: np.ndarray) -> np.ndarray:
     col = col_map[c.field]
     s = df[col]
     if c.op == "is_true":
         return s.fillna(False).to_numpy(dtype=bool)
     if c.op == "is_false":
         return (~s.fillna(False).astype(bool)).to_numpy()
+    if c.op in ("rank_pct_top", "rank_pct_bottom"):
+        return _eval_rank_pct(df, col_map, c, times, uni)
     left = pd.to_numeric(s, errors="coerce").to_numpy(dtype=float)
     if c.ref is not None:
         right = pd.to_numeric(df[col_map[c.ref]], errors="coerce").to_numpy(dtype=float) * c.mult
@@ -61,17 +92,19 @@ def _eval_condition(df: pd.DataFrame, col_map: dict, c: Condition) -> np.ndarray
     return res
 
 
-def _eval_group(df: pd.DataFrame, col_map: dict, g: Group) -> np.ndarray:
+def _eval_group(df: pd.DataFrame, col_map: dict, g: Group,
+                times: np.ndarray, uni: np.ndarray) -> np.ndarray:
     items = g.all if g.all is not None else g.any
     arrs = [
-        _eval_group(df, col_map, it) if isinstance(it, Group) else _eval_condition(df, col_map, it)
+        _eval_group(df, col_map, it, times, uni) if isinstance(it, Group)
+        else _eval_condition(df, col_map, it, times, uni)
         for it in items
     ]
     stacked = np.vstack(arrs)
     return stacked.all(axis=0) if g.all is not None else stacked.any(axis=0)
 
 
-# ── 벤치마크 (유니버스 adj_open 로그수익 기하 누적) ─────────────────────────
+# ── 벤치마크 (날짜 → 정규화 값 맵; excess는 비율로 차감) ─────────────────────
 def _build_uidx(df: pd.DataFrame, uni: np.ndarray) -> dict:
     # float32 패널 → 로그 누적 오차 방지 위해 float64로 승격 후 계산.
     ret = df.groupby("stock", sort=False)["adj_open"].transform(
@@ -86,23 +119,29 @@ def _build_uidx(df: pd.DataFrame, uni: np.ndarray) -> dict:
     return {pd.Timestamp(t): float(v) for t, v in uidx.items()}
 
 
-# ── 메인 ───────────────────────────────────────────────────────────────────
-def run_event_study(panel: dict, spec: Strategy, progress_cb=None, _signal_shift: int = 0) -> dict:
-    """spec을 패널에 적용해 이벤트 스터디 결과 dict 반환.
+def _build_bmap(spec: Strategy, df: pd.DataFrame, uni: np.ndarray, panel: dict) -> tuple[bool, dict]:
+    """(use_bench, {Timestamp: value}). value는 정규화 무관(excess는 비율만 사용)."""
+    b = spec.benchmark
+    if b == "none":
+        return False, {}
+    if b == "universe_avg":
+        return True, _build_uidx(df, uni)
+    # kospi / kosdaq — panel["indices"][b] = {Timestamp: close}
+    idx = (panel.get("indices") or {}).get(b) or {}
+    return True, dict(idx)
 
-    _signal_shift: 검증(look-ahead 스모크) 전용 — onset을 종목 내 n칸 이동. 프로덕션 경로는 0.
-    """
-    def prog(p):
-        if progress_cb:
-            progress_cb(p)
 
-    df: pd.DataFrame = panel["df"]  # 전체 패널 (종목·시간 정렬·연속 인덱스)
+# ── 준비: 기간·유니버스·onset·벤치마크 ──────────────────────────────────────
+def _prepare(panel: dict, spec: Strategy, prog=None, _signal_shift: int = 0) -> dict:
+    def _p(p):
+        if prog:
+            prog(p)
+
+    df: pd.DataFrame = panel["df"]
     col_map = field_column_map()
 
-    # 1) 기간 마스크 — 패널을 **슬라이스하지 않는다**. 슬라이스하면 첫날 prev=False라
-    #    이미 신호 중인 종목이 전부 경계 onset으로 잡힌다(인플레이션). 신호/onset은 전체
-    #    범위에서 계산한 뒤 onset 날짜만 period로 필터 → 진짜 onset만 남는다.
-    #    청산 스캔은 period end까지로 제한 (에피소드 루프의 L_eff).
+    # 1) 기간 마스크 — 패널을 **슬라이스하지 않는다**. 신호/onset은 전체 범위에서 계산 후
+    #    onset 날짜만 period로 필터(경계 onset 인플레이션 방지). 청산 스캔은 period end까지.
     start = spec.period.start
     end = spec.period.end
     times = df["time"].to_numpy()
@@ -112,7 +151,7 @@ def run_event_study(panel: dict, spec: Strategy, progress_cb=None, _signal_shift
     end_ts = np.datetime64(pd.Timestamp(end)) if end is not None else None
     if end_ts is not None:
         in_period &= times <= end_ts
-    prog(62)
+    _p(62)
 
     # 2) 유니버스 (일별 마스크)
     markets = set(spec.universe.markets)
@@ -122,8 +161,8 @@ def run_event_study(panel: dict, spec: Strategy, progress_cb=None, _signal_shift
     uni = in_mkt & (adv >= spec.universe.min_adv_eok) & (mcap >= spec.universe.min_mcap_eok)
     uni &= ~np.isnan(adv) & ~np.isnan(mcap)
 
-    # 3) entry 조건 → onset (전일 False→당일 True, 유니버스 내)
-    cond = _eval_group(df, col_map, spec.entry)
+    # 3) entry 조건 → onset (전일 False→당일 True, 유니버스 내). rank_pct는 uni·times 필요.
+    cond = _eval_group(df, col_map, spec.entry, times, uni)
     signal = cond & uni
     df["__sig"] = signal
     prev = df.groupby("stock", sort=False)["__sig"].shift(1, fill_value=False).to_numpy()
@@ -133,14 +172,31 @@ def run_event_study(panel: dict, spec: Strategy, progress_cb=None, _signal_shift
         onset = df.groupby("stock", sort=False)["__sig"].shift(_signal_shift, fill_value=False).to_numpy() & uni
         pv = pd.Series(onset).groupby(df["stock"].to_numpy()).shift(1, fill_value=False).to_numpy()
         onset = onset & (~pv)
-    onset &= in_period  # 진짜 onset 중 period 안에 있는 것만 (경계 onset 인플레이션 방지)
-    prog(70)
+    onset &= in_period
+    _p(70)
 
-    # 4) 벤치마크
-    use_bench = spec.benchmark == "universe_avg"
-    uidx = _build_uidx(df, uni) if use_bench else {}
+    use_bench, bmap = _build_bmap(spec, df, uni, panel)
 
-    # 5) 에피소드 시뮬 (종목별 연속 배열)
+    return {
+        "df": df, "col_map": col_map, "times": times,
+        "in_period": in_period, "end_ts": end_ts,
+        "uni": uni, "onset": onset, "use_bench": use_bench, "bmap": bmap,
+    }
+
+
+# ── 에피소드 시뮬 (종목별 연속 배열) ─────────────────────────────────────────
+def _run_episodes(ctx: dict, spec: Strategy, prog=None) -> list[dict]:
+    """자본 무제약 onset 에피소드 전부. 각 dict에 내부 키(_entry_g/_exit_g/…) 포함
+    (포트폴리오 엔진용 — 공개 결과는 _public로 strip)."""
+    df = ctx["df"]
+    col_map = ctx["col_map"]
+    times = ctx["times"]
+    uni = ctx["uni"]
+    onset = ctx["onset"]
+    end_ts = ctx["end_ts"]
+    use_bench = ctx["use_bench"]
+    uidx = ctx["bmap"]
+
     open_arr = df["adj_open"].to_numpy(dtype=float)
     close_arr = df["adj_close"].to_numpy(dtype=float)
     dates = df["time"].to_numpy()
@@ -159,7 +215,7 @@ def run_event_study(panel: dict, spec: Strategy, progress_cb=None, _signal_shift
             fixed_days = rule.days if fixed_days is None else min(fixed_days, rule.days)
         elif rule.type == "condition":
             grp = Group(all=rule.all, any=rule.any)
-            cond_rules.append((ri, _eval_group(df, col_map, grp)))
+            cond_rules.append((ri, _eval_group(df, col_map, grp, times, uni)))
         elif rule.type == "stop_loss_pct":
             stops.append((ri, rule.value / 100.0))
         elif rule.type == "take_profit_pct":
@@ -216,13 +272,15 @@ def run_event_study(panel: dict, spec: Strategy, progress_cb=None, _signal_shift
                 continue
             k, _ri, reason = min(candidates, key=lambda c: (c[0], c[1]))
 
-            # 청산 체결
+            # 청산 체결 (exit_at_close: 대금이 종가에 실현 — 포트폴리오 당일 재사용 게이트용)
             ongoing = False
             if reason in ("stop_loss_pct", "take_profit_pct"):
                 # 종가 판정 후 다음날 체결 (same_close는 next_open으로 폴백)
                 xb = k + 1
-                exit_px = (o_close[xb] if exit_fill == "next_close" else o_open[xb]) if xb < L_eff else np.nan
+                exit_at_close = exit_fill == "next_close"
+                exit_px = (o_close[xb] if exit_at_close else o_open[xb]) if xb < L_eff else np.nan
             else:  # fixed_holding / condition
+                exit_at_close = exit_fill in ("same_close", "next_close")
                 if exit_fill == "same_close":
                     xb = k
                     exit_px = o_close[xb] if xb < L_eff else np.nan
@@ -241,6 +299,7 @@ def run_event_study(panel: dict, spec: Strategy, progress_cb=None, _signal_shift
                 if li <= eb:
                     continue
                 xb, exit_px, ongoing, reason = li, o_close[li], True, "ongoing"
+                exit_at_close = True  # 마지막 종가 마감
 
             net = exit_px / entry_px - 1.0 - cost
             excess = None
@@ -262,11 +321,37 @@ def run_event_study(panel: dict, spec: Strategy, progress_cb=None, _signal_shift
                 "ret_pct": round(net * 100, 2),
                 "excess_pct": round(excess * 100, 2) if excess is not None else None,
                 "ongoing": ongoing,
+                # ── 내부(포트폴리오 시뮬용) — _public에서 strip ──
+                "_onset_g": int(pos[i]),
+                "_entry_g": int(pos[eb]),
+                "_exit_g": int(pos[xb]),
+                "_entry_px": float(entry_px),
+                "_exit_px": float(exit_px),
+                "_net": float(net),
+                "_exit_at_close": exit_at_close,
             })
-    prog(90)
+    if prog:
+        prog(90)
+    return episodes
 
-    result = _summarize(episodes, spec, panel, uni & in_period, df)
-    prog(100)
+
+def _public(episodes: list[dict]) -> list[dict]:
+    """내부(_로 시작) 키 제거한 공개 에피소드."""
+    return [{k: v for k, v in e.items() if not k.startswith("_")} for e in episodes]
+
+
+# ── 메인 (이벤트 스터디) ─────────────────────────────────────────────────────
+def run_event_study(panel: dict, spec: Strategy, progress_cb=None, _signal_shift: int = 0) -> dict:
+    """spec을 패널에 적용해 이벤트 스터디 결과 dict 반환.
+
+    _signal_shift: 검증(look-ahead 스모크) 전용 — onset을 종목 내 n칸 이동. 프로덕션 경로는 0.
+    """
+    ctx = _prepare(panel, spec, progress_cb, _signal_shift)
+    episodes = _run_episodes(ctx, spec, progress_cb)
+    result = _summarize(_public(episodes), spec, panel, ctx["uni"] & ctx["in_period"], ctx["df"])
+    result["mode"] = "event_study"
+    if progress_cb:
+        progress_cb(100)
     return result
 
 
@@ -318,14 +403,28 @@ def _summarize(episodes, spec, panel, uni, df) -> dict:
     if lookahead:
         warnings.insert(0, _FOOTNOTES["same_close"])
 
+    # 실효 커버리지 — 체결가(adj_open)가 실제 존재하는 첫 날. 표기 period.start보다 늦으면
+    # 그 이전 신호는 체결 불가(측정 불가)라 경고 + meta에 별도 표기 (이벤트/포트폴리오 공통).
+    period_start = (spec.period.start.isoformat() if spec.period.start
+                    else panel["meta"]["period"]["start"])
+    effective_start = None
+    open_finite = np.isfinite(df["adj_open"].to_numpy(dtype=float))
+    if open_finite.any():
+        first_open = df["time"].to_numpy()[open_finite].min()
+        effective_start = pd.Timestamp(first_open).date().isoformat()
+        if effective_start > period_start:
+            warnings.append(
+                f"가격 데이터(수정시가) 가용 시작 {effective_start} — 그 이전 신호는 측정 불가.")
+
     n_uni_stocks = int(df.loc[uni, "stock"].nunique()) if uni.any() else 0
     meta = {
         "panel_versions": panel["versions"],
         "panel_meta": panel["meta"],
         "period": {
-            "start": (spec.period.start.isoformat() if spec.period.start else panel["meta"]["period"]["start"]),
+            "start": period_start,
             "end": (spec.period.end.isoformat() if spec.period.end else panel["meta"]["period"]["end"]),
         },
+        "effective_start": effective_start,  # 첫 유효 체결가(adj_open) 날짜 — 실효 커버리지
         "universe": {
             "markets": spec.universe.markets,
             "min_adv_eok": spec.universe.min_adv_eok,

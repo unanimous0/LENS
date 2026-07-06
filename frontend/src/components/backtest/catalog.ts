@@ -61,11 +61,22 @@ export function blankCond(idx: CatalogIndex): EditCond {
   }
 }
 
+export function isRankOp(op: Op): boolean {
+  return op === 'rank_pct_top' || op === 'rank_pct_bottom'
+}
+
 /** 편집 조건 → 스키마 Condition. 유효하지 않으면 null (예: 값 미입력). */
 export function toCondition(idx: CatalogIndex, c: EditCond): Condition | null {
   if (!c.field) return null
   if (c.op === 'is_true' || c.op === 'is_false') {
     return { field: c.field, op: c.op }
+  }
+  // rank_pct는 ref를 받지 않고 value(0<v<=100, %)만. bool 지표엔 라우터가 422.
+  if (isRankOp(c.op)) {
+    if (c.value.trim() === '') return null
+    const v = Number(c.value)
+    if (!Number.isFinite(v) || v <= 0 || v > 100) return null
+    return { field: c.field, op: c.op, value: v }
   }
   if (c.useRef) {
     if (!c.ref) return null

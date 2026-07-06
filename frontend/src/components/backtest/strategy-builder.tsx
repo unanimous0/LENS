@@ -1,8 +1,17 @@
+import { useMemo } from 'react'
+
 import { type CatalogIndex, blankCond } from './catalog'
 import { type BuilderState } from './builder-state'
 import { ConditionList } from './condition-row'
-import type { FieldError } from './types'
-import { Field, NumberInput, Select, SectionTitle } from './ui'
+import type { Benchmark, FieldError } from './types'
+import { Field, NumberInput, Select, SectionTitle, Tip } from './ui'
+
+const BENCHMARK_OPTIONS: { value: Benchmark; label: string }[] = [
+  { value: 'universe_avg', label: '유니버스 평균 (기하)' },
+  { value: 'kospi', label: 'KOSPI 종합' },
+  { value: 'kosdaq', label: 'KOSDAQ 종합' },
+  { value: 'none', label: '없음 (절대수익)' },
+]
 
 const FILL_OPTIONS = [
   { value: 'next_open', label: '익일 시가 (기본)' },
@@ -29,6 +38,10 @@ export function StrategyBuilder({
 }) {
   const patch = (p: Partial<BuilderState>) => setState((s) => ({ ...s, ...p }))
   const sameClose = state.entryFill === 'same_close' || state.exitFill === 'same_close'
+  const rankByOptions = useMemo(
+    () => idx.numeric.map((m) => ({ value: m.key, label: m.label })),
+    [idx],
+  )
 
   return (
     <div className="flex flex-col gap-3">
@@ -164,6 +177,62 @@ export function StrategyBuilder({
         </div>
       </section>
 
+      {/* 모드 · 자본 */}
+      <section className="panel flex flex-col gap-2 p-3">
+        <SectionTitle>모드</SectionTitle>
+        <div className="flex gap-1">
+          {(
+            [
+              ['event_study', '이벤트 스터디', '자본 제약 없이 신호 edge만 측정'],
+              ['portfolio', '포트폴리오', 'max_positions 슬롯 자본 제약 시뮬 (에쿼티 커브)'],
+            ] as const
+          ).map(([m, label, tip]) => (
+            <button
+              key={m}
+              type="button"
+              title={tip}
+              onClick={() => patch({ mode: m })}
+              className={`flex-1 rounded-sm border px-2 py-1.5 text-[13px] transition-colors ${
+                state.mode === m
+                  ? 'border-accent bg-accent/15 text-accent'
+                  : 'border-bg-surface text-t3 hover:text-t1'
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        {state.mode === 'portfolio' && (
+          <div className="flex flex-col gap-2 border-t border-bg-surface/50 pt-2">
+            <Field label="최대 보유 종목수">
+              <NumberInput value={state.maxPositions} onChange={(v) => patch({ maxPositions: v })} min={1} />
+            </Field>
+            <div className="flex items-center justify-between gap-2 text-[13px] text-t3">
+              <span className="group relative flex shrink-0 items-center">
+                우선순위 지표
+                <span className="ml-1 cursor-help text-t4">ⓘ</span>
+                <Tip
+                  align="left"
+                  title="rank_by — 신호 초과 시 우선순위"
+                  body={
+                    <div>
+                      진입 신호가 빈 슬롯보다 많은 날, 이 지표 내림차순으로 슬롯을 채웁니다.
+                      &ldquo;선착순&rdquo;이면 종목코드순 결정적 타이브레이크.
+                    </div>
+                  }
+                />
+              </span>
+              <Select
+                value={state.rankBy}
+                onChange={(v) => patch({ rankBy: v })}
+                options={[{ value: '', label: '(없음 — 선착순)' }, ...rankByOptions]}
+                className="w-44"
+              />
+            </div>
+          </div>
+        )}
+      </section>
+
       {/* 기간 · 벤치마크 */}
       <section className="panel flex flex-col gap-2 p-3">
         <SectionTitle>기간 · 벤치마크</SectionTitle>
@@ -186,11 +255,8 @@ export function StrategyBuilder({
         <Field label="벤치마크">
           <Select
             value={state.benchmark}
-            onChange={(v) => patch({ benchmark: v as 'universe_avg' | 'none' })}
-            options={[
-              { value: 'universe_avg', label: '유니버스 평균 (기하)' },
-              { value: 'none', label: '없음 (절대수익)' },
-            ]}
+            onChange={(v) => patch({ benchmark: v as Benchmark })}
+            options={BENCHMARK_OPTIONS}
             className="w-40"
           />
         </Field>

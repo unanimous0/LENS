@@ -4,7 +4,19 @@
  */
 
 // ── 카탈로그 (GET /api/backtest/catalog) ────────────────────────────────────
-export type Op = '>' | '>=' | '<' | '<=' | '==' | 'is_true' | 'is_false'
+export type Op =
+  | '>'
+  | '>='
+  | '<'
+  | '<='
+  | '=='
+  | 'is_true'
+  | 'is_false'
+  | 'rank_pct_top'
+  | 'rank_pct_bottom'
+
+export type Benchmark = 'universe_avg' | 'kospi' | 'kosdaq' | 'none'
+export type PortfolioMode = 'event_study' | 'portfolio'
 
 export type CatalogMetric = {
   key: string // 예: "price.ret_20d" / "flow.tag.장기동시"
@@ -32,6 +44,7 @@ export type Catalog = {
     cost_bps_default: number
     portfolio_modes: string[]
     benchmarks: string[]
+    max_positions_default?: number
   }
 }
 
@@ -67,8 +80,13 @@ export type Strategy = {
     cost_bps: number
   }
   exit: { rules: ExitRule[] }
-  portfolio: { mode: 'event_study' }
-  benchmark: 'universe_avg' | 'none'
+  portfolio: {
+    mode: PortfolioMode
+    max_positions?: number
+    weighting?: 'equal'
+    rank_by?: string | null
+  }
+  benchmark: Benchmark
   period: { start: string | null; end: string | null }
 }
 
@@ -114,11 +132,82 @@ export type ResultMeta = {
   stock_names?: Record<string, string>
 }
 
+// 다중검정 카운터 (jobs.py가 결과에 주입).
+export type Attempts = { same_spec: number; total_runs: number }
+
+// 포트폴리오 에쿼티 커브 1점 (lightweight-charts용). benchmark=none이면 benchmark 없음.
+export type EquityPoint = { date: string; equity: number; benchmark?: number | null }
+
+// 연도별 수익 (전략/벤치마크/초과).
+export type PortfolioYear = {
+  year: string
+  strategy_pct: number
+  benchmark_pct?: number | null
+  excess_pct?: number | null
+}
+
+// portfolio 모드 결과 블록 (engine_portfolio._simulate).
+export type PortfolioResult = {
+  n_slots: number
+  n_candidate_signals: number
+  n_entered: number
+  missed_signals: number
+  dup_skipped: number
+  rank_by: string | null
+  start_date: string | null
+  end_date: string | null
+  n_days: number
+  final_equity: number
+  total_return_pct: number
+  cagr_pct: number | null
+  mdd_pct: number
+  mdd_peak_date: string | null
+  mdd_trough_date: string | null
+  sharpe: number | null
+  annual_turnover: number | null
+  avg_positions: number
+  by_year: PortfolioYear[]
+  equity_curve: EquityPoint[]
+}
+
 export type BacktestResult = {
   summary: Summary
   episodes: Episode[]
   warnings: string[]
   meta: ResultMeta
+  mode?: PortfolioMode
+  attempts?: Attempts
+  portfolio?: PortfolioResult
+}
+
+// ── 저장 전략 (GET /api/backtest/strategies) ────────────────────────────────
+export type StrategyRecord = {
+  id: string
+  name: string
+  spec: Strategy | null
+  created_at: number
+  updated_at: number
+}
+
+// ── 실행 이력 (GET /api/backtest/runs) ──────────────────────────────────────
+export type RunSummaryHead = {
+  n_episodes: number | null
+  avg_excess_pct: number | null
+  t_value: number | null
+  cagr_pct: number | null
+  mdd_pct: number | null
+  mode: PortfolioMode | null
+} | null
+
+export type RunRecord = {
+  id: string
+  strategy_id: string | null
+  spec_hash: string
+  panel_version: string | null
+  started_at: number
+  finished_at: number | null
+  status: string
+  summary_head: RunSummaryHead
 }
 
 export type JobStatus = {

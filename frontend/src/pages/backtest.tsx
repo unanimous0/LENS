@@ -1,10 +1,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { buildIndex, type CatalogIndex } from '@/components/backtest/catalog'
-import { type BuilderState, PRESETS, defaultState, serialize } from '@/components/backtest/builder-state'
+import {
+  type BuilderState,
+  PRESETS,
+  defaultState,
+  serialize,
+  stateFromStrategy,
+} from '@/components/backtest/builder-state'
 import { ResultView } from '@/components/backtest/result-view'
+import { RunHistory } from '@/components/backtest/run-history'
+import { StrategyBar } from '@/components/backtest/strategy-bar'
 import { StrategyBuilder } from '@/components/backtest/strategy-builder'
-import type { BacktestResult, Catalog, FieldError, JobStatus } from '@/components/backtest/types'
+import type { BacktestResult, Catalog, FieldError, JobStatus, Strategy } from '@/components/backtest/types'
 
 /**
  * 백테스팅 탭 (범용 전략 백테스트 — PR-C1) · backtest.md §8.
@@ -41,7 +49,13 @@ function BacktestInner({ catalog }: { catalog: Catalog }) {
   const [runError, setRunError] = useState<string | null>(null)
   const [fieldErrors, setFieldErrors] = useState<FieldError[]>([])
   const [clientErrors, setClientErrors] = useState<string[]>([])
+  // 저장 전략 연결 + 저장/실행 이력 갱신 트리거
+  const [selectedStrategyId, setSelectedStrategyId] = useState<string | null>(null)
+  const [refreshToken, setRefreshToken] = useState(0)
   const pollRef = useRef<number | null>(null)
+
+  // 현재 빌더의 직렬화 spec — 저장 바에 전달 (오류면 null → 저장 비활성)
+  const currentSpec = useMemo<Strategy | null>(() => serialize(idx, state).strategy, [idx, state])
 
   useEffect(() => () => {
     if (pollRef.current) window.clearInterval(pollRef.current)
@@ -53,10 +67,19 @@ function BacktestInner({ catalog }: { catalog: Catalog }) {
     setRunError(null)
     setFieldErrors([])
     setClientErrors([])
+    setSelectedStrategyId(null)
   }
 
   const loadPreset = (make: (i: CatalogIndex) => BuilderState) => {
     setStateRaw(make(idx))
+    setFieldErrors([])
+    setClientErrors([])
+    setSelectedStrategyId(null)
+  }
+
+  const loadStrategy = (id: string, spec: Strategy) => {
+    setStateRaw(stateFromStrategy(idx, spec))
+    setSelectedStrategyId(id)
     setFieldErrors([])
     setClientErrors([])
   }
@@ -73,10 +96,12 @@ function BacktestInner({ catalog }: { catalog: Catalog }) {
     setRunning(true)
     setProgress(0)
     try {
+      // strategy_id는 Strategy 스키마 밖 키 — 라우터가 검증 전 분리(전략과 run 연결).
+      const body = selectedStrategyId ? { ...strategy, strategy_id: selectedStrategyId } : strategy
       const res = await fetch('/api/backtest/run', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(strategy),
+        body: JSON.stringify(body),
       })
       if (res.status === 422) {
         const body = await res.json().catch(() => ({}))
@@ -109,6 +134,7 @@ function BacktestInner({ catalog }: { catalog: Catalog }) {
           if (pollRef.current) window.clearInterval(pollRef.current)
           setResult(job.result)
           setRunning(false)
+          setRefreshToken((v) => v + 1) // 저장 바 최근 실행 + 실행 이력 갱신
         } else if (job.status === 'error') {
           if (pollRef.current) window.clearInterval(pollRef.current)
           setRunError(job.error ?? '엔진 오류')
@@ -141,6 +167,18 @@ function BacktestInner({ catalog }: { catalog: Catalog }) {
           </span>
         )}
       </div>
+
+      {/* 저장 전략 바 */}
+      <StrategyBar
+        currentSpec={currentSpec}
+        currentName={state.name}
+        selectedId={selectedStrategyId}
+        refreshToken={refreshToken}
+        onLoad={loadStrategy}
+        onCleared={() => setSelectedStrategyId(null)}
+        onSaved={(id) => setSelectedStrategyId(id)}
+        onDeleted={() => setSelectedStrategyId(null)}
+      />
 
       <div className="grid gap-2 lg:grid-cols-[380px_minmax(0,1fr)]">
         {/* 좌: 빌더 */}
@@ -178,10 +216,11 @@ function BacktestInner({ catalog }: { catalog: Catalog }) {
             <div className="panel px-3 py-2 text-[13px] text-down">엔진 오류: {runError}</div>
           )}
           {result ? (
-            <ResultView result={result} />
+            <ResultView result={result} idx={idx} />
           ) : (
             !running && <EmptyState onPreset={loadPreset} />
           )}
+          <RunHistory refreshToken={refreshToken} />
         </div>
       </div>
     </div>

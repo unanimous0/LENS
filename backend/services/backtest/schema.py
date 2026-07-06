@@ -20,14 +20,17 @@ from typing import Annotated, Literal, Union
 
 from pydantic import BaseModel, Field, model_validator
 
-# 비교 연산자 (값·지표 비교) + 불리언 태그 연산자
+# 비교 연산자 (값·지표 비교) + 불리언 태그 연산자 + 횡단면 순위(C2)
 CompareOp = Literal[">", ">=", "<", "<=", "=="]
 BoolOp = Literal["is_true", "is_false"]
-Op = Literal[">", ">=", "<", "<=", "==", "is_true", "is_false"]
+# rank_pct_top/bottom (C2): "그날 유니버스 내 해당 지표 상위/하위 value%" — 횡단면 순위.
+RankOp = Literal["rank_pct_top", "rank_pct_bottom"]
+Op = Literal[">", ">=", "<", "<=", "==", "is_true", "is_false", "rank_pct_top", "rank_pct_bottom"]
 
 
 class Condition(BaseModel):
-    """리프 조건. `field OP value` 또는 `field OP (ref × mult)` 또는 `field is_true/is_false`."""
+    """리프 조건. `field OP value` 또는 `field OP (ref × mult)` 또는 `field is_true/is_false`
+    또는 `field rank_pct_top/bottom value`(횡단면 상·하위 value%)."""
 
     model_config = {"extra": "forbid"}
 
@@ -42,6 +45,11 @@ class Condition(BaseModel):
         if self.op in ("is_true", "is_false"):
             if self.value is not None or self.ref is not None:
                 raise ValueError(f"'{self.op}'는 value/ref를 받지 않는다")
+        elif self.op in ("rank_pct_top", "rank_pct_bottom"):
+            if self.ref is not None:
+                raise ValueError(f"'{self.op}'는 ref를 받지 않는다 (횡단면 순위)")
+            if self.value is None or not (0 < self.value <= 100):
+                raise ValueError(f"'{self.op}'는 value(0<v<=100, %)가 필요하다")
         else:
             if (self.value is None) == (self.ref is None):
                 raise ValueError(f"'{self.op}'는 value 또는 ref 중 정확히 하나가 필요하다")
@@ -137,10 +145,12 @@ class Universe(BaseModel):
 class Portfolio(BaseModel):
     model_config = {"extra": "forbid"}
 
-    # C1은 event_study만. 다른 값은 pydantic이 422 (portfolio는 C2).
-    mode: Literal["event_study"] = "event_study"
-    max_positions: int | None = None
-    weighting: str | None = None
+    # event_study(C1) | portfolio(C2, 자본 제약 시뮬).
+    mode: Literal["event_study", "portfolio"] = "event_study"
+    max_positions: int = Field(default=20, ge=1)   # portfolio 모드 슬롯 수
+    weighting: Literal["equal"] = "equal"           # 현재 equal만
+    # 신호 초과 시 슬롯 채우는 우선순위 지표(카탈로그 키, 내림차순). None이면 코드순 결정적 타이브레이크.
+    rank_by: str | None = None
 
 
 class Period(BaseModel):
@@ -159,8 +169,8 @@ class Strategy(BaseModel):
     execution: Execution = Field(default_factory=Execution)
     exit: Exit
     portfolio: Portfolio = Field(default_factory=Portfolio)
-    # C1: universe_avg(기본) | none. kospi/kosdaq은 C2 → 여기선 값 거부(422).
-    benchmark: Literal["universe_avg", "none"] = "universe_avg"
+    # universe_avg(기하, 기본) | kospi | kosdaq(지수) | none.
+    benchmark: Literal["universe_avg", "kospi", "kosdaq", "none"] = "universe_avg"
     period: Period = Field(default_factory=Period)
 
 
@@ -189,6 +199,27 @@ def iter_condition_fields(strategy: Strategy):
                 yield p, c.field
                 if c.ref is not None:
                     yield f"{p}.ref", c.ref
+
+
+def iter_conditions(strategy: Strategy):
+    """전략이 참조하는 (경로, Condition) — op별 추가 검증(rank_pct의 bool 지표 금지 등)용."""
+    def walk_group(g: Group, path: str):
+        items = g.all if g.all is not None else g.any
+        kind = "all" if g.all is not None else "any"
+        for idx, it in enumerate(items or []):
+            p = f"{path}.{kind}[{idx}]"
+            if isinstance(it, Group):
+                yield from walk_group(it, p)
+            else:
+                yield p, it
+
+    yield from walk_group(strategy.entry, "entry")
+    for ri, rule in enumerate(strategy.exit.rules):
+        if rule.type == "condition":
+            conds = rule.all if rule.all is not None else rule.any
+            kind = "all" if rule.all is not None else "any"
+            for ci, c in enumerate(conds or []):
+                yield f"exit.rules[{ri}].{kind}[{ci}]", c
 
 
 Group.model_rebuild()

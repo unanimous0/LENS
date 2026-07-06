@@ -1,4 +1,4 @@
-import { type CatalogIndex, type EditCond, blankCond, isBoolField, nsOf } from './catalog'
+import { type CatalogIndex, type EditCond, blankCond, isBoolField, isRankOp, nsOf } from './catalog'
 import type { Op } from './types'
 import { Select, Tip } from './ui'
 
@@ -10,8 +10,12 @@ const OP_LABEL: Record<Op, string> = {
   '==': '=',
   is_true: '참(true)',
   is_false: '거짓(false)',
+  rank_pct_top: '상위 N%',
+  rank_pct_bottom: '하위 N%',
 }
 const COMPARE_OPS: Op[] = ['>', '>=', '<', '<=', '==']
+const RANK_OPS: Op[] = ['rank_pct_top', 'rank_pct_bottom']
+const NUMERIC_OPS: Op[] = [...COMPARE_OPS, ...RANK_OPS]
 const BOOL_OPS: Op[] = ['is_true', 'is_false']
 
 /**
@@ -44,7 +48,7 @@ export function ConditionRow({
     onChange({
       ...cond,
       field: first.key,
-      op: nextBool ? 'is_true' : COMPARE_OPS.includes(cond.op) ? cond.op : '>=',
+      op: nextBool ? 'is_true' : NUMERIC_OPS.includes(cond.op) ? cond.op : '>=',
     })
   }
   const setField = (key: string) => {
@@ -52,11 +56,12 @@ export function ConditionRow({
     onChange({
       ...cond,
       field: key,
-      op: nextBool ? (BOOL_OPS.includes(cond.op) ? cond.op : 'is_true') : COMPARE_OPS.includes(cond.op) ? cond.op : '>=',
+      op: nextBool ? (BOOL_OPS.includes(cond.op) ? cond.op : 'is_true') : NUMERIC_OPS.includes(cond.op) ? cond.op : '>=',
     })
   }
 
-  const opOptions = (isBool ? BOOL_OPS : COMPARE_OPS).map((o) => ({ value: o, label: OP_LABEL[o] }))
+  const opOptions = (isBool ? BOOL_OPS : NUMERIC_OPS).map((o) => ({ value: o, label: OP_LABEL[o] }))
+  const rank = isRankOp(cond.op)
 
   return (
     <div className="flex flex-wrap items-center gap-1">
@@ -83,7 +88,22 @@ export function ConditionRow({
         options={opOptions}
         className="w-24"
       />
-      {!isBool && (
+      {!isBool && rank && (
+        <span className="flex items-center gap-1">
+          <input
+            type="number"
+            value={cond.value}
+            placeholder="N"
+            min={0}
+            max={100}
+            step={1}
+            onChange={(e) => onChange({ ...cond, value: e.target.value })}
+            className="w-16 rounded-sm border border-bg-surface bg-bg-input px-1.5 py-1 text-[13px] tabular-nums text-t1 outline-none focus:border-accent"
+          />
+          <span className="text-t4">%</span>
+        </span>
+      )}
+      {!isBool && !rank && (
         <>
           {cond.useRef ? (
             <>
