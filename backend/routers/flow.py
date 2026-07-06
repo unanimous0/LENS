@@ -5,6 +5,8 @@
 """
 from __future__ import annotations
 
+import json
+
 from fastapi import APIRouter, HTTPException
 
 from services import flow_metrics as fm
@@ -82,6 +84,26 @@ async def flow_ranking(preset: str = "default") -> dict:
         "edges": edges,  # 태그 범례용: {패턴명: {edge, t, direction}} — 측정값 조회 (튜닝 없음)
         "rows": out,
     }
+
+
+@router.get("/backtest-report")
+async def flow_backtest_report() -> dict:
+    """수급 태그 백테스트 검증 리포트 원본 — 화면 '검증 근거' 패널용 열람 전용.
+
+    data/flow_backtest.json(주기 갱신본)을 그대로 반환 + available:true. 파일 부재/파싱 실패면
+    available:false (404 아님 — 내부망 첫 배포는 JSON 없이 시작, 프론트가 안내 문구로 degrade).
+    경로는 flow_ai._BACKTEST_PATH 재사용(중복 상수 금지). 파일이 작아 매 요청 read 무방.
+    """
+    from services import flow_ai
+
+    try:
+        path = flow_ai._BACKTEST_PATH
+        if path.exists():
+            data = json.loads(path.read_text(encoding="utf-8"))
+            return {"available": True, **data}
+    except Exception:  # noqa: BLE001 — 손상/부재 시 available:false로 degrade
+        pass
+    return {"available": False}
 
 
 @router.get("/stocks/{code}")

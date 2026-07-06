@@ -41,6 +41,8 @@ ADV_MIN = 1_000_000_000      # 일평균 거래대금 10억 이상 (거래 가�
 MCAP_MIN = 50_000_000_000    # 시총 500억 이상
 REBAL_EVERY = 5              # 리밸런스 간격 (거래일) — 주간
 HORIZONS = [5, 20, 60, 120]  # 보유일수 (120=중장기 지속성 축 측정용, 2년 룩백에선 마지막 ~6개월 fwd가 NaN → 날짜수 감소는 정상)
+# 보유기간 곡선용 지평 (검증 근거 화면 곡선 차트). stdout 리포트 ①~④는 HORIZONS만 쓰며 불변.
+CURVE_H = [5, 10, 20, 40, 60, 90, 120, 180]
 
 
 async def _fetch(years: float = YEARS) -> tuple[pd.DataFrame, ...]:
@@ -124,7 +126,7 @@ def _build_panel(it_df, ohlcv_df, mc_df) -> pd.DataFrame:
 
     # 진입 = D+1 시가, 청산 = (D+1+h) 시가 (look-ahead 차단)
     df["entry"] = g["adj_open"].shift(-1)
-    for h in HORIZONS:
+    for h in sorted(set(HORIZONS) | set(CURVE_H)):
         df[f"fwd{h}"] = g["adj_open"].shift(-(1 + h)) / df["entry"] - 1
     return df
 
@@ -280,8 +282,17 @@ def _canonical_masks(df: pd.DataFrame) -> dict:
     }
 
 
-def save_results(path: str, df: pd.DataFrame, h: int = 60) -> None:
-    """canonical 패턴의 h일 초과수익을 측정해 JSON 저장 (flow_ai가 소비)."""
+def save_results(path: str, df: pd.DataFrame, years: float, h: int = 60) -> None:
+    """canonical 패턴의 보유기간 곡선·Rank IC·메타를 측정해 JSON 저장.
+
+    소비자 둘:
+      1. flow_ai._load_edges — 레거시 키 `patterns.{name}.{h60_excess_pct,t,direction,n_dates}`만
+         읽는다. 형식·값 **절대 불변**(h=60 canonical 스프레드, 기존과 동일 계산).
+      2. 검증 근거 화면 — `patterns.{name}.curve`(CURVE_H 곡선), 최상위 `rank_ic`·메타를 읽는다.
+
+    곡선은 리밸런스 서브셋(작음)을 날짜별 한 번만 순회하며 h마다 스프레드를 누적(h×패턴 중복
+    groupby 회피). h60 곡선 값이 곧 레거시 h60_excess_pct라 한 번만 계산해 재사용한다.
+    """
     masks = _canonical_masks(df)
     for name, m in masks.items():
         df[f"__c::{name}"] = m
@@ -290,33 +301,73 @@ def save_results(path: str, df: pd.DataFrame, h: int = 60) -> None:
     rebal = set(times[::REBAL_EVERY])
     d = df[df["uni"] & df["time"].isin(rebal)].copy()
 
-    patterns: dict = {}
-    for name in masks:
-        col = f"__c::{name}"
-        spreads = []
-        for _, grp in d.groupby("time"):
-            u = grp[grp[f"fwd{h}"].notna()]
+    curve_h = sorted(set(CURVE_H) | {h})
+    spreads: dict = {name: {hh: [] for hh in curve_h} for name in masks}
+    counts: dict = {name: {hh: [] for hh in curve_h} for name in masks}
+    for _, grp in d.groupby("time"):
+        for hh in curve_h:
+            fwd = f"fwd{hh}"
+            u = grp[grp[fwd].notna()]
             if len(u) < 20:
                 continue
-            tg = u[u[col]]
-            if len(tg) == 0:
+            umean = u[fwd].mean()
+            for name in masks:
+                tg = u[u[f"__c::{name}"]]
+                if len(tg) == 0:
+                    continue
+                spreads[name][hh].append(tg[fwd].mean() - umean)
+                counts[name][hh].append(len(tg))
+
+    patterns: dict = {}
+    for name in masks:
+        curve: dict = {}
+        for hh in curve_h:
+            sp_list = spreads[name][hh]
+            if len(sp_list) < 5:  # 관측 부족 지평은 곡선에서 제외 (기존 <5 skip과 동일 기준)
                 continue
-            spreads.append(tg[f"fwd{h}"].mean() - u[f"fwd{h}"].mean())
-        if len(spreads) < 5:
+            sp = np.array(sp_list)
+            curve[str(hh)] = {
+                "excess_pct": round(float(sp.mean()) * 100, 2),
+                "t": round(float(sp.mean() / (sp.std(ddof=1) / np.sqrt(len(sp)))), 2),
+                "n_dates": len(sp),
+                "avg_stocks": round(float(np.mean(counts[name][hh])), 1),
+            }
+        h60 = curve.get(str(h))
+        if h60 is None:  # h(=60) 관측 부족이면 패턴 자체 스킵 (기존 동작과 동일)
             continue
-        sp = np.array(spreads)
-        ex = round(float(sp.mean()) * 100, 2)
-        tval = round(float(sp.mean() / (sp.std(ddof=1) / np.sqrt(len(sp)))), 2)
         patterns[name] = {
-            "h60_excess_pct": ex,
-            "t": tval,
-            "direction": "강세" if ex > 0 else "약세",
-            "n_dates": len(sp),
+            # ── 레거시 키 (flow_ai._load_edges 소비 — 형식·값 불변) ──
+            "h60_excess_pct": h60["excess_pct"],
+            "t": h60["t"],
+            "direction": "강세" if h60["excess_pct"] > 0 else "약세",
+            "n_dates": h60["n_dates"],
+            # ── 검증 근거 화면용 곡선 ──
+            "curve": curve,
         }
+
+    rank_ic: dict = {}
+    for hh in HORIZONS:
+        ic, tval, nd, _ = _rank_ic(d, "sig", hh)
+        rank_ic[str(hh)] = {
+            "ic": round(float(ic), 4) if not np.isnan(ic) else None,
+            "t": round(float(tval), 2) if not np.isnan(tval) else None,
+            "n_dates": nd,
+        }
+
     out = {
         "generated_at": date.today().isoformat(),
         "universe_n": int(df["stock"].nunique()),
         "horizon_days": h,
+        "lookback_years": years,
+        "period": {
+            "start": pd.to_datetime(df["time"].min()).date().isoformat(),
+            "end": pd.to_datetime(df["time"].max()).date().isoformat(),
+        },
+        "rebalance_days": REBAL_EVERY,
+        "universe_criteria": {"adv_min": ADV_MIN, "mcap_min": MCAP_MIN},
+        "curve_horizons": curve_h,
+        "method": "D+1 시가 진입 · 유니버스 평균 대비 초과수익 · 주간 리밸런스 · look-ahead 차단",
+        "rank_ic": rank_ic,
         "patterns": patterns,
     }
     out_dir = os.path.dirname(os.path.abspath(path))
@@ -346,7 +397,7 @@ async def main() -> None:
     if "--save" in sys.argv:
         i = sys.argv.index("--save")
         path = sys.argv[i + 1] if i + 1 < len(sys.argv) else "data/flow_backtest.json"
-        save_results(path, df)
+        save_results(path, df, years)
 
 
 if __name__ == "__main__":

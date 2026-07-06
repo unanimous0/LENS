@@ -156,3 +156,11 @@ f120>0 서브셋 **안에서는** 외인 20D 정렬이 전 지평 무의(t<0.5).
 5. **매집주 눌림은 조기청산 절대 금지** (E5 ≈ 0 — 조기청산이 edge 완전 파괴).
 
 **방법론 주의**: ⚠️ 유니버스 벤치를 일별 산술평균 누적으로 만들면 소형주 노이즈로 +7%→+14.5% 부풀어 부호 역전(Blume-Stambaugh) — **로그수익 평균 누적(기하)으로 교정** 필수. 에피소드 중첩으로 ②③ t 팽창(보수 해석). 단일 상승장 레짐(2024-07~2026-07) — 절대치는 레짐 의존, 순위·부호는 상대적 견고.
+
+## PR-A — 검증 근거 리포트 (JSON 확장 + 화면 열람, 2026-07-06)
+
+지금까지 CLI stdout·이 문서에만 있던 검증 곡선/Rank IC를 주기 갱신 JSON에 담아 수급 화면에서 열람.
+
+- **JSON 확장** (`save_results`): 레거시 키(`patterns.{name}.{h60_excess_pct,t,direction,n_dates}` — flow_ai._load_edges 소비, 형식·값 불변)에 더해 `patterns.{name}.curve = {"<h>":{excess_pct,t,n_dates,avg_stocks}}`(CURVE_H=5·10·20·40·60·90·120·180, h60은 레거시와 동일 값 재사용), 최상위 `rank_ic`(HORIZONS), 메타(`lookback_years`·`period{start,end}`·`rebalance_days`·`universe_criteria`·`curve_horizons`·`method`) 추가. stdout ①~④ 섹션·HORIZONS 불변.
+- **API**: `GET /api/flow/backtest-report` — JSON 원본 + `available` 반환(부재/파싱실패 시 `available:false`, 404 아님). 경로는 flow_ai `_BACKTEST_PATH` 재사용. 구스키마(curve 없음)도 그대로 반환 → 프론트가 필드 부재 처리.
+- **화면** (`components/flow/flow-backtest-report.tsx`, "검증 근거" 토글): 헤더(기준일·룩백·유니버스·method) + Rank IC 미니테이블 + **보유기간 곡선(인라인 SVG, 매수 계열 기본 + 경고 계열 토글, 호버 값카드)** + 태그×h 매트릭스(`excess%(t)`, |t|≥2만 방향색). 열람 전용 — 재계산·파라미터 입력 없음(공식 1벌).

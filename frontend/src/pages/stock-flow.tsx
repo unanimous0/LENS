@@ -1,5 +1,6 @@
 import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
 
+import { FlowBacktestReport } from '@/components/flow/flow-backtest-report'
 import { FlowDetail } from '@/components/flow/flow-detail'
 
 /**
@@ -246,6 +247,7 @@ export function StockFlowPage() {
   const [sortKey, setSortKey] = useState<SortKey>('f_20d_bp')
   const [sortAsc, setSortAsc] = useState(false)
   const [showLegend, setShowLegend] = useState(false) // 태그 설명 패널 토글
+  const [showReport, setShowReport] = useState(false) // 검증 근거 패널 토글
   const [chip, setChip] = useState<ChipId | null>(null) // 요약 스트립 칩 필터 (라디오식, 한 번에 하나)
   const toggleChip = (id: ChipId) => setChip((c) => (c === id ? null : id))
   const pickDirection = (d: 'buy' | 'sell') => {
@@ -607,14 +609,25 @@ export function StockFlowPage() {
               필터 해제 ✕
             </button>
           )}
-          <button
-            onClick={() => setShowLegend((v) => !v)}
-            className="ml-auto rounded-sm border border-bg-surface bg-accent/20 px-2 py-0.5 text-accent hover:bg-accent/30"
-          >
-            {showLegend ? '태그 설명 닫기' : '태그 설명'}
-          </button>
+          <div className="ml-auto flex items-center gap-2">
+            <button
+              onClick={() => setShowReport((v) => !v)}
+              className="rounded-sm border border-bg-surface bg-accent/20 px-2 py-0.5 text-accent hover:bg-accent/30"
+            >
+              {showReport ? '검증 근거 닫기' : '검증 근거'}
+            </button>
+            <button
+              onClick={() => setShowLegend((v) => !v)}
+              className="rounded-sm border border-bg-surface bg-accent/20 px-2 py-0.5 text-accent hover:bg-accent/30"
+            >
+              {showLegend ? '태그 설명 닫기' : '태그 설명'}
+            </button>
+          </div>
         </div>
       )}
+
+      {/* 검증 근거 패널 — 백테스트 리포트 열람 전용 (첫 오픈 시 1회 fetch, 재계산 없음) */}
+      <FlowBacktestReport open={showReport} />
 
       {/* 태그 범례 — 검증 edge·t는 API edges에서 동적 표시 (|t|<2면 유의성 미달 경고) */}
       {showLegend && data && (
