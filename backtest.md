@@ -1,6 +1,9 @@
-# 백테스팅 탭 (범용 전략 백테스트 엔진) — 설계 (PR-C)
+# 백테스팅 탭 (범용 전략 백테스트 엔진) — 설계 + 구현 (PR-C)
 
-> **단일 진실원.** 상위 탭 `/backtest`(현재 StubPage)에 들어갈 사용자 전략 백테스트 도구의 설계.
+> **상태: C1~C4 전부 구현 완료 (2026-07-06, 커밋 cc57fc2·b392d51·4746903·92a7b0d).**
+> §1~§10은 설계 정본, 하단 "구현 노트"가 실구현·검증 수치의 기록이다.
+
+> **단일 진실원.** 상위 탭 `/backtest`에 들어간 사용자 전략 백테스트 도구의 설계.
 > 수급 전용이 아니다 — 수급·가격·재무(PER/PBR)·외인보유율 등 여러 네임스페이스의 데이터를
 > 조합한 전략을 백테스트하는 **LENS 전반의 범용 도구**. 배경 논의는 memory `project_supply_demand`
 > (PR-C 항목), 부검 원칙은 `reference_lpmm_supply_postmortem`.
@@ -242,14 +245,16 @@ SQLite 테이블 (LENS 자체 DB 규약 — Finance_Data에 쓰기 금지):
 4. **에피소드 중첩**: 같은 종목 연속 onset·동시 다종목으로 t값 팽창 — 보수 해석 주석 고정.
 5. 수급 데이터는 **주식 전용** (ETF 없음) — ETF 전략은 etf 네임스페이스 추가(C3+) 전까지 불가.
 
-## 10. 로드맵
+## 10. 로드맵 — 전 단계 완료
 
-- **C1 (엔진 코어)**: schema/adapters(price+flow)/panel/engine(이벤트 스터디)/jobs + run·jobs API
-  + 최소 UI(빌더+결과 v1). 검증: 기존 게이트 결과와 방향 재현(예: "장기동시 진입·120일 고정보유"가
-  flow_exit_backtest 결론과 부호·크기 정합) + look-ahead 스모크(시그널 시프트 테스트).
-- **C2 (포트폴리오·운영)**: portfolio 모드, 비용 모델 정밀화, rank_pct/rank_by, 전략 저장·이력,
+- **C1 (엔진 코어) ✅ cc57fc2**: schema/adapters(price+flow)/panel/engine(이벤트 스터디)/jobs +
+  run·jobs API + 최소 UI. 검증: 게이트 방향 재현(장기동시 fixed120 +1.58% t2.37) + look-ahead 스모크.
+- **C2 (포트폴리오·운영) ✅ b392d51**: portfolio 모드, rank_pct/rank_by, 전략 저장·이력,
   다중검정 카운터, 벤치마크 kospi/kosdaq.
-- **C3 (네임스페이스 확장)**: fin(공시 lag 규칙)·own 어댑터, etf/statarb 검토.
+- **C3 (네임스페이스 확장) ✅ 4746903**: fin(공시 lag + adjfac 분할 보정)·own 어댑터.
+- **C4 (마무리) ✅ 92a7b0d**: etf 네임스페이스·holdout 잠금·ADV 체결 캡. statarb는 보류(결정 로그).
+- **이후 후보** (필요 시): holdout 전략 단위 잠금의 우회 완화, 분봉 지원, statarb 재검토,
+  체결 모델 정밀화(호가 슬리피지).
 
 ## 결정 로그
 

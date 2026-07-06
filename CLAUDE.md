@@ -33,7 +33,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **[etf-arbitrage.md](etf-arbitrage.md)** — ETF 차익 기능 설계 + **실시간 페이지 reference 구현**의 성능 최적화 다층 방어 표
 - **[stat-arb-engine.md](stat-arb-engine.md)** — 통계 차익거래 엔진 + 화면 설계 (M:N 페어 발굴, 대여·매도차 통합, 포지션 추적). 별도 Rust binary `stat-arb-engine/` (port 8300)
 - **[supply-demand.md](supply-demand.md)** — 수급(외국인/기관) 종목 선정. 지표 정본은 `backend/services/flow_metrics.py` 1벌 (합성점수 없음·파라미터 상수). 설계 근거는 memory `project_supply_demand`/`reference_lpmm_supply_postmortem`
-- **[backtest.md](backtest.md)** — 백테스팅 탭(범용 전략 백테스트 엔진, PR-C) 설계 단일 진실원. 네임스페이스 어댑터(price/flow/fin/own) + 이벤트 스터디→포트폴리오 2모드 + 방법론 레일(look-ahead 차단은 엔진 고정)
+- **[backtest.md](backtest.md)** — 백테스팅 탭(범용 전략 백테스트 엔진) 설계+구현 단일 진실원. **C1~C4 구현 완료**: 네임스페이스 어댑터 5종(price/flow/fin/own/etf, 58지표) + 이벤트 스터디·포트폴리오 2모드 + holdout 잠금(1회 개봉)·다중검정 카운터·ADV 캡. 방법론 레일(look-ahead 차단·수정주가·기하 벤치마크)은 엔진 고정 — 사용자 노브 아님
 - `docs/ETF Market Making Plans/` (00~07) — **참고용 외부 자료**. 실행 스펙 아님. 기술 스택·phase 구성 그대로 베끼지 말 것 (memory `reference_etf_mm_plans`)
 
 ## 데이터 흐름 / 책임 분할
