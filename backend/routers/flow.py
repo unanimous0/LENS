@@ -115,3 +115,18 @@ async def flow_stock_series(code: str, days: int = 365) -> dict:
     if not rows:
         raise HTTPException(404, f"no flow data for {code}")
     return {"code": code, "as_of": info.as_of, "days": days, "rows": rows}
+
+
+@router.get("/episodes/{code}")
+async def flow_episodes(code: str) -> dict:
+    """종목 태그 에피소드 히스토리 — 과거 각 태그 onset + 이후 20/60/120거래일 초과수익.
+
+    판정은 flow_verdict 정본 재호출(공식 1벌 — 화면 태그와 바이트 일치), 성과는 look-ahead
+    차단(onset D+1 시가 진입) + universe_index 벤치 대비. 데이터 없으면 404(/stocks 관례)."""
+    from services import flow_episodes as fe
+    from services.stock_code import normalize_stock_code
+
+    result = await fe.episodes(normalize_stock_code(code) or code)
+    if result is None:
+        raise HTTPException(404, f"no flow data for {code}")
+    return result

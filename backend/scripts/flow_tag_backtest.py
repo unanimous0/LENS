@@ -354,6 +354,24 @@ def save_results(path: str, df: pd.DataFrame, years: float, h: int = 60) -> None
             "n_dates": nd,
         }
 
+    # ── 유니버스 벤치마크 인덱스 (PR-B) — 종목별 에피소드 초과수익의 벤치마크 ──
+    # 일별 유니버스(adv20≥ADV_MIN & mcap≥MCAP_MIN) 종목의 **로그수익 평균의 기하 누적**.
+    # flow_exit_backtest.py _augment의 uidx와 동일 방법론: 일별 횡단면 *산술* 평균 복리化는
+    # 소형주 노이즈 open의 Blume-Stambaugh 편향으로 벤치가 부풀어 초과수익 부호가 뒤집힘 →
+    # 로그수익 평균의 누적(경로독립·기하평균 총수익)으로 교정. adj_open→adj_open (D+1 시가 체결 정합).
+    uni_day = (df["adv20"] >= ADV_MIN) & (df["mcap"] >= MCAP_MIN)
+    ret_open = df.groupby("stock", sort=False)["adj_open"].transform(lambda s: s / s.shift(1) - 1)
+    m = uni_day & ret_open.notna() & (ret_open > -0.99)
+    lr = ret_open[m].map(np.log1p).groupby(df.loc[m, "time"]).mean().sort_index()
+    universe_index: dict = {"dates": [], "values": []}
+    if len(lr) > 0:
+        uidx = np.exp(lr.cumsum())
+        uidx = uidx / uidx.iloc[0]  # 시작 1.0 정규화 (에피소드 초과수익은 비율이라 상수 상쇄)
+        universe_index = {
+            "dates": [pd.to_datetime(t).date().isoformat() for t in uidx.index],
+            "values": [round(float(v), 6) for v in uidx.to_numpy()],
+        }
+
     out = {
         "generated_at": date.today().isoformat(),
         "universe_n": int(df["stock"].nunique()),
@@ -368,6 +386,7 @@ def save_results(path: str, df: pd.DataFrame, years: float, h: int = 60) -> None
         "curve_horizons": curve_h,
         "method": "D+1 시가 진입 · 유니버스 평균 대비 초과수익 · 주간 리밸런스 · look-ahead 차단",
         "rank_ic": rank_ic,
+        "universe_index": universe_index,  # PR-B 종목 에피소드 벤치마크 (로그수익 평균 기하 누적)
         "patterns": patterns,
     }
     out_dir = os.path.dirname(os.path.abspath(path))

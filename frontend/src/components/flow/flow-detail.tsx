@@ -1,5 +1,7 @@
-import { createChart, LineStyle, type IChartApi, type LogicalRange, type SeriesMarker, type Time } from 'lightweight-charts'
-import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
+import { createChart, LineStyle, type IChartApi, type ISeriesApi, type LogicalRange, type SeriesMarker, type Time } from 'lightweight-charts'
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { EpisodeSection } from './flow-episodes'
+import { defaultPattern, onsetMarkers, type EpisodesResponse } from './flow-episodes-utils'
 
 // 4개 차트 시간축 동기화용 — mount 시 register(chart), 반환 cleanup으로 unregister.
 type RegisterFn = (chart: IChartApi | null) => () => void
@@ -243,6 +245,42 @@ export function FlowDetail({ code, name, onClose }: { code: string; name: string
     setAi(null)
     setAiLoading(false)
   }, [code])
+
+  // 태그 에피소드 히스토리 (PR-B) — 상세 열릴 때 1회. 404/벤치없음 degrade.
+  const [episodes, setEpisodes] = useState<EpisodesResponse | null>(null)
+  const [epStatus, setEpStatus] = useState<'loading' | 'empty' | 'ok'>('loading')
+  const [selPattern, setSelPattern] = useState<string | null>(null)
+  useEffect(() => {
+    let cancelled = false
+    setEpisodes(null)
+    setSelPattern(null)
+    setEpStatus('loading')
+    fetch(`/api/flow/episodes/${code}`)
+      .then((r) => (r.ok ? (r.json() as Promise<EpisodesResponse>) : null))
+      .then((d) => {
+        if (cancelled) return
+        if (!d || !d.patterns || Object.keys(d.patterns).length === 0) {
+          setEpStatus('empty')
+          return
+        }
+        setEpisodes(d)
+        setSelPattern(defaultPattern(d.patterns))
+        setEpStatus('ok')
+      })
+      .catch(() => {
+        if (!cancelled) setEpStatus('empty')
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [code])
+
+  // 선택 패턴 onset 마커 (현재 로드된 주가 시계열 범위 내 날짜만) → 주가차트(①)로 전달
+  const priceMarkers = useMemo<SeriesMarker<Time>[]>(() => {
+    if (!episodes || !selPattern || !rows) return []
+    const valid = new Set(rows.map((r) => r.d))
+    return onsetMarkers(episodes.patterns[selPattern], valid, selPattern)
+  }, [episodes, selPattern, rows])
   const fetchAiSummary = useCallback(async () => {
     setAiLoading(true)
     try {
@@ -362,19 +400,38 @@ export function FlowDetail({ code, name, onClose }: { code: string; name: string
 
       {rows && (
         <div className="grid gap-3 lg:grid-cols-2">
-          <PriceChart rows={rows} register={register} />
+          <PriceChart rows={rows} register={register} markers={priceMarkers} />
           <MomentumChart rows={rows} register={register} />
           <CumFlowPanel rows={rows} view={cumView} setView={setCumView} register={register} />
           <NetFlowPanel rows={rows} view={netView} setView={setNetView} register={register} />
+        </div>
+      )}
+
+      {epStatus === 'ok' && episodes && (
+        <EpisodeSection data={episodes} selected={selPattern} setSelected={setSelPattern} />
+      )}
+      {epStatus === 'loading' && <div className="mt-3 text-[11px] text-t3">에피소드 히스토리 로딩 중…</div>}
+      {epStatus === 'empty' && (
+        <div className="mt-3 rounded-sm bg-bg-surface/40 p-2 text-[11px] text-t3">
+          과거 태그 에피소드 없음.
         </div>
       )}
     </div>
   )
 }
 
-// ── 1. 주가 (캔들 + 평단선 + 이평선) ────────────────────────────────────
-function PriceChart({ rows, register }: { rows: SeriesRow[]; register: RegisterFn }) {
+// ── 1. 주가 (캔들 + 평단선 + 이평선 + 태그 onset 마커) ──────────────────
+function PriceChart({
+  rows,
+  register,
+  markers,
+}: {
+  rows: SeriesRow[]
+  register: RegisterFn
+  markers?: SeriesMarker<Time>[]
+}) {
   const ref = useRef<HTMLDivElement>(null)
+  const seriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null)
   useEffect(() => {
     if (!ref.current) return
     const chart = createChart(ref.current, { ...chartOpts, autoSize: true })
@@ -387,6 +444,7 @@ function PriceChart({ rows, register }: { rows: SeriesRow[]; register: RegisterF
       wickDownColor: C.candleDown,
       priceFormat: { type: 'price', precision: 0, minMove: 1 },
     })
+    seriesRef.current = s
     // rows 전체 사용 — OHLC 없는 날은 whitespace({time})로 패딩해 다른 차트와 인덱스 일치(동기화용)
     s.setData(
       rows.map((r) =>
@@ -451,9 +509,17 @@ function PriceChart({ rows, register }: { rows: SeriesRow[]; register: RegisterF
     return () => {
       unreg()
       cleanupTip()
+      seriesRef.current = null
       chart.remove()
     }
   }, [rows, register])
+
+  // 태그 onset 마커 — 선택 패턴 변경/차트 범위 변경 시 차트 재생성 없이 마커만 갱신.
+  // (차트 생성 useEffect가 위에 먼저 정의돼 있어 rows 변경 시 series 재생성 후 이 effect가 실행됨.)
+  useEffect(() => {
+    seriesRef.current?.setMarkers(markers ?? [])
+  }, [markers, rows])
+
   return (
     <ChartBox
       title="① 주가 (수정주가)"
@@ -463,6 +529,7 @@ function PriceChart({ rows, register }: { rows: SeriesRow[]; register: RegisterF
         ['200일', C.t1],
         ['VWMA200', '#a78bfa'],
         ['외인평단', C.t3],
+        ['▲/▼ 태그 onset', C.t3],
       ]}
     >
       <div ref={ref} className="h-[210px] w-full" />

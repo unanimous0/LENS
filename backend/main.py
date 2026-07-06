@@ -84,13 +84,15 @@ async def _refresh_flow_backtest_if_stale() -> None:
         lock = repo / "data" / ".flow_backtest.running"
         now = time.time()
         fresh = out.exists() and (now - out.stat().st_mtime) < 30 * 86400
-        # 스키마 갱신(PR-A): curve/rank_ic 없는 구스키마 파일은 아직 신선해도 재생성 대상 —
-        # 검증 근거 화면이 곡선을 그리려면 신 스키마가 필요. 실패해도 flow_ai는 구파일로 degrade.
+        # 스키마 갱신(PR-A rank_ic / PR-B universe_index): 신 필드 없는 구스키마 파일은 아직
+        # 신선해도 재생성 대상 — 검증 근거 곡선(rank_ic)·에피소드 벤치마크(universe_index)에 필요.
+        # 실패해도 flow_ai는 구파일로 degrade.
         if fresh:
             import json as _json
 
             try:
-                fresh = "rank_ic" in _json.loads(out.read_text(encoding="utf-8"))
+                data = _json.loads(out.read_text(encoding="utf-8"))
+                fresh = "rank_ic" in data and "universe_index" in data
             except Exception:  # noqa: BLE001 — 손상 파일이면 재생성
                 fresh = False
         running = lock.exists() and (now - lock.stat().st_mtime) < 1200  # 20분 내 실행 중이면 스킵
