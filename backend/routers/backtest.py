@@ -74,7 +74,12 @@ async def run(payload: dict) -> dict:
     try:
         spec = Strategy.model_validate(payload)
     except ValidationError as e:
-        raise HTTPException(422, detail=e.errors(include_url=False))
+        # include_context=False: 커스텀 model_validator의 ValueError 객체(ctx.error)가 JSON
+        # 직렬화 불가 → 제외해야 422 응답이 정상 렌더된다 (Portfolio ADV 캡 both-or-neither 등).
+        # input도 제외: NaN 등 JSON 비호환 입력값이 detail에 실리면 응답 직렬화가 500이 된다.
+        errs = [{k: v for k, v in err.items() if k != "input"}
+                for err in e.errors(include_url=False, include_context=False)]
+        raise HTTPException(422, detail=errs)
 
     _validate_fields(spec)
 
@@ -111,7 +116,12 @@ async def save_strategy(payload: dict) -> dict:
     try:
         spec = Strategy.model_validate(spec_payload)
     except ValidationError as e:
-        raise HTTPException(422, detail=e.errors(include_url=False))
+        # include_context=False: 커스텀 model_validator의 ValueError 객체(ctx.error)가 JSON
+        # 직렬화 불가 → 제외해야 422 응답이 정상 렌더된다 (Portfolio ADV 캡 both-or-neither 등).
+        # input도 제외: NaN 등 JSON 비호환 입력값이 detail에 실리면 응답 직렬화가 500이 된다.
+        errs = [{k: v for k, v in err.items() if k != "input"}
+                for err in e.errors(include_url=False, include_context=False)]
+        raise HTTPException(422, detail=errs)
     _validate_fields(spec)
 
     name = (payload.get("name") or spec.name or "").strip()
@@ -140,6 +150,18 @@ async def delete_strategy(sid: str) -> dict:
     if not ok:
         raise HTTPException(404, f"unknown strategy: {sid}")
     return {"deleted": sid}
+
+
+@router.post("/strategies/{sid}/unlock-holdout")
+async def unlock_holdout(sid: str) -> dict:
+    """저장 전략의 holdout 구간을 개봉(1회성). 개봉 후 실행은 spec_hash가 개봉 시점과 일치할 때만
+    전체 기간 측정. 이미 개봉된 전략은 409 (재개봉 불가 — 우회 차단)."""
+    res = await store.unlock_holdout(sid)
+    if res is None:
+        raise HTTPException(404, f"unknown strategy: {sid}")
+    if res.get("already"):
+        raise HTTPException(409, detail="이미 holdout이 개봉된 전략이다 (재개봉 불가).")
+    return {"unlocked": sid, **res}
 
 
 @router.get("/runs")

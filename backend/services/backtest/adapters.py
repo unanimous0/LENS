@@ -431,7 +431,68 @@ class OwnAdapter:
         return df[["time", "stock", *_OWN_OUT]]
 
 
-ADAPTERS: list[DataAdapter] = [PriceAdapter(), FlowAdapter(), FinAdapter(), OwnAdapter()]
+# ─────────────────────────────── etf ───────────────────────────────
+# ETF 괴리(disparity)·NAV·보수. 원천 = etf_master_daily(snapshot_date, net_asset, listed_shares,
+# total_fee). 실측(2026-07): 커버리지 **2026-01-02~** (676 종목), 하이퍼테이블 아님(단일 SELECT).
+# 가격/거래대금/시총은 price 네임스페이스가 ohlcv_daily·market_cap_daily로 이미 커버(ETF도 존재) —
+# etf 어댑터는 NAV 계열만. 비ETF 종목은 etf_master 없음 → 전 컬럼 NaN.
+#   nav_per_share = net_asset / listed_shares (raw 원/주)
+#   disparity(%)  = raw종가(close_price) / nav_per_share − 1   (nav가 raw-per-share라 raw종가 사용)
+# as-of backward 조인(snapshot_date ≤ t) — 스냅샷 없는 날은 직전 스냅샷 forward-fill.
+# `_etf_mcap_eok`(= net_asset ÷ 1억)은 카탈로그 밖 헬퍼 — market_cap_daily 결측 ETF의 mcap 폴백용
+# (panel._compute가 소비 후 drop). ETF는 market_cap_daily 실측 커버리지 1142/1143이라 폴백은 예외적.
+ETF_AVAIL = "2026-01-02"
+_ETF_OUT = ["disparity", "nav_per_share", "total_fee"]
+
+
+class EtfAdapter:
+    namespace = "etf"
+
+    def required_sources(self) -> set[str]:
+        return {"ohlcv", "etf_master"}  # ohlcv = disparity 재계산용 raw종가(close_price)
+
+    def catalog(self) -> list[dict]:
+        def m(key, label, unit, desc, avail=ETF_AVAIL):
+            return {"key": f"etf.{key}", "column": key, "label": label,
+                    "unit": unit, "desc": desc, "available_from": avail}
+        return [
+            m("disparity", "괴리율", "%",
+              "ETF 시장가격 괴리율 = raw종가 ÷ 주당NAV(net_asset/listed_shares) − 1. "
+              "양수=고평가(프리미엄)·음수=저평가(디스카운트). etf_master 2026-01-02~."),
+            m("nav_per_share", "주당 NAV", "원", "순자산가치 ÷ 상장주식수 (as-of 스냅샷)"),
+            m("total_fee", "총보수", "%", "ETF 총보수율(연) — 낮을수록 저비용"),
+        ]
+
+    def build(self, raw: dict, ctx) -> pd.DataFrame:
+        oh = raw["ohlcv"]          # time, stock, close_price(raw)
+        em = raw["etf_master"]     # stock, snapshot_date, net_asset, listed_shares, total_fee
+        spine = oh[["time", "stock", "close_price"]].copy()
+        if em is None or em.empty:
+            for c in _ETF_OUT:
+                spine[c] = np.nan
+            spine["_etf_mcap_eok"] = np.nan
+            return spine[["time", "stock", *_ETF_OUT, "_etf_mcap_eok"]]
+
+        em = em.copy()
+        em["time"] = pd.to_datetime(em["snapshot_date"])
+        na = pd.to_numeric(em["net_asset"], errors="coerce").to_numpy(dtype=float)
+        ls = pd.to_numeric(em["listed_shares"], errors="coerce").to_numpy(dtype=float)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            em["nav_per_share"] = np.where(ls > 0, na / ls, np.nan)
+            em["_etf_mcap_eok"] = np.where(na > 0, na / _EOK, np.nan)
+        em["total_fee"] = pd.to_numeric(em["total_fee"], errors="coerce")
+        asof = (em[["time", "stock", "nav_per_share", "total_fee", "_etf_mcap_eok"]]
+                .dropna(subset=["time"]).sort_values("time"))
+        spine = spine.sort_values("time")
+        merged = pd.merge_asof(spine, asof, on="time", by="stock", direction="backward")
+        close = pd.to_numeric(merged["close_price"], errors="coerce").to_numpy(dtype=float)
+        nav = merged["nav_per_share"].to_numpy(dtype=float)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            merged["disparity"] = np.where(nav > 0, close / nav - 1.0, np.nan) * 100.0
+        return merged[["time", "stock", *_ETF_OUT, "_etf_mcap_eok"]]
+
+
+ADAPTERS: list[DataAdapter] = [PriceAdapter(), FlowAdapter(), FinAdapter(), OwnAdapter(), EtfAdapter()]
 
 
 def full_catalog() -> list[dict]:

@@ -68,7 +68,8 @@ frontend/src/pages/backtest.tsx (+ components/backtest/)
 | `fin` | financial_metrics_quarterly | PER·PBR(일별 재계산)·EPS_ttm·BPS·ROE·ROA·영업이익률·영업이익/매출 YoY | **C3 ✅** (§3.1) |
 | `own` | foreign_ownership | 외인 보유율, 보유율 5d/20d 변화(pp), 한도소진율 | **C3 ✅** |
 | `index` | index_ohlcv_daily | (벤치마크 전용 — 조건 참조는 v2) | C2 |
-| (미래) `etf`/`statarb` | ETF 괴리·베이시스·페어 z-score | — | C3+ |
+| `etf` | etf_master_daily (+ohlcv/market_cap_daily) | 괴리율(disparity)·주당NAV·총보수. 가격/거래대금/시총은 price 공용(ETF도 커버) | **C4 ✅** |
+| (보류) `statarb` | 페어 z-score | 페어 축이라 종목 축 패널과 구조 미스매치 — 결정 로그 참조 | — |
 
 ### 3.1 재무(fin) 어댑터의 point-in-time 문제 ⚠️
 
@@ -182,7 +183,37 @@ SQLite 테이블 (LENS 자체 DB 규약 — Finance_Data에 쓰기 금지):
 
 - 실행 이력은 자동 축적된다. 결과 리포트 상단에 **"이 전략(및 파생 spec_hash 계열) 시도 N회"**
   를 항상 표기 — 반복 튜닝으로 얻은 결과임을 사용자가 잊지 않게.
-- holdout(기간 분할 잠금·1회 개봉)은 C2+ 후보. v1은 카운터+경고 문구까지.
+- holdout(기간 분할 잠금·1회 개봉)은 **C4에서 구현**(아래).
+
+### holdout 잠금 (C4 — 부검 "train/holdout 1회 개봉" 계승)
+
+반복 튜닝으로 얻은 edge가 신규 데이터에서도 유지되는지 **한 번만** 검증하는 레일. 사용자 노브가
+아니라 **엔진이 강제하는 레일** — 스키마에 옵션 없음.
+
+- **분할점**: `holdout_start` = 실효 커버리지(첫 유효 adj_open ~ 패널 끝)의 **75% 지점**(달력일).
+  현 패널(adj_open 2024-04-23~2026-07-03) → **2025-12-15**. 패널 속성이라 spec·유니버스 무관·결정적.
+- **레일(기본)**: 모든 실행은 **train-only** — 엔진이 실행 창 상한을 `holdout_start` 직전으로 캡
+  (`_resolve_end`). 결과 `meta.holdout = {start, locked:true}` + 경고("최근 구간은 holdout으로 잠김 —
+  저장 전략의 1회 개봉으로만 측정 가능"). period.end가 이미 train 안이면 캡 무영향.
+- **개봉(전략별 1회)**: `POST /api/backtest/strategies/{id}/unlock-holdout` → `backtest_strategies`에
+  `holdout_unlocked_at`(ms) + **개봉 시점 `holdout_spec_hash`** 기록. 재호출 = **409**.
+- **개봉 후 전체 기간 실행 조건**: run 요청 `strategy_id`가 개봉된 전략 **AND** 실행 spec_hash가
+  개봉 시점 hash와 **일치**할 때만. (개봉 후 조건을 바꿔 다시 전 기간을 보는 우회를 차단 — hash 불일치면
+  train 캡으로 되돌아감.) 일치 시 전체 기간 + **train/holdout 분리 스탯**(이벤트: 각 구간 n·평균초과·t /
+  포트폴리오: 구간별 수익) + `holdout.locked:false` + "개봉됨(1회성)" 경고 배지.
+- **ad-hoc(strategy_id 없음)·미개봉·hash 불일치 → 항상 train 캡.** 판정은 `jobs._run_backtest`가
+  store 조회로 수행 → 러너에 `holdout_unlocked` 전달.
+
+### ADV 체결 가능량 캡 (C4 — portfolio 전용, LP 실무)
+
+소형주 신호의 실현가능성 체크: 자본 대비 포지션이 종목 유동성(ADV20)의 x%를 못 넘게.
+
+- 스키마 `portfolio.capital_eok`(원화 자본, 억)·`adv_cap_pct`(기본 null=비활성, 예 10 = ADV20의 10%).
+  **둘 다 있어야 활성**(한쪽만 → 422). 비활성(기본) 경로는 기존과 **완전 동일**(scale=1·idle=0).
+- 시뮬(engine_portfolio): 슬리브 목표 notional(억) = 가용현금×capital → max_notional = 진입일
+  ADV20×cap% → `scale = min(1, max/목표)`로 **부분 체결**. 축소분(idle)은 슬리브 현금으로 잔류
+  (수익 기여 없음·청산 시 회수). 결과 `portfolio.adv_cap = {capital_eok, adv_cap_pct, capped_entries,
+  avg_fill_ratio}`. 평균 체결률 <50%면 유동성 부족 경고.
 
 ## 7. 성능 목표
 
@@ -230,6 +261,11 @@ SQLite 테이블 (LENS 자체 DB 규약 — Finance_Data에 쓰기 금지):
   스냅샷 1회분 — look-ahead 원천 차단. actual + 공시 지연 상수만.
 - **손절/익절은 종가 판정 후 익일 체결** (2026-07-06): 장중 low 터치 손절은 LP_MM 부검의
   look-ahead 실패 지점 — 일봉 데이터로 장중 체결가를 아는 척하지 않는다.
+- **statarb 네임스페이스 보류** (2026-07-06, C4): 페어 z-score는 **종목 쌍(pair) 속성**이라
+  (time, stock) 종목 축 패널과 구조가 미스매치 — 조건 트리·onset·에피소드 모델이 단일 종목 기준이라
+  페어 축을 억지로 얹으면 엔진 레일이 깨진다. 게다가 통계차익은 이미 자체 화면(stat-arb-engine 8300)이
+  인트라데이 디테일·포지션 추적을 보유(`stat-arb-engine.md`)해 백테스트 실험실과 목적·데이터 경로가
+  다르다. → etf만 C4에 추가하고 statarb는 미구현. 필요 시 별도 pair-축 엔진으로 분리 검토.
 
 ## 구현 노트 (C1 백엔드)
 
@@ -563,3 +599,122 @@ frontend/src/pages/backtest.tsx  # StrategyBar(헤더 하단)·RunHistory(결과
   공식 버전을 버전 키에 포함해 구 pickle 자동 무효화 (수동 삭제 불요).
 - 회귀: C1 n=7164·+1.58·t2.37 / C2 final 1.361951 **불변**. fin E2E 헤드라인은 왜곡 제거로 변동
   (n=1571→1563·avg +1.17→+1.69·t 0.99→1.43). 재빌드 112.6초·pickle 600MB 동일.
+
+## 구현 노트 (C4 백엔드 — etf 네임스페이스 + holdout 잠금 + ADV 체결 캡)
+
+> 2026-07-07 구현·검증 완료. **백엔드만**. 프론트 수정 불요(카탈로그가 네임스페이스 동적 생성 —
+> etf 드롭다운 자동 노출). C1/C2/C3 레퍼런스는 **개봉 전략(전체 기간)** 으로 재현·불변 확인.
+
+### A. etf 네임스페이스 + 유니버스 확장
+
+- **EtfAdapter**(`etf`, adapters.py) 3 지표: `disparity`(괴리율 % = raw종가 ÷ 주당NAV − 1,
+  주당NAV = net_asset/listed_shares)·`nav_per_share`·`total_fee`. 원천 = etf_master_daily
+  (as-of backward 조인, 스냅샷 없는 날 forward-fill). 커버리지 **2026-01-02~** — 사용 시 실질
+  커버리지 경고 자동(fin/own과 동일 메커니즘, engine `_summarize` used_ns 분기). 비ETF 종목 = NaN.
+- **유니버스에 ETF 추가**: `_resolve_universe`가 `market IN (KOSPI,KOSDAQ,ETF)` — 패널 1벌에
+  담고 엔진이 spec.universe.markets로 슬라이스. 스키마 `Universe.markets`에 "ETF" 허용. **기본값
+  markets는 KOSPI/KOSDAQ 유지** — ETF는 명시 선택 시에만. flow/fin/own은 ETF에 자연 NaN(조건에
+  쓰면 탈락 = 정상 시맨틱). price 지표(수익률·거래대금·시총·MA)는 ohlcv/market_cap_daily로 그대로 동작.
+- **ETF mcap 폴백**: market_cap_daily 실측 커버리지 **1142/1143**(거의 완전)이라 대부분 그대로
+  동작. 결측 시만 etf 어댑터의 `_etf_mcap_eok`(net_asset÷1억, 카탈로그 밖 헬퍼)로 `_compute`가
+  fillna 후 즉시 drop → universe min_mcap 필터가 ETF에도 동작.
+- **패널 규모 증가**(콜드): rows 2,727,876 → **3,573,208**(ETF ~845k행), 종목 2,719 → **3,862**,
+  pickle **600MB → 829MB**(+229MB), 콜드 재빌드 **112 → 127초**. `PANEL_SCHEMA_VERSION 2→3`
+  (구 pickle 자동 무효화·재빌드).
+- etf_master_daily는 **`etf_code`** 컬럼(stock_code 아님)·하이퍼테이블 아님(단일 SELECT).
+
+### B. statarb — 미구현 (결정 로그 "보류" 참조)
+
+### C. holdout 잠금 (§6 holdout 섹션 = 스펙)
+
+- engine `compute_holdout_start`(패널 75% 지점) + `_resolve_end`(train 캡 or 전체) + `_prepare(end_cap)`
+  + `_attach_holdout`(meta.holdout 블록·경고·구간 분리 스탯). run_event_study/run_portfolio에
+  `holdout_unlocked` 인자. jobs가 store 조회로 판정(strategy_id 개봉 + spec_hash 일치).
+- store: `backtest_strategies`에 `holdout_unlocked_at`·`holdout_spec_hash` **ALTER TABLE
+  ADD COLUMN**(PRAGMA table_info 체크 — 기존 배포 호환). `unlock_holdout`(재호출 시 already 반환→409).
+  라우터 `POST /strategies/{id}/unlock-holdout`.
+- **라우터 422 직렬화 수정**: 커스텀 model_validator의 ValueError 객체(ctx.error)가 JSON 직렬화
+  불가 → `e.errors(include_url=False, include_context=False)`. (기존 Condition/Universe 검증에도
+  잠재했던 버그를 ADV 캡 both-or-neither 검증이 표면화.)
+
+### D. ADV 체결 가능량 캡 (§6 ADV 캡 섹션 = 스펙)
+
+- schema `Portfolio.capital_eok`·`adv_cap_pct` + both-or-neither model_validator(422). engine_portfolio
+  `_simulate`가 슬리브 진입 시 scale 계산·부분 체결(committed/idle 분리) — **비활성 경로는 scale=1·
+  idle=0으로 기존과 바이트 동일**. 결과 `portfolio.adv_cap` 블록 + 저체결 경고.
+
+### 검증 결과 (전부 수치)
+
+1. **레퍼런스 불변(개봉=전체 기간)**: 이벤트(장기동시 fixed120, cost0, universe default) 전체 기간
+   **n=7164·avg +1.58%·t 2.37 불변**. 포트폴리오(cost0) 전체 기간 **final 1.361951 불변**
+   (entered 100·missed 6803·dup 261 동일). → **train-only 새 레퍼런스**: 이벤트 **n=4668·−3.33%·
+   t −5.32**(period.end 2025-12-14, holdout locked), 포트폴리오 **final 1.242168·CAGR 14.16%**.
+   (train 캡으로 fixed120 경계 에피소드가 잘려 음수 — holdout 개봉 시 train/holdout 분리로 확인.)
+2. **holdout E2E(라이브 8109)**: ad-hoc → train 캡(locked·period.end 2025-12-14) ✓ / 저장 → run
+   pre-unlock 여전히 train 캡 ✓ / unlock 200 ✓ / 동일 spec run → **locked:false·n=7164 + 분리 스탯**
+   {train n=4697·−0.69%·t −0.79 / **holdout n=2467·+5.89%·t 5.97**} + 개봉 배지 ✓ / spec 수정
+   (days 100) run → **다시 train 캡**(hash 불일치 우회 차단) ✓ / unlock 재호출 → **409** ✓.
+   포트폴리오 분리: train +24.44%(399일) / holdout +9.64%(134일).
+3. **ETF**: markets=["ETF"] `price.ret_20d rank_pct_top 10`(개봉) **n=2700·avg +2.04%·유니버스
+   637종목** / `etf.disparity<=-0.3` **n=2088·+0.72%** + ETF 커버리지 경고(2026-01-02~) ✓. KOSPI/KOSDAQ
+   기본 실행 유니버스 2444종목, **에피소드에 ETF 코드 0개**(ETF 미포함 확인) ✓. (ad-hoc train 캡 시
+   etf.disparity는 데이터가 holdout 구간(2026-01-02~)에만 있어 n=0 — 정상.)
+4. **ADV 캡**(capital 100억·adv_cap 10%, 전체 기간): **capped_entries 47·avg_fill_ratio 72.1%**,
+   final **1.306937** vs 비활성 **1.361951**(diff −0.055 — 부분 체결로 현금 드래그). 비활성 경로
+   final **1.361951 불변**. both-or-neither 422 확인.
+5. **콜드 재빌드**: 127초·pickle 829MB(§A).
+6. `python3 -c "import main"` 통과.
+
+## 구현 노트 (C4 프론트엔드 — ETF 유니버스 · holdout UI · ADV 캡)
+
+> 2026-07-07 구현·검증(tsc/lint 0, 라이브 UI E2E). C1~C3 프론트 구조 확장 — 회귀 없음. 백엔드
+> 무수정(C4 백엔드 계약 그대로 소비).
+
+### 컴포넌트 변경 (추가 없음 — 기존 파일 확장)
+
+```
+frontend/src/components/backtest/
+  types.ts          # Market('ETF' 추가)·Strategy.universe.markets=Market[]; Strategy.portfolio에 capital_eok/adv_cap_pct;
+                    #   +Holdout(locked true | false+event_study{train,holdout}+portfolio?)·HoldoutEventStat·HoldoutPortfolioSeg;
+                    #   ResultMeta.holdout; PortfolioResult.adv_cap(AdvCap); StrategyRecord에 holdout_unlocked_at/holdout_spec_hash
+  builder-state.ts  # BuilderState.markets에 ETF·+capitalEok/advCapPct(''=비활성);
+                    #   serialize: markets ETF 포함·ADV캡 both-or-neither 클라검증(한쪽만→에러, 백엔드 422 정합)·
+                    #   둘 다 유효할 때만 portfolio에 capital_eok/adv_cap_pct 주입(비활성=필드 미포함=기존 경로 불변);
+                    #   stateFromStrategy 역변환에 ETF·ADV캡 복원
+  strategy-builder.tsx # 유니버스에 ETF 체크박스(기본 OFF)+Tip(수급/재무/외인 없음→자동 제외·괴리율 2026-01~);
+                    #   portfolio 섹션에 "ADV 체결 캡(선택)" 자본(억)·캡% 입력+Tip(LP 실무 체결가능량 ≤ADV20의 N%)·한쪽만 경고
+  strategy-bar.tsx  # 미개봉 저장전략 선택 시 [holdout 개봉] 버튼→인라인 confirm(1회성·불가역·조건수정 시 재잠금 명시)→
+                    #   POST /strategies/{id}/unlock-holdout(200/409/404 처리)·reloadList 동기화; 개봉된 전략은 "개봉됨(1회성) YYYY-MM-DD" 뱃지
+  result-view.tsx   # meta.holdout 전용 HoldoutPanel: locked=정보성 파랑 배지+Tip(과적합 방지 레일 설명),
+                    #   개봉=주황 "개봉됨(1회성)" 배지 + train/holdout 분리 스탯 블록(이벤트 n·평균초과·t / 포트 수익·기간);
+                    #   백엔드 holdout 경고 문구는 배지와 중복이라 warnings에서 필터; PortfolioView에 holdoutStart 전달
+  portfolio-view.tsx # ADV 캡 활성 시 스탯 라인(자본·캡%·축소 진입·평균 체결률<50%면 주황); holdoutStart를 EquityCurve로 전달·범례
+  equity-curve.tsx  # holdoutStart 있으면 경계 데이터점에 주황 마커(v4 세로선 시리즈 없음 → aboveBar arrowDown 'holdout' 마커로 대체)
+```
+
+### 설계 결정 / 설계와 달라진 점
+
+- **holdout 경고 문구 중복 제거**: 백엔드가 `warnings[0]`에 넣는 "최근 구간은 holdout으로 잠김…"/
+  "holdout 개봉됨…"을 전용 HoldoutPanel 배지로 렌더하므로 warnings 리스트에서 prefix 매칭 필터 —
+  같은 내용이 두 번 뜨지 않게.
+- **에쿼티 세로 구분선 = 마커로 대체**: lightweight-charts v4에 세로선 시리즈가 없어(가격선은 수평만),
+  설계의 "가능하면 세로 구분선"을 **경계 데이터점 마커(arrowDown 'holdout', 주황)** + 범례 라벨로 구현.
+  locked 결과는 커브가 holdout 직전에서 끝나 마커 불필요 → 개봉(전체 기간) 시에만 전달.
+- **ADV 캡 필드 조건부 주입**: 둘 다 유효할 때만 spec.portfolio에 capital_eok/adv_cap_pct를 넣음
+  (비활성이면 키 자체를 생략 → spec_hash·백엔드 경로가 기존과 바이트 동일). 한쪽만 입력은 serialize가
+  클라 검증 에러로 막아 백엔드 422 도달 전에 차단(422와 메시지 정합).
+- **stateFromStrategy 왕복**: ETF 마켓·ADV 캡 필드를 대칭 복원. unlock hash 매칭이 라이브에서 성립
+  (저장 spec_hash == 실행 serialize hash)해 round-trip 안정성 확인.
+
+### 검증 (라이브 UI E2E, 패널 웜)
+
+1. **잠김(기본)**: 장기동시·fixed120 실행 → 정보성 파랑 배지 "최근 구간(2025-12-15~)은 holdout으로
+   잠김"·period 2022-01-03~**2025-12-14**·n **4,668**(train 캡). 중복 경고 없음.
+2. **개봉 플로우**: 포트폴리오+ADV캡(100억·10%) 전략 저장 → [holdout 개봉]→confirm→개봉 → "개봉됨(1회성)"
+   뱃지. 동일 spec 실행 → 전체 기간 n **7,164** + 분리 스탯 {train n 4,697·−1.19%·t −1.36·포트 +10.90%(399일) /
+   **holdout n 2,467·+5.39%·t 5.46·포트 +15.95%(134일)**} + 에쿼티 커브 holdout 마커(2025-12-15). (cost 25라
+   백엔드 cost0 레퍼런스와 소수 차 — 방향·n 정합.)
+3. **ADV 캡 표시**: 자본 100억·ADV20의 10%·**축소 진입 47건·평균 체결률 72.3%** 스탯 라인 노출.
+4. **ETF 체크박스**: 유니버스에 ETF(기본 OFF)+Tip 렌더. serialize/round-trip에 ETF 포함.
+5. **정리**: 테스트 전략(curl·UI 각 1)만 생성 후 삭제 — 사용자 전략 '장기동시 포트 120D'는 unlock 미호출·
+   locked 유지(불변 확인). `npx tsc --noEmit` 0, `eslint src/pages/backtest.tsx src/components/backtest/` 0.

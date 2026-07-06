@@ -20,6 +20,7 @@ C2:
 from __future__ import annotations
 
 import math
+from datetime import date, timedelta
 
 import numpy as np
 import pandas as pd
@@ -32,6 +33,109 @@ _FOOTNOTES = {
     "overlap": "에피소드 중첩: 같은 종목 연속 onset·동시 다종목으로 t값이 팽창 — 보수적으로 해석.",
     "same_close": "same_close 체결: D일 데이터로 D일 종가에 매수한다는 낙관 가정 — 실현 불가능할 수 있음(look-ahead).",
 }
+
+# holdout 분할 비율 — 실효 커버리지(첫 유효 adj_open ~ 패널 끝)의 앞 75%가 train, 뒤 25%가 holdout.
+_HOLDOUT_FRAC = 0.75
+
+
+# ── holdout 잠금 (부검 "train/holdout 1회 개봉" 계승 — backtest.md §6) ─────────
+def compute_holdout_start(panel: dict) -> date | None:
+    """holdout 시작일 = 실효 커버리지(첫 유효 adj_open ~ 패널 끝)의 75% 지점(달력일).
+
+    엔진 레일: 기본 모든 실행은 이 날짜 **직전**까지만(train-only). 저장 전략 1회 개봉 시에만
+    전체 기간 측정. spec·유니버스와 무관한 패널 속성이라 patch 한 벌로 결정적.
+    """
+    df: pd.DataFrame = panel["df"]
+    open_finite = np.isfinite(df["adj_open"].to_numpy(dtype=float))
+    if not open_finite.any():
+        return None
+    eff_start = pd.Timestamp(df["time"].to_numpy()[open_finite].min()).date()
+    try:
+        end = date.fromisoformat(panel["meta"]["period"]["end"])
+    except (KeyError, ValueError, TypeError):
+        return None
+    span = (end - eff_start).days
+    if span <= 0:
+        return None
+    return eff_start + timedelta(days=round(span * _HOLDOUT_FRAC))
+
+
+def _resolve_end(panel: dict, spec: Strategy, holdout_unlocked: bool):
+    """(eff_end, holdout_start, train_only) — 실행 창 상한을 결정.
+
+    train_only(기본)면 holdout_start 직전으로 캡. 개봉 상태면 전체 기간(user/panel end).
+    period.end가 이미 train 안이면 min으로 캡이 무영향.
+    """
+    try:
+        panel_end = date.fromisoformat(panel["meta"]["period"]["end"])
+    except (KeyError, ValueError, TypeError):
+        panel_end = None
+    user_end = spec.period.end or panel_end
+    hs = compute_holdout_start(panel)
+    if holdout_unlocked or hs is None:
+        return user_end, hs, False
+    train_end = hs - timedelta(days=1)
+    if user_end is not None:
+        train_end = min(user_end, train_end)
+    return train_end, hs, True
+
+
+def _split_event_stats(episodes: list[dict], hs_iso: str) -> dict:
+    """개봉 시 이벤트 스터디 산출을 train/holdout 구간으로 분리(각 n·평균 초과·t)."""
+    def stat(sub: list[dict]) -> dict:
+        ex = np.array([e["excess_pct"] for e in sub if e["excess_pct"] is not None], dtype=float)
+        ne = len(ex)
+        t_val = None
+        if ne > 1 and ex.std(ddof=1) > 0:
+            t_val = round(float(ex.mean() / (ex.std(ddof=1) / math.sqrt(ne))), 2)
+        return {"n_episodes": len(sub), "n_with_excess": ne,
+                "avg_excess_pct": round(float(ex.mean()), 2) if ne else None,
+                "median_excess_pct": round(float(np.median(ex)), 2) if ne else None,
+                "t_value": t_val}
+    train = [e for e in episodes if e["entry_date"] < hs_iso]
+    hold = [e for e in episodes if e["entry_date"] >= hs_iso]
+    return {"train": stat(train), "holdout": stat(hold)}
+
+
+def _split_portfolio_returns(curve: list[dict], hs_iso: str) -> dict | None:
+    """개봉 시 포트폴리오 에쿼티 커브를 train/holdout 구간 수익률로 분리."""
+    if not curve:
+        return None
+    b = next((i for i, p in enumerate(curve) if p["date"] >= hs_iso), None)
+    start_eq = curve[0]["equity"]
+    end_eq = curve[-1]["equity"]
+
+    def seg(a_eq, b_eq, days):
+        return {"return_pct": round((b_eq / a_eq - 1.0) * 100, 2) if a_eq else None, "days": days}
+
+    if b is None:               # 전 구간 train (개봉했으나 holdout 진입 없음)
+        return {"train": seg(start_eq, end_eq, len(curve)), "holdout": None}
+    if b == 0:                  # 전 구간 holdout (드묾)
+        return {"train": None, "holdout": seg(start_eq, end_eq, len(curve))}
+    boundary_eq = curve[b - 1]["equity"]
+    return {"train": seg(start_eq, boundary_eq, b),
+            "holdout": seg(boundary_eq, end_eq, len(curve) - b)}
+
+
+def _attach_holdout(result: dict, episodes: list[dict], hs: date | None,
+                    train_only: bool, portfolio: dict | None = None) -> None:
+    """result.meta.holdout 블록 + 경고 배지. train_only면 잠금 표기, 개봉이면 구간 분리 스탯."""
+    if hs is None:
+        return
+    hs_iso = hs.isoformat()
+    if train_only:
+        result["meta"]["holdout"] = {"start": hs_iso, "locked": True}
+        result["warnings"].insert(
+            0, f"최근 구간은 holdout으로 잠김({hs_iso}~) — 저장 전략의 1회 개봉으로만 측정 가능.")
+        return
+    block = {"start": hs_iso, "locked": False, "event_study": _split_event_stats(episodes, hs_iso)}
+    if portfolio is not None:
+        ps = _split_portfolio_returns(portfolio.get("equity_curve") or [], hs_iso)
+        if ps is not None:
+            block["portfolio"] = ps
+    result["meta"]["holdout"] = block
+    result["warnings"].insert(
+        0, f"holdout 개봉됨 (1회성) — 전체 기간 측정, holdout({hs_iso}~) 구간 분리 표기.")
 
 
 def _ns_coverage_start(df: pd.DataFrame, prefix: str) -> str | None:
@@ -144,7 +248,8 @@ def _build_bmap(spec: Strategy, df: pd.DataFrame, uni: np.ndarray, panel: dict) 
 
 
 # ── 준비: 기간·유니버스·onset·벤치마크 ──────────────────────────────────────
-def _prepare(panel: dict, spec: Strategy, prog=None, _signal_shift: int = 0) -> dict:
+def _prepare(panel: dict, spec: Strategy, prog=None, _signal_shift: int = 0,
+             end_cap: date | None = None) -> dict:
     def _p(p):
         if prog:
             prog(p)
@@ -154,8 +259,9 @@ def _prepare(panel: dict, spec: Strategy, prog=None, _signal_shift: int = 0) -> 
 
     # 1) 기간 마스크 — 패널을 **슬라이스하지 않는다**. 신호/onset은 전체 범위에서 계산 후
     #    onset 날짜만 period로 필터(경계 onset 인플레이션 방지). 청산 스캔은 period end까지.
+    #    end_cap(holdout train 캡)이 주어지면 그것이 실효 상한 — 러너가 항상 concrete date 전달.
     start = spec.period.start
-    end = spec.period.end
+    end = end_cap if end_cap is not None else spec.period.end
     times = df["time"].to_numpy()
     in_period = np.ones(len(df), dtype=bool)
     if start is not None:
@@ -353,21 +459,26 @@ def _public(episodes: list[dict]) -> list[dict]:
 
 
 # ── 메인 (이벤트 스터디) ─────────────────────────────────────────────────────
-def run_event_study(panel: dict, spec: Strategy, progress_cb=None, _signal_shift: int = 0) -> dict:
+def run_event_study(panel: dict, spec: Strategy, progress_cb=None, _signal_shift: int = 0,
+                    holdout_unlocked: bool = False) -> dict:
     """spec을 패널에 적용해 이벤트 스터디 결과 dict 반환.
 
+    holdout_unlocked=False(기본)면 train-only(holdout 직전 캡), True면 전체 기간 + 구간 분리 스탯.
     _signal_shift: 검증(look-ahead 스모크) 전용 — onset을 종목 내 n칸 이동. 프로덕션 경로는 0.
     """
-    ctx = _prepare(panel, spec, progress_cb, _signal_shift)
+    eff_end, hs, train_only = _resolve_end(panel, spec, holdout_unlocked)
+    ctx = _prepare(panel, spec, progress_cb, _signal_shift, end_cap=eff_end)
     episodes = _run_episodes(ctx, spec, progress_cb)
-    result = _summarize(_public(episodes), spec, panel, ctx["uni"] & ctx["in_period"], ctx["df"])
+    pub = _public(episodes)
+    result = _summarize(pub, spec, panel, ctx["uni"] & ctx["in_period"], ctx["df"], eff_end=eff_end)
     result["mode"] = "event_study"
+    _attach_holdout(result, pub, hs, train_only)
     if progress_cb:
         progress_cb(100)
     return result
 
 
-def _summarize(episodes, spec, panel, uni, df) -> dict:
+def _summarize(episodes, spec, panel, uni, df, eff_end: date | None = None) -> dict:
     ex = np.array([e["excess_pct"] for e in episodes if e["excess_pct"] is not None], dtype=float)
     n = len(episodes)
     n_ex = len(ex)
@@ -443,14 +554,23 @@ def _summarize(episodes, spec, panel, uni, df) -> dict:
         cov = _ns_coverage_start(df, "own.")
         warnings.append(
             "외인보유율 조건 사용 — 실질 커버리지 " + (f"{cov}~" if cov else "데이터 없음"))
+    if "etf" in used_ns:
+        cov = _ns_coverage_start(df, "etf.")
+        warnings.append(
+            "ETF 괴리 조건 사용 — 실질 커버리지 "
+            + (f"{cov}~ (etf_master 2026-01-02~)" if cov else "데이터 없음"))
 
+    # 실행 창 상한 — holdout train 캡(eff_end)이 주어지면 그것이 실제 측정 종료일.
+    period_end = (eff_end.isoformat() if eff_end is not None
+                  else (spec.period.end.isoformat() if spec.period.end
+                        else panel["meta"]["period"]["end"]))
     n_uni_stocks = int(df.loc[uni, "stock"].nunique()) if uni.any() else 0
     meta = {
         "panel_versions": panel["versions"],
         "panel_meta": panel["meta"],
         "period": {
             "start": period_start,
-            "end": (spec.period.end.isoformat() if spec.period.end else panel["meta"]["period"]["end"]),
+            "end": period_end,
         },
         "effective_start": effective_start,  # 첫 유효 체결가(adj_open) 날짜 — 실효 커버리지
         "universe": {

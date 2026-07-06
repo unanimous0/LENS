@@ -80,6 +80,14 @@ def _ensure_schema_sync() -> None:
             CREATE INDEX IF NOT EXISTS idx_bt_runs_started ON backtest_runs(started_at);
             """
         )
+        # ── C4 holdout 마이그레이션 (기존 배포 호환 — PRAGMA table_info 후 ADD COLUMN) ──
+        # holdout_unlocked_at: 개봉 시각(ms), NULL=미개봉. holdout_spec_hash: 개봉 시점 spec 해시
+        # (개봉 후 조건 변경으로 전체 기간을 다시 보는 우회 차단 — 실행 spec_hash 일치 시에만 전체 측정).
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(backtest_strategies)").fetchall()}
+        if "holdout_unlocked_at" not in cols:
+            conn.execute("ALTER TABLE backtest_strategies ADD COLUMN holdout_unlocked_at INTEGER")
+        if "holdout_spec_hash" not in cols:
+            conn.execute("ALTER TABLE backtest_strategies ADD COLUMN holdout_spec_hash TEXT")
         conn.commit()
 
 
@@ -89,8 +97,19 @@ async def ensure_schema() -> None:
 
 # ── spec_hash ───────────────────────────────────────────────────────────────
 def spec_hash(spec: Strategy | dict) -> str:
-    """정규화(name 제외·sort_keys) spec의 sha256 — 같은 조건이면 이름 달라도 같은 계열."""
-    d = spec.model_dump(mode="json") if isinstance(spec, Strategy) else dict(spec)
+    """정규화(name 제외·sort_keys) spec의 sha256 — 같은 조건이면 이름 달라도 같은 계열.
+
+    dict 입력도 **Strategy로 라운드트립**해 스키마 기본값을 채운 뒤 해싱한다 — 구 스키마로 저장된
+    spec(예: C4 이전, capital_eok 필드 없음)과 실행 시 Strategy가 기본값을 채운 spec의 해시가
+    일치하도록(holdout 개봉 hash 매칭 안정성). 검증 실패 시에만 원본 dict로 폴백.
+    """
+    if isinstance(spec, Strategy):
+        d = spec.model_dump(mode="json")
+    else:
+        try:
+            d = Strategy.model_validate(spec).model_dump(mode="json")
+        except Exception:  # noqa: BLE001 — 손상/구형 spec은 원본 그대로(해시 안정성보다 실패 회피)
+            d = dict(spec)
     d.pop("name", None)
     canon = json.dumps(d, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
     return hashlib.sha256(canon.encode("utf-8")).hexdigest()
@@ -142,8 +161,11 @@ def _row_to_strategy(row: sqlite3.Row) -> dict:
         spec = json.loads(row["spec_json"])
     except json.JSONDecodeError:
         spec = None
+    keys = row.keys()
     return {"id": row["id"], "name": row["name"], "spec": spec,
-            "created_at": row["created_at"], "updated_at": row["updated_at"]}
+            "created_at": row["created_at"], "updated_at": row["updated_at"],
+            "holdout_unlocked_at": row["holdout_unlocked_at"] if "holdout_unlocked_at" in keys else None,
+            "holdout_spec_hash": row["holdout_spec_hash"] if "holdout_spec_hash" in keys else None}
 
 
 def _list_strategies_sync() -> list[dict]:
@@ -176,6 +198,39 @@ def _delete_strategy_sync(sid: str) -> bool:
 
 async def delete_strategy(sid: str) -> bool:
     return await asyncio.to_thread(_delete_strategy_sync, sid)
+
+
+# ── holdout 개봉 (전략별 1회) ────────────────────────────────────────────────
+def _unlock_holdout_sync(sid: str) -> dict | None:
+    """전략의 holdout을 개봉(1회). None=미존재, {'already':True}=이미 개봉, 아니면 개봉 정보."""
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT id, spec_json, holdout_unlocked_at FROM backtest_strategies WHERE id = ?",
+            (sid,)).fetchone()
+        if row is None:
+            return None
+        if row["holdout_unlocked_at"] is not None:
+            return {"already": True, "holdout_unlocked_at": row["holdout_unlocked_at"]}
+        try:
+            spec = json.loads(row["spec_json"])
+        except json.JSONDecodeError:
+            spec = {}
+        # 개봉 시점 전략 spec의 해시를 고정 저장 — 이후 실행은 이 해시와 일치할 때만 전체 기간.
+        h = spec_hash(spec)
+        now = _now_ms()
+        # WHERE ... IS NULL + rowcount: SELECT~UPDATE 사이 동시 개봉 경합에도 1회만 성공 (TOCTOU 차단)
+        cur = conn.execute(
+            "UPDATE backtest_strategies SET holdout_unlocked_at = ?, holdout_spec_hash = ?"
+            " WHERE id = ? AND holdout_unlocked_at IS NULL",
+            (now, h, sid))
+        conn.commit()
+        if cur.rowcount == 0:
+            return {"already": True, "holdout_unlocked_at": None}
+    return {"id": sid, "holdout_unlocked_at": now, "holdout_spec_hash": h}
+
+
+async def unlock_holdout(sid: str) -> dict | None:
+    return await asyncio.to_thread(_unlock_holdout_sync, sid)
 
 
 # ── runs 이력 + 다중검정 카운터 ──────────────────────────────────────────────

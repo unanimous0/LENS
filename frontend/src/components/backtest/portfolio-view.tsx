@@ -15,10 +15,12 @@ export function PortfolioView({
   portfolio,
   benchmark,
   rankByLabel,
+  holdoutStart,
 }: {
   portfolio: PortfolioResult
   benchmark: Benchmark
   rankByLabel: string | null
+  holdoutStart?: string | null // 개봉 시 에쿼티 커브 holdout 시작 구분선
 }) {
   const p = portfolio
   const hasBench = benchmark !== 'none'
@@ -65,6 +67,23 @@ export function PortfolioView({
         />
       </div>
 
+      {/* ADV 체결 캡 (활성 시에만) */}
+      {p.adv_cap && (
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-sm bg-bg-surface/20 px-3 py-2 text-[11px] text-t4">
+          <span className="font-medium text-t3">ADV 체결 캡</span>
+          <span className="tabular-nums">
+            자본 {p.adv_cap.capital_eok.toLocaleString()}억 · ADV20의 {p.adv_cap.adv_cap_pct}%
+          </span>
+          <span className="tabular-nums">축소 진입 {p.adv_cap.capped_entries.toLocaleString()}건</span>
+          <span className="tabular-nums">
+            평균 체결률{' '}
+            <span className={p.adv_cap.avg_fill_ratio != null && p.adv_cap.avg_fill_ratio < 50 ? 'text-warning' : 'text-t3'}>
+              {p.adv_cap.avg_fill_ratio == null ? '—' : `${p.adv_cap.avg_fill_ratio}%`}
+            </span>
+          </span>
+        </div>
+      )}
+
       {/* 에쿼티 커브 */}
       <div className="panel p-3">
         <div className="mb-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
@@ -79,8 +98,14 @@ export function PortfolioView({
               <span className="text-t3">{BENCH_LABEL[benchmark]}</span>
             </span>
           )}
+          {holdoutStart && (
+            <span className="flex items-center gap-1">
+              <span className="inline-block h-3 w-px" style={{ background: '#ff9f0a' }} />
+              <span className="text-t3">holdout 시작 ({holdoutStart})</span>
+            </span>
+          )}
         </div>
-        <EquityCurve curve={p.equity_curve} hasBenchmark={hasBench} />
+        <EquityCurve curve={p.equity_curve} hasBenchmark={hasBench} holdoutStart={holdoutStart} />
       </div>
 
       {/* 연도별 테이블 */}

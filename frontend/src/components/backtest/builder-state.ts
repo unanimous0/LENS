@@ -10,7 +10,7 @@ import type { Benchmark, Condition, ExitRule, Group, PortfolioMode, Strategy } f
 
 export type BuilderState = {
   name: string
-  markets: { KOSPI: boolean; KOSDAQ: boolean }
+  markets: { KOSPI: boolean; KOSDAQ: boolean; ETF: boolean }
   minAdv: string
   minMcap: string
   // 진입: 기본 all 리스트 + OR 그룹 1개 (스키마 1-depth 중첩 대응)
@@ -35,6 +35,9 @@ export type BuilderState = {
   mode: PortfolioMode
   maxPositions: string
   rankBy: string // '' = 없음(선착순)
+  // ADV 체결 캡 (portfolio 전용) — 둘 다 채워야 활성, 한쪽만이면 클라 검증 에러(백엔드 422 정합)
+  capitalEok: string // '' = 비활성
+  advCapPct: string // '' = 비활성
   // 기간·벤치마크
   start: string
   end: string
@@ -44,7 +47,7 @@ export type BuilderState = {
 export function defaultState(idx: CatalogIndex): BuilderState {
   return {
     name: 'untitled',
-    markets: { KOSPI: true, KOSDAQ: true },
+    markets: { KOSPI: true, KOSDAQ: true, ETF: false },
     minAdv: '10',
     minMcap: '500',
     andConds: [blankCond(idx)],
@@ -65,6 +68,8 @@ export function defaultState(idx: CatalogIndex): BuilderState {
     mode: 'event_study',
     maxPositions: '20',
     rankBy: '',
+    capitalEok: '',
+    advCapPct: '',
     start: '',
     end: '',
     benchmark: 'universe_avg',
@@ -99,8 +104,8 @@ export function serialize(idx: CatalogIndex, s: BuilderState): SerializeResult {
   }
 
   // 유니버스
-  const markets = (['KOSPI', 'KOSDAQ'] as const).filter((m) => s.markets[m])
-  if (!markets.length) errors.push('시장(KOSPI/KOSDAQ)을 최소 1개 선택하세요.')
+  const markets = (['KOSPI', 'KOSDAQ', 'ETF'] as const).filter((m) => s.markets[m])
+  if (!markets.length) errors.push('시장(KOSPI/KOSDAQ/ETF)을 최소 1개 선택하세요.')
 
   // 청산 규칙
   const rules: ExitRule[] = []
@@ -128,10 +133,31 @@ export function serialize(idx: CatalogIndex, s: BuilderState): SerializeResult {
 
   // 포트폴리오 파라미터
   let maxPos = 20
+  let capitalEok: number | null = null
+  let advCapPct: number | null = null
   if (s.mode === 'portfolio') {
     const mp = parseInt(s.maxPositions, 10)
     if (!Number.isFinite(mp) || mp < 1) errors.push('최대 보유 종목수는 1 이상이어야 합니다.')
     else maxPos = mp
+
+    // ADV 체결 캡 — 자본(억)과 캡 %는 둘 다 채우거나 둘 다 비우거나 (백엔드 422 both-or-neither).
+    const capRaw = s.capitalEok.trim()
+    const pctRaw = s.advCapPct.trim()
+    if (capRaw !== '' || pctRaw !== '') {
+      if (capRaw === '' || pctRaw === '') {
+        errors.push('ADV 체결 캡은 자본(억)과 캡 %를 함께 입력하세요 (한쪽만 입력 불가).')
+      } else {
+        const cap = Number(capRaw)
+        const pct = Number(pctRaw)
+        if (!Number.isFinite(cap) || cap <= 0) errors.push('자본(억)은 양수여야 합니다.')
+        else if (!Number.isFinite(pct) || pct <= 0 || pct > 100)
+          errors.push('ADV 캡 %는 0 초과 100 이하여야 합니다.')
+        else {
+          capitalEok = cap
+          advCapPct = pct
+        }
+      }
+    }
   }
 
   if (errors.length || !entry) return { strategy: null, errors }
@@ -142,7 +168,16 @@ export function serialize(idx: CatalogIndex, s: BuilderState): SerializeResult {
 
   const portfolio: Strategy['portfolio'] =
     s.mode === 'portfolio'
-      ? { mode: 'portfolio', max_positions: maxPos, weighting: 'equal', rank_by: s.rankBy || null }
+      ? {
+          mode: 'portfolio',
+          max_positions: maxPos,
+          weighting: 'equal',
+          rank_by: s.rankBy || null,
+          // 둘 다 유효할 때만 캡 필드 전송 (비활성이면 필드 자체를 넣지 않음 = 기존 경로 불변).
+          ...(capitalEok != null && advCapPct != null
+            ? { capital_eok: capitalEok, adv_cap_pct: advCapPct }
+            : {}),
+        }
       : { mode: 'event_study' }
 
   const strategy: Strategy = {
@@ -231,6 +266,7 @@ export function stateFromStrategy(idx: CatalogIndex, spec: Strategy): BuilderSta
     markets: {
       KOSPI: spec.universe.markets.includes('KOSPI'),
       KOSDAQ: spec.universe.markets.includes('KOSDAQ'),
+      ETF: spec.universe.markets.includes('ETF'),
     },
     minAdv: String(spec.universe.min_adv_eok),
     minMcap: String(spec.universe.min_mcap_eok),
@@ -252,6 +288,8 @@ export function stateFromStrategy(idx: CatalogIndex, spec: Strategy): BuilderSta
     mode,
     maxPositions: String(spec.portfolio.max_positions ?? 20),
     rankBy: spec.portfolio.rank_by ?? '',
+    capitalEok: spec.portfolio.capital_eok != null ? String(spec.portfolio.capital_eok) : '',
+    advCapPct: spec.portfolio.adv_cap_pct != null ? String(spec.portfolio.adv_cap_pct) : '',
     start: spec.period.start ?? '',
     end: spec.period.end ?? '',
     benchmark: spec.benchmark,

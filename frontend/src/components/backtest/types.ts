@@ -66,10 +66,12 @@ export type ExitRule =
   | { type: 'take_profit_pct'; value: number }
   | { type: 'condition'; all?: Condition[]; any?: Condition[] }
 
+export type Market = 'KOSPI' | 'KOSDAQ' | 'ETF'
+
 export type Strategy = {
   name: string
   universe: {
-    markets: ('KOSPI' | 'KOSDAQ')[]
+    markets: Market[]
     min_adv_eok: number
     min_mcap_eok: number
   }
@@ -85,6 +87,9 @@ export type Strategy = {
     max_positions?: number
     weighting?: 'equal'
     rank_by?: string | null
+    // ADV 체결 가능량 캡 (portfolio 전용) — 둘 다 있어야 활성 (한쪽만이면 백엔드 422).
+    capital_eok?: number | null
+    adv_cap_pct?: number | null
   }
   benchmark: Benchmark
   period: { start: string | null; end: string | null }
@@ -117,6 +122,27 @@ export type Summary = {
   by_month_avg_excess: Record<string, number | null>
 }
 
+// ── holdout 잠금 (meta.holdout — engine._attach_holdout) ─────────────────────
+// 구간별 이벤트 스터디 스탯 (개봉 시 train/holdout 분리).
+export type HoldoutEventStat = {
+  n_episodes: number
+  n_with_excess: number
+  avg_excess_pct: number | null
+  median_excess_pct: number | null
+  t_value: number | null
+}
+// 구간별 포트폴리오 수익 (개봉 시, portfolio 모드에서만).
+export type HoldoutPortfolioSeg = { return_pct: number | null; days: number }
+
+export type Holdout =
+  | { start: string; locked: true } // 기본 — train-only 캡, 최근 구간 잠김
+  | {
+      start: string
+      locked: false // 개봉됨 — 전체 기간 + 구간 분리 스탯
+      event_study: { train: HoldoutEventStat; holdout: HoldoutEventStat }
+      portfolio?: { train: HoldoutPortfolioSeg | null; holdout: HoldoutPortfolioSeg | null }
+    }
+
 export type ResultMeta = {
   panel_versions: Record<string, string>
   panel_meta: PanelMeta
@@ -130,6 +156,7 @@ export type ResultMeta = {
   benchmark: string
   lookahead_warning: boolean
   stock_names?: Record<string, string>
+  holdout?: Holdout
 }
 
 // 다중검정 카운터 (jobs.py가 결과에 주입).
@@ -144,6 +171,14 @@ export type PortfolioYear = {
   strategy_pct: number
   benchmark_pct?: number | null
   excess_pct?: number | null
+}
+
+// ADV 체결 가능량 캡 결과 (활성 시에만 — engine_portfolio._simulate).
+export type AdvCap = {
+  capital_eok: number
+  adv_cap_pct: number
+  capped_entries: number
+  avg_fill_ratio: number | null // %
 }
 
 // portfolio 모드 결과 블록 (engine_portfolio._simulate).
@@ -168,6 +203,7 @@ export type PortfolioResult = {
   avg_positions: number
   by_year: PortfolioYear[]
   equity_curve: EquityPoint[]
+  adv_cap?: AdvCap
 }
 
 export type BacktestResult = {
@@ -187,6 +223,9 @@ export type StrategyRecord = {
   spec: Strategy | null
   created_at: number
   updated_at: number
+  // holdout 개봉 상태 (store.py) — 개봉 시각(ms)·개봉 시점 spec 해시. null=미개봉.
+  holdout_unlocked_at?: number | null
+  holdout_spec_hash?: string | null
 }
 
 // ── 실행 이력 (GET /api/backtest/runs) ──────────────────────────────────────

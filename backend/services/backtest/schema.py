@@ -15,6 +15,7 @@ C1 범위:
 """
 from __future__ import annotations
 
+import math
 from datetime import date
 from typing import Annotated, Literal, Union
 
@@ -131,7 +132,8 @@ class Exit(BaseModel):
 class Universe(BaseModel):
     model_config = {"extra": "forbid"}
 
-    markets: list[Literal["KOSPI", "KOSDAQ"]] = ["KOSPI", "KOSDAQ"]
+    # KOSPI/KOSDAQ 기본. ETF는 명시 선택 시에만 포함(수급·재무·외인은 자연 NaN → 조건 사용 시 탈락).
+    markets: list[Literal["KOSPI", "KOSDAQ", "ETF"]] = ["KOSPI", "KOSDAQ"]
     min_adv_eok: float = Field(default=10, ge=0)     # 일평균 거래대금 하한 (억)
     min_mcap_eok: float = Field(default=500, ge=0)   # 시가총액 하한 (억)
 
@@ -151,6 +153,24 @@ class Portfolio(BaseModel):
     weighting: Literal["equal"] = "equal"           # 현재 equal만
     # 신호 초과 시 슬롯 채우는 우선순위 지표(카탈로그 키, 내림차순). None이면 코드순 결정적 타이브레이크.
     rank_by: str | None = None
+    # ── ADV 체결 가능량 캡 (C4, portfolio 전용) ──
+    # capital_eok = 원화 자본(억), adv_cap_pct = 포지션 ≤ 진입일 ADV20의 x%. **둘 다 있어야 활성**
+    # (한쪽만 지정 시 422). 비활성(기본 둘 다 None)이면 기존 경로와 완전 동일.
+    capital_eok: float | None = None
+    adv_cap_pct: float | None = None
+
+    @model_validator(mode="after")
+    def _check(self) -> "Portfolio":
+        has_cap = self.capital_eok is not None
+        has_pct = self.adv_cap_pct is not None
+        if has_cap != has_pct:
+            raise ValueError("capital_eok와 adv_cap_pct는 함께 지정해야 한다 (ADV 체결 캡)")
+        # isfinite: json은 NaN 리터럴을 허용하고 NaN<=0은 False라 가드 우회됨 — 유한 양수만
+        if has_cap and not (math.isfinite(self.capital_eok) and self.capital_eok > 0):
+            raise ValueError("capital_eok는 양수(억)여야 한다")
+        if has_pct and not (0 < self.adv_cap_pct <= 100):
+            raise ValueError("adv_cap_pct는 0<v<=100 (%)이어야 한다")
+        return self
 
 
 class Period(BaseModel):

@@ -27,17 +27,29 @@ from .schema import Strategy
 _TRADING_DAYS = 252.0
 
 
-def run_portfolio(panel: dict, spec: Strategy, progress_cb=None) -> dict:
-    """이벤트 스터디 결과 + portfolio 블록."""
-    ctx = engine._prepare(panel, spec, progress_cb)
+def run_portfolio(panel: dict, spec: Strategy, progress_cb=None,
+                  holdout_unlocked: bool = False) -> dict:
+    """이벤트 스터디 결과 + portfolio 블록.
+
+    holdout_unlocked=False(기본)면 train-only(holdout 직전 캡), True면 전체 기간 + 구간 분리.
+    """
+    eff_end, hs, train_only = engine._resolve_end(panel, spec, holdout_unlocked)
+    ctx = engine._prepare(panel, spec, progress_cb, end_cap=eff_end)
     episodes = engine._run_episodes(ctx, spec, progress_cb)  # prog→90
+    pub = engine._public(episodes)
 
     # 이벤트 스터디 산출(자본 무제약) — 방향/edge 측정용.
-    result = engine._summarize(engine._public(episodes), spec, panel,
-                               ctx["uni"] & ctx["in_period"], ctx["df"])
+    result = engine._summarize(pub, spec, panel,
+                               ctx["uni"] & ctx["in_period"], ctx["df"], eff_end=eff_end)
     result["mode"] = "portfolio"
 
     result["portfolio"] = _simulate(ctx, episodes, spec, panel)
+    # ADV 캡으로 체결이 크게 줄면 실현가능성 경고.
+    adv_cap = result["portfolio"].get("adv_cap")
+    if adv_cap and adv_cap.get("avg_fill_ratio") is not None and adv_cap["avg_fill_ratio"] < 50.0:
+        result["warnings"].insert(
+            0, f"ADV 체결 캡: 평균 체결률 {adv_cap['avg_fill_ratio']}% — 자본 대비 유동성 부족(축소 심함).")
+    engine._attach_holdout(result, pub, hs, train_only, portfolio=result["portfolio"])
     if progress_cb:
         progress_cb(100)
     return result
@@ -50,6 +62,13 @@ def _simulate(ctx: dict, episodes: list[dict], spec: Strategy, panel: dict) -> d
     col_map = ctx["col_map"]
     N = spec.portfolio.max_positions
     cost = spec.execution.cost_bps / 1e4      # 편도
+
+    # ADV 체결 캡 (둘 다 지정 시에만 활성 — 스키마가 both-or-neither 강제). 비활성이면 아래 경로가
+    # scale=1·idle=0으로 기존과 완전 동일. 단위: capital_eok·adv_20d 모두 억 → 비율만 사용(캔슬).
+    adv_cap_active = spec.portfolio.capital_eok is not None and spec.portfolio.adv_cap_pct is not None
+    capital_eok = float(spec.portfolio.capital_eok) if adv_cap_active else 0.0
+    adv_cap_pct = float(spec.portfolio.adv_cap_pct) if adv_cap_active else 0.0
+    adv_arr = pd.to_numeric(df["adv_20d"], errors="coerce").to_numpy(dtype=float)  # 억
 
     if not episodes:
         return _empty_portfolio(spec)
@@ -94,6 +113,7 @@ def _simulate(ctx: dict, episodes: list[dict], spec: Strategy, panel: dict) -> d
             "entry_px": entry_px, "price_by_di": price_by_di,
             "round_factor": round_factor, "rank": rv,
             "exit_at_close": bool(e.get("_exit_at_close", False)),
+            "adv_entry_eok": float(adv_arr[eg]),   # 진입일 ADV20 (억) — ADV 캡 max_notional 기준
         })
 
     if not cand:
@@ -127,10 +147,13 @@ def _simulate(ctx: dict, episodes: list[dict], spec: Strategy, panel: dict) -> d
     entries = 0
     missed = 0
     dup_skipped = 0
+    capped_entries = 0
+    fill_ratios: list[float] = []
 
     def _realize(j: int, di: int) -> None:
         p = sleeve_pos[j]
-        sleeve_cash[j] = p["committed"] * p["round_factor"]
+        # 투자분은 round_factor로 실현 + 캡으로 남긴 유휴현금(idle) 회수.
+        sleeve_cash[j] = p["committed"] * p["round_factor"] + p["idle"]
         held_stocks.discard(p["stock"])
         sleeve_pos[j] = None
         sleeve_free[j] = True
@@ -156,10 +179,23 @@ def _simulate(ctx: dict, episodes: list[dict], spec: Strategy, panel: dict) -> d
                 if j is None:
                     missed += 1
                     continue
-                committed = sleeve_cash[j]
+                sleeve_avail = sleeve_cash[j]
+                # ADV 캡: 슬리브 목표 notional(억) = 가용현금 × 자본. max_notional = 진입일 ADV20×cap%.
+                # scale = min(1, max/목표)로 부분 체결 — 축소분 idle은 현금 잔류(수익 기여 없음).
+                scale = 1.0
+                if adv_cap_active:
+                    target_eok = sleeve_avail * capital_eok
+                    max_eok = c["adv_entry_eok"] * adv_cap_pct / 100.0
+                    if math.isfinite(c["adv_entry_eok"]) and target_eok > 0:
+                        scale = min(1.0, max_eok / target_eok)
+                    fill_ratios.append(scale)
+                    if scale < 1.0 - 1e-9:
+                        capped_entries += 1
+                committed = sleeve_avail * scale
+                idle = sleeve_avail - committed
                 sleeve_free[j] = False
                 sleeve_pos[j] = {
-                    "entry_px": c["entry_px"], "committed": committed,
+                    "entry_px": c["entry_px"], "committed": committed, "idle": idle,
                     "price_by_di": c["price_by_di"], "exit_di": c["exit_di"],
                     "last_price": c["entry_px"], "round_factor": c["round_factor"],
                     "stock": c["stock"], "exit_at_close": c["exit_at_close"],
@@ -186,8 +222,8 @@ def _simulate(ctx: dict, episodes: list[dict], spec: Strategy, panel: dict) -> d
                 price = p["price_by_di"].get(di)
                 if price is not None:
                     p["last_price"] = price
-                # 진입비용 반영 후 시가/진입가 비율 (청산비용은 실현 시).
-                equity += p["committed"] * (1.0 - cost) * (p["last_price"] / p["entry_px"])
+                # 진입비용 반영 후 시가/진입가 비율 (청산비용은 실현 시) + 캡으로 남긴 유휴현금.
+                equity += p["committed"] * (1.0 - cost) * (p["last_price"] / p["entry_px"]) + p["idle"]
                 held += 1
         eq_dates.append(pd.Timestamp(D[di]).date().isoformat())
         eq_vals.append(equity)
@@ -219,6 +255,14 @@ def _simulate(ctx: dict, episodes: list[dict], spec: Strategy, panel: dict) -> d
         "dup_skipped": dup_skipped,
         "rank_by": spec.portfolio.rank_by,
     })
+    # ADV 캡 결과(활성 시에만 노출 — 비활성 경로 result 형태 불변).
+    if adv_cap_active:
+        stats["adv_cap"] = {
+            "capital_eok": capital_eok,
+            "adv_cap_pct": adv_cap_pct,
+            "capped_entries": capped_entries,
+            "avg_fill_ratio": round(float(np.mean(fill_ratios)) * 100, 1) if fill_ratios else None,
+        }
 
     curve = [{"date": d, "equity": round(v, 6)} for d, v in zip(eq_dates, eq_vals)]
     if bench_vals is not None:

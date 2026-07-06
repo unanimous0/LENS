@@ -88,16 +88,27 @@ async def _own_version() -> str:
     return f"{row[0]}:{int(row[1])}"
 
 
+async def _etf_version() -> str:
+    """etf_master_daily 버전 = max(snapshot_date):전체 행수."""
+    async with korea_async_session() as s:
+        row = (await s.execute(text(
+            "SELECT max(snapshot_date)::text, count(*) FROM etf_master_daily"
+        ))).one()
+    return f"{row[0]}:{int(row[1])}"
+
+
 # 어댑터 **공식** 버전 — DB 프로브는 데이터 변경만 감지하므로, 어댑터 산식이 바뀌면
-# 여기를 올려 구 pickle을 무효화한다 (2 = C3.1: fin 분할 브리지·TTM/YoY 연속성 게이트).
-PANEL_SCHEMA_VERSION = 2
+# 여기를 올려 구 pickle을 무효화한다 (2 = C3.1: fin 분할 브리지·TTM/YoY 연속성 게이트,
+# 3 = C4: etf 네임스페이스 + 유니버스에 ETF 종목 추가 → 패널 행 구성 변경).
+PANEL_SCHEMA_VERSION = 3
 
 
 async def adapter_versions() -> dict:
     fv = await fm.data_version()
     return {"schema": PANEL_SCHEMA_VERSION,
             "price": await _price_version(), "flow": f"{fv[0]}:{fv[1]}",
-            "fin": await _fin_version(), "own": await _own_version()}
+            "fin": await _fin_version(), "own": await _own_version(),
+            "etf": await _etf_version()}
 
 
 async def _fetch_indices(start: date, end: date) -> dict[str, dict]:
@@ -123,8 +134,10 @@ async def _fetch_indices(start: date, end: date) -> dict[str, dict]:
 # ── 유니버스 + 벌크 조회 (연도 청크 · 테이블별 세션) ────────────────────────
 async def _resolve_universe() -> tuple[list[str], dict[str, str], date]:
     async with korea_async_session() as s:
+        # ETF 포함(패널 1벌에 담고 엔진이 spec.universe.markets로 슬라이스). 기본 markets는
+        # KOSPI/KOSDAQ이라 ETF는 명시 선택 시에만 조건 평가에 들어간다.
         rows = (await s.execute(text(
-            "SELECT stock_code, market FROM stocks WHERE is_active AND market IN ('KOSPI','KOSDAQ')"
+            "SELECT stock_code, market FROM stocks WHERE is_active AND market IN ('KOSPI','KOSDAQ','ETF')"
         ))).all()
         latest = (await s.execute(text("SELECT max(time) FROM ohlcv_daily"))).scalar()
     codes = [r[0] for r in rows]
@@ -230,6 +243,21 @@ class RawFetcher:
             df[c] = pd.to_numeric(df[c], errors="coerce")
         return df
 
+    async def _etf_master(self) -> pd.DataFrame:
+        # etf_master_daily = 하이퍼테이블 아님(~9만 행) → 단일 SELECT. 비ETF 코드는 자연 부재.
+        async with korea_async_session() as s:
+            rows = (await s.execute(text(
+                "SELECT etf_code AS stock, snapshot_date, net_asset, listed_shares, total_fee "
+                "FROM etf_master_daily WHERE etf_code = ANY(:codes)"
+            ), {"codes": self.ctx.codes})).all()
+        cols = ["stock", "snapshot_date", "net_asset", "listed_shares", "total_fee"]
+        df = pd.DataFrame(rows, columns=cols)
+        if not df.empty:
+            df["snapshot_date"] = pd.to_datetime(df["snapshot_date"])
+            for c in ("net_asset", "listed_shares", "total_fee"):
+                df[c] = pd.to_numeric(df[c], errors="coerce")
+        return df
+
     async def _foreign(self) -> pd.DataFrame:
         # foreign_ownership = 하이퍼테이블(236 청크) → 연도 청크(ohlcv와 동일 패턴).
         df = await _fetch_chunked(
@@ -279,11 +307,16 @@ async def _build(progress_cb=None) -> dict:
             base = frames["price"].sort_values(["stock", "time"])
             flow = frames["flow"]
             df = base.merge(flow, on=["time", "stock"], how="left")
-            # fin/own은 price 스파인에 left-join(각 (time,stock) 유일 → 행 증식 없음). 없는 날 = NaN
+            # fin/own/etf는 price 스파인에 left-join(각 (time,stock) 유일 → 행 증식 없음). 없는 날 = NaN
             # (수치 지표 비교는 NaN→False로 신호 안 냄 — 기존 price/flow 행·값 불변, C1/C2 회귀 안전).
-            for ns in ("fin", "own"):
+            for ns in ("fin", "own", "etf"):
                 if ns in frames:
                     df = df.merge(frames[ns], on=["time", "stock"], how="left")
+            # ETF mcap 폴백: market_cap_daily 결측 ETF는 net_asset 기반 NAV(억)로 채움 →
+            # universe min_mcap 필터가 ETF에도 동작. (헬퍼 컬럼은 소비 후 즉시 drop — 카탈로그 밖.)
+            if "_etf_mcap_eok" in df.columns:
+                df["mcap"] = df["mcap"].where(df["mcap"].notna(), df["_etf_mcap_eok"])
+                df = df.drop(columns=["_etf_mcap_eok"])
             # flow 없는 (종목,일)은 태그 False·수치 NaN — is_true가 정상 동작하도록 태그 fillna(False).
             tag_cols = [c for c in df.columns if c.startswith("tag_")]
             if tag_cols:

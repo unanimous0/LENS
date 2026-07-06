@@ -4,12 +4,27 @@ import type { CatalogIndex } from './catalog'
 import { ExcessHistogram } from './histogram'
 import { fmtPct, fmtSigned, signCls } from './format'
 import { PortfolioView } from './portfolio-view'
-import { type Attempts, type BacktestResult, type Benchmark, type Episode, REASON_LABEL } from './types'
+import {
+  type Attempts,
+  type BacktestResult,
+  type Benchmark,
+  type Episode,
+  type Holdout,
+  type HoldoutEventStat,
+  type HoldoutPortfolioSeg,
+  REASON_LABEL,
+} from './types'
+import { Tip } from './ui'
 
 /** 우측 결과 뷰 — 백엔드 결과 포맷팅만 (지표 재계산 없음). */
 export function ResultView({ result, idx }: { result: BacktestResult; idx?: CatalogIndex }) {
   const { summary, episodes, warnings, meta } = result
   const isPortfolio = result.mode === 'portfolio' && result.portfolio != null
+  const holdout = meta.holdout
+  // holdout 상태는 전용 배지로 렌더 — 백엔드가 넣은 동일 경고 문구는 중복 제거.
+  const filteredWarnings = warnings.filter(
+    (w) => !w.startsWith('최근 구간은 holdout으로 잠김') && !w.startsWith('holdout 개봉됨'),
+  )
   const excessValues = useMemo(
     () => episodes.map((e) => e.excess_pct).filter((v): v is number => v != null),
     [episodes],
@@ -45,10 +60,13 @@ export function ResultView({ result, idx }: { result: BacktestResult; idx?: Cata
         </span>
       </div>
 
+      {/* holdout 상태 (잠김 정보 / 개봉 시 구간 분리 스탯) */}
+      {holdout && <HoldoutPanel holdout={holdout} isPortfolio={isPortfolio} />}
+
       {/* 경고 배지 */}
-      {warnings.length > 0 && (
+      {filteredWarnings.length > 0 && (
         <div className="flex flex-col gap-1">
-          {warnings.map((w, i) => {
+          {filteredWarnings.map((w, i) => {
             const strong = /표본 부족|same_close/.test(w)
             return (
               <div
@@ -67,7 +85,12 @@ export function ResultView({ result, idx }: { result: BacktestResult; idx?: Cata
 
       {/* 포트폴리오 성과 (자본 제약) */}
       {isPortfolio && result.portfolio && (
-        <PortfolioView portfolio={result.portfolio} benchmark={meta.benchmark as Benchmark} rankByLabel={rankByLabel} />
+        <PortfolioView
+          portfolio={result.portfolio}
+          benchmark={meta.benchmark as Benchmark}
+          rankByLabel={rankByLabel}
+          holdoutStart={holdout && !holdout.locked ? holdout.start : null}
+        />
       )}
 
       {/* 이벤트 스터디 관점 — portfolio 모드에선 자본 무제약 산출을 구분 표기 */}
@@ -136,6 +159,98 @@ const BENCH_LABELS: Record<string, string> = {
   kospi: 'KOSPI 종합',
   kosdaq: 'KOSDAQ 종합',
   none: '없음',
+}
+
+function HoldoutPanel({ holdout, isPortfolio }: { holdout: Holdout; isPortfolio: boolean }) {
+  if (holdout.locked) {
+    return (
+      <div className="group relative flex items-start gap-1.5 rounded-sm bg-blue/10 px-3 py-2 text-xs leading-relaxed text-blue">
+        <span>
+          최근 구간(<span className="tabular-nums">{holdout.start}</span>~)은 holdout으로 잠김 — train 구간만 측정됩니다.
+        </span>
+        <span className="cursor-help text-blue/70">ⓘ</span>
+        <Tip
+          align="left"
+          title="holdout 잠금 — 과적합 방지 레일"
+          body={
+            <div>
+              반복 튜닝으로 얻은 edge가 신규 데이터에서도 유지되는지 <b>한 번만</b> 검증하려고, 실효 커버리지의
+              뒤 25% 구간을 잠급니다(엔진 강제 레일 · 전략 무관). 저장 전략을 1회 개봉할 때만 이 구간을 봅니다.
+            </div>
+          }
+        />
+      </div>
+    )
+  }
+  const es = holdout.event_study
+  const pf = holdout.portfolio
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex flex-wrap items-center gap-1.5 text-xs">
+        <span className="rounded-sm bg-warning/15 px-1.5 py-0.5 font-medium text-warning">개봉됨 (1회성)</span>
+        <span className="text-t4">
+          전체 기간 측정 · holdout 시작 <span className="tabular-nums text-t3">{holdout.start}</span> 기준 구간 분리
+        </span>
+      </div>
+      <div className="grid gap-2 sm:grid-cols-2">
+        <HoldoutBlock title="Train (과거)" es={es.train} pf={pf?.train ?? null} showPf={isPortfolio} />
+        <HoldoutBlock title="Holdout (검증)" es={es.holdout} pf={pf?.holdout ?? null} showPf={isPortfolio} accent />
+      </div>
+      <div className="text-[11px] leading-relaxed text-t4">
+        Holdout 구간 성과가 train과 크게 다르면 과적합 신호입니다. 개봉은 전략당 1회뿐 — 조건을 수정하면 다시 잠깁니다.
+      </div>
+    </div>
+  )
+}
+
+function HoldoutBlock({
+  title,
+  es,
+  pf,
+  showPf,
+  accent,
+}: {
+  title: string
+  es: HoldoutEventStat
+  pf: HoldoutPortfolioSeg | null
+  showPf: boolean
+  accent?: boolean
+}) {
+  const tCls =
+    es.t_value != null && Math.abs(es.t_value) >= 2
+      ? es.t_value > 0
+        ? 'text-up'
+        : 'text-down'
+      : 'text-t3'
+  return (
+    <div
+      className={`rounded-sm border p-2.5 ${
+        accent ? 'border-warning/30 bg-warning/5' : 'border-bg-surface bg-bg-surface/20'
+      }`}
+    >
+      <div className="mb-1.5 text-[11px] font-medium uppercase tracking-wide text-t3">{title}</div>
+      <div className="grid grid-cols-3 gap-2">
+        <MiniStat label="에피소드" value={es.n_episodes.toLocaleString()} />
+        <MiniStat label="평균 초과" value={fmtPct(es.avg_excess_pct)} cls={signCls(es.avg_excess_pct)} />
+        <MiniStat label="t값" value={es.t_value == null ? '—' : es.t_value.toFixed(2)} cls={tCls} />
+      </div>
+      {showPf && (
+        <div className="mt-2 grid grid-cols-2 gap-2 border-t border-bg-surface/40 pt-2">
+          <MiniStat label="포트 수익" value={pf ? fmtPct(pf.return_pct) : '—'} cls={pf ? signCls(pf.return_pct) : 'text-t3'} />
+          <MiniStat label="기간(거래일)" value={pf ? pf.days.toLocaleString() : '—'} />
+        </div>
+      )}
+    </div>
+  )
+}
+
+function MiniStat({ label, value, cls = 'text-t1' }: { label: string; value: string; cls?: string }) {
+  return (
+    <div>
+      <div className="text-[10px] text-t4">{label}</div>
+      <div className={`tabular-nums text-[13px] font-medium ${cls}`}>{value}</div>
+    </div>
+  )
 }
 
 function AttemptsBanner({ attempts }: { attempts: Attempts }) {

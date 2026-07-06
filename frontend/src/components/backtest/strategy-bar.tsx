@@ -31,6 +31,7 @@ export function StrategyBar({
   const [saveName, setSaveName] = useState('')
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState<string | null>(null)
+  const [confirmUnlock, setConfirmUnlock] = useState(false)
 
   const reloadList = useCallback(async () => {
     try {
@@ -67,6 +68,11 @@ export function StrategyBar({
 
   const selected = strategies.find((s) => s.id === selectedId) ?? null
 
+  // 선택 전략이 바뀌면 개봉 확인 단계 리셋 (다른 전략에 확인 상태가 새지 않게)
+  useEffect(() => {
+    setConfirmUnlock(false)
+  }, [selectedId])
+
   const handleSelect = (id: string) => {
     if (!id) {
       onCleared()
@@ -101,6 +107,28 @@ export function StrategyBar({
       setMsg(`저장됨: ${rec.name}`)
     } catch {
       setMsg('저장 실패 — 백엔드(8100) 연결 확인')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const handleUnlock = async () => {
+    if (!selected) return
+    setBusy(true)
+    setMsg(null)
+    try {
+      const r = await fetch(`/api/backtest/strategies/${selected.id}/unlock-holdout`, { method: 'POST' })
+      if (r.ok) {
+        setMsg('holdout 개봉됨 — 이 전략 실행 시 전체 기간(train/holdout 분리)이 측정됩니다.')
+      } else if (r.status === 409) {
+        setMsg('이미 개봉된 전략입니다 (재개봉 불가).')
+      } else {
+        setMsg(`개봉 실패 (HTTP ${r.status})`)
+      }
+      setConfirmUnlock(false)
+      await reloadList() // 개봉 뱃지·상태 동기화
+    } catch {
+      setMsg('개봉 실패 — 백엔드(8100) 연결 확인')
     } finally {
       setBusy(false)
     }
@@ -174,6 +202,59 @@ export function StrategyBar({
       </div>
 
       {msg && <div className="text-[11px] text-t4">{msg}</div>}
+
+      {/* holdout 개봉 (저장 전략 1회성) */}
+      {selected && (
+        <div className="flex flex-col gap-1.5 border-t border-bg-surface/40 pt-1.5">
+          {selected.holdout_unlocked_at ? (
+            <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+              <span className="rounded-sm bg-warning/15 px-1.5 py-0.5 font-medium text-warning">개봉됨 (1회성)</span>
+              <span className="tabular-nums text-t4">{new Date(selected.holdout_unlocked_at).toLocaleDateString('ko-KR')}</span>
+              <span className="text-t4">
+                — 이 전략 실행 시 전체 기간(train/holdout 분리) 측정. 조건을 수정하면 다시 잠깁니다.
+              </span>
+            </div>
+          ) : confirmUnlock ? (
+            <div className="flex flex-col gap-1.5 rounded-sm bg-warning/10 px-2 py-2 text-[11px] leading-relaxed text-warning">
+              <div>
+                <b>holdout 개봉</b>은 전략당 <b>1회성이며 되돌릴 수 없습니다.</b> 개봉하면 이 전략을 실행할 때
+                잠겼던 최근 구간까지 전체 기간이 측정됩니다. 개봉 후 <b>조건을 수정하면 다시 잠깁니다</b>(우회 차단).
+                과적합 검증은 한 번만 하세요.
+              </div>
+              <div className="flex gap-1.5">
+                <button
+                  type="button"
+                  onClick={handleUnlock}
+                  disabled={busy}
+                  className="rounded-sm bg-warning/20 px-2 py-1 font-medium text-warning hover:bg-warning/30 disabled:opacity-50"
+                >
+                  개봉 확인
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setConfirmUnlock(false)}
+                  disabled={busy}
+                  className="rounded-sm border border-bg-surface px-2 py-1 text-t3 hover:text-t1"
+                >
+                  취소
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="flex flex-wrap items-center gap-2 text-[11px] text-t4">
+              <button
+                type="button"
+                onClick={() => setConfirmUnlock(true)}
+                disabled={busy}
+                className="rounded-sm border border-blue/40 px-2 py-1 font-medium text-blue hover:bg-blue/10 disabled:opacity-50"
+              >
+                holdout 개봉
+              </button>
+              <span>최근 구간(holdout)은 잠겨 있습니다. 저장 전략만 1회 개봉해 과적합을 검증할 수 있습니다.</span>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* 선택 전략의 최근 실행 요약 */}
       {selected && recent.length > 0 && (

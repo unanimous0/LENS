@@ -35,7 +35,15 @@ const pct = (x: number) => `${x >= 1 ? '+' : ''}${((x - 1) * 100).toFixed(2)}%`
  * 포트폴리오 에쿼티 커브 — 전략(accent) vs 벤치마크(회색), 둘 다 t0=1.0 정규화.
  * lightweight-charts v4 autoSize (flow-detail 관례). 벤치마크 없으면 1라인.
  */
-export function EquityCurve({ curve, hasBenchmark }: { curve: EquityPoint[]; hasBenchmark: boolean }) {
+export function EquityCurve({
+  curve,
+  hasBenchmark,
+  holdoutStart,
+}: {
+  curve: EquityPoint[]
+  hasBenchmark: boolean
+  holdoutStart?: string | null
+}) {
   const ref = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -49,6 +57,16 @@ export function EquityCurve({ curve, hasBenchmark }: { curve: EquityPoint[]; has
       lastValueVisible: true,
     })
     strat.setData(curve.map((p) => ({ time: t(p.date), value: p.equity })))
+
+    // holdout 시작 구분선 — v4는 세로선 시리즈가 없어 경계 데이터점 마커로 표기(주황).
+    if (holdoutStart) {
+      const b = curve.find((p) => p.date >= holdoutStart)
+      if (b) {
+        strat.setMarkers([
+          { time: t(b.date), position: 'aboveBar', color: '#ff9f0a', shape: 'arrowDown', text: 'holdout' },
+        ])
+      }
+    }
 
     let benchSeries = false
     if (hasBenchmark) {
@@ -108,7 +126,7 @@ export function EquityCurve({ curve, hasBenchmark }: { curve: EquityPoint[]; has
       tip.remove()
       chart.remove()
     }
-  }, [curve, hasBenchmark])
+  }, [curve, hasBenchmark, holdoutStart])
 
   if (curve.length === 0) {
     return <div className="py-8 text-center text-xs text-t4">에쿼티 커브 데이터 없음</div>

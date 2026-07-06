@@ -38,6 +38,8 @@ export function StrategyBuilder({
 }) {
   const patch = (p: Partial<BuilderState>) => setState((s) => ({ ...s, ...p }))
   const sameClose = state.entryFill === 'same_close' || state.exitFill === 'same_close'
+  // ADV 캡: 한쪽만 입력하면 클라 검증 경고 (백엔드 422 both-or-neither와 정합).
+  const capOneOnly = (state.capitalEok.trim() !== '') !== (state.advCapPct.trim() !== '')
   const rankByOptions = useMemo(
     () => idx.numeric.map((m) => ({ value: m.key, label: m.label })),
     [idx],
@@ -49,8 +51,8 @@ export function StrategyBuilder({
       <section className="panel flex flex-col gap-2 p-3">
         <SectionTitle>유니버스</SectionTitle>
         <div className="flex items-center gap-3 text-[13px] text-t2">
-          {(['KOSPI', 'KOSDAQ'] as const).map((m) => (
-            <label key={m} className="flex items-center gap-1.5">
+          {(['KOSPI', 'KOSDAQ', 'ETF'] as const).map((m) => (
+            <label key={m} className="group relative flex items-center gap-1.5">
               <input
                 type="checkbox"
                 checked={state.markets[m]}
@@ -58,6 +60,21 @@ export function StrategyBuilder({
                 className="accent-accent"
               />
               {m}
+              {m === 'ETF' && (
+                <>
+                  <span className="cursor-help text-t4">ⓘ</span>
+                  <Tip
+                    align="left"
+                    title="ETF 유니버스 (기본 OFF)"
+                    body={
+                      <div>
+                        ETF는 수급·재무·외인 지표가 없어 해당 조건을 쓰면 자동 제외됩니다. 괴리율 등 etf.*
+                        지표는 2026-01~ 커버리지. 가격·거래대금·시총 지표는 ETF도 동작합니다.
+                      </div>
+                    }
+                  />
+                </>
+              )}
             </label>
           ))}
         </div>
@@ -228,6 +245,46 @@ export function StrategyBuilder({
                 options={[{ value: '', label: '(없음 — 선착순)' }, ...rankByOptions]}
                 className="w-44"
               />
+            </div>
+
+            {/* ADV 체결 가능량 캡 */}
+            <div className="flex flex-col gap-2 border-t border-bg-surface/50 pt-2">
+              <div className="group relative flex items-center gap-1 text-xs text-t3">
+                <span className="font-medium">ADV 체결 캡 (선택)</span>
+                <span className="cursor-help text-t4">ⓘ</span>
+                <Tip
+                  align="left"
+                  title="ADV 체결 캡 — LP 실무 체결 가능량"
+                  body={
+                    <div>
+                      포지션이 종목 20일 평균 거래대금(ADV20)의 N%를 넘지 못하게 부분 체결 —
+                      소형주 신호의 실현 가능성 체크. 자본(억)과 캡 %를 <b>둘 다</b> 입력해야 활성.
+                      비우면 비활성(기존과 동일).
+                    </div>
+                  }
+                />
+              </div>
+              <Field label="자본 (억)">
+                <NumberInput
+                  value={state.capitalEok}
+                  onChange={(v) => patch({ capitalEok: v })}
+                  min={0}
+                  placeholder="비활성"
+                />
+              </Field>
+              <Field label="ADV 캡 %">
+                <NumberInput
+                  value={state.advCapPct}
+                  onChange={(v) => patch({ advCapPct: v })}
+                  min={0}
+                  placeholder="비활성"
+                />
+              </Field>
+              {capOneOnly && (
+                <div className="rounded-sm bg-warning/10 px-2 py-1 text-[11px] leading-relaxed text-warning">
+                  자본(억)과 ADV 캡 %는 함께 입력해야 합니다 (한쪽만 입력 시 실행 불가).
+                </div>
+              )}
             </div>
           </div>
         )}

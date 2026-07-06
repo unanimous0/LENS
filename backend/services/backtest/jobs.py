@@ -39,10 +39,19 @@ class Job:
     finished_at: float | None = None
 
 
-async def _run_backtest(spec: Strategy, progress_cb) -> dict:
+async def _run_backtest(spec: Strategy, strategy_id: str | None, progress_cb) -> dict:
     panel = await panel_mod.ensure_panel(progress_cb)          # 0~55 (콜드 빌드 시)
+    # holdout 개봉 판정: 저장 전략이 개봉됐고 **실행 spec_hash가 개봉 시점 해시와 일치**할 때만
+    # 전체 기간 측정(우회 차단). ad-hoc·미개봉·hash 불일치 → train 캡(기본 레일).
+    holdout_unlocked = False
+    if strategy_id:
+        s = await store.get_strategy(strategy_id)
+        if (s and s.get("holdout_unlocked_at")
+                and s.get("holdout_spec_hash") == store.spec_hash(spec)):
+            holdout_unlocked = True
     runner = run_portfolio if spec.portfolio.mode == "portfolio" else run_event_study
-    result = await asyncio.to_thread(runner, panel, spec, progress_cb)
+    result = await asyncio.to_thread(
+        lambda: runner(panel, spec, progress_cb, holdout_unlocked=holdout_unlocked))
     # 에피소드에 등장한 코드만 종목명 조인 (경량 조회 — 프론트 에피소드 테이블용).
     codes = sorted({e["stock"] for e in result.get("episodes", [])})
     if codes:
@@ -61,7 +70,7 @@ async def _run(job: Job) -> None:
         result: dict | None = None
         status = "error"
         try:
-            result = await _run_backtest(job.spec, cb)
+            result = await _run_backtest(job.spec, job.strategy_id, cb)
             status = "done"
         except Exception as e:  # noqa: BLE001 — 사용자에게 error 상태로 전달
             logger.exception("backtest job %s failed", job.id)
