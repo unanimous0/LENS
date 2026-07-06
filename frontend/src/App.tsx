@@ -9,6 +9,7 @@ import { MarketPage } from './pages/market'
 import { LendingPage } from './pages/lending'
 import { StockArbitragePage } from './pages/stock-arbitrage'
 import { StockFlowPage } from './pages/stock-flow'
+import { BacktestPage } from './pages/backtest'
 import { EtfLayout } from './pages/etf-layout'
 import { EtfDashboardPage } from './pages/etf-dashboard'
 import { EtfArbitragePage } from './pages/etf-arbitrage'
@@ -54,7 +55,7 @@ function AppLayout() {
             <Route path="/dashboard" element={<DashboardPage />} />
             <Route path="/market" element={<MarketPage />} />
             <Route path="/lending" element={<LendingPage />} />
-            <Route path="/backtest" element={<StubPage label="백테스팅" />} />
+            <Route path="/backtest" element={<BacktestPage />} />
             <Route path="/signals" element={<StubPage label="시그널" />} />
             <Route path="/position" element={<StubPage label="포지션" />} />
             <Route path="/supply-demand" element={<StockFlowPage />} />

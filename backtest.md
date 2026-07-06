@@ -228,3 +228,114 @@ SQLite 테이블 (LENS 자체 DB 규약 — Finance_Data에 쓰기 금지):
   스냅샷 1회분 — look-ahead 원천 차단. actual + 공시 지연 상수만.
 - **손절/익절은 종가 판정 후 익일 체결** (2026-07-06): 장중 low 터치 손절은 LP_MM 부검의
   look-ahead 실패 지점 — 일봉 데이터로 장중 체결가를 아는 척하지 않는다.
+
+## 구현 노트 (C1 백엔드)
+
+> 2026-07-06 구현·검증 완료. **백엔드만** (프론트는 다음 단계). 아래가 실제 산출물 기준.
+
+### 패키지 구조 (실제)
+
+```
+backend/services/backtest/
+  __init__.py   # 패키지 개요
+  schema.py     # 전략 JSON pydantic v2 (Strategy/Group/Condition/ExitRule/…) + 1-depth 검증
+  adapters.py   # DataAdapter 프로토콜 + PriceAdapter/FlowAdapter (카탈로그 + build)
+  panel.py      # RawFetcher(연도청크·테이블별 세션) + 빌드·join·버전·캐시(lazy)
+  engine.py     # run_event_study (조건→onset→에피소드 시뮬→요약/경고)
+  jobs.py       # 메모리 job 레지스트리 + run 오케스트레이션 (동시 1개, asyncio.to_thread)
+backend/routers/backtest.py   # GET /catalog · POST /run · GET /jobs/{id}  (/api prefix)
+```
+- `store.py`(lens.db 전략 CRUD·실행 이력)는 **C2**라 미구현. `/run`은 job_id만 반환, 결과는 job 폴링.
+- main.py 라우터 목록에 `"backtest"` 추가 (기존 try/except import 관례). startup 부작용 없음(lazy).
+
+### 카탈로그 (42개 지표)
+
+- **price (20)**: `close` `mcap`(억) `adv_20d`(억) `ret_5d/20d/60d/120d`(%) `ma_20/60/120/200`(원)
+  `ma20/60/120/200_disp`(%, 종가/MA−1) `high_52w_disp`(%). MA·이격도는 완전창(min_periods=n)만 —
+  flow-detail의 NaN 오염 교훈.
+- **flow (22)**: 수치 16 (`f_5d/20d/60d/120d_bp` `i_20d/120d_bp` `f_5d/20d/60d/120d_eok`
+  `i_5d/20d/120d_eok` `r_5d_eok` `f_streak` `absorb_5d_pct`) + **태그 bool 10**
+  (`flow.tag.장기동시` 등, 내부 컬럼 `tag_*`). 태그·bp는 `flow_metrics._row_to_metrics` +
+  `flow_verdict.applicable_patterns` **정본 재호출** (flow_episodes와 동일 — 근사 프록시 미사용).
+- 조건 필드 키 형식: `price.ret_20d` / `flow.f_20d_bp` / `flow.tag.장기동시`. `ref`는 동일 키 공간.
+
+### 검증 결과 (backtest.md §10 C1 기준)
+
+1. **게이트 재현** — `{장기동시 is_true, fixed_holding 120, next_open, cost 0, universe default,
+   benchmark universe_avg}` 직접 실행: **평균 초과 +1.58%, t=2.37, n=7164** (전 구간 2022~2026).
+   flow_exit_backtest 장기동시 **E2(고정120) = +4.05%, t=3.06** (2년) 대비 **부호 일치·같은 한자릿수%
+   ·둘 다 유의** → 정합. 크기 차이는 방법론 차이(아래): 엔진은 canonical(부분창 min_periods=1,
+   유통시총 분모)라 flow_exit 프록시(완전창 min_periods=n, 시총 분모)보다 marginal onset이 많아
+   edge가 희석됨. 2년·완료건만으로 좁히면 ~0%로 더 벌어지나(2024 약세 레짐 비중↑), 기본 전 구간
+   헤드라인은 양수·유의.
+2. **look-ahead 스모크** — 같은 전략 onset을 하루 미래로 shift(−1): **+1.58%→+3.81%, t 2.37→5.61**로
+   유의하게 커짐 → 엔진이 미래 정보를 안 쓴다는 방증(정상).
+3. **조건 트리** — `동시 AND (flow.f_5d_eok ≥ price.adv_20d×0.3 OR flow.f_20d_bp ≥ 15)` (ref/mult +
+   any/all 중첩) 정상 실행 (n=6001). `ref×mult` 지표 간 비교·1-depth 중첩 동작 확인.
+4. **whichever-first + 청산 분해** — fixed120/stop−15%/take+30%/condition(동반순매도) 4규칙:
+   분해 `{stop 3254, take 1850, condition 1518, fixed 357, ongoing 185}` **합계 7164 == 에피소드 수**.
+   평균 보유 32.8일(고정만일 때 102일보다 짧음 — 조기 청산 정상).
+5. **라이브 uvicorn(8100)** — catalog→run→jobs 폴링 E2E 성공. pickle 캐시 히트로 job <3초 완료,
+   결과 파이썬 직접 실행과 동일(n=7164, +1.58%, t=2.37). 422 검증: portfolio.mode 오값·미지 지표
+   모두 필드 단위 메시지 반환.
+6. `python3 -c "import main"` (cd backend) 통과.
+
+### 성능 (실측)
+
+- **콜드 패널 빌드**: 벽시계 ~100초 (조회 ~40s + compute ~62s). 2,727,876 rows × 2,719 종목,
+  전 구간 2022-01-03~2026-07-03. 캐시 pickle **458 MB**(float32).
+- **웜 ensure**(메모리 히트): ~0.17초. pickle 로드(콜드 프로세스): ~3초.
+- **전략 1회 실행**(패널 캐시 히트): 이벤트 스터디 **~1.8초** (목표 <3초 충족).
+
+### 설계와 달라진 점
+
+- **캐시 포맷 = pickle** (parquet 아님): 환경에 pyarrow/fastparquet **미설치** (requirements에도 없음,
+  내부망 오프라인 배포 고려해 신규 무거운 의존성 추가 지양). `data/backtest_panel/panel.pkl` 단일
+  파일 + 버전 메타 임베드. 버전 불일치 시 재빌드. (parquet 엔진 도입 시 손쉽게 교체 가능.)
+- **네임스페이스 분리 parquet(price/flow 각각) → 단일 panel.pkl**: join 결과를 한 벌로 캐시
+  (버전 키에 두 어댑터 버전 모두 포함). 부분 stale 재활용 이득보다 단순성 우선.
+- **float32 다운캐스트**: 지표·가격 컬럼 float64→float32 (메모리·디스크 절반, 829→458 MB). 수익률은
+  비율이라 정밀도 충분. 벤치마크 로그 누적만 engine에서 float64로 승격. 게이트 수치 불변 확인.
+- **flow 롤링 min_periods=1**: 정본(runtime `/ranking`·flow_episodes)과 바이트 일치를 위해 부분창 허용.
+  게이트 스크립트(flow_tag/flow_exit)의 완전창(min_periods=n)과 다르며, 위 §검증1의 크기 차 원인.
+  정본 재사용이 규약이므로 게이트에 맞추지 않았다.
+- **store.py/lens.db·strategies·runs API 미포함**: C2 범위(§6). C1은 catalog/run/jobs만.
+- **RawFetcher 연도 청크**: investor_trading/ohlcv/market_cap이 TimescaleDB 하이퍼테이블(236 주간 청크)
+  이라 전 구간 단일 트랜잭션 조회 시 out of shared memory. 연도별 별도 세션으로 청크 락을 사이사이
+  해제(flow_episodes 주석 계승).
+
+## 구현 노트 (C1 프론트엔드)
+
+> 2026-07-06 구현·검증(tsc/lint 0, 라이브 E2E). `/backtest` StubPage → 실제 페이지 교체.
+
+### 컴포넌트 구조
+
+```
+frontend/src/pages/backtest.tsx        # 페이지: catalog fetch → 좌 빌더/우 결과 2-분할.
+                                        #   run→job 폴링(1초·progress·%바), 422 필드에러/클라 검증 분리.
+frontend/src/components/backtest/
+  types.ts          # API 계약 타입 (Catalog/Strategy/BacktestResult/JobStatus/FieldError) + REASON_LABEL
+  format.ts         # signCls/fmtPct/fmtSigned/fmtEok (컴포넌트 아님 — fast-refresh 격리)
+  ui.tsx            # Tip(hover 툴팁)·Select·NumberInput·Field·SectionTitle
+  catalog.ts        # CatalogIndex(byNs/byKey/numeric) + EditCond ↔ Condition 변환(toCondition/fromCondition)
+  condition-row.tsx # ConditionRow([ns▾][지표▾][연산▾][값|ref×mult] Tip) + ConditionList(추가/삭제)
+  builder-state.ts  # BuilderState + defaultState/serialize(클라 검증) + PRESETS
+  strategy-builder.tsx # 좌 패널: 유니버스/진입(AND+OR 토글)/체결·비용(same_close 주황경고)/청산(체크박스)/기간·벤치마크/[실행][초기화]
+  histogram.tsx     # 초과수익 분포 인라인 SVG (31 bin·1·99분위 클립·0 기준선·양초록/음빨강)
+  result-view.tsx   # 우 패널: 메타줄/경고배지/스탯스트립/히스토그램/청산사유분해/연·월테이블/에피소드테이블(정렬·더보기)/방법론각주
+```
+
+### 설계 결정
+
+- **진입 트리 = 기본 AND 리스트 + OR 그룹 1개 토글**(스키마 1-depth 중첩 대응). serialize:
+  `andLeaves`만 → `{all:[...]}`, OR도 있으면 `{all:[...and, {any:[...or]}]}`, and 없이 or만 → `{any:[...]}`.
+- **손절/익절 입력은 양수 크기**, 전송 시 stop=`-abs`, take=`+abs`(스키마 부호 규칙). 고정보유일 기본 ON·120.
+- **`ref×mult` 지표 간 비교**는 행의 [값/지표] 토글 버튼으로. bool 지표(tag)는 is_true/is_false만·값 숨김.
+- **프리셋 2개**(검증 조합만): "장기동시·120일 보유"(게이트 재현 헤드라인), "정석·손절15·익절30". 빈 결과 화면에서 클릭 시 빌더 채움.
+- **재계산 금지 준수**: 히스토그램 binning·사유별 평균초과는 반환된 에피소드 배열의 **표시용 집계**일 뿐 지표를 다시 계산하지 않음(edge/t/수익은 백엔드 값 그대로).
+
+### 백엔드 소규모 추가
+
+- `panel.fetch_stock_names(codes)` + `jobs._run_backtest`가 **에피소드 등장 코드만** 종목명 조인 →
+  `result.meta.stock_names`(code→name). 패널 pickle(458MB) 불변·경량 단일 SELECT. 에피소드 테이블
+  종목명 표시용(없으면 코드만). 라이브 확인: 정석 전략 n=7817, stock_names 1566개, 000050→경방.
