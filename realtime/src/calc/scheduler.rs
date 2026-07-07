@@ -31,6 +31,7 @@ use crate::model::lp::{
 use crate::model::message::WsMessage;
 
 use super::book_risk::{compute_book_risk, RiskParamsCache};
+use super::hedge_ticket::compute_hedge_tickets;
 use super::quote_board::{
     compute_fv_futures, compute_quote_row, FvFutures, IndexFuturesState, QuoteParams,
     QuoteUniverseEtf,
@@ -246,11 +247,29 @@ impl MatrixState {
         }
         drop(universe);
 
-        // ─── Book risk ──────────────────────────────────────────────────
+        // ─── Book risk + 헤지 티켓 (§13.3-B) ────────────────────────────
         let risk = self.risk_cache.get().await;
         let book = self.book.read().await.clone();
-        let book_risk_snap =
+        let mut book_risk_snap =
             compute_book_risk(&book, &prices_snapshot, risk.as_deref(), &now_iso);
+        // 헤지 티켓 — 가족별 순 델타를 지수선물로 0 만드는 상시 계약. ETF 현재가는 etf_prices
+        // (나이 無) 스냅샷, 기존 지수선물 델타는 idx_snapshot 가격으로 valuation.
+        let etf_prices_snapshot: HashMap<String, f64> = self
+            .etf_prices
+            .iter()
+            .map(|r| (r.key().clone(), *r.value()))
+            .collect();
+        let universe = self.quote_universe.read().await;
+        book_risk_snap.hedge_tickets = compute_hedge_tickets(
+            &book,
+            &prices_snapshot,
+            &etf_prices_snapshot,
+            risk.as_deref(),
+            &universe,
+            &idx_snapshot,
+            now_ms,
+        );
+        drop(universe);
         if tx.try_send(WsMessage::BookRisk(book_risk_snap)).is_err() {
             MATRIX_TX_DROPPED.fetch_add(1, Ordering::Relaxed);
         }

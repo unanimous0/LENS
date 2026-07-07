@@ -139,6 +139,7 @@ pub fn compute_book_risk(
             top_residual_contributors: Vec::new(),
             pnl_today: None,
             unmapped_positions: unmapped,
+            hedge_tickets: Vec::new(),
             timestamp: now_iso.to_string(),
         };
     };
@@ -198,6 +199,7 @@ pub fn compute_book_risk(
         top_residual_contributors: contribs,
         pnl_today: None,
         unmapped_positions: unmapped,
+        hedge_tickets: Vec::new(),
         timestamp: now_iso.to_string(),
     }
 }

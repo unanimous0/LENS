@@ -84,6 +84,14 @@ pub struct QuoteParams {
     #[serde(default)]
     pub inventory_limit_overrides: HashMap<String, f64>,
     pub max_futures_contracts: i64,
+    /// 베이시스 실행 라우터(§13.4) 임계 (bp). |excess_basis| 가 이 이상이면 선물 대체.
+    /// 구버전 backend 대비 default.
+    #[serde(default = "default_basis_threshold_bp")]
+    pub basis_threshold_bp: f64,
+}
+
+fn default_basis_threshold_bp() -> f64 {
+    5.0
 }
 
 impl Default for QuoteParams {
@@ -96,6 +104,7 @@ impl Default for QuoteParams {
             per_etf_inventory_limit_krw: 1_000_000_000.0,
             inventory_limit_overrides: HashMap::new(),
             max_futures_contracts: 100,
+            basis_threshold_bp: 5.0,
         }
     }
 }

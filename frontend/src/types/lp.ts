@@ -50,6 +50,35 @@ export interface PnLBreakdown {
   basis: number
 }
 
+// ---- 헤지 티켓 (§13.3-B) — realtime/src/model/lp.rs HedgeTicket 과 1:1 ----
+
+export interface HedgeLeg {
+  /** 실제 front-month 지수선물 코드 (A+8자리). */
+  code: string
+  /** 표시용 이름 ("KOSPI200 선물" / "KOSPI200 미니선물" / "KOSDAQ150 선물"). */
+  name: string
+  side: 'buy' | 'sell'
+  /** 계약 수 (양수). */
+  contracts: number
+}
+
+export interface HedgeTicket {
+  family: string // "k200" | "kq150"
+  /** ETF·현물 재고에서 나온 가족 델타 (원). */
+  net_delta_krw: number
+  /** 기존 지수선물이 이미 제공하는 델타 (원, 부호 有). */
+  existing_futures_delta_krw: number
+  /** 티켓 전 총 잔여 델타 = net + existing. */
+  residual_delta_krw: number
+  /** 잔여를 상쇄하는 계약 지시. 비어 있으면 "헤지 불필요". */
+  ticket: HedgeLeg[]
+  /** 티켓 후 남는 델타 (원, 미니 라운딩 잔차). */
+  rounding_residual_krw: number
+  futures_price_age_ms: number
+  usable: boolean
+  reason: string
+}
+
 export interface BookRiskSnapshot {
   beta_adj_delta_krw: number
   gross_delta_krw: number
@@ -59,7 +88,38 @@ export interface BookRiskSnapshot {
   top_residual_contributors: Array<[string, number]>
   pnl_today: PnLBreakdown | null
   unmapped_positions: Array<[string, number]>
+  /** 가족별 헤지 티켓 (§13.3-B). */
+  hedge_tickets: HedgeTicket[]
   timestamp: string
+}
+
+// ---- 베이시스 실행 라우터 (§13.4) — realtime/src/calc/basis_route.rs 와 1:1 ----
+
+export interface BasisFuturesInfo {
+  code: string
+  name: string
+  price: number
+  expiry: string // YYYYMMDD
+  days_left: number
+  multiplier: number
+}
+
+export interface BasisRouteResponse {
+  code: string
+  input_code: string
+  side: string
+  qty: number
+  spot_price: number
+  futures: BasisFuturesInfo | null
+  basis_now: number
+  basis_theory: number
+  excess_basis: number
+  excess_bp: number
+  verdict: 'futures' | 'spot' | 'no_futures' | 'stale' | 'no_data'
+  verdict_reason: string
+  qty_futures_contracts: number
+  qty_futures_residual_shares: number
+  inputs_age_ms: number
 }
 
 export interface LpCostInputs {
@@ -102,6 +162,8 @@ export interface LedgerAggregate {
   fills_qty_today: number
   net_qty: number
   avg_price: number | null
+  /** 주식선물 → 기초 종목 6자리 (베이시스 페어 태그용). 그 외 null/미제공. */
+  base_code?: string | null
 }
 
 export interface LedgerSnapshot {
@@ -185,6 +247,8 @@ export interface QuoteParams {
   per_etf_inventory_limit_krw: number
   inventory_limit_overrides: Record<string, number>
   max_futures_contracts: number
+  /** 베이시스 라우터(§13.4) 선물 대체 임계 (bp). */
+  basis_threshold_bp: number
 }
 
 export const DEFAULT_QUOTE_PARAMS: QuoteParams = {
@@ -195,6 +259,7 @@ export const DEFAULT_QUOTE_PARAMS: QuoteParams = {
   per_etf_inventory_limit_krw: 1_000_000_000,
   inventory_limit_overrides: {},
   max_futures_contracts: 100,
+  basis_threshold_bp: 5,
 }
 
 /** matrix-config quote_universe 항목 — 모드 뱃지(배수/β)·override 편집용 메타. QuoteRow엔 없는 정적 입력. */

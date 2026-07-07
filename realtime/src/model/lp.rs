@@ -180,6 +180,48 @@ pub struct QuoteBoardSnapshot {
     pub timestamp: String,
 }
 
+// =============================================================================
+// 헤지 티켓 (§13.3-B) — 북 순 델타를 지수선물로 0 만드는 상시 티켓
+// =============================================================================
+
+/// 헤지 티켓 leg 1건 — 지수선물 한 계약 종류의 매매 지시.
+#[derive(Debug, Clone, Serialize)]
+pub struct HedgeLeg {
+    /// 실제 front-month 지수선물 코드 (A + 8자리). 원장 기장/주문에 그대로 사용.
+    pub code: String,
+    /// 표시용 이름 ("KOSPI200 선물" / "KOSPI200 미니선물" / "KOSDAQ150 선물").
+    pub name: String,
+    /// "buy" | "sell".
+    pub side: String,
+    /// 계약 수 (양수). 부호는 side로.
+    pub contracts: i64,
+}
+
+/// 한 지수 가족의 헤지 티켓 (§13.3-B). 개별 체결별이 아니라 **북 단위 상시 티켓** —
+/// 반대 재고가 있으면 residual이 작아져 자연히 "헤지 불필요"(넷팅)가 된다.
+#[derive(Debug, Clone, Serialize)]
+pub struct HedgeTicket {
+    /// "k200" | "kq150".
+    pub family: String,
+    /// ETF·현물 재고에서 나온 가족 델타 (원). 지수형 ETF는 노출×L, 섹터형·현물은 노출×β.
+    pub net_delta_krw: f64,
+    /// 원장의 기존 지수선물 포지션이 이미 제공하는 델타 (원, 부호 有 — 숏이면 음수).
+    pub existing_futures_delta_krw: f64,
+    /// 티켓 실행 전 총 잔여 델타 (원) = net_delta + existing_futures (부호 有).
+    /// 반대 재고/기존 선물이 넷팅하면 0에 가까워진다.
+    pub residual_delta_krw: f64,
+    /// 잔여 델타를 상쇄하는 계약 지시. 비어 있으면 "헤지 불필요" (넷팅/라운딩 내).
+    pub ticket: Vec<HedgeLeg>,
+    /// 티켓 실행 후 남는 델타 (원, 부호 有). 미니 라운딩 잔차 — 본계약+미니로 못 잡는 KRW.
+    pub rounding_residual_krw: f64,
+    /// 티켓에 쓰인 지수선물 시세 나이 (ms). stale 판정 입력.
+    pub futures_price_age_ms: u32,
+    /// 티켓 산출 가능 여부 — 지수선물 미수신/stale이면 false.
+    pub usable: bool,
+    /// usable=false 사유 (빈 문자열이면 usable).
+    pub reason: String,
+}
+
 /// 북 단위 리스크 스냅샷 — #2 베타조정 델타 + #3 잔차위험.
 /// #1 자체 기준가는 매트릭스 셀에서 자연스럽게 보이므로 여기 두지 않음.
 /// #4 손익 분해는 `pnl_today: None` 스텁 (TODO 빈 박스).
@@ -203,5 +245,8 @@ pub struct BookRiskSnapshot {
     /// 첫 빌드에서 주식선물/지수선물 포지션이 여기로 들어감. 다음 빌드에 base_stock 매핑으로 환산.
     /// (code, qty) — qty는 부호 있음.
     pub unmapped_positions: Vec<(String, i64)>,
+    /// 가족별 헤지 티켓 (§13.3-B). compute_book_risk는 빈 Vec, scheduler가 채움.
+    #[serde(default)]
+    pub hedge_tickets: Vec<HedgeTicket>,
     pub timestamp: String,
 }

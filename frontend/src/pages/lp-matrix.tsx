@@ -1,6 +1,8 @@
 import { useLpInit } from '@/hooks/useLpInit'
 import { BookFourNumbers } from '@/components/lp/BookFourNumbers'
 import { QuoteBoard } from '@/components/lp/QuoteBoard'
+import { HedgeTicketPanel } from '@/components/lp/HedgeTicketPanel'
+import { BasisRouterPanel } from '@/components/lp/BasisRouterPanel'
 import { FairValueMatrix } from '@/components/lp/FairValueMatrix'
 import { LedgerBoard } from '@/components/lp/LedgerBoard'
 import { CostInputsPanel } from '@/components/lp/CostInputsPanel'
@@ -25,6 +27,11 @@ export function LpMatrixPage() {
     <div className="flex flex-col gap-1 p-1">
       <BookFourNumbers />
       <QuoteBoard />
+      {/* ③ 헤지 티켓(§13.3-B) + 베이시스 라우터(§13.4) — QuoteBoard 아래·원장 위 한 행 */}
+      <div className="grid grid-cols-2 gap-1">
+        <HedgeTicketPanel />
+        <BasisRouterPanel />
+      </div>
       <LedgerBoard />
       <FairValueMatrix />
       <div className="grid grid-cols-2 gap-1">

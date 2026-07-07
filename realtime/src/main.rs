@@ -153,6 +153,8 @@ pub struct AppState {
     /// POST /permanent-stocks가 set 전체를 replace. diff로 SubscribeStocks/UnsubscribeStocks 발사.
     /// 페이지 mount/unmount와 무관하게 ref-count 영구 +1 효과.
     pub permanent_codes: Arc<StdRwLock<std::collections::HashSet<String>>>,
+    /// LP 매트릭스 상태 — 베이시스 라우터(§13.4) HTTP 핸들러가 실시간 가격/cost/quote-params 조회.
+    pub matrix_state: Arc<MatrixState>,
 }
 
 /// Bridge에서 EtfTick의 0/None 필드를 이전 캐시값으로 메우기 위한 stash.
@@ -448,6 +450,7 @@ async fn main() {
         client_subs: Arc::new(DashMap::new()),
         client_subs_inav: Arc::new(DashMap::new()),
         permanent_codes: Arc::new(StdRwLock::new(std::collections::HashSet::new())),
+        matrix_state: matrix_state.clone(),
     };
 
     // Startup polling — realtime 단독 재시작 시 backend의 active 포지션 leg를
@@ -542,6 +545,7 @@ async fn main() {
         .route("/orderbook/unsubscribe", post(unsubscribe_orderbook))
         .route("/debug/stats", get(debug_stats))
         .route("/intraday/today", get(intraday_today))
+        .route("/basis-route", get(basis_route))
         .with_state(state.clone())
         .layer(cors);
 
@@ -1370,6 +1374,60 @@ async fn unsubscribe_orderbook(State(state): State<AppState>) -> Json<serde_json
         .unwrap()
         .send(SubCommand::UnsubscribeOrderbook);
     Json(serde_json::json!({"status": "ok"}))
+}
+
+#[derive(serde::Deserialize)]
+struct BasisRouteQuery {
+    /// 자유 형식 종목코드 (6자리 / A+6 / KR7 ISIN).
+    code: String,
+    /// "buy" | "sell".
+    side: String,
+    /// 주문 수량 (주).
+    qty: i64,
+}
+
+/// 베이시스 실행 라우터 (§13.4) — 주문 leg에 대해 현물 vs 주식선물 대체 판정.
+/// 실시간 현물·주식선물가는 MatrixState.prices tick 캐시에서 조회, 이론 베이시스는
+/// cost-inputs 금리 × 잔존일. 판정 로직은 calc::basis_route::decide_basis (순수·단위테스트).
+async fn basis_route(
+    State(state): State<AppState>,
+    Query(q): Query<BasisRouteQuery>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    use calc::basis_route::{decide_basis, lookup_stock_future, normalize_base};
+
+    if q.qty <= 0 {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"detail": "qty must be > 0"})),
+        ));
+    }
+    let base = normalize_base(&q.code);
+    let now_ms = now_us() / 1000;
+    let ms = &state.matrix_state;
+
+    // tick 캐시(주식/주식선물)에서 (price, age_ms) 조회.
+    let price_of = |key: &str| -> Option<(f64, u32)> {
+        ms.prices.get(key).map(|p| {
+            let age = now_ms.saturating_sub(p.updated_at_ms).min(u32::MAX as u64) as u32;
+            (p.price, age)
+        })
+    };
+    // 현물: 6자리(LS) / A+6(내부망) 키 변형 시도. 없으면 no_data (비 PDF·미구독 종목).
+    let spot = price_of(&base).or_else(|| price_of(&format!("A{base}")));
+
+    let sf = lookup_stock_future(&base);
+    let fut_price = sf.as_ref().and_then(|s| price_of(&s.front_code));
+
+    let base_rate = ms.cost.read().await.base_rate_annual;
+    let threshold = ms.quote_params.read().await.basis_threshold_bp;
+    let today = chrono::Local::now().date_naive();
+
+    let resp = decide_basis(
+        &q.code, &base, &q.side, q.qty,
+        spot, sf.as_ref(), fut_price,
+        base_rate, threshold, today,
+    );
+    Ok(Json(serde_json::to_value(&resp).unwrap_or_default()))
 }
 
 /// 틱 처리 파이프라인 성능 카운터. 9번(Arc<str> 인터닝 / struct deserialize)

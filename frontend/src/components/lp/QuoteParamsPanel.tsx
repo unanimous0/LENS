@@ -86,6 +86,12 @@ export function QuoteParamsPanel() {
           integer
           onChange={(v) => update({ max_futures_contracts: v })}
         />
+        <NumField
+          label="베이시스 임계 (bp, §13.4)"
+          value={params.basis_threshold_bp}
+          step={0.5}
+          onChange={(v) => update({ basis_threshold_bp: v })}
+        />
       </div>
 
       {codes.length > 0 && (

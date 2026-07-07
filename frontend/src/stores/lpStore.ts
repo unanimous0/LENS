@@ -26,6 +26,17 @@ export interface CorporateActionToday {
   description: string | null
 }
 
+/** 원장 입력 폼 프리필 요청 (헤지 티켓·베이시스 라우터 → LedgerBoard EntryForm). */
+export interface LedgerPrefill {
+  code: string
+  side: 'buy' | 'sell'
+  qty: number
+  price?: number | null
+  note?: string | null
+  /** 매 클릭마다 증가 — 같은 값 재클릭도 EntryForm이 감지하도록. */
+  nonce: number
+}
+
 interface LpState {
   matrix: FairValueMatrixSnapshot | null
   bookRisk: BookRiskSnapshot | null
@@ -44,6 +55,8 @@ interface LpState {
   quoteParams: QuoteParams
   /** matrix-config quote_universe: code → 배수/β/family 메타 (모드 뱃지·override 편집용). */
   quoteUniverse: Record<string, QuoteUniverseMeta>
+  /** 원장 입력 폼 프리필 (헤지 티켓·베이시스 라우터 기장 바로가기). */
+  ledgerPrefill: LedgerPrefill | null
   setMatrix: (m: FairValueMatrixSnapshot) => void
   setBookRisk: (b: BookRiskSnapshot) => void
   setPositions: (p: Record<string, number>, updatedAt?: string | null) => void
@@ -53,6 +66,8 @@ interface LpState {
   setQuoteBoard: (b: QuoteBoardSnapshot) => void
   setQuoteParams: (p: QuoteParams) => void
   setQuoteUniverse: (u: Record<string, QuoteUniverseMeta>) => void
+  /** 프리필 요청 — nonce 자동 증가. code/side/qty(+선택 price/note). */
+  requestLedgerPrefill: (p: Omit<LedgerPrefill, 'nonce'>) => void
 }
 
 export const useLpStore = create<LpState>((set) => ({
@@ -68,6 +83,7 @@ export const useLpStore = create<LpState>((set) => ({
   quoteBoard: null,
   quoteParams: DEFAULT_QUOTE_PARAMS,
   quoteUniverse: {},
+  ledgerPrefill: null,
   setMatrix: (m) => set({ matrix: m }),
   setBookRisk: (b) => set({ bookRisk: b }),
   setPositions: (p, updatedAt) =>
@@ -83,4 +99,8 @@ export const useLpStore = create<LpState>((set) => ({
   setQuoteBoard: (b) => set({ quoteBoard: b }),
   setQuoteParams: (p) => set({ quoteParams: p }),
   setQuoteUniverse: (u) => set({ quoteUniverse: u }),
+  requestLedgerPrefill: (p) =>
+    set((s) => ({
+      ledgerPrefill: { ...p, nonce: (s.ledgerPrefill?.nonce ?? 0) + 1 },
+    })),
 }))

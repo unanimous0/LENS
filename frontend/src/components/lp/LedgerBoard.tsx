@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useLpStore } from '@/stores/lpStore'
 import { useMarketStore } from '@/stores/marketStore'
 import { LEDGER_GROUPS, type LedgerAggregate, type LedgerInstrument } from '@/types/lp'
@@ -14,6 +14,26 @@ import { LEDGER_GROUPS, type LedgerAggregate, type LedgerInstrument } from '@/ty
 const fmtQty = (n: number) => n.toLocaleString('ko-KR')
 const fmtPx = (n: number | null) =>
   n == null ? '-' : n.toLocaleString('ko-KR', { maximumFractionDigits: 2 })
+
+/**
+ * 지수선물 거래승수 (원/지수포인트) — prefix(A+2자리)별.
+ * KRX 계약명세·ls_api_full.md t8455 tradeunit 실측과 동일:
+ * A01=KOSPI200F 250,000 / A05=미니K200F 50,000 / A06=KOSDAQ150F 10,000.
+ * Rust hedge_ticket.rs MULT_* 상수와 1:1 — 변경 시 양쪽 동기화.
+ * 미상 prefix는 1 (포인트 그대로 — instrument override로 index_fut 분류된 예외 케이스).
+ */
+const INDEX_FUT_MULT: Record<string, number> = { '01': 250_000, '05': 50_000, '06': 10_000 }
+const indexFutMultiplier = (code: string): number => INDEX_FUT_MULT[code.slice(1, 3)] ?? 1
+
+/** 평가 노출 (원). 지수선물 = 계약수 × 지수포인트 × 승수, 그 외 = 수량 × 가격. */
+const exposureOf = (a: LedgerAggregate, price: number): number =>
+  a.instrument === 'index_fut'
+    ? a.net_qty * price * indexFutMultiplier(a.code)
+    : a.net_qty * price
+
+/** 수량 단위 라벨 — 원장은 지수선물=계약수, 주식선물=주수(계약×승수) 혼용이라 명시 표기. */
+const qtyUnit = (instrument: LedgerInstrument): string =>
+  instrument === 'index_fut' ? '계약' : instrument === 'stock_fut' ? '주' : ''
 
 function fmtNotional(n: number): string {
   const abs = Math.abs(n)
@@ -40,15 +60,18 @@ export function LedgerBoard() {
   const stockTicks = useMarketStore((s) => s.stockTicks)
   const etfTicks = useMarketStore((s) => s.etfTicks)
   const futuresTicks = useMarketStore((s) => s.futuresTicks)
+  const indexFuturesTicks = useMarketStore((s) => s.indexFuturesTicks)
 
   const priceOf = (code: string, instrument: LedgerInstrument): number => {
     if (instrument === 'etf') return etfTicks[code]?.price || 0
     if (instrument === 'stock') return stockTicks[code]?.price || 0
-    // index_fut / stock_fut
+    // 지수선물은 별도 스트림(index_futures_tick → indexFuturesTicks). futuresTicks 폴백.
+    if (instrument === 'index_fut')
+      return indexFuturesTicks[code]?.price || futuresTicks[code]?.price || 0
     return futuresTicks[code]?.price || 0
   }
 
-  // 자산유형별 그룹 + 노출 합계
+  // 자산유형별 그룹 + 노출 합계 + 베이시스 페어 태그
   const grouped = useMemo(() => {
     const byInst: Record<string, LedgerAggregate[]> = {}
     for (const a of aggregates) (byInst[a.instrument] ??= []).push(a)
@@ -57,15 +80,28 @@ export function LedgerBoard() {
     for (const a of aggregates) {
       const p = priceOf(a.code, a.instrument)
       if (p > 0) {
-        const exp = a.net_qty * p
+        // 지수선물은 계약수 × 포인트 × 승수 (M3 — 승수 미반영 시 노출 왜곡).
+        const exp = exposureOf(a, p)
         if (exp > 0) longExp += exp
         else shortExp += exp
       }
     }
-    return { byInst, longExp, shortExp }
+    // 현물 롱/숏 부호 맵 (base 6자리) → 반대 부호의 주식선물이 있으면 베이시스 페어.
+    const stockSign: Record<string, number> = {}
+    for (const a of aggregates)
+      if (a.instrument === 'stock' && a.net_qty !== 0)
+        stockSign[a.code] = Math.sign(a.net_qty)
+    const basisPaired = new Set<string>()
+    for (const a of aggregates) {
+      if (a.instrument === 'stock_fut' && a.base_code && a.net_qty !== 0) {
+        const s = stockSign[a.base_code]
+        if (s && s === -Math.sign(a.net_qty)) basisPaired.add(a.code)
+      }
+    }
+    return { byInst, longExp, shortExp, basisPaired }
     // priceOf는 tick 참조 — ticks 변경 시 재계산 필요
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [aggregates, stockTicks, etfTicks, futuresTicks])
+  }, [aggregates, stockTicks, etfTicks, futuresTicks, indexFuturesTicks])
 
   return (
     <div className="flex flex-col gap-1">
@@ -116,6 +152,7 @@ export function LedgerBoard() {
                   label={g.label}
                   rows={rows}
                   priceOf={priceOf}
+                  basisPaired={grouped.basisPaired}
                   onDelete={refreshLedger}
                 />
               )
@@ -156,11 +193,13 @@ function GroupSection({
   label,
   rows,
   priceOf,
+  basisPaired,
   onDelete,
 }: {
   label: string
   rows: LedgerAggregate[]
   priceOf: (code: string, instrument: LedgerInstrument) => number
+  basisPaired: Set<string>
   onDelete: () => void
 }) {
   const del = async (agg: LedgerAggregate) => {
@@ -181,7 +220,8 @@ function GroupSection({
       </tr>
       {rows.map((a) => {
         const p = priceOf(a.code, a.instrument)
-        const exp = a.net_qty * p
+        const exp = exposureOf(a, p)
+        const unit = qtyUnit(a.instrument)
         const qtyColor = (q: number) =>
           q > 0 ? '' : q < 0 ? 'var(--color-down)' : 'var(--color-t4)'
         return (
@@ -189,6 +229,14 @@ function GroupSection({
             <td className="py-1 text-t2">
               <span className="text-t1">{a.code}</span>
               {a.name && <span className="text-t4 ml-1 text-[10px]">{a.name}</span>}
+              {basisPaired.has(a.code) && (
+                <span
+                  className="ml-1.5 px-1 py-0.5 text-[9px] rounded-sm bg-blue/15 text-blue align-middle"
+                  title="현물 반대 포지션과 종목 베이시스 페어 (상세 원장은 Phase 4)"
+                >
+                  베이시스
+                </span>
+              )}
             </td>
             <td className="py-1 text-right text-t3">{fmtQty(a.carryover_qty)}</td>
             <td className="py-1 text-right" style={{ color: qtyColor(a.fills_qty_today) }}>
@@ -196,6 +244,7 @@ function GroupSection({
             </td>
             <td className="py-1 text-right font-medium" style={{ color: qtyColor(a.net_qty) }}>
               {fmtQty(a.net_qty)}
+              {unit && <span className="text-t4 text-[9px] ml-0.5">{unit}</span>}
             </td>
             <td className="py-1 text-right text-t3">{fmtPx(a.avg_price)}</td>
             <td className="py-1 text-right text-t3">{p > 0 ? p.toLocaleString('ko-KR') : '-'}</td>
@@ -227,6 +276,21 @@ function EntryForm() {
   const [note, setNote] = useState('')
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
+
+  // 헤지 티켓·베이시스 라우터 "기장 바로가기" → 폼 프리필 (nonce 변화 감지).
+  const prefill = useLpStore((s) => s.ledgerPrefill)
+  useEffect(() => {
+    if (!prefill) return
+    setCode(prefill.code)
+    setSide(prefill.side)
+    setKind('fill')
+    setQty(String(prefill.qty))
+    setPrice(prefill.price != null ? String(prefill.price) : '')
+    setNote(prefill.note ?? '')
+    setErr('')
+    // nonce만 의존 — 같은 값 재클릭도 반영.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [prefill?.nonce])
 
   const submit = async () => {
     const c = code.trim()

@@ -44,9 +44,10 @@ FUTURES_MASTER_PATH = DATA_DIR / "futures_master.json"
 # 지수선물 상품 프리픽스 (A + 2자리): KOSPI200=01, 미니K200=05, KOSDAQ150=06.
 INDEX_FUT_PREFIXES = {"01", "05", "06"}
 
-# 선물 마스터 캐시 (front/back 8자리 코드 set + code→name). mtime 기준 갱신.
+# 선물 마스터 캐시 (front/back 8자리 코드 set + code→name + code→base). mtime 기준 갱신.
 _fut_codes_cache: set[str] = set()
 _fut_names_cache: dict[str, str] = {}
+_fut_to_base_cache: dict[str, str] = {}
 _fut_master_mtime: float = 0.0
 
 # 첫 빌드 ETF 2개 (6자리 정규화 코드)
@@ -104,6 +105,7 @@ DEFAULT_QUOTE_PARAMS = {
     "per_etf_inventory_limit_krw": 1_000_000_000.0,  # ETF별 재고 한도 (기본 10억)
     "inventory_limit_overrides": {},  # {code: krw} ETF별 override
     "max_futures_contracts": 100,   # 선물 헤지 여력 (계약)
+    "basis_threshold_bp": 5.0,      # 베이시스 라우터(§13.4) 선물 대체 임계 (bp)
 }
 
 
@@ -121,6 +123,9 @@ class QuoteParams(BaseModel):
         default_factory=dict, description="{code: krw} ETF별 한도 override (음수 거부)"
     )
     max_futures_contracts: int = Field(100, ge=0, description="선물 헤지 여력 (계약)")
+    basis_threshold_bp: float = Field(
+        5.0, ge=0, description="베이시스 라우터(§13.4) 선물 대체 임계 (bp)"
+    )
 
     @field_validator("inventory_limit_overrides")
     @classmethod
@@ -167,7 +172,7 @@ def _write_json(path: Path, data: dict) -> None:
 
 def _load_futures_master() -> None:
     """futures_master.json (273종목 × front/back) → 코드 set + code→name 캐시. mtime 갱신."""
-    global _fut_codes_cache, _fut_names_cache, _fut_master_mtime
+    global _fut_codes_cache, _fut_names_cache, _fut_to_base_cache, _fut_master_mtime
     try:
         mtime = FUTURES_MASTER_PATH.stat().st_mtime
     except OSError:
@@ -176,10 +181,12 @@ def _load_futures_master() -> None:
         return
     codes: set[str] = set()
     names: dict[str, str] = {}
+    to_base: dict[str, str] = {}
     try:
         with FUTURES_MASTER_PATH.open() as f:
             data = json.load(f)
         for item in data.get("items", []):
+            base = str(item.get("base_code") or "").strip()
             for leg in ("front", "back"):
                 node = item.get(leg) or {}
                 c = node.get("code")
@@ -188,10 +195,13 @@ def _load_futures_master() -> None:
                     codes.add(c)
                     if node.get("name"):
                         names[c] = str(node["name"]).strip()
+                    if base:
+                        to_base[c] = base
     except Exception:
         return
     _fut_codes_cache = codes
     _fut_names_cache = names
+    _fut_to_base_cache = to_base
     _fut_master_mtime = mtime
 
 
@@ -256,6 +266,14 @@ def _name_for(code: str, instrument: str) -> Optional[str]:
     if instrument in ("stock_fut", "index_fut"):
         _load_futures_master()
         return _fut_names_cache.get(code)
+    return None
+
+
+def _base_for(code: str, instrument: str) -> Optional[str]:
+    """주식선물 코드 → 기초 종목 6자리 (베이시스 페어 태그용). 그 외 None."""
+    if instrument == "stock_fut":
+        _load_futures_master()
+        return _fut_to_base_cache.get(str(code).strip().upper())
     return None
 
 
@@ -476,6 +494,8 @@ async def get_ledger():
         aggregates.append({
             **a,
             "name": _name_for(code, a["instrument"]),
+            # 주식선물 → 기초 종목 6자리. 원장 보드가 현물↔선물 베이시스 페어 태그에 사용.
+            "base_code": _base_for(code, a["instrument"]),
         })
     aggregates.sort(key=lambda x: (x["instrument"], x["code"]))
     return {
@@ -573,8 +593,13 @@ async def set_cost_inputs(payload: CostInputs):
 
 @router.get("/quote-params")
 async def get_quote_params():
-    """호가 제안 파라미터 (§13.3-A). Rust scheduler가 5초 poll — UI 조정 즉시 반영."""
-    return _read_json(QUOTE_PARAMS_PATH, DEFAULT_QUOTE_PARAMS)
+    """호가 제안 파라미터 (§13.3-A). Rust scheduler가 5초 poll — UI 조정 즉시 반영.
+
+    default를 병합 반환 — 구버전 lp_quote_params.json이 신규 키(basis_threshold_bp 등)를
+    누락해도 프론트/스케줄러가 default를 받게 한다 (Rust는 serde default가 이중 방어).
+    """
+    saved = _read_json(QUOTE_PARAMS_PATH, {})
+    return {**DEFAULT_QUOTE_PARAMS, **saved}
 
 
 @router.post("/quote-params")
