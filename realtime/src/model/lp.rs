@@ -105,6 +105,81 @@ pub struct PnLBreakdown {
     pub basis: f64,
 }
 
+// =============================================================================
+// 호가 보드 (§13.3-A FV_futures) — PR-B
+// =============================================================================
+
+/// 호가 요구 엣지 분해 (bp). skew는 부호 있음(롱 재고 → 음수), hedge_cost는 정보용 별도.
+#[derive(Debug, Clone, Serialize)]
+pub struct QuoteComponents {
+    /// 기본 반스프레드
+    pub base: f64,
+    /// 역선택 버퍼
+    pub buffer: f64,
+    /// 잔차위험 charge (섹터형만 >0)
+    pub residual: f64,
+    /// 재고 skew (부호 有: 롱 재고 → 음수 → 예약가격 하향)
+    pub skew: f64,
+    /// 헤지 비용 (정보용 — 호가 가격엔 미반영, 수익성 판단용 별도 차감)
+    pub hedge_cost: f64,
+}
+
+/// 한 ETF의 호가 제안 (§13.3-A). 자동 제출 X — "제안" 데이터.
+#[derive(Debug, Clone, Serialize)]
+pub struct QuoteRow {
+    pub code: String,
+    pub name: String,
+    /// ETF 현재가 (틱). 0이면 결측.
+    pub price: f64,
+    /// FV_futures 호가 앵커. no_quote면 0 가능.
+    pub fv_futures: f64,
+    /// 'index' | 'beta'
+    pub fv_mode: String,
+    /// 소속 지수 가족: "k200" | "kq150"
+    pub index_family: String,
+    /// 함축 지수 수익률 (직전 지수 종가 대비, 소수).
+    pub r_implied: f64,
+    /// 지수선물에서 캐리 역산한 함축 현물지수.
+    pub implied_index_spot: f64,
+    /// 호가에 쓰인 지수선물 코드.
+    pub futures_code: String,
+    /// LS 이론가 (FC9 theoryprice) — 참고 필드(§9.7). 자체 금리 기준 S_impl과 별개.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub futures_theory_price: Option<f64>,
+
+    /// 매수 호가까지 요구 엣지 (bp, FV 하단 거리) = base+buffer+residual − skew
+    pub edge_bid_bp: f64,
+    /// 매도 호가까지 요구 엣지 (bp, FV 상단 거리) = base+buffer+residual + skew
+    pub edge_ask_bp: f64,
+    /// 재고 skew (bp, 부호 有). QuoteComponents.skew와 동일 — 상단 요약용.
+    pub skew_bp: f64,
+    pub components: QuoteComponents,
+
+    /// 제안 매수/매도 호가 (호가단위 rounding 적용). no_quote면 0.
+    pub suggested_bid: f64,
+    pub suggested_ask: f64,
+    /// 제안 수량 (주) — v1은 재고 한도 잔여 기준.
+    pub suggested_size: i64,
+    /// 제안 수량 근거 문자열.
+    pub size_basis: String,
+    /// 재고 한도 잔여 (원).
+    pub inventory_remaining_krw: f64,
+
+    /// 입력(지수선물/ETF틱) 중 가장 오래된 나이 (ms).
+    pub inputs_age_ms: u32,
+    /// 호가 가능 여부 (no_quote_reason 없음).
+    pub usable: bool,
+    /// 불가 사유 (usable=false일 때). 빈 문자열이면 usable.
+    pub no_quote_reason: String,
+}
+
+/// 호가 보드 스냅샷 — 200ms throttle broadcast (매트릭스와 함께).
+#[derive(Debug, Clone, Serialize)]
+pub struct QuoteBoardSnapshot {
+    pub rows: Vec<QuoteRow>,
+    pub timestamp: String,
+}
+
 /// 북 단위 리스크 스냅샷 — #2 베타조정 델타 + #3 잔차위험.
 /// #1 자체 기준가는 매트릭스 셀에서 자연스럽게 보이므로 여기 두지 않음.
 /// #4 손익 분해는 `pnl_today: None` 스텁 (TODO 빈 박스).

@@ -118,7 +118,7 @@ export const LEDGER_GROUPS: Array<{ instrument: LedgerInstrument; label: string 
   { instrument: 'stock', label: '현물' },
 ]
 
-/** UI에 표시할 5개 헤지 경로 컬럼 순서. ③④⑤는 첫 빌드 빈 셀(placeholder). */
+/** UI에 표시할 5개 헤지 경로 컬럼 순서. ③은 PR-B(FV_futures)에서 wire됨. ④⑤는 빈 셀(placeholder). */
 export const HEDGE_ROUTE_COLUMNS: Array<{
   kind: HedgeRoute['kind']
   label: string
@@ -126,7 +126,7 @@ export const HEDGE_ROUTE_COLUMNS: Array<{
 }> = [
   { kind: 'pdf_basket', label: 'PDF 바스켓', wiredInFirstBuild: true },
   { kind: 'stock_futures_intersect', label: '∩ 주식선물', wiredInFirstBuild: true },
-  { kind: 'index_futures', label: '지수선물', wiredInFirstBuild: false },
+  { kind: 'index_futures', label: '지수선물', wiredInFirstBuild: true },
   { kind: 'correlated_etf', label: '상관 ETF', wiredInFirstBuild: false },
   { kind: 'beta_hedge', label: '베타 헤지', wiredInFirstBuild: false },
 ]

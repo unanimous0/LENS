@@ -39,12 +39,14 @@ async def compute_lp_target_codes() -> set[str]:
 
     포함 대상 (= fixed에 없어 별도 영구 구독 필수):
       - DEFAULT_ETF_CODES — ETF 자체 (229200, 396500 등). fixed master에 없음
+      - QUOTE_UNIVERSE_CODES — FV_futures 호가 유니버스 12종 ETF. fixed master에 없음.
+        틱만 필요(호가 앵커용 현재가) — 지수선물 3종은 realtime FC9 전용 연결이 이미 구독.
       - PDF non_intersect_stocks — 주식선물 없는 PDF 구성종목 (잡주 등). fixed master에 없음
     """
-    from routers.lp import DEFAULT_ETF_CODES
+    from routers.lp import DEFAULT_ETF_CODES, QUOTE_UNIVERSE_CODES
     from services.pdf_futures_match import get_intersect_for_etf
 
-    codes: set[str] = set(DEFAULT_ETF_CODES)
+    codes: set[str] = set(DEFAULT_ETF_CODES) | set(QUOTE_UNIVERSE_CODES)
     for etf_code in DEFAULT_ETF_CODES:
         intersect = await get_intersect_for_etf(etf_code)
         if not intersect:

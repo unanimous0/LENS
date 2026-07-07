@@ -215,14 +215,21 @@ struct MockFuture {
     base_price: f64,
 }
 
+// LP 호가 유니버스 12종 (§13.7 Phase 2) + 은행. base_price는 2026-07-06 종가 근사 —
+// mock quote_board의 FV_futures 괴리가 현실적(수십bp)이도록. 지수선물 base도 아래에서 실측 근사.
 static MOCK_ETFS: &[MockEtf] = &[
-    MockEtf { code: "069500", name: "KODEX 200", base_price: 35000.0 },
-    MockEtf { code: "102110", name: "TIGER 200", base_price: 35200.0 },
-    MockEtf { code: "229200", name: "KODEX 코스닥150", base_price: 12500.0 },
-    MockEtf { code: "251340", name: "KODEX 코스닥150레버리지", base_price: 8900.0 },
-    MockEtf { code: "114800", name: "KODEX 인버스", base_price: 5200.0 },
-    MockEtf { code: "252670", name: "KODEX 200선물인버스2X", base_price: 2800.0 },
-    MockEtf { code: "091160", name: "KODEX 반도체", base_price: 42000.0 },
+    MockEtf { code: "069500", name: "KODEX 200", base_price: 130125.0 },
+    MockEtf { code: "122630", name: "KODEX 레버리지", base_price: 176630.0 },
+    MockEtf { code: "233740", name: "KODEX 코스닥150레버리지", base_price: 8465.0 },
+    MockEtf { code: "102110", name: "TIGER 200", base_price: 130120.0 },
+    MockEtf { code: "091160", name: "KODEX 반도체", base_price: 153510.0 },
+    MockEtf { code: "229200", name: "KODEX 코스닥150", base_price: 14730.0 },
+    MockEtf { code: "396500", name: "TIGER 반도체TOP10", base_price: 44500.0 },
+    MockEtf { code: "114800", name: "KODEX 인버스", base_price: 949.0 },
+    MockEtf { code: "252670", name: "KODEX 200선물인버스2X", base_price: 76.0 },
+    MockEtf { code: "251340", name: "KODEX 코스닥150선물인버스", base_price: 2500.0 },
+    MockEtf { code: "364980", name: "TIGER 2차전지TOP10", base_price: 9535.0 },
+    MockEtf { code: "0117V0", name: "TIGER 코리아AI전력기기TOP3플러스", base_price: 21195.0 },
     MockEtf { code: "091170", name: "KODEX 은행", base_price: 9500.0 },
 ];
 
@@ -247,10 +254,12 @@ struct MockIndexFuture {
 }
 
 /// 지수선물 3종 합성 (FC9 대응). 코드는 A+상품2+연1+월1+000 형식 예시(9월물).
+/// base_idx는 2026-07-06 실측 근사 (KOSPI200 1293.13 / KOSDAQ150 1487.98) — mock FV_futures가
+/// matrix-config의 prev_index_close와 정합해 r_implied가 현실적(수십bp)이 되게. 선물은 +소폭 콘탱고.
 static MOCK_INDEX_FUTURES: &[MockIndexFuture] = &[
-    MockIndexFuture { code: "A0169000", name: "코스피200 F 2609", product: "kospi200", base_fut: 350.5, base_idx: 350.0 },
-    MockIndexFuture { code: "A0569000", name: "미니 코스피200 F 2609", product: "mini_k200", base_fut: 350.5, base_idx: 350.0 },
-    MockIndexFuture { code: "A0669000", name: "코스닥150 F 2609", product: "kosdaq150", base_fut: 1251.0, base_idx: 1250.0 },
+    MockIndexFuture { code: "A0169000", name: "코스피200 F 2609", product: "kospi200", base_fut: 1295.5, base_idx: 1293.13 },
+    MockIndexFuture { code: "A0569000", name: "미니 코스피200 F 2609", product: "mini_k200", base_fut: 1295.5, base_idx: 1293.13 },
+    MockIndexFuture { code: "A0669000", name: "코스닥150 F 2609", product: "kosdaq150", base_fut: 1491.0, base_idx: 1487.98 },
 ];
 
 pub struct MockFeed;

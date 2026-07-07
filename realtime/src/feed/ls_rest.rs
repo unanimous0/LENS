@@ -1038,7 +1038,7 @@ pub(crate) fn parse_index_fut_ym(code: &str, today_year: i32) -> Option<(i32, u3
 }
 
 /// 해당 연월의 2번째 목요일 (KRX 지수선물/옵션 만기일).
-fn second_thursday(year: i32, month: u32) -> Option<chrono::NaiveDate> {
+pub(crate) fn second_thursday(year: i32, month: u32) -> Option<chrono::NaiveDate> {
     use chrono::{Datelike, NaiveDate};
     let first = NaiveDate::from_ymd_opt(year, month, 1)?;
     let dow = first.weekday().num_days_from_monday(); // Mon=0..Sun=6, Thu=3

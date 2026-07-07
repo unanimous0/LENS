@@ -194,11 +194,14 @@ async def estimate_risk_params(
     """
     # circular import 회피 — 함수 안에서 lazy import
     from routers.etfs import _cache as etf_cache, _ensure_loaded
-    from routers.lp import DEFAULT_ETF_CODES
+    from routers.lp import DEFAULT_ETF_CODES, QUOTE_UNIVERSE_CODES
 
     await _ensure_loaded()
 
-    target_codes_set: set[str] = set(DEFAULT_ETF_CODES)
+    # 대상 = 매트릭스 ETF(2) + 호가 유니버스(12) + 각 PDF 구성종목 union.
+    # 유니버스 12종 ETF도 회귀 대상에 넣어 섹터형 β + 잔차 σ를 FV_futures가 쓰게 한다
+    # (지수형은 하드코딩 배수 L을 쓰지만 β는 참고용으로 함께 노출). 비용 미미(+12 코드).
+    target_codes_set: set[str] = set(DEFAULT_ETF_CODES) | set(QUOTE_UNIVERSE_CODES)
     for etf_code in DEFAULT_ETF_CODES:
         pdf = etf_cache.pdfs.get(etf_code)
         if not pdf:
@@ -255,6 +258,8 @@ async def estimate_risk_params(
         "as_of": dates[-1].isoformat() if dates else None,
         "market_code": market_code,
         "window_days": window_days,
+        # 시장(KOSPI200) 일변동성 — LP 호가 skew의 σ_day 산출용 (지수형은 |L|×σ_mkt).
+        "market_sigma_daily": float(market_ret.std()) if len(market_ret) else 0.0,
         "betas": betas,
         "residual_sigmas_daily": residual_sigmas,
         "residual_covariance": {

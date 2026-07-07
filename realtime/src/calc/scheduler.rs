@@ -25,14 +25,19 @@ use tracing::{info, warn};
 pub static MATRIX_TX_DROPPED: AtomicU64 = AtomicU64::new(0);
 
 use crate::model::lp::{
-    DeskBook, EtfFairValueSnapshot, FairValueCell, FairValueMatrixSnapshot,
+    DeskBook, EtfFairValueSnapshot, FairValueCell, FairValueMatrixSnapshot, HedgeRoute,
+    QuoteBoardSnapshot,
 };
 use crate::model::message::WsMessage;
 
 use super::book_risk::{compute_book_risk, RiskParamsCache};
+use super::quote_board::{
+    compute_fv_futures, compute_quote_row, FvFutures, IndexFuturesState, QuoteParams,
+    QuoteUniverseEtf,
+};
 use super::{
-    pdf_basket, stock_futures_intersect, CostInputs, EtfStaticInput, MatrixConfig, PriceMap,
-    PriceWithAge,
+    apply_level3_costs, pdf_basket, stock_futures_intersect, CostInputs, EtfStaticInput,
+    MatrixConfig, PriceMap, PriceWithAge,
 };
 
 /// 첫 빌드 Level 3 default cost params — backend에서 fetch 실패 시 fallback.
@@ -55,6 +60,12 @@ pub struct MatrixState {
     pub prices: DashMap<String, PriceWithAge>,
     pub etf_prices: DashMap<String, f64>,
     pub risk_cache: Arc<RiskParamsCache>,
+    /// FV_futures 호가 유니버스 12종 (§13.3-A). matrix-config에서 로드.
+    pub quote_universe: RwLock<Vec<QuoteUniverseEtf>>,
+    /// 호가 파라미터. matrix-config 로드 + 5초 poll로 갱신.
+    pub quote_params: RwLock<QuoteParams>,
+    /// 지수선물 최신 상태 — product("kospi200"|"mini_k200"|"kosdaq150") → state. lock-free.
+    pub index_futures: DashMap<String, IndexFuturesState>,
 }
 
 impl Default for MatrixState {
@@ -75,6 +86,9 @@ impl MatrixState {
             prices: DashMap::new(),
             etf_prices: DashMap::new(),
             risk_cache: Arc::new(RiskParamsCache::new()),
+            quote_universe: RwLock::new(Vec::new()),
+            quote_params: RwLock::new(QuoteParams::default()),
+            index_futures: DashMap::new(),
         }
     }
 
@@ -104,6 +118,20 @@ impl MatrixState {
             WsMessage::EtfTick(t) if t.price > 0.0 => {
                 self.etf_prices.insert(t.code.clone(), t.price);
             }
+            // 지수선물 (FC9) — product별 최신 상태 보관. FV_futures 앵커(§13.3-A).
+            // product는 &'static str ("kospi200"|"mini_k200"|"kosdaq150").
+            WsMessage::IndexFuturesTick(t) if t.price > 0.0 => {
+                self.index_futures.insert(
+                    t.product.to_string(),
+                    IndexFuturesState {
+                        code: t.code.clone(),
+                        price: t.price,
+                        underlying_index: t.underlying_index,
+                        theory_price: t.theory_price,
+                        updated_at_ms: now_ms,
+                    },
+                );
+            }
             _ => {}
         }
     }
@@ -120,11 +148,40 @@ impl MatrixState {
         let now_iso = chrono::Utc::now().to_rfc3339();
         let prices_snapshot = self.snapshot_prices();
 
+        // ─── FV_futures (호가 앵커, §13.3-A) — 유니버스 전체 1회 계산 ─────
+        // 매트릭스 ③열(index_futures 셀)과 호가 보드가 이 결과를 공유.
+        let universe = self.quote_universe.read().await;
+        let quote_params = self.quote_params.read().await.clone();
+        let today = chrono::Local::now().date_naive();
+        let idx_snapshot: HashMap<String, IndexFuturesState> = self
+            .index_futures
+            .iter()
+            .map(|r| (r.key().clone(), r.value().clone()))
+            .collect();
+        let mut fv_map: HashMap<String, FvFutures> = HashMap::with_capacity(universe.len());
+        for etf in universe.iter() {
+            let fv = compute_fv_futures(etf, &idx_snapshot, cost.base_rate_annual, now_ms, today);
+            fv_map.insert(etf.code.clone(), fv);
+        }
+
+        // ETF 현재가 + 나이 조회 (EtfTick은 etf_prices, StockTick으로 온 ETF는 prices).
+        // etf_prices는 나이 미보관 → 0(fresh). 한국 시장 마지막 체결가는 미체결이어도 유효.
+        let etf_price_age = |code: &str| -> (f64, u32) {
+            if let Some(p) = self.etf_prices.get(code) {
+                return (*p, 0);
+            }
+            if let Some(p) = prices_snapshot.get(code) {
+                let age = now_ms.saturating_sub(p.updated_at_ms).min(u32::MAX as u64) as u32;
+                return (p.price, age);
+            }
+            (0.0, u32::MAX)
+        };
+
         // ─── Fair value 매트릭스 ─────────────────────────────────────────
         let mut etf_snaps: Vec<EtfFairValueSnapshot> = Vec::with_capacity(etfs.len());
         for (etf_code, etf) in etfs.iter() {
             let etf_price = self.etf_prices.get(etf_code).map(|v| *v).unwrap_or(0.0);
-            let mut cells: Vec<FairValueCell> = Vec::with_capacity(2);
+            let mut cells: Vec<FairValueCell> = Vec::with_capacity(3);
             cells.push(pdf_basket::compute_pdf_basket(
                 etf,
                 etf_price,
@@ -139,6 +196,12 @@ impl MatrixState {
                 &cost,
                 now_ms,
             ));
+            // 경로 ③ 지수선물 — 유니버스에 있고 FV 유효하면 셀 추가 (드디어 usable).
+            if let Some(fv) = fv_map.get(etf_code) {
+                if fv.no_quote_reason.is_empty() && fv.fair_value > 0.0 {
+                    cells.push(index_futures_cell(etf_code, fv, etf_price, &cost, now_ms));
+                }
+            }
             let best_route_buy = pick_best(&cells, |c| c.edge_buy_bp, true);
             let best_route_sell = pick_best(&cells, |c| c.edge_sell_bp, false);
             etf_snaps.push(EtfFairValueSnapshot {
@@ -159,6 +222,29 @@ impl MatrixState {
         if tx.try_send(WsMessage::FairValueMatrix(matrix_snap)).is_err() {
             MATRIX_TX_DROPPED.fetch_add(1, Ordering::Relaxed);
         }
+
+        // ─── 호가 보드 (§13.3-A) ─────────────────────────────────────────
+        if !universe.is_empty() {
+            let book = self.book.read().await;
+            let rows: Vec<_> = universe
+                .iter()
+                .map(|etf| {
+                    let fv = &fv_map[&etf.code];
+                    let (price, age) = etf_price_age(&etf.code);
+                    let qty = book.positions.get(&etf.code).copied().unwrap_or(0);
+                    compute_quote_row(etf, fv, &quote_params, price, age, qty, cost.hold_days)
+                })
+                .collect();
+            drop(book);
+            let quote_snap = QuoteBoardSnapshot {
+                rows,
+                timestamp: now_iso.clone(),
+            };
+            if tx.try_send(WsMessage::QuoteBoard(quote_snap)).is_err() {
+                MATRIX_TX_DROPPED.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        drop(universe);
 
         // ─── Book risk ──────────────────────────────────────────────────
         let risk = self.risk_cache.get().await;
@@ -217,6 +303,8 @@ impl MatrixState {
             .map_err(|e| format!("parse: {}", e))?;
         *self.etfs.write().await = cfg.per_etf;
         *self.cost.write().await = cfg.book.cost_inputs;
+        *self.quote_universe.write().await = cfg.quote_universe;
+        *self.quote_params.write().await = cfg.quote_params;
         Ok(())
     }
 
@@ -250,6 +338,20 @@ impl MatrixState {
             Ok(resp) => warn!("cost-inputs http {}", resp.status()),
             Err(e) => warn!("cost-inputs fetch: {}", e),
         }
+
+        // quote-params (호가 파라미터 — UI 조정 즉시 반영)
+        let url = format!("{}/api/lp/quote-params", base);
+        match client.get(&url).timeout(Duration::from_secs(10)).send().await {
+            Ok(resp) if resp.status().is_success() => {
+                match resp.json::<QuoteParams>().await {
+                    Ok(qp) => *self.quote_params.write().await = qp,
+                    // 파싱 실패(스키마 어긋난 lp_quote_params.json 등) — 이전 값 유지 + 경고.
+                    Err(e) => warn!("quote-params parse 실패 (이전 값 유지): {}", e),
+                }
+            }
+            Ok(resp) => warn!("quote-params http {}", resp.status()),
+            Err(e) => warn!("quote-params fetch: {}", e),
+        }
     }
 }
 
@@ -258,6 +360,51 @@ struct PositionsPayload {
     #[serde(default)]
     positions: HashMap<String, i64>,
     updated_at: Option<String>,
+}
+
+/// 경로 ③ 지수선물 FairValueCell — FV_futures 재사용.
+///
+/// Level 3 비용: **tax_sell_bp = 0** — 이 경로의 매도 출구는 *ETF 매도(증권거래세 면제)* +
+/// 선물 청산이라 20bp를 부과하면 매도 edge 과소평가. pdf_basket 경로는 출구가 바스켓
+/// *주식* 매도(거래세 부과 대상)라 20bp 유지가 맞음 — 경로별 세제 차이가 곧 edge 차이.
+fn index_futures_cell(
+    etf_code: &str,
+    fv: &FvFutures,
+    etf_price: f64,
+    cost: &CostInputs,
+    now_ms: u64,
+) -> FairValueCell {
+    let cost_no_tax = CostInputs {
+        tax_sell_bp: 0.0,
+        ..*cost
+    };
+    let (net_fv_buy, net_fv_sell) = apply_level3_costs(fv.fair_value, &cost_no_tax);
+    let (edge_buy_bp, edge_sell_bp) = if etf_price > 0.0 {
+        (
+            (etf_price - net_fv_buy) / etf_price * 10_000.0,
+            (net_fv_sell - etf_price) / etf_price * 10_000.0,
+        )
+    } else {
+        (0.0, 0.0)
+    };
+    FairValueCell {
+        etf_code: etf_code.to_string(),
+        route: HedgeRoute::IndexFutures {
+            code: fv.futures_code.clone(),
+        },
+        fair_value: fv.fair_value,
+        net_fv_buy,
+        net_fv_sell,
+        edge_buy_bp,
+        edge_sell_bp,
+        inputs_age_ms: fv.inputs_age_ms,
+        inputs_covered_pct: 1.0,
+        missing_components: Vec::new(),
+        // ETF 틱 결측이면 edge 산출 불가 — pdf_basket과 대칭으로 usable=false
+        // (pick_best가 이 셀을 best route로 뽑지 않게).
+        usable: etf_price > 0.0,
+        computed_at_ms: now_ms,
+    }
 }
 
 /// best route 인덱스 — usable 셀 중 metric 최대(`max=true`) 또는 최소.
@@ -328,11 +475,16 @@ pub fn spawn_workers(
             tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
             loop {
                 tick.tick().await;
-                if st.etfs.read().await.is_empty() {
+                // quote_universe도 복구 조건 — backend bootstrap 시점 build_quote_universe()가
+                // 일시 실패(risk 회귀/DB)해 빈 배열이면, etfs만 봐선 영영 재fetch 안 됨.
+                if st.etfs.read().await.is_empty()
+                    || st.quote_universe.read().await.is_empty()
+                {
                     match st.refresh_matrix_config(&fb).await {
                         Ok(()) => info!(
-                            "lp matrix-config 복구: {} ETF",
-                            st.etfs.read().await.len()
+                            "lp matrix-config 복구: {} ETF / quote_universe {}",
+                            st.etfs.read().await.len(),
+                            st.quote_universe.read().await.len()
                         ),
                         Err(e) => warn!("lp matrix-config 재시도 실패: {}", e),
                     }

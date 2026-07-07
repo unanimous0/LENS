@@ -9,6 +9,7 @@
 
 pub mod book_risk;
 pub mod pdf_basket;
+pub mod quote_board;
 pub mod scheduler;
 pub mod stock_futures_intersect;
 
@@ -16,12 +17,20 @@ use std::collections::HashMap;
 
 use serde::Deserialize;
 
+use quote_board::{QuoteParams, QuoteUniverseEtf};
+
 /// FastAPI `/api/lp/matrix-config` 전체 응답.
 /// Rust startup에 1회 fetch — `matrix_config()`에서 reqwest로 받음 (Task #5).
 #[derive(Debug, Clone, Deserialize)]
 pub struct MatrixConfig {
     pub book: BookConfig,
     pub per_etf: HashMap<String, EtfStaticInput>,
+    /// FV_futures 호가 유니버스 12종 (§13.7 Phase 2). 구버전 backend 대비 default.
+    #[serde(default)]
+    pub quote_universe: Vec<QuoteUniverseEtf>,
+    /// 호가 파라미터. 미제공 시 default.
+    #[serde(default)]
+    pub quote_params: QuoteParams,
 }
 
 #[derive(Debug, Clone, Deserialize)]

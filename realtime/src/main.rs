@@ -182,9 +182,10 @@ fn msg_pending_key(msg: &WsMessage) -> String {
         WsMessage::EtfTick(t) => format!("etf_tick:{}", t.code),
         WsMessage::OrderbookTick(t) => format!("orderbook_tick:{}", t.code),
         WsMessage::VolumeTick(t) => format!("volume_tick:{}", t.code),
-        // LP 매트릭스·북 리스크는 각각 단일 인스턴스 — 고정 key로 dedup.
+        // LP 매트릭스·북 리스크·호가 보드는 각각 단일 인스턴스 — 고정 key로 dedup.
         WsMessage::FairValueMatrix(_) => "fair_value_matrix".to_string(),
         WsMessage::BookRisk(_) => "book_risk".to_string(),
+        WsMessage::QuoteBoard(_) => "quote_board".to_string(),
     }
 }
 
@@ -199,9 +200,10 @@ fn msg_cache_key(msg: &WsMessage) -> Option<String> {
         WsMessage::OrderbookTick(_) => None,
         // 거래대금은 캐시 — 신규 클라이언트가 전체 순위를 즉시 매길 수 있게.
         WsMessage::VolumeTick(t) => Some(format!("volume_tick:{}", t.code)),
-        // 매트릭스·북 리스크는 캐시 — 신규 클라이언트 연결 시 즉시 보여주기 위해.
+        // 매트릭스·북 리스크·호가 보드는 캐시 — 신규 클라이언트 연결 시 즉시 보여주기 위해.
         WsMessage::FairValueMatrix(_) => Some("fair_value_matrix".to_string()),
         WsMessage::BookRisk(_) => Some("book_risk".to_string()),
+        WsMessage::QuoteBoard(_) => Some("quote_board".to_string()),
     }
 }
 

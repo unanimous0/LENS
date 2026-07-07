@@ -17,9 +17,14 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, Field
+import logging
 
+import numpy as np
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel, Field, field_validator
+from sqlalchemy import text
+
+from core.database import korea_async_session
 from routers.etfs import _cache as etf_cache, _ensure_loaded, _norm_code
 from services import lp_ledger
 from services.pdf_futures_match import get_intersect_for_etf
@@ -28,9 +33,12 @@ from services.stock_code import normalize_stock_code
 
 router = APIRouter(prefix="/lp", tags=["lp"])
 
+logger = logging.getLogger("uvicorn.error")
+
 DATA_DIR = Path(__file__).resolve().parent.parent.parent / "data"
 POSITIONS_PATH = DATA_DIR / "lp_positions.json"
 COST_INPUTS_PATH = DATA_DIR / "lp_cost_inputs.json"
+QUOTE_PARAMS_PATH = DATA_DIR / "lp_quote_params.json"
 FUTURES_MASTER_PATH = DATA_DIR / "futures_master.json"
 
 # 지수선물 상품 프리픽스 (A + 2자리): KOSPI200=01, 미니K200=05, KOSDAQ150=06.
@@ -50,6 +58,77 @@ DEFAULT_COST_INPUTS = {
     "slippage_bp": 0.0,
     "hold_days": 1,
 }
+
+# ---------------------------------------------------------------------------
+# LP 호가 유니버스 12종 (§13.7 Phase 2 — memory reference_lp_etf_universe)
+# ---------------------------------------------------------------------------
+# FV_futures 호가 앵커(§13.3-A)를 계산할 대상. PDF 바스켓(2종)과 별개 경로 —
+# 필요한 실시간 입력이 ETF 틱 12개 + 지수선물 3개뿐이라 LS 구독 부담 거의 0.
+QUOTE_UNIVERSE_CODES = [
+    "069500", "122630", "233740", "102110", "091160", "229200",
+    "396500", "114800", "252670", "251340", "364980", "0117V0",
+]
+
+# 12종 하드코딩 fallback 맵 (정본). etf_master_daily의 tracking_multiple 컬럼은 레버리지/
+# 인버스에도 "일반 (1)"로 채워져 있어 (2026-07-07 실측) 배수 도출 불가 → 코드가 정본이다.
+# index_family: 'k200' | 'kq150' — r_implied(지수 함축수익률)의 소스 지수 가족.
+#   섹터/테마형은 KOSPI200(risk_estimator MARKET_CODE=K2G01P)에 대해 회귀하므로 'k200'.
+# leverage: 부호 있는 일일 배수 (+1/+2/-1/-2). 섹터형은 None (fv_mode='beta'로 β 사용).
+# fv_mode: 'index' (배수형) | 'beta' (섹터/테마형 — 지수 베타 + 잔차 프리미엄).
+_QUOTE_UNIVERSE_FALLBACK: dict[str, dict] = {
+    # 지수형 (배수)
+    "069500": {"name": "KODEX 200", "index_family": "k200", "leverage": 1, "fv_mode": "index"},
+    "122630": {"name": "KODEX 레버리지", "index_family": "k200", "leverage": 2, "fv_mode": "index"},
+    "233740": {"name": "KODEX 코스닥150레버리지", "index_family": "kq150", "leverage": 2, "fv_mode": "index"},
+    "102110": {"name": "TIGER 200", "index_family": "k200", "leverage": 1, "fv_mode": "index"},
+    "229200": {"name": "KODEX 코스닥150", "index_family": "kq150", "leverage": 1, "fv_mode": "index"},
+    "114800": {"name": "KODEX 인버스", "index_family": "k200", "leverage": -1, "fv_mode": "index"},
+    "252670": {"name": "KODEX 200선물인버스2X", "index_family": "k200", "leverage": -2, "fv_mode": "index"},
+    "251340": {"name": "KODEX 코스닥150선물인버스", "index_family": "kq150", "leverage": -1, "fv_mode": "index"},
+    # 섹터/테마형 (베타)
+    "091160": {"name": "KODEX 반도체", "index_family": "k200", "leverage": None, "fv_mode": "beta"},
+    "396500": {"name": "TIGER 반도체TOP10", "index_family": "k200", "leverage": None, "fv_mode": "beta"},
+    "364980": {"name": "TIGER 2차전지TOP10", "index_family": "k200", "leverage": None, "fv_mode": "beta"},
+    "0117V0": {"name": "TIGER 코리아AI전력기기TOP3플러스", "index_family": "k200", "leverage": None, "fv_mode": "beta"},
+}
+
+# index_family → Finance_Data index_ohlcv_daily 코드.
+_FAMILY_INDEX_CODE = {"k200": "K2G01P", "kq150": "Q5G01P"}
+
+# 호가 파라미터 default (사용자 합의 전 초기값 — 전부 UI 조정 대상).
+DEFAULT_QUOTE_PARAMS = {
+    "base_spread_bp": 5.0,          # 기본 반스프레드 (bp)
+    "gamma": 1.0,                   # 재고 skew 강도 (A-S 간소화 계수)
+    "adverse_buffer_bp": 3.0,       # 역선택 버퍼 (bp)
+    "hedge_cost_bp": 2.0,           # 헤지 비용 (bp) — 정보용 별도 표기
+    "per_etf_inventory_limit_krw": 1_000_000_000.0,  # ETF별 재고 한도 (기본 10억)
+    "inventory_limit_overrides": {},  # {code: krw} ETF별 override
+    "max_futures_contracts": 100,   # 선물 헤지 여력 (계약)
+}
+
+
+class QuoteParams(BaseModel):
+    # 전 필드 ge=0 — 음수 스프레드/한도는 bid > ask 역전 등 무의미한 제안을 만든다.
+    # (Rust 측 half 클램프가 이중 방어.)
+    base_spread_bp: float = Field(5.0, ge=0, description="기본 반스프레드 (bp)")
+    gamma: float = Field(1.0, ge=0, description="재고 skew 강도 (A-S 간소화)")
+    adverse_buffer_bp: float = Field(3.0, ge=0, description="역선택 버퍼 (bp)")
+    hedge_cost_bp: float = Field(2.0, ge=0, description="헤지 비용 (bp) — 정보용 별도 표기")
+    per_etf_inventory_limit_krw: float = Field(
+        1_000_000_000.0, ge=0, description="ETF별 재고 한도 (원, 기본 10억)"
+    )
+    inventory_limit_overrides: dict[str, float] = Field(
+        default_factory=dict, description="{code: krw} ETF별 한도 override (음수 거부)"
+    )
+    max_futures_contracts: int = Field(100, ge=0, description="선물 헤지 여력 (계약)")
+
+    @field_validator("inventory_limit_overrides")
+    @classmethod
+    def _overrides_non_negative(cls, v: dict[str, float]) -> dict[str, float]:
+        for code, krw in v.items():
+            if krw < 0:
+                raise ValueError(f"inventory_limit_overrides[{code}] must be >= 0")
+        return v
 
 
 class CostInputs(BaseModel):
@@ -201,11 +280,103 @@ class CarryoverPayload(BaseModel):
     instrument: Optional[str] = Field(None, description="수동 override")
 
 
+# ---------------------------------------------------------------------------
+# quote_universe 빌더 (§13.3-A FV_futures 정적 입력)
+# ---------------------------------------------------------------------------
+
+async def _fetch_etf_prev_close(session, codes: list[str]) -> dict[str, float]:
+    """각 ETF의 *직전 거래일* 수정종가 (adj_close). 오늘 일봉은 EOD 전엔 없으므로
+    time < CURRENT_DATE 로 안전하게 직전 완결 거래일 종가를 잡는다."""
+    rows = (await session.execute(text(
+        "SELECT DISTINCT ON (stock_code) stock_code, adj_close "
+        "FROM ohlcv_daily "
+        "WHERE stock_code = ANY(:codes) AND time < CURRENT_DATE AND adj_close IS NOT NULL "
+        "ORDER BY stock_code, time DESC"
+    ), {"codes": codes})).all()
+    return {r.stock_code: float(r.adj_close) for r in rows}
+
+
+async def _fetch_index_prev_and_vol(
+    session, index_codes: list[str], window: int = 60
+) -> dict[str, tuple[Optional[float], Optional[float]]]:
+    """지수별 (직전 종가, 일일 변동성 σ). σ는 최근 window 거래일 단순수익률 표준편차."""
+    out: dict[str, tuple[Optional[float], Optional[float]]] = {}
+    for code in index_codes:
+        rows = (await session.execute(text(
+            "SELECT close FROM index_ohlcv_daily "
+            "WHERE code = :c AND time < CURRENT_DATE ORDER BY time DESC LIMIT :n"
+        ), {"c": code, "n": window + 1})).all()
+        if not rows:
+            out[code] = (None, None)
+            continue
+        closes = np.array([float(r.close) for r in reversed(rows)], dtype=np.float64)
+        prev_close = float(closes[-1])
+        sigma: Optional[float] = None
+        if len(closes) >= 5:
+            rets = (closes[1:] - closes[:-1]) / closes[:-1]
+            sigma = float(rets.std())
+        out[code] = (prev_close, sigma)
+    return out
+
+
+async def build_quote_universe() -> list[dict]:
+    """FV_futures 계산에 필요한 12종 정적 입력 (§13.3-A).
+
+    각 항목: {code, name, index_family, leverage(부호), fv_mode, beta(섹터형),
+             residual_sigma_daily, index_sigma_daily, prev_nav, prev_close, prev_index_close}.
+
+    - beta / residual_sigma_daily: risk_estimator (KOSPI200 60일 OLS). 섹터형 FV에 사용.
+    - index_sigma_daily: 소속 지수 60일 일변동성 (skew의 σ_day 계산용).
+    - prev_nav: ETF 직전 종가를 NAV 프록시로 사용. etf_master_daily의
+      net_asset/listed_shares는 일부 종목(252670)에서 ~10× 어긋나 신뢰 불가 (2026-07-07 실측)
+      → adj_close가 시장가와 직접 비교되는 안정 소스라 이를 정본으로 채택. ETF는 NAV를
+      촘촘히 추종하므로 프록시 오차 미미.
+    - prev_index_close: 소속 지수 직전 종가 (r_implied 앵커).
+    """
+    risk = await get_risk_params()
+    betas: dict = risk.get("betas", {}) or {}
+    resid: dict = risk.get("residual_sigmas_daily", {}) or {}
+
+    async with korea_async_session() as session:
+        etf_prev = await _fetch_etf_prev_close(session, QUOTE_UNIVERSE_CODES)
+        idx = await _fetch_index_prev_and_vol(session, list(_FAMILY_INDEX_CODE.values()))
+
+    universe: list[dict] = []
+    for code in QUOTE_UNIVERSE_CODES:
+        fb = _QUOTE_UNIVERSE_FALLBACK[code]
+        family = fb["index_family"]
+        idx_code = _FAMILY_INDEX_CODE.get(family)
+        prev_index_close, index_sigma = idx.get(idx_code, (None, None)) if idx_code else (None, None)
+        prev_close = etf_prev.get(code)
+        universe.append({
+            "code": code,
+            "name": fb["name"],
+            "index_family": family,
+            "leverage": fb["leverage"],
+            "fv_mode": fb["fv_mode"],
+            "beta": betas.get(code),
+            "residual_sigma_daily": resid.get(code),
+            "index_sigma_daily": index_sigma,
+            "prev_nav": prev_close,       # ETF 직전 종가 = NAV 프록시 (위 docstring 근거)
+            "prev_close": prev_close,
+            "prev_index_close": prev_index_close,
+        })
+    return universe
+
+
 @router.get("/matrix-config")
 async def get_matrix_config():
     """Rust startup이 한 번 fetch. 첫 빌드의 모든 정적 입력을 한 번에."""
     await _ensure_loaded()
     cost_inputs = _read_json(COST_INPUTS_PATH, DEFAULT_COST_INPUTS)
+    quote_params = _read_json(QUOTE_PARAMS_PATH, DEFAULT_QUOTE_PARAMS)
+    try:
+        quote_universe = await build_quote_universe()
+    except Exception as e:  # noqa: BLE001
+        # 유니버스 빌드 실패 (risk 회귀/DB 등) — 호가 보드만 비고 나머지 매트릭스는 정상 동작.
+        # Rust 5초 poll이 quote_universe 빈 배열을 보고 재fetch하므로 복구 가능. warn 필수.
+        logger.warning("build_quote_universe failed — quote_universe empty: %s", e)
+        quote_universe = []
 
     per_etf: dict[str, dict] = {}
     for code in DEFAULT_ETF_CODES:
@@ -236,6 +407,9 @@ async def get_matrix_config():
             "cost_inputs": cost_inputs,
         },
         "per_etf": per_etf,
+        # §13.7 Phase 2 — FV_futures 호가 보드 정적 입력 (12종) + 호가 파라미터.
+        "quote_universe": quote_universe,
+        "quote_params": quote_params,
         "loaded_at": etf_cache.loaded_at,
     }
 
@@ -394,6 +568,20 @@ async def set_cost_inputs(payload: CostInputs):
     """Level 3 cost params 갱신 (슬리피지/hold_days는 UI에서 자주, 거래세/금리는 거의 안 바뀜)."""
     data = payload.model_dump()
     _write_json(COST_INPUTS_PATH, data)
+    return data
+
+
+@router.get("/quote-params")
+async def get_quote_params():
+    """호가 제안 파라미터 (§13.3-A). Rust scheduler가 5초 poll — UI 조정 즉시 반영."""
+    return _read_json(QUOTE_PARAMS_PATH, DEFAULT_QUOTE_PARAMS)
+
+
+@router.post("/quote-params")
+async def set_quote_params(payload: QuoteParams):
+    """호가 제안 파라미터 갱신 (base_spread / gamma / buffer / hedge_cost / 재고 한도 등)."""
+    data = payload.model_dump()
+    _write_json(QUOTE_PARAMS_PATH, data)
     return data
 
 
