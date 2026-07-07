@@ -6,7 +6,11 @@ import type {
   LedgerEntry,
   LedgerSnapshot,
   LpCostInputs,
+  QuoteBoardSnapshot,
+  QuoteParams,
+  QuoteUniverseMeta,
 } from '../types/lp'
+import { DEFAULT_QUOTE_PARAMS } from '../types/lp'
 
 const DEFAULT_COST: LpCostInputs = {
   tax_sell_bp: 20,
@@ -34,12 +38,21 @@ interface LpState {
   ledgerEntries: LedgerEntry[]
   ledgerAggregates: LedgerAggregate[]
   ledgerUpdatedAt: string | null
+  /** 호가 보드(§13.3-A) — Rust 200ms throttle quote_board WS. */
+  quoteBoard: QuoteBoardSnapshot | null
+  /** 호가 제안 파라미터 (base_spread/γ/buffer/hedge_cost/재고한도). GET/POST /api/lp/quote-params. */
+  quoteParams: QuoteParams
+  /** matrix-config quote_universe: code → 배수/β/family 메타 (모드 뱃지·override 편집용). */
+  quoteUniverse: Record<string, QuoteUniverseMeta>
   setMatrix: (m: FairValueMatrixSnapshot) => void
   setBookRisk: (b: BookRiskSnapshot) => void
   setPositions: (p: Record<string, number>, updatedAt?: string | null) => void
   setCostInputs: (c: LpCostInputs) => void
   setCorporateActionsToday: (items: CorporateActionToday[]) => void
   setLedger: (snap: LedgerSnapshot) => void
+  setQuoteBoard: (b: QuoteBoardSnapshot) => void
+  setQuoteParams: (p: QuoteParams) => void
+  setQuoteUniverse: (u: Record<string, QuoteUniverseMeta>) => void
 }
 
 export const useLpStore = create<LpState>((set) => ({
@@ -52,6 +65,9 @@ export const useLpStore = create<LpState>((set) => ({
   ledgerEntries: [],
   ledgerAggregates: [],
   ledgerUpdatedAt: null,
+  quoteBoard: null,
+  quoteParams: DEFAULT_QUOTE_PARAMS,
+  quoteUniverse: {},
   setMatrix: (m) => set({ matrix: m }),
   setBookRisk: (b) => set({ bookRisk: b }),
   setPositions: (p, updatedAt) =>
@@ -64,4 +80,7 @@ export const useLpStore = create<LpState>((set) => ({
       ledgerAggregates: snap.aggregates,
       ledgerUpdatedAt: snap.updated_at ?? null,
     }),
+  setQuoteBoard: (b) => set({ quoteBoard: b }),
+  setQuoteParams: (p) => set({ quoteParams: p }),
+  setQuoteUniverse: (u) => set({ quoteUniverse: u }),
 }))

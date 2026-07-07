@@ -88,6 +88,8 @@ export function useWebSocket() {
         // LP 매트릭스 — Rust가 200ms throttle로 보내므로 rAF 묶지 않고 즉시 store 반영
         else if (m.type === 'fair_value_matrix') useLpStore.getState().setMatrix(m.data)
         else if (m.type === 'book_risk') useLpStore.getState().setBookRisk(m.data)
+        // 호가 보드(§13.3-A) — 매트릭스와 동일 200ms throttle. rAF 묶지 않고 즉시 반영.
+        else if (m.type === 'quote_board') useLpStore.getState().setQuoteBoard(m.data)
         else if (!warnedTypes.has(m.type)) {
           warnedTypes.add(m.type)
           console.warn('[useWebSocket] unhandled tick type:', m.type, '— register in marketStore + dispatchOne')
