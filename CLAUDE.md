@@ -23,6 +23,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 기능 상세, 프로젝트 구조 등은 별도 문서 참조:
 - **[lp-system-design.md](lp-system-design.md)** — **LP 시스템 단일 진실원**. fair value m×n 매트릭스 + 4대 지표 + 현재 build 상태. 전략 방향은 항상 여기 기준 (memory `project_lens_lp_pivot` 참조)
+- **[docs/lp-matrix-guide.md](docs/lp-matrix-guide.md)** — LP 매트릭스 탭 **사용자 안내서** (패널별 읽는 법·운영 워크플로·산식 레퍼런스·튜닝·한계·트러블슈팅). 상사 공유용으로도 사용
 - **[features.md](features.md)** — 구현된 기능 상세 (대여가능확인, 상환가능확인, 실시간 시세, 데이터 어댑터)
 - **[architecture.md](architecture.md)** — 프로젝트 구조, 데이터 소스 전략, 새 기능 추가 방법
 - **[ls-api.md](ls-api.md)** — LS증권 OpenAPI 연동 가이드 (실시간 시세, 선물 베이시스)

@@ -2,6 +2,8 @@ import { useLpInit } from '@/hooks/useLpInit'
 import { BookFourNumbers } from '@/components/lp/BookFourNumbers'
 import { BasisBookPanel } from '@/components/lp/BasisBookPanel'
 import { PnlPanel } from '@/components/lp/PnlPanel'
+import { BasketBuilderPanel } from '@/components/lp/BasketBuilderPanel'
+import { ExitComparisonPanel } from '@/components/lp/ExitComparisonPanel'
 import { QuoteBoard } from '@/components/lp/QuoteBoard'
 import { HedgeTicketPanel } from '@/components/lp/HedgeTicketPanel'
 import { BasisRouterPanel } from '@/components/lp/BasisRouterPanel'
@@ -32,6 +34,13 @@ export function LpMatrixPage() {
       <BasisBookPanel />
       {/* P&L 5분해 + 리스크 한도(§13.3-C) — #4 손익 분해의 상세 */}
       <PnlPanel />
+      {/* ⑤ 정리 — 출구 3개(§13.3-D): 넷팅 바스켓 빌더(넓게) + 출구 비교 카드 */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-1">
+        <div className="lg:col-span-2">
+          <BasketBuilderPanel />
+        </div>
+        <ExitComparisonPanel />
+      </div>
       <QuoteBoard />
       {/* ③ 헤지 티켓(§13.3-B) + 베이시스 라우터(§13.4) — QuoteBoard 아래·원장 위 한 행 */}
       <div className="grid grid-cols-2 gap-1">

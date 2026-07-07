@@ -116,6 +116,8 @@ DEFAULT_QUOTE_PARAMS = {
     "limit_net_delta_krw": 2_000_000_000.0,    # 북 순 베타델타 한도 (오버레이 후, 20억)
     "limit_residual_krw": 100_000_000.0,       # 잔차위험 1σ 총량 한도 (1억)
     "limit_basis_var_krw": 200_000_000.0,      # 베이시스 VaR 한도 (2억)
+    # ── §13.3-D 출구 (Phase 5) ──
+    "cu_fee_bp": 2.0,               # 설정/환매 AP 수수료 (bp × CU 명목) — 출구 3 비교용
 }
 
 
@@ -151,6 +153,10 @@ class QuoteParams(BaseModel):
     )
     limit_basis_var_krw: float = Field(
         200_000_000.0, ge=0, description="베이시스 VaR 한도 (원)"
+    )
+    # ── §13.3-D 출구 (Phase 5) ──
+    cu_fee_bp: float = Field(
+        2.0, ge=0, description="설정/환매 AP 수수료 (bp × CU 명목) — 출구 3 비교용"
     )
 
     @field_validator("inventory_limit_overrides")
@@ -733,3 +739,162 @@ async def get_corporate_actions_today():
         for r in rows
     ]
     return {"as_of": today.isoformat(), "count": len(items), "items": items}
+
+
+# ---------------------------------------------------------------------------
+# §13.3-D 출구 (Phase 5) — 넷팅 바스켓 빌더 + 지수 베이시스 z-score 모니터
+# ---------------------------------------------------------------------------
+
+@router.post("/netting-basket")
+async def post_netting_basket():
+    """넷팅 바스켓 실행 주문표 생성 (§13.3-D 메인 출구 · §13.2).
+
+    body 없음 — 원장 ETF 재고를 읽어 PDF 합산 후 종목별 순 주수 주문표를 스냅샷 계산.
+    상세·부호 규약·비용 추정은 services/lp_netting.py docstring 참조.
+    """
+    from services import lp_netting
+    return await lp_netting.build_netting_basket()
+
+
+# 지수 베이시스 raw 행 캐시 (1시간). key='01'/'06' → (computed_at_monotonic, rows).
+# excess 통계는 금리(cost_inputs) 의존이라 캐시하지 않고 요청마다 재계산 (60 floats, 저렴)
+# — 사용자가 금리를 바꾸면 즉시 반영.
+_basis_rows_cache: dict[str, tuple[float, list[dict]]] = {}
+_BASIS_DIST_TTL_SEC = 3600.0
+# 지수 z-score 창 (거래일).
+_BASIS_ZSCORE_WINDOW = 60
+
+# family(베이시스 북) → 지수선물 underlying_code.
+_FAMILY_TO_UNDERLYING = {"k200": "01", "kq150": "06"}
+
+
+def _second_thursday(year: int, month: int) -> "date":
+    """해당 월의 두 번째 목요일 (지수선물 만기 — memory reference_stock_futures_expiry)."""
+    from datetime import date as _date
+    d1 = _date(year, month, 1)
+    first_thu = 1 + (3 - d1.weekday()) % 7  # Mon=0 … Thu=3
+    return _date(year, month, first_thu + 7)
+
+
+def _next_quarterly_expiry(d: "date") -> "date":
+    """d 이후(당일 포함) 첫 분기(3/6/9/12월) 만기일.
+
+    NEAR 정의와 정합: futures_daily_with_class는 만기 당일까지 해당 월물이 NEAR
+    (2026-06-11 A0166000 실측 — 만기일 NEAR 유지, 익일 롤). 따라서 행 날짜 기준
+    '당일 포함 다음 분기 만기'가 그 행 계약의 만기다. 계약 코드 파싱 불필요.
+    """
+    y, m = d.year, d.month
+    for _ in range(6):
+        qm = ((m - 1) // 3 + 1) * 3  # 이번 분기의 만기월 (3/6/9/12)
+        exp = _second_thursday(y, qm)
+        if exp >= d:
+            return exp
+        m = qm + 1
+        if m > 12:
+            y, m = y + 1, 1
+    return exp  # unreachable (2 iter 내 반환)
+
+
+async def _basis_excess_rows(underlying: str) -> list[dict]:
+    """underlying('01'|'06') NEAR 최근 60거래일 raw 행 (1h 캐시).
+
+    각 행: {time(date), basis(선물−현물지수), spot(현물지수 종가), days_left(만기 잔존일)}.
+    - basis: futures_daily_with_class.underlying_basis — 정확히 (close − 현물지수 close)
+      실측 확인 (2026-07-06: 1303.95 − K2G01P 1293.13 = 10.82 = ub).
+    - spot = close − underlying_basis (지수 테이블 조인 불필요).
+    - days_left = 행 날짜 기준 다음 분기 만기까지 일수 (_next_quarterly_expiry).
+    """
+    import time as _time
+    cached = _basis_rows_cache.get(underlying)
+    if cached and (_time.monotonic() - cached[0]) < _BASIS_DIST_TTL_SEC:
+        return cached[1]
+
+    async with korea_async_session() as session:
+        db_rows = (await session.execute(text(
+            "SELECT time, close, underlying_basis FROM futures_daily_with_class "
+            "WHERE underlying_code = :u AND contract_class = 'NEAR' "
+            "AND underlying_basis IS NOT NULL AND close IS NOT NULL "
+            "ORDER BY time DESC LIMIT :n"
+        ), {"u": underlying, "n": _BASIS_ZSCORE_WINDOW})).all()
+
+    rows = [
+        {
+            "time": r.time,
+            "basis": float(r.underlying_basis),
+            "spot": float(r.close) - float(r.underlying_basis),
+            "days_left": (_next_quarterly_expiry(r.time) - r.time).days,
+        }
+        for r in db_rows
+    ]
+    _basis_rows_cache[underlying] = (_time.monotonic(), rows)
+    return rows
+
+
+@router.get("/basis-zscore")
+async def get_basis_zscore(
+    k200: Optional[float] = None,
+    kq150: Optional[float] = None,
+    k200_spot: Optional[float] = None,
+    kq150_spot: Optional[float] = None,
+):
+    """지수 베이시스 z-score 모니터 (§13.3-D) — **만기 정규화 excess 기준**.
+
+    raw 베이시스는 만기 잔존일에 비례해 자연 수축하므로, 60일 창에 월물이 섞이면
+    이봉 분포가 되어 z 부호가 반전될 수 있다 (2026-07-07 실측: 6월물 43d + 9월물 17d
+    혼합 5.91±6.24 vs 월물별 2.97/13.34 — basis 10.82의 z가 +0.79 vs −0.64 반전).
+    → 행별 excess = basis − (spot × r × 잔존일/365) 로 정규화 (r = cost_inputs 자체 금리,
+    §9.7 인포맥스 theoretical_basis는 금리 불명이라 미사용). 월물 혼합이 무해해짐.
+
+    현재값도 동일 정의: `k200`/`kq150` = 실시간 베이시스(IndexFuturesTick.basis),
+    `*_spot` = 기초지수 레벨(tick.underlying_index, 이론 베이시스 계산용 — 미제공 시
+    직전 종가 폴백, 오차 미미).
+    """
+    cost_inputs = _read_json(COST_INPUTS_PATH, DEFAULT_COST_INPUTS)
+    r_annual = float(cost_inputs.get("base_rate_annual", 0.028))
+    from datetime import date as _date
+    today = _date.today()
+
+    current = {"k200": (k200, k200_spot), "kq150": (kq150, kq150_spot)}
+    families: dict[str, dict] = {}
+    for family, underlying in _FAMILY_TO_UNDERLYING.items():
+        rows = await _basis_excess_rows(underlying)
+        excess = np.array(
+            [row["basis"] - row["spot"] * r_annual * row["days_left"] / 365.0 for row in rows],
+            dtype=np.float64,
+        )
+        cur_basis, cur_spot = current[family]
+        days_now = (_next_quarterly_expiry(today) - today).days
+        # 현재 이론 베이시스의 spot: 실시간 기초지수 우선, 없으면 직전 종가 폴백.
+        spot_ref = cur_spot if (cur_spot and cur_spot > 0) else (rows[0]["spot"] if rows else None)
+        theory_now = (spot_ref * r_annual * days_now / 365.0) if spot_ref else None
+        cur_excess = (float(cur_basis) - theory_now) if (cur_basis is not None and theory_now is not None) else None
+
+        stats: dict = {
+            "underlying": underlying,
+            "n": int(excess.size),
+            "window": _BASIS_ZSCORE_WINDOW,
+            "r_annual": r_annual,
+            "days_to_expiry": days_now,
+            "asof": rows[0]["time"].isoformat() if rows else None,
+            "current": float(cur_basis) if cur_basis is not None else None,
+            "theory_now": theory_now,
+            "current_excess": cur_excess,
+        }
+        if excess.size >= 2:
+            mean = float(excess.mean())
+            std = float(excess.std(ddof=1))  # 표본 표준편차
+            stats.update({
+                "mean": mean, "std": std,
+                "min": float(excess.min()), "max": float(excess.max()),
+                "z": ((cur_excess - mean) / std) if (cur_excess is not None and std > 0) else None,
+            })
+        else:
+            stats.update({"mean": None, "std": None, "min": None, "max": None, "z": None})
+        families[family] = stats
+
+    return {
+        "families": families,
+        "caveat": "만기 정규화 excess(베이시스 − spot×r×잔존일/365, r=자체 금리) 기준 z — "
+                  "월물 혼합 무해. 배당 미반영·현물지수 폴백 시 직전 종가 근사. "
+                  "인포맥스 이론값은 금리 가정 불명이라 미사용(§9.7).",
+    }

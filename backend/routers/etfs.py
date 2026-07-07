@@ -216,7 +216,13 @@ async def _load_from_db() -> None:
             continue  # 해외 ETF 제외
         bucket = pdfs.setdefault(etf_code, {"as_of": snap_iso, "stocks": [], "cash": 0})
         if r.is_cash:
-            bucket["cash"] = int(r.shares or 0)
+            # is_cash 행은 전수 2종 (2026-07-07 실측): 원화현금(010010) · 설정현금액(H00000).
+            # 설정현금액은 CU 전체 설정금액 **summary 행** — 122630 실측: H00000 = NAV×CU 정확
+            # 일치, 원화현금 = NAV − Σ주식 정확 일치. cash 성분이 아니므로 합산 제외.
+            # 나머지는 SUM — 기존 "마지막 행 덮어쓰기"는 ORDER BY 없어 비결정이었음 (186 ETF 영향).
+            code_u = (str(r.component_code) if r.component_code else "").strip().upper()
+            if code_u != "H00000" and "설정현금" not in (r.component_name or ""):
+                bucket["cash"] += int(r.shares or 0)
             continue
         bucket["stocks"].append({
             "code": _norm_code(r.component_code),

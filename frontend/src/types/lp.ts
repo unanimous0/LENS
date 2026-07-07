@@ -391,6 +391,9 @@ export interface QuoteParams {
   limit_residual_krw: number
   /** 베이시스 VaR 한도 (원). */
   limit_basis_var_krw: number
+  // ── §13.3-D 출구 (Phase 5) ──
+  /** 설정/환매 AP 수수료 (bp × CU 명목) — 출구 3 비교용. */
+  cu_fee_bp: number
 }
 
 export const DEFAULT_QUOTE_PARAMS: QuoteParams = {
@@ -407,6 +410,109 @@ export const DEFAULT_QUOTE_PARAMS: QuoteParams = {
   limit_net_delta_krw: 2_000_000_000,
   limit_residual_krw: 100_000_000,
   limit_basis_var_krw: 200_000_000,
+  cu_fee_bp: 2,
+}
+
+// ---- 넷팅 바스켓 빌더 (§13.3-D 출구 Phase 5) — backend/services/lp_netting.py 와 1:1 ----
+
+export interface NettingLeg {
+  code: string
+  name: string | null
+  side: 'buy' | 'sell'
+  /** 순 주문 주수 (양수). */
+  shares: number
+  /** 예상 대금 (원). 가격 결측이면 null. */
+  est_notional: number | null
+  /** |주문주수| / ADV20(20일 평균 거래량) × 100 (%). 결측이면 null. */
+  adv_ratio: number | null
+  /** adv_ratio > adv_cap_pct 이면 true (실현성 경고). */
+  adv_capped: boolean
+  /** 거래세 (bp) — 매도 leg만 >0. */
+  tax_bp: number
+  /** 주식선물 상장 종목 여부 (베이시스 라우터 연계 배지). */
+  has_stock_future: boolean
+}
+
+export interface NettingExcluded {
+  etf_code: string
+  name: string | null
+  reason: string
+}
+
+export interface NettingEtfHolding {
+  code: string
+  name: string | null
+  net_qty: number
+  cu_unit: number | null
+  /** net_qty / cu_unit (부호 有 실수). */
+  units_exact: number | null
+  /** |net_qty| // cu_unit — 완전한 CU 개수 (설정/환매 출구). */
+  cu_count: number
+  price: number | null
+  notional: number | null
+  futures_based: boolean
+  /** 넷팅 바스켓 leg에 반영됐는지 (futures_based·PDF/CU 결측이면 false). */
+  basket_eligible: boolean
+}
+
+export interface NettingTotals {
+  n_legs: number
+  n_buy: number
+  n_sell: number
+  buy_notional: number
+  sell_notional: number
+  gross_notional: number
+  /** buy − sell (+면 순매수 = 현금 유출). */
+  net_notional: number
+  est_tax_krw: number
+  n_adv_capped: number
+}
+
+export interface NettingBasketResponse {
+  legs: NettingLeg[]
+  /** 현금분 순합 (원). */
+  cash_residual: number
+  excluded: NettingExcluded[]
+  etf_holdings: NettingEtfHolding[]
+  /** 재고 총 명목 (전 ETF, 원). */
+  inventory_notional_krw: number
+  totals: NettingTotals
+  /** ADV 임팩트 캡 임계 (%). */
+  adv_cap_pct: number
+  caveats: string[]
+  n_etfs_held: number
+}
+
+// ---- 지수 베이시스 z-score 모니터 (§13.3-D Phase 5) — GET /api/lp/basis-zscore 와 1:1 ----
+
+export interface BasisZFamily {
+  underlying: string // '01' | '06'
+  n: number
+  window: number
+  /** 이론 베이시스 금리 (cost_inputs base_rate_annual, 소수). */
+  r_annual: number
+  /** 현재 front 월물 만기 잔존일. */
+  days_to_expiry: number
+  /** 만기 정규화 excess(베이시스 − spot×r×잔존일/365) 60일 분포의 mean. */
+  mean: number | null
+  std: number | null
+  min: number | null
+  max: number | null
+  asof: string | null
+  /** 프론트가 넘긴 실시간 raw 베이시스 (선물가 − 기초지수). */
+  current: number | null
+  /** 현재 이론 베이시스 (spot × r × 잔존일/365). */
+  theory_now: number | null
+  /** 현재 excess = current − theory_now. z의 대상. */
+  current_excess: number | null
+  /** (current_excess − mean) / std. 산출 불가 시 null. */
+  z: number | null
+}
+
+export interface BasisZscoreResponse {
+  /** 'k200' | 'kq150' → 분포·z. */
+  families: Record<string, BasisZFamily>
+  caveat: string
 }
 
 /** matrix-config quote_universe 항목 — 모드 뱃지(배수/β)·override 편집용 메타. QuoteRow엔 없는 정적 입력. */

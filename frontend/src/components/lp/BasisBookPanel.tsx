@@ -1,5 +1,6 @@
 import { useLpStore } from '@/stores/lpStore'
-import type { IndexBasisExposure, StockBasisPair } from '@/types/lp'
+import { useBasisZscore } from '@/hooks/useBasisZscore'
+import type { BasisZFamily, IndexBasisExposure, StockBasisPair } from '@/types/lp'
 import { cn } from '@/lib/utils'
 
 /**
@@ -36,8 +37,29 @@ const FAMILY_LABEL: Record<string, string> = { k200: 'K200', kq150: 'KQ150' }
 
 const signClass = (v: number) => (v > 0 ? 'text-up' : v < 0 ? 'text-down' : 'text-t3')
 
+/** z-score 셀 — |z|≥2 warning 하이라이트. */
+function ZCell({ zf }: { zf: BasisZFamily | undefined }) {
+  if (!zf || zf.z == null) {
+    return <span className="text-t4" title={zf ? `분포 표본 ${zf.n}일` : '데이터 없음'}>-</span>
+  }
+  const hot = Math.abs(zf.z) >= 2
+  return (
+    <span
+      className={cn(
+        hot ? 'text-warning font-medium' : zf.z > 0 ? 'text-up' : 'text-down',
+        hot && 'px-1 rounded-sm bg-warning/15',
+      )}
+      title={`excess ${zf.current_excess?.toFixed(1)} (실측 ${zf.current?.toFixed(1)} − 이론 ${zf.theory_now?.toFixed(1)}) vs 60일 excess ${zf.mean?.toFixed(1)}±${zf.std?.toFixed(1)} (n=${zf.n}, D-${zf.days_to_expiry})`}
+    >
+      {zf.z >= 0 ? '+' : '−'}
+      {Math.abs(zf.z).toFixed(2)}σ
+    </span>
+  )
+}
+
 export function BasisBookPanel() {
   const bb = useLpStore((s) => s.basisBook)
+  const zscore = useBasisZscore()
 
   return (
     <div className="bg-bg-primary">
@@ -104,7 +126,10 @@ export function BasisBookPanel() {
           {/* ── 지수 베이시스 가족별 ── */}
           {bb.index_basis.length > 0 && (
             <div className="px-3 py-2">
-              <div className="text-[10px] text-t3 uppercase tracking-wide mb-1">지수 베이시스 (가족별)</div>
+              <div className="text-[10px] text-t3 uppercase tracking-wide mb-1">
+                지수 베이시스 (가족별)
+                <span className="text-t4 normal-case ml-2">· z-score: 만기 정규화 excess 60일 분포 대비 (월물 혼합 무해)</span>
+              </div>
               <table className="w-full text-[11px]">
                 <thead className="text-t4 text-[10px]">
                   <tr>
@@ -113,12 +138,13 @@ export function BasisBookPanel() {
                     <th className="text-right py-1 font-normal">선물 leg</th>
                     <th className="text-right py-1 font-normal">순 베이시스</th>
                     <th className="text-right py-1 font-normal">10bp당</th>
+                    <th className="text-right py-1 font-normal">z-score</th>
                     <th className="text-right py-1 font-normal">만기</th>
                   </tr>
                 </thead>
                 <tbody className="font-mono tabular-nums">
                   {bb.index_basis.map((e) => (
-                    <IndexRow key={e.family} e={e} />
+                    <IndexRow key={e.family} e={e} zf={zscore?.families[e.family]} />
                   ))}
                 </tbody>
               </table>
@@ -167,7 +193,7 @@ function Layer({ label, hint, children }: { label: string; hint: string; childre
   )
 }
 
-function IndexRow({ e }: { e: IndexBasisExposure }) {
+function IndexRow({ e, zf }: { e: IndexBasisExposure; zf: BasisZFamily | undefined }) {
   const hasPos = e.net_basis_notional_krw !== 0
   return (
     <tr className="border-t border-bg-base/40">
@@ -185,6 +211,9 @@ function IndexRow({ e }: { e: IndexBasisExposure }) {
       </td>
       <td className={cn('py-1 text-right', signClass(e.sensitivity_per_10bp_krw))}>
         {hasPos ? fmtKrw(e.sensitivity_per_10bp_krw) : '-'}
+      </td>
+      <td className="py-1 text-right">
+        <ZCell zf={zf} />
       </td>
       <td className="py-1 text-right">
         {e.futures_code ? (

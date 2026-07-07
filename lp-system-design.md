@@ -467,7 +467,7 @@ LP 작업은 Finance_Data DB + LS API를 광범위하게 *읽음*. main 쪽 데�
 | **2. 호가 보드** | FV_futures wire + 요구엣지·skew·제안 호가/수량 시트, 유니버스 12종 | ✅ 2026-07-07 PR-A `0cc9548` / PR-B `7a7a0b4` / PR-C `bbfbbab` (§13.8) |
 | **3. 헤지 티켓 + 실행 라우터** | 체결→선물 티켓(넷팅 판정·미니 라운딩) + 현물vs선물 대체 판정 + 베이시스 포지션 기장 | ✅ 2026-07-07 `4a7e9dd` |
 | **4. 손익·베이시스 분해** | 5분해 + markout + 베이시스 북 원장 + 4층 분해 + 만기 롤 알림 + 한도 4개 | ✅ PR-D(베이시스 북 원장·4층 분해·만기 롤, §13.9) + PR-E(P&L 5분해·markout·한도 4개, §13.10) 완료 |
-| **5. 출구** | 베이시스 z-score 모니터 + 넷팅 바스켓 빌더 + 출구 3개 비교 + 알림 | |
+| **5. 출구** | 베이시스 z-score 모니터 + 넷팅 바스켓 빌더 + 출구 3개 비교 | ✅ 2026-07-07 (§13.11) — 넷팅 바스켓 빌더(PDF 합산·부호 넷팅·ADV 캡·주식선물 배지) + 지수 베이시스 z-score(raw 60일 분포) + 출구 3개 순 bp 비교. 알림은 색상 배지 v1(별도 시스템 X) |
 
 각 Phase는 독립적으로 쓸모 있게 (end-to-end 먼저 원칙 유지). 단계별 사용자 합의 후 다음 Phase.
 
@@ -599,3 +599,85 @@ Playwright 실화면 확인.
   유령 캐리가 잔차로 역류. → 선물 제외 + 현물성 부호 반영 + caveat 명기.
 - markout 가격 신선도 가드 60s (정지 종가 무경고 기록 차단) / 장중 재시작 day_open caveat +
   reqwest Client 재사용.
+
+### 13.11 Phase 5 구현 기록 (2026-07-07 — 출구: 넷팅 바스켓 + z-score + 출구 3개 비교)
+
+**목표 달성**: v2 운영 사이클의 마지막 단계(정리)를 채워 §13.3-D 출구 3개를 상시 비교
+가능하게. **Rust 무변경** (전부 backend REST + 프론트 계산). 파일: backend
+`services/lp_netting.py`(신규)·`routers/lp.py`, 프론트 `BasketBuilderPanel`·
+`ExitComparisonPanel`(신규)·`BasisBookPanel`·`BasisRouterPanel`·`QuoteParamsPanel`·
+`useBasisZscore`(신규)·`lpStore`·`types/lp`.
+
+**Part 1 — 넷팅 바스켓 빌더 (메인 출구, §13.2)**: `POST /api/lp/netting-basket` (body 없음,
+원장 ETF 재고 읽음). 버튼 트리거 스냅샷 (실시간 스트림 아님). 부호 규약
+`units_signed = net_qty/cu_unit`, 종목별 기여 `= −units_signed × pdf_shares` (롱 ETF → 매도
+leg / 숏 ETF → 매수 leg), **종목별 float 끝까지 누적 후 최종 1회 round-half-to-even** (ETF마다
+반올림하면 겹침 상쇄가 깨져 잔여 부풀음 — 0주 leg 제외). 현금분 별도 합. PDF는 etf_cache
+우선·miss 시 etf_portfolio_daily on-demand(마스터/PDF **독립 MAX** — §9.8 버그1 방어).
+futures_based ETF(114800·252670·251340)는 excluded(사유 반환)하되 `etf_holdings`엔 남김
+(설정/환매 출구용). leg 비용: (a) 매도 leg 거래세 tax_sell_bp (b) ADV 임팩트 =
+|주문주수|/ADV20(20일 평균 volume, ohlcv_daily) 비율 + 캡(기본 10%) 초과 플래그 (c) 종목
+스프레드 v1 생략(caveat). has_stock_future = futures_master base 존재. UI: 주문표 테이블 +
+합계 스트립 + 선물 오버레이 청산 안내(현 index_fut의 역방향 계약수) + **주식선물 배지 클릭 →
+BasisRouterPanel 프리필+자동판정** + **주문표 클립보드 복사(탭 구분)**.
+
+**넷팅 손계산 실측** (069500 롱 50000(1CU) + 102110 숏 50000(1CU), 둘 다 K200): 삼성전자
+069500 매도 6978 vs 102110 매수 6987 → **순 +9주 매수**. 단독 069500 gross 65.05억 → 넷팅 후
+gross **7.85M (0.1%)**, 잔여 18 leg(지수편입비 차이). 반대로 229200(KQ150)+069500(K200)은
+겹침 0 → 350 leg 그대로(넷팅 없음). 부호 4방향 검증: 롱 ETF 단독=전 leg 매도·현금잔여<0,
+숏 ETF=매수, futures_based 제외+holdings 잔존 — 유닛 하네스 전부 통과.
+
+**Part 2 — 지수 베이시스 z-score**: `GET /api/lp/basis-zscore?k200=&kq150=&k200_spot=&kq150_spot=`.
+Finance_Data `futures_daily_with_class`(NEAR, underlying '01'/'06')의 **`underlying_basis`
+컬럼이 정확히 (선물 종가 − 현물지수 종가)** 실측 확인(2026-07-06: 01 close 1303.95 − K2G01P
+1293.13 = 10.82 = ub) → 지수 조인 불필요. **만기 정규화 excess 기준** (독립 검증 F1 수정,
+아래): 행별 excess = ub − spot×r×잔존일/365 (r=cost_inputs 자체 금리, spot=close−ub, 잔존일 =
+행 날짜 기준 다음 분기(3/6/9/12월) 두 번째 목요일 — NEAR가 만기 당일까지 유지·익일 롤 실측이라
+코드 파싱 불필요). raw 행 1h 캐시·excess 통계는 요청마다 재계산(금리 변경 즉시 반영). 현재값도
+동일 정의: 실시간 베이시스(tick.basis) − 이론(tick.underlying_index×r×D/365, spot 미제공 시
+직전 종가 폴백). UI: BasisBookPanel 지수 베이시스 행 z 칼럼 + |z|≥2 warning, 툴팁에
+excess/실측/이론/분포/D-day.
+
+**Part 3 — 출구 3개 비교 카드** (`ExitComparisonPanel`, 프론트 근사): 넷팅 바스켓 결과
+(lpStore 공유)의 재고 명목 대비 **순 bp**로 통일 비교·정렬. ① 넷팅 바스켓+선물 청산 = −(거래세
++ 선물청산수수료 근사(재고명목×futures_fee_bp)) ② 호가 자연 건조 = 재고명목×base_spread_bp −
+캐리(base_rate×소요일/365), 소요일 사용자 입력(v1) ③ 설정/환매 = CU 도달 ETF만
+재고×cu_fee_bp(**신설 quote-param, default 2bp**). 각 카드 근사 각주 + 최선 하이라이트. 실측
+(재고 137.5억): ① −1.4bp ② **+2.7bp(최선)** ③ −2.0bp — bp 산식 손계산 일치.
+
+**검증**: backend `import main` OK·tsc 0·lint 0(신규/수정 파일)·cargo 무변경(realtime/
+stat-arb-engine git clean). mock 8200 라이브 스모크: 넷팅 바스켓 생성(4종·168 leg·오버레이
+역방향 8계약)·출구 3카드 bp 정렬·z-score 칼럼(excess 기준 −1.33σ, 툴팁 "excess −4.3 (실측
+2.0 − 이론 6.3) vs 60일 excess 1.8±4.6 (n=60, D-64)")·주식선물 배지→라우터
+프리필+자동판정(196170/170/매도, 시세미수신=mock 구독외 정상)·클립보드 복사·콘솔 에러 0.
+**테스트 원장 전량 정리(0/0)**. 기존 회귀(ledger·basis_book·pnl_decomp·quote_board·quote-params
+cu_fee_bp round-trip) 유지 — Rust serde가 미지 필드 무시(deny_unknown_fields 없음)라 quote-params
+확장 안전.
+
+**독립 검증 후 수정 3건 + 소소 2건 (F1·F2·F3, 2026-07-07)**:
+- **F1 z-score 롤오버 오염 (부호 반전 실측)**: 60일 창에 6월물 43일 + 9월물 17일 혼합 → raw
+  베이시스가 이봉 분포(혼합 5.91±6.24 vs 월물별 2.97/13.34), basis 10.82의 z가 혼합 +0.79 vs
+  현재월물 −0.64로 **부호 반전**. → **(a) 만기 정규화 excess** 채택 (선호안): 행별 excess =
+  ub − spot×r×잔존일/365. 잔존일은 "행 날짜 기준 다음 분기 2번째 목요일" 규칙으로 도출 —
+  view가 만기 당일까지 NEAR 유지(2026-06-11 A0166000 실측)라 계약 코드 파싱 없이 정확.
+  수정 후 excess 분포 1.76±4.61 (만기 기울기 제거 — 월물간 잔차는 실제 시장 rich/cheap),
+  current 10.82 → excess 4.57 → z +0.61. 단위검증: 2nd Thursday 3건·롤 경계 2건·연말 경계.
+- **F2 레버리지 ETF 바스켓 미차단**: 122630·233740은 PDF가 현물+지수선물+타 ETF 혼합 —
+  현물 leg만 환산하면 실델타(2x)의 ~50%만 커버하는 주문표 무경고 생성 + 069500 등 타 ETF
+  성분이 leg로 등장. → `LEVERAGED_MIXED_ETFS` excluded (사유 명시), etf_holdings에는 잔존
+  (설정/환매 참조 — futures_based와 동일 처리). 재현 테스트: 122630 기장 → excluded·leg 0 확인.
+- **F3 복수 is_cash 행 overwrite 비결정**: `etfs.py`·`lp_netting.py`가 마지막 is_cash 행
+  덮어쓰기 + ORDER BY 없음 → 122630에서 설정현금액 88.6억 vs 원화현금 0.9억이 행 순서 따라
+  뒤바뀜(~98배, **186 ETF 영향**). is_cash 행은 전수 2종(원화현금 010010·설정현금액 H00000)
+  실측. **설정현금액 = NAV×CU 정확 일치 (summary 행), 원화현금 = NAV − Σ주식 정확 일치** →
+  단순 SUM은 ~2× NAV로 이중계상. 채택: **SUM(is_cash) − 설정현금액(H00000) 제외**. iNAV 영향:
+  122630 rNAV 항등 (8,769,088,640 + 90,829,483)/50,000 = 177,198.36 = NAV/주 **정확 일치**.
+  arbitrable ETF(단일 원화현금)는 069500=2,760,388·229200=−1,610,760 불변 회귀 확인 —
+  H00000 보유 ETF는 전부 파생형(arbitrable=False, UI 흐림)이라 iNAV 화면 위험 없음, 이제 결정적.
+- 소소: cash_residual 라벨 → "현금 leg (음수=수취)" (부호 규약 명시·중립색) / lp.py 사구
+  `_PRODUCT_TO_UNDERLYING` 제거.
+
+**알려진 v1 근사/스코프**: (a) 종목 스프레드·시장 임팩트 krw 비용 미산입(ADV 비율/캡 플래그만) —
+실현 비용 과소평가 가능 (b) 선물 청산 수수료 = 재고명목×fee 근사(승수별 정밀 명목 아님) (c) 자연
+건조 스프레드=전량 스큐 소진 가정(낙관적)·소요일 수동 (d) z의 excess는 배당 미반영 + spot 폴백
+시 직전 종가 근사 (e) 가격/ADV는 직전 거래일 프록시(장중 실시간 아님).

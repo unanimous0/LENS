@@ -7,6 +7,7 @@ import type {
   LedgerEntry,
   LedgerSnapshot,
   LpCostInputs,
+  NettingBasketResponse,
   PnlDecompSnapshot,
   QuoteBoardSnapshot,
   QuoteParams,
@@ -26,6 +27,15 @@ export interface CorporateActionToday {
   event_type: string
   price_factor: number
   description: string | null
+}
+
+/** 베이시스 라우터 프리필 요청 (넷팅 바스켓 주식선물 배지 → BasisRouterPanel 입력+자동판정). */
+export interface BasisRoutePrefill {
+  code: string
+  side: 'buy' | 'sell'
+  qty: number
+  /** 매 클릭마다 증가 — 같은 값 재클릭도 감지. */
+  nonce: number
 }
 
 /** 원장 입력 폼 프리필 요청 (헤지 티켓·베이시스 라우터 → LedgerBoard EntryForm). */
@@ -69,6 +79,10 @@ interface LpState {
   quoteUniverse: Record<string, QuoteUniverseMeta>
   /** 원장 입력 폼 프리필 (헤지 티켓·베이시스 라우터 기장 바로가기). */
   ledgerPrefill: LedgerPrefill | null
+  /** 넷팅 바스켓(§13.3-D) — 버튼 트리거 스냅샷. 출구 3개 비교(ExitComparisonPanel)와 공유. */
+  nettingBasket: NettingBasketResponse | null
+  /** 베이시스 라우터 프리필 (넷팅 바스켓 주식선물 배지 → BasisRouterPanel). */
+  basisRoutePrefill: BasisRoutePrefill | null
   setMatrix: (m: FairValueMatrixSnapshot) => void
   setBookRisk: (b: BookRiskSnapshot) => void
   setBasisBook: (b: BasisBookSnapshot) => void
@@ -82,6 +96,9 @@ interface LpState {
   setQuoteUniverse: (u: Record<string, QuoteUniverseMeta>) => void
   /** 프리필 요청 — nonce 자동 증가. code/side/qty(+선택 price/note). */
   requestLedgerPrefill: (p: Omit<LedgerPrefill, 'nonce'>) => void
+  setNettingBasket: (b: NettingBasketResponse | null) => void
+  /** 베이시스 라우터 프리필 요청 — nonce 자동 증가. */
+  requestBasisRoutePrefill: (p: Omit<BasisRoutePrefill, 'nonce'>) => void
 }
 
 export const useLpStore = create<LpState>((set) => ({
@@ -100,6 +117,8 @@ export const useLpStore = create<LpState>((set) => ({
   quoteParams: DEFAULT_QUOTE_PARAMS,
   quoteUniverse: {},
   ledgerPrefill: null,
+  nettingBasket: null,
+  basisRoutePrefill: null,
   setMatrix: (m) => set({ matrix: m }),
   setBookRisk: (b) => set({ bookRisk: b }),
   setBasisBook: (b) => set({ basisBook: b }),
@@ -120,5 +139,10 @@ export const useLpStore = create<LpState>((set) => ({
   requestLedgerPrefill: (p) =>
     set((s) => ({
       ledgerPrefill: { ...p, nonce: (s.ledgerPrefill?.nonce ?? 0) + 1 },
+    })),
+  setNettingBasket: (b) => set({ nettingBasket: b }),
+  requestBasisRoutePrefill: (p) =>
+    set((s) => ({
+      basisRoutePrefill: { ...p, nonce: (s.basisRoutePrefill?.nonce ?? 0) + 1 },
     })),
 }))

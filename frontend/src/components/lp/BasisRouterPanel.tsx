@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useLpStore } from '@/stores/lpStore'
 import type { BasisRouteResponse } from '@/types/lp'
 import { cn } from '@/lib/utils'
@@ -24,16 +24,30 @@ const VERDICT_LABEL: Record<string, string> = {
 
 export function BasisRouterPanel() {
   const requestPrefill = useLpStore((s) => s.requestLedgerPrefill)
+  const routePrefill = useLpStore((s) => s.basisRoutePrefill)
   const [code, setCode] = useState('')
   const [side, setSide] = useState<'buy' | 'sell'>('sell')
   const [qty, setQty] = useState('')
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
   const [result, setResult] = useState<BasisRouteResponse | null>(null)
+  const lastPrefillNonce = useRef(0)
 
-  const run = async () => {
-    const c = code.trim()
-    const q = parseInt(qty, 10)
+  // 넷팅 바스켓 주식선물 배지 클릭 → 입력 프리필 + 즉시 판정 (§13.3-D).
+  useEffect(() => {
+    if (!routePrefill || routePrefill.nonce === lastPrefillNonce.current) return
+    lastPrefillNonce.current = routePrefill.nonce
+    setCode(routePrefill.code)
+    setSide(routePrefill.side)
+    setQty(String(routePrefill.qty))
+    void run({ code: routePrefill.code, side: routePrefill.side, qty: routePrefill.qty })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [routePrefill])
+
+  const run = async (over?: { code: string; side: 'buy' | 'sell'; qty: number }) => {
+    const c = (over?.code ?? code).trim()
+    const q = over?.qty ?? parseInt(qty, 10)
+    const sd = over?.side ?? side
     if (!c || !Number.isFinite(q) || q <= 0) {
       setErr('코드·수량(양수) 필수')
       return
@@ -41,7 +55,7 @@ export function BasisRouterPanel() {
     setBusy(true)
     setErr('')
     try {
-      const url = `/realtime/basis-route?code=${encodeURIComponent(c)}&side=${side}&qty=${q}`
+      const url = `/realtime/basis-route?code=${encodeURIComponent(c)}&side=${sd}&qty=${q}`
       const r = await fetch(url)
       if (!r.ok) {
         setErr(`요청 실패 (${r.status})`)
@@ -121,7 +135,7 @@ export function BasisRouterPanel() {
             className="w-28 bg-bg-base px-2 py-1 text-[11px] tabular-nums text-right text-t1 outline-none focus:border-accent border border-transparent"
           />
           <button
-            onClick={run}
+            onClick={() => run()}
             disabled={busy}
             className="text-[11px] px-4 py-1 bg-accent text-bg-base font-medium hover:opacity-90 disabled:opacity-50"
           >

@@ -128,9 +128,15 @@ export function QuoteParamsPanel() {
             step={0.5}
             onChange={(v) => update({ limit_basis_var_krw: v * 1e8 })}
           />
+          <NumField
+            label="설정/환매 수수료 (bp, §13.3-D)"
+            value={params.cu_fee_bp}
+            step={0.5}
+            onChange={(v) => update({ cu_fee_bp: v })}
+          />
         </div>
         <div className="mt-1 text-[10px] text-t4">
-          베이시스 VaR = (지수+종목 명목) × 일변동성 근사 — 조잡한 v1 상수.
+          베이시스 VaR = (지수+종목 명목) × 일변동성 근사 — 조잡한 v1 상수. 설정/환매 수수료는 출구 3 비교(AP 비용)용.
         </div>
       </div>
 
