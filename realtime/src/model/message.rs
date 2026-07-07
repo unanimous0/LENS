@@ -1,6 +1,6 @@
 use serde::Serialize;
 
-use super::lp::{BookRiskSnapshot, FairValueMatrixSnapshot, QuoteBoardSnapshot};
+use super::lp::{BasisBookSnapshot, BookRiskSnapshot, FairValueMatrixSnapshot, QuoteBoardSnapshot};
 use super::tick::{EtfTick, FuturesTick, IndexFuturesTick, OrderbookTick, StockTick, VolumeTick};
 
 /// 프론트엔드로 전송하는 WebSocket 메시지.
@@ -31,4 +31,7 @@ pub enum WsMessage {
     /// LP 호가 보드 — FV_futures 기준 12종 제안 호가/수량 (§13.3-A). 200ms throttle broadcast.
     #[serde(rename = "quote_board")]
     QuoteBoard(QuoteBoardSnapshot),
+    /// LP 베이시스 북 — 북 4층 분해 + 종목/지수 베이시스 페어 (§13.4). 1초 주기 broadcast.
+    #[serde(rename = "basis_book")]
+    BasisBook(BasisBookSnapshot),
 }

@@ -1,5 +1,6 @@
 import { useLpInit } from '@/hooks/useLpInit'
 import { BookFourNumbers } from '@/components/lp/BookFourNumbers'
+import { BasisBookPanel } from '@/components/lp/BasisBookPanel'
 import { QuoteBoard } from '@/components/lp/QuoteBoard'
 import { HedgeTicketPanel } from '@/components/lp/HedgeTicketPanel'
 import { BasisRouterPanel } from '@/components/lp/BasisRouterPanel'
@@ -26,6 +27,8 @@ export function LpMatrixPage() {
   return (
     <div className="flex flex-col gap-1 p-1">
       <BookFourNumbers />
+      {/* 북 4층 분해 + 베이시스 북(§13.4) — 4대 숫자의 확장이므로 바로 아래 */}
+      <BasisBookPanel />
       <QuoteBoard />
       {/* ③ 헤지 티켓(§13.3-B) + 베이시스 라우터(§13.4) — QuoteBoard 아래·원장 위 한 행 */}
       <div className="grid grid-cols-2 gap-1">

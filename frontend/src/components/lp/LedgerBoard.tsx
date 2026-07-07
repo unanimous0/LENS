@@ -274,6 +274,8 @@ function EntryForm() {
   const [qty, setQty] = useState('')
   const [price, setPrice] = useState('')
   const [note, setNote] = useState('')
+  // 진입 베이시스 (§13.4) — 프리필로만 세팅. 수동 코드 편집 시 해제(오귀속 방지).
+  const [entryBasis, setEntryBasis] = useState<number | null>(null)
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
 
@@ -287,6 +289,7 @@ function EntryForm() {
     setQty(String(prefill.qty))
     setPrice(prefill.price != null ? String(prefill.price) : '')
     setNote(prefill.note ?? '')
+    setEntryBasis(prefill.entry_basis ?? null)
     setErr('')
     // nonce만 의존 — 같은 값 재클릭도 반영.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -316,7 +319,15 @@ function EntryForm() {
         r = await fetch('/api/lp/ledger/entry', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ code: c, side, qty: q, price: p, note: note || null, kind: 'fill' }),
+          body: JSON.stringify({
+            code: c,
+            side,
+            qty: q,
+            price: p,
+            note: note || null,
+            entry_basis: entryBasis,
+            kind: 'fill',
+          }),
         })
       }
       if (!r.ok) {
@@ -329,6 +340,7 @@ function EntryForm() {
       setQty('')
       setPrice('')
       setNote('')
+      setEntryBasis(null)
     } finally {
       setBusy(false)
     }
@@ -368,7 +380,10 @@ function EntryForm() {
       <div className="flex gap-1 mb-1">
         <input
           value={code}
-          onChange={(e) => setCode(e.target.value)}
+          onChange={(e) => {
+            setCode(e.target.value)
+            setEntryBasis(null) // 수동 편집 시 프리필된 진입 베이시스 해제
+          }}
           placeholder="코드 (자유 입력)"
           className="flex-1 bg-bg-base px-2 py-1 text-[11px] tabular-nums text-t1 outline-none focus:border-accent border border-transparent"
         />
@@ -406,6 +421,12 @@ function EntryForm() {
         {kind === 'carryover'
           ? '이월: 해당 코드 기존 이월을 이 수량으로 교체 (당일 체결 보존)'
           : '체결: 당일 체결 로그에 누적'}
+        {entryBasis != null && kind === 'fill' && (
+          <span className="ml-1 text-blue">
+            · 진입 베이시스 {entryBasis >= 0 ? '+' : ''}
+            {entryBasis.toLocaleString('ko-KR', { maximumFractionDigits: 1 })}
+          </span>
+        )}
       </div>
     </div>
   )

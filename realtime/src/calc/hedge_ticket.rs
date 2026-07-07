@@ -9,7 +9,9 @@
 //!   - 현물 주식:  노출 × β → K200 가족.
 //!   - 원장의 기존 지수선물 포지션: 코드 prefix로 가족·승수 판정 → existing_futures_delta에
 //!     합산 (부호 有, 숏이면 음수). residual = net + existing → 이미 헤지된 분이 상쇄됨.
-//!   - 주식선물 포지션은 v1 델타 분해에서 제외 (Part 2 베이시스 라우터가 종목 베이시스 처리).
+//!   - 주식선물 포지션: base 종목 β로 K200 가족 델타 포함 (Phase 4 M3 — 원장이 주수 단위로
+//!     기장하므로 노출 = 주수 × 선물가(폴백 현물가) × β). 미포함 시 델타중립 베이시스 페어
+//!     (현물 롱 + 주식선물 숏)의 현물 leg 델타만 잡혀 **중복 지수 헤지 티켓**이 나옴.
 //!
 //! 계약 환산: 계약 델타 = 선물가 × 승수. K200은 본계약(정수) 라운딩 후 잔차를 미니(1/5)로
 //! 추가 라운딩해 라운딩 잔차 최소화. KQ150은 미니 없음(단일 라운딩).
@@ -34,7 +36,7 @@ const MULT_KOSDAQ150: f64 = 10_000.0;
 
 /// 지수선물 코드(A + 상품2 + 연1 + 월1 + 000) → (가족, index_futures 맵 키, 승수).
 /// 지수선물이 아니면 None (주식선물·주식·ETF 등).
-fn classify_index_future(code: &str) -> Option<(&'static str, &'static str, f64)> {
+pub(crate) fn classify_index_future(code: &str) -> Option<(&'static str, &'static str, f64)> {
     if code.len() != 8 || !code.starts_with('A') {
         return None;
     }
@@ -62,6 +64,9 @@ fn family_static(f: &str) -> Option<&'static str> {
 /// - `risk`: 베타/섹터 (섹터 ETF·현물의 K200 베타).
 /// - `universe`: 12종 호가 유니버스 메타 (family·leverage·beta·fv_mode).
 /// - `index_futures`: product별 지수선물 최신 상태 (front 코드·가격·나이).
+/// - `stock_fut_bases`: 주식선물 코드 → base 6자리 (원장 집계 base_code). 주식선물 델타를
+///   base β로 가족 분해에 포함 — 델타중립 페어의 중복 헤지 차단 (M3).
+#[allow(clippy::too_many_arguments)]
 pub fn compute_hedge_tickets(
     book: &DeskBook,
     prices: &PriceMap,
@@ -69,6 +74,7 @@ pub fn compute_hedge_tickets(
     risk: Option<&RiskParams>,
     universe: &[QuoteUniverseEtf],
     index_futures: &HashMap<String, IndexFuturesState>,
+    stock_fut_bases: &HashMap<String, String>,
     now_ms: u64,
 ) -> Vec<HedgeTicket> {
     let uni: HashMap<&str, &QuoteUniverseEtf> =
@@ -94,6 +100,31 @@ pub fn compute_hedge_tickets(
                 }
                 None => {
                     fam_broken.entry(family).or_insert_with(|| code.clone());
+                }
+            }
+            continue;
+        }
+        // 1.5) 주식선물 → base 종목 β로 K200 가족 델타 (M3 — 원장 주수 단위 기장).
+        //      가격은 선물가 우선, 미수신이면 현물가 폴백 (베이시스 수백원 차이 ≪ 델타 오차 허용).
+        //      base β 미상이면 기존과 동일하게 분해 제외 (unmapped — book_risk에 표시됨).
+        if let Some(base) = stock_fut_bases.get(code) {
+            if let Some(r) = risk {
+                if let Some(&b) = r.betas.get(base) {
+                    let price = prices
+                        .get(code)
+                        .map(|p| p.price)
+                        .filter(|p| *p > 0.0)
+                        .or_else(|| prices.get(base).map(|p| p.price).filter(|p| *p > 0.0))
+                        .or_else(|| {
+                            prices
+                                .get(&format!("A{base}"))
+                                .map(|p| p.price)
+                                .filter(|p| *p > 0.0)
+                        })
+                        .unwrap_or(0.0);
+                    if price > 0.0 {
+                        *fam_net.entry("k200").or_insert(0.0) += qty as f64 * price * b;
+                    }
                 }
             }
             continue;
@@ -141,7 +172,7 @@ pub fn compute_hedge_tickets(
                 }
             }
         }
-        // 4) 주식선물·미매핑 — v1 델타 분해 제외 (베이시스 라우터가 종목 베이시스 처리).
+        // 4) 미매핑 (base 미상 주식선물 포함) — 델타 분해 제외 (book_risk unmapped에 표시).
     }
 
     let mut tickets = Vec::new();
@@ -328,6 +359,7 @@ mod tests {
             prev_nav: None,
             prev_close: None,
             prev_index_close: None,
+            futures_based: false,
         }
     }
 
@@ -372,7 +404,7 @@ mod tests {
             [("252670".to_string(), 5_000.0), ("229200".to_string(), 10_000.0)].into();
         let b = book(&[("252670", 20_000), ("229200", 10_000)]);
         let index = idx(now, &[("kospi200", "A0166000", 350.0), ("kosdaq150", "A0666000", 1200.0)]);
-        let ts = compute_hedge_tickets(&b, &HashMap::new(), &etf_prices, None, &universe, &index, now);
+        let ts = compute_hedge_tickets(&b, &HashMap::new(), &etf_prices, None, &universe, &index, &HashMap::new(), now);
 
         let k200 = find(&ts, "k200");
         // 1억 × (−2) = −2억.
@@ -391,7 +423,7 @@ mod tests {
         let etf_prices: HashMap<String, f64> = [("069500".to_string(), 100_000.0)].into();
         let b = book(&[("069500", 2_800)]);
         let index = idx(now, &[("kospi200", "A0166000", 350.0), ("mini_k200", "A0566000", 350.0)]);
-        let ts = compute_hedge_tickets(&b, &HashMap::new(), &etf_prices, None, &universe, &index, now);
+        let ts = compute_hedge_tickets(&b, &HashMap::new(), &etf_prices, None, &universe, &index, &HashMap::new(), now);
         let k200 = find(&ts, "k200");
         assert!((k200.net_delta_krw - 280_000_000.0).abs() < 1.0);
         // 본계약 매도 3 + 미니 매도 1 (0.2본계약 = 미니 1). 잔차 0.
@@ -415,7 +447,7 @@ mod tests {
         // 069500 롱 2.8억(+280M) + 본계약 숏 3(−262.5M) + 미니 숏 1(−17.5M) = 정확히 0.
         let b = book(&[("069500", 2_800), ("A0166000", -3), ("A0566000", -1)]);
         let index = idx(now, &[("kospi200", "A0166000", 350.0), ("mini_k200", "A0566000", 350.0)]);
-        let ts = compute_hedge_tickets(&b, &HashMap::new(), &etf_prices, None, &universe, &index, now);
+        let ts = compute_hedge_tickets(&b, &HashMap::new(), &etf_prices, None, &universe, &index, &HashMap::new(), now);
         let k200 = find(&ts, "k200");
         assert!((k200.existing_futures_delta_krw - (-280_000_000.0)).abs() < 1.0, "exist={}", k200.existing_futures_delta_krw);
         assert!(k200.residual_delta_krw.abs() < 1.0, "residual={}", k200.residual_delta_krw);
@@ -432,7 +464,7 @@ mod tests {
         // KQ150 1X 숏 → 음의 델타. 노출 −1억. 계약 델타 = 1200×10000 = 1,200만. −1억/1200만 ≈ −8.33.
         let b = book(&[("229200", -10_000)]);
         let index = idx(now, &[("kosdaq150", "A0666000", 1200.0)]);
-        let ts = compute_hedge_tickets(&b, &HashMap::new(), &etf_prices, None, &universe, &index, now);
+        let ts = compute_hedge_tickets(&b, &HashMap::new(), &etf_prices, None, &universe, &index, &HashMap::new(), now);
         let kq = find(&ts, "kq150");
         assert!((kq.net_delta_krw - (-100_000_000.0)).abs() < 1.0);
         // target = +1억 → 매수. round(1억/1200만)=round(8.33)=8.
@@ -452,7 +484,7 @@ mod tests {
         // 노출 2,000주 × 50,000 = 1억. β1.25 → K200 델타 1.25억.
         let b = book(&[("396500", 2_000)]);
         let index = idx(now, &[("kospi200", "A0166000", 350.0)]);
-        let ts = compute_hedge_tickets(&b, &HashMap::new(), &etf_prices, None, &universe, &index, now);
+        let ts = compute_hedge_tickets(&b, &HashMap::new(), &etf_prices, None, &universe, &index, &HashMap::new(), now);
         let k200 = find(&ts, "k200");
         assert!((k200.net_delta_krw - 125_000_000.0).abs() < 1.0, "net={}", k200.net_delta_krw);
     }
@@ -468,7 +500,7 @@ mod tests {
             [("069500".to_string(), PriceWithAge { price: 100_000.0, updated_at_ms: now })].into();
         let b = book(&[("069500", 2_800)]);
         let index = idx(now, &[("kospi200", "A0166000", 350.0), ("mini_k200", "A0566000", 350.0)]);
-        let ts = compute_hedge_tickets(&b, &prices, &etf_prices, None, &universe, &index, now);
+        let ts = compute_hedge_tickets(&b, &prices, &etf_prices, None, &universe, &index, &HashMap::new(), now);
         let k200 = find(&ts, "k200");
         // StockTick 경로 가격으로 2.8억 델타 → 매도 3+미니 1 (기존 테스트와 동일 결과).
         assert!((k200.net_delta_krw - 280_000_000.0).abs() < 1.0, "net={}", k200.net_delta_krw);
@@ -491,7 +523,7 @@ mod tests {
         let b = book(&[("069500", 2_800), ("A0566000", -4), ("229200", 10_000)]);
         // kospi200/kosdaq150은 신선, mini_k200은 미수신.
         let index = idx(now, &[("kospi200", "A0166000", 350.0), ("kosdaq150", "A0666000", 1200.0)]);
-        let ts = compute_hedge_tickets(&b, &HashMap::new(), &etf_prices, None, &universe, &index, now);
+        let ts = compute_hedge_tickets(&b, &HashMap::new(), &etf_prices, None, &universe, &index, &HashMap::new(), now);
         let k200 = find(&ts, "k200");
         assert!(!k200.usable, "existing 평가 불가면 unusable이어야 함");
         assert!(k200.ticket.is_empty(), "강등 시 티켓 leg 없음: {:?}", k200.ticket);
@@ -511,7 +543,7 @@ mod tests {
         let b = book(&[("069500", 2_800), ("A0166000", -3)]);
         // kospi200 state는 오래됨(1_000_000) — leg도 valuation도 stale.
         let index = idx(1_000_000, &[("kospi200", "A0166000", 350.0)]);
-        let ts = compute_hedge_tickets(&b, &HashMap::new(), &etf_prices, None, &universe, &index, now);
+        let ts = compute_hedge_tickets(&b, &HashMap::new(), &etf_prices, None, &universe, &index, &HashMap::new(), now);
         let k200 = find(&ts, "k200");
         assert!(!k200.usable);
         assert!(k200.reason.contains("A0166000"), "reason={}", k200.reason);
@@ -526,10 +558,70 @@ mod tests {
         let b = book(&[("069500", 2_800)]);
         // state는 1_000_000 시점 (오래됨).
         let index = idx(1_000_000, &[("kospi200", "A0166000", 350.0), ("mini_k200", "A0566000", 350.0)]);
-        let ts = compute_hedge_tickets(&b, &HashMap::new(), &etf_prices, None, &universe, &index, now);
+        let ts = compute_hedge_tickets(&b, &HashMap::new(), &etf_prices, None, &universe, &index, &HashMap::new(), now);
         let k200 = find(&ts, "k200");
         assert!(!k200.usable);
         assert!(k200.ticket.is_empty());
         assert!(k200.reason.contains("stale") || k200.reason.contains("미수신"));
+    }
+
+    fn risk_with_beta(code: &str, beta: f64) -> RiskParams {
+        use super::super::book_risk::{CoverageInfo, ResidualCovariance};
+        RiskParams {
+            as_of: None,
+            market_code: "K2G01P".into(),
+            window_days: 60,
+            betas: [(code.to_string(), beta)].into(),
+            residual_sigmas_daily: HashMap::new(),
+            residual_covariance: ResidualCovariance { codes: vec![], matrix: vec![] },
+            sector_map: HashMap::new(),
+            shrinkage_intensity: 0.3,
+            coverage: CoverageInfo { target_stocks: 1, fit_ok: 1, fit_failed: 0, failed_codes_sample: vec![] },
+        }
+    }
+
+    /// M3: 델타중립 종목 베이시스 페어 (현물 롱 + 주식선물 숏, 주수 동일) → 가족 델타가
+    /// 베이시스분(수백만)만 남아 티켓 0계약 = 중복 지수 헤지 차단. 4층 분해 ① 가산성의 핵심.
+    #[test]
+    fn stock_futures_delta_nets_spot_in_family() {
+        let now = 1_000_000u64;
+        let risk = risk_with_beta("005930", 1.1);
+        let prices: crate::calc::PriceMap = [
+            ("005930".to_string(), PriceWithAge { price: 70_000.0, updated_at_ms: now }),
+            ("A1167000".to_string(), PriceWithAge { price: 70_300.0, updated_at_ms: now }),
+        ]
+        .into();
+        let sf_bases: HashMap<String, String> = [("A1167000".to_string(), "005930".to_string())].into();
+        let b = book(&[("005930", 10_000), ("A1167000", -10_000)]);
+        let index = idx(now, &[("kospi200", "A0166000", 350.0), ("mini_k200", "A0566000", 350.0)]);
+        let ts = compute_hedge_tickets(&b, &prices, &HashMap::new(), Some(&risk), &[], &index, &sf_bases, now);
+        let k200 = find(&ts, "k200");
+        // net = 1.1 × 10,000 × (70,000 − 70,300) = −330만 (베이시스분만 잔존).
+        assert!((k200.net_delta_krw - (-3_300_000.0)).abs() < 1.0, "net={}", k200.net_delta_krw);
+        // 본계약 8,750만·미니 1,750만 → 330만은 0계약 라운딩 = 헤지 불필요.
+        assert!(k200.ticket.is_empty(), "델타중립 페어에 중복 헤지 티켓: {:?}", k200.ticket);
+        assert!(k200.usable);
+    }
+
+    /// M3 폴백: 주식선물가 미수신 → 현물가 폴백 → 정확히 0 넷팅.
+    #[test]
+    fn stock_futures_price_falls_back_to_spot() {
+        let now = 1_000_000u64;
+        let risk = risk_with_beta("005930", 1.1);
+        let prices: crate::calc::PriceMap = [
+            ("005930".to_string(), PriceWithAge { price: 70_000.0, updated_at_ms: now }),
+            // A1167000 시세 없음 — 현물가로 valuation.
+        ]
+        .into();
+        let sf_bases: HashMap<String, String> = [("A1167000".to_string(), "005930".to_string())].into();
+        let b = book(&[("005930", 10_000), ("A1167000", -10_000)]);
+        let index = idx(now, &[("kospi200", "A0166000", 350.0)]);
+        let ts = compute_hedge_tickets(&b, &prices, &HashMap::new(), Some(&risk), &[], &index, &sf_bases, now);
+        // 정확히 0 → k200 티켓 자체가 생성 안 됨 (net==0 && fut==0).
+        assert!(
+            ts.iter().all(|t| t.family != "k200" || t.net_delta_krw.abs() < 1.0),
+            "폴백 넷팅 실패: {:?}",
+            ts.iter().map(|t| (t.family.clone(), t.net_delta_krw)).collect::<Vec<_>>()
+        );
     }
 }

@@ -188,6 +188,7 @@ fn msg_pending_key(msg: &WsMessage) -> String {
         WsMessage::FairValueMatrix(_) => "fair_value_matrix".to_string(),
         WsMessage::BookRisk(_) => "book_risk".to_string(),
         WsMessage::QuoteBoard(_) => "quote_board".to_string(),
+        WsMessage::BasisBook(_) => "basis_book".to_string(),
     }
 }
 
@@ -206,6 +207,7 @@ fn msg_cache_key(msg: &WsMessage) -> Option<String> {
         WsMessage::FairValueMatrix(_) => Some("fair_value_matrix".to_string()),
         WsMessage::BookRisk(_) => Some("book_risk".to_string()),
         WsMessage::QuoteBoard(_) => Some("quote_board".to_string()),
+        WsMessage::BasisBook(_) => Some("basis_book".to_string()),
     }
 }
 

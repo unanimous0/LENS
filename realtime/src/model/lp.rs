@@ -250,3 +250,102 @@ pub struct BookRiskSnapshot {
     pub hedge_tickets: Vec<HedgeTicket>,
     pub timestamp: String,
 }
+
+// =============================================================================
+// 베이시스 북 (§13.4 Phase 4) — 북 4층 분해 + 종목/지수 베이시스 명시 추적
+// =============================================================================
+
+/// 종목 베이시스 페어 (현물 ±q vs 주식선물 ∓q'). 수량 불일치 시 겹침(min)만 페어,
+/// 잔여는 일반 포지션으로 남아 여기 안 잡힘.
+///
+/// 다월물: 같은 base의 선물 leg가 여러 개(근월+차월, 롤 주간)면 **만기 순으로 현물 잔량을
+/// 순차 배분** (근월 우선) — 현물 전량이 월물마다 중복 페어링되는 이중계상 방지 (H1).
+///
+/// 부호 규약: `matched_signed_shares` = sign(현물 수량) × 겹침주수.
+///   - 현물 롱 + 선물 숏 (매도 대체) → matched_signed > 0, **베이시스 축소 시 이익**.
+///   - 현물 숏 + 선물 롱 (매수 대체) → matched_signed < 0, 베이시스 확대 시 이익.
+/// `convergence_pnl = (entry_basis − basis_now) × matched_signed_shares` 로 4방향 일관.
+#[derive(Debug, Clone, Serialize)]
+pub struct StockBasisPair {
+    pub base_code: String,
+    pub name: String,
+    /// 현물 순 수량 (부호 有, 주).
+    pub spot_qty: i64,
+    pub fut_code: String,
+    /// 주식선물 순 수량 (부호 有, 주환산 — 원장이 계약×승수=주수로 기장).
+    pub fut_qty: i64,
+    /// 겹침 주수 (양수) = min(|spot_qty|, |fut_qty|).
+    pub matched_shares: i64,
+    /// 페어 부호가 적용된 겹침 (= sign(spot_qty) × matched_shares). convergence_pnl 부호원.
+    pub matched_signed_shares: i64,
+    pub spot_price: f64,
+    pub fut_price: f64,
+    /// 원장 진입 베이시스 (주당 원). 없으면 None → convergence_pnl None.
+    pub entry_basis: Option<f64>,
+    /// 실측 베이시스 = 선물가 − 현물가 (주당 원).
+    pub basis_now: f64,
+    /// 이론 베이시스 = spot × r × d/365 (배당 무시 v1).
+    pub basis_theory: f64,
+    /// excess = 실측 − 이론.
+    pub excess_now: f64,
+    /// 수렴 손익 (원) = (entry_basis − basis_now) × matched_signed_shares. 진입 없으면 None.
+    pub convergence_pnl: Option<f64>,
+    /// 겹침 명목 (원, 크기) = matched_shares × spot_price.
+    pub matched_notional_krw: f64,
+    /// 실보유 계약(front/back)의 만기까지 잔존일. expiry_known=false면 0 (의미 없음).
+    pub days_to_expiry: i64,
+    /// 만기 확인 여부 — futures_master(front/back)에 계약 코드가 없으면 false
+    /// (만기 미상: D-day·이론 베이시스·연환산 무의미, 액션 플래그도 억제).
+    pub expiry_known: bool,
+    /// 현재 베이시스의 연환산 bp (만기 수렴 가정 캐리 수익률).
+    pub annualized_bp: f64,
+    /// 만기 D-5 이내 — 현금결제라 만기일 현물 leg 처리 액션 필수. 만기 미상이면 false.
+    pub expiry_action_needed: bool,
+    /// 가격 확보 여부 (현물·선물 틱 모두 있어야 베이시스 산출).
+    pub usable: bool,
+    /// 미산출 사유 (usable=false일 때).
+    pub reason: String,
+}
+
+/// 지수 베이시스 노출 (지수형 ETF vs 지수선물), 가족 단위.
+///
+/// ETF 롱 + 선물 숏 매칭이 **베이시스 롱** (notional·sensitivity 양수).
+#[derive(Debug, Clone, Serialize)]
+pub struct IndexBasisExposure {
+    /// "k200" | "kq150".
+    pub family: String,
+    /// 지수형 ETF의 지수 환산 델타 합 (부호 有, 원) = Σ 노출 × L.
+    pub etf_leg_krw: f64,
+    /// 원장 지수선물 오버레이 델타 (부호 有, 원) = Σ 계약 × 선물가 × 승수. hedge_ticket과 동일 소스.
+    pub fut_leg_krw: f64,
+    /// 매칭된 베이시스 포지션 크기 (부호 有 — 양수=베이시스 롱). 반대 부호일 때만 min(|·|), 아니면 0.
+    pub net_basis_notional_krw: f64,
+    /// 베이시스 10bp당 손익 (원) = net_basis_notional × 10bp. 부호는 notional과 동일.
+    pub sensitivity_per_10bp_krw: f64,
+    /// front-month 지수선물 만기까지 잔존일 (오버레이 롤 스케줄).
+    pub days_to_expiry: i64,
+    /// front month D-2 이내 → 롤 필요.
+    pub roll_needed: bool,
+    /// 만기 산정에 쓴 front 지수선물 코드 (없으면 빈 문자열).
+    pub futures_code: String,
+}
+
+/// 베이시스 북 스냅샷 — 북 4층 분해 + 페어별 상세 (§13.4). 1초 주기 broadcast.
+///
+/// 4층: `방향 델타 + 지수 베이시스(가족별) + 종목 베이시스 + 잔차`.
+#[derive(Debug, Clone, Serialize)]
+pub struct BasisBookSnapshot {
+    /// ① 방향 델타 (원) — 선물 오버레이 후 잔여 방향. hedge_ticket residual 합 (동일 소스).
+    pub directional_delta_krw: f64,
+    /// ② 지수 베이시스 (가족별).
+    pub index_basis: Vec<IndexBasisExposure>,
+    /// ③ 종목 베이시스 페어 목록.
+    pub stock_basis: Vec<StockBasisPair>,
+    /// ③ 종목 베이시스 총 명목 (원, 크기 합) = Σ matched_notional_krw.
+    pub stock_basis_total_krw: f64,
+    /// ④ 잔차위험 1σ (원) — book_risk #3 그대로.
+    pub residual_risk_krw: f64,
+    /// 만기 액션 필요 (종목 페어 D-5 또는 지수 오버레이 D-2) — UI 경고 배지 편의 플래그.
+    pub any_expiry_action: bool,
+    pub timestamp: String,
+}

@@ -7,6 +7,7 @@
 //! 호출자(`scheduler`)가 매 throttle 윈도우(50~200ms)에 호출하여 셀 재계산.
 #![allow(dead_code)]
 
+pub mod basis_book;
 pub mod basis_route;
 pub mod book_risk;
 pub mod hedge_ticket;
@@ -94,6 +95,25 @@ pub struct CostInputs {
     pub slippage_bp: f64,
     /// 헤지 회전 가정 (일). 캐리 일할 계산용
     pub hold_days: i32,
+}
+
+/// 원장 집계 1건 (`GET /api/lp/ledger` aggregates[]). scheduler 5초 poll이 채우고
+/// `DeskBook.positions`(book_risk·hedge_ticket 호환)와 베이시스 북(§13.4)의 단일 소스.
+/// price/avg_price 등 표시 필드는 Rust에서 미사용 — 필요 필드만 역직렬화.
+#[derive(Debug, Clone, Deserialize)]
+pub struct LedgerAgg {
+    pub code: String,
+    pub instrument: String,
+    #[serde(default)]
+    pub net_qty: i64,
+    /// 주식선물 → 기초 종목 6자리 (종목 베이시스 페어 매칭 키). 그 외 None.
+    #[serde(default)]
+    pub base_code: Option<String>,
+    /// 진입 베이시스 qty 가중 평균 (주당 원). 베이시스 대체 기장 leg에만. 없으면 None.
+    #[serde(default)]
+    pub entry_basis: Option<f64>,
+    #[serde(default)]
+    pub name: Option<String>,
 }
 
 /// 가격 맵 — 코드(주식/ETF/선물 모두) → (price, last_update_ms).

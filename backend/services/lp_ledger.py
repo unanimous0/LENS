@@ -75,6 +75,12 @@ def _ensure_schema_sync() -> None:
             );
             """
         )
+        # entry_basis 1급 시민화 (§13.4 Phase 4) — 베이시스 대체 기장 시 진입 베이시스
+        # (선물가 − 현물가, 주당 원)를 note 문자열과 병행해 수치로 보관. 멱등 마이그레이션:
+        # 기존 DB엔 컬럼이 없으므로 table_info로 존재 확인 후에만 ALTER (ADD COLUMN 재실행 방지).
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(lp_ledger)").fetchall()}
+        if "entry_basis" not in cols:
+            conn.execute("ALTER TABLE lp_ledger ADD COLUMN entry_basis REAL")
         conn.commit()
 
 
@@ -116,6 +122,7 @@ def _signed(side: str, qty: int) -> int:
 
 
 def _row_to_entry(row: dict) -> dict:
+    eb = row["entry_basis"] if "entry_basis" in row.keys() else None
     return {
         "id": row["id"],
         "ts": row["ts"],
@@ -126,6 +133,7 @@ def _row_to_entry(row: dict) -> dict:
         "qty": int(row["qty"]),
         "price": None if row["price"] is None else float(row["price"]),
         "note": row["note"],
+        "entry_basis": None if eb is None else float(eb),
     }
 
 
@@ -136,6 +144,7 @@ def _row_to_entry(row: dict) -> dict:
 def _add_entry_sync(entry: dict) -> dict:
     eid = uuid.uuid4().hex
     ts = entry.get("ts") or datetime.now().isoformat(timespec="seconds")
+    entry_basis = entry.get("entry_basis")
     row = (
         eid,
         ts,
@@ -146,11 +155,12 @@ def _add_entry_sync(entry: dict) -> dict:
         int(entry["qty"]),
         entry.get("price"),
         entry.get("note"),
+        entry_basis,
     )
     with _connect() as conn:
         conn.execute(
-            "INSERT INTO lp_ledger (id, ts, code, instrument, kind, side, qty, price, note) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO lp_ledger (id, ts, code, instrument, kind, side, qty, price, note, entry_basis) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             row,
         )
         conn.commit()
@@ -164,6 +174,7 @@ def _add_entry_sync(entry: dict) -> dict:
         "qty": int(entry["qty"]),
         "price": entry.get("price"),
         "note": entry.get("note"),
+        "entry_basis": entry_basis,
     }
 
 
@@ -262,9 +273,14 @@ def _aggregate_sync() -> dict[str, dict]:
     """코드별 집계.
 
     반환: {code: {code, instrument, carryover_qty(signed), fills_qty(signed, all),
-                  fills_qty_today(signed), net_qty(signed), avg_price(nullable)}}
+                  fills_qty_today(signed), net_qty(signed), avg_price(nullable),
+                  entry_basis(nullable)}}
 
     avg_price: price가 있는 모든 엔트리의 qty 가중 VWAP (blended 평단 proxy).
+    entry_basis: entry_basis가 있는 엔트리 중 **포지션 증가 방향** (signed 부호 == 최종
+                 net_qty 부호)만의 qty 가중 평균 (§13.4). 청산 방향 fill에 entry_basis가
+                 실려도 진입 평균에 *가산*되는 왜곡 방지 — 청산은 진입 베이시스를 바꾸지
+                 않는다 (v1 근사: FIFO 아닌 부호 필터. net 0이면 None).
     net_qty: carryover 부호합 + fill 부호합 (전체). Rust 호환 dict의 소스.
     fills_qty_today: 표시용 (ts date == 오늘).
     """
@@ -287,6 +303,7 @@ def _aggregate_sync() -> dict[str, dict]:
                 "net_qty": 0,
                 "_px_num": 0.0,
                 "_px_den": 0,
+                "_eb_rows": [],  # (signed_qty, qty, entry_basis) — net 확정 후 부호 필터
             }
             agg[code] = a
         # instrument는 코드당 일관되어야 하지만, override 등으로 갈리면 최신(=carryover 우선) 유지.
@@ -303,12 +320,21 @@ def _aggregate_sync() -> dict[str, dict]:
         if r["price"] is not None:
             a["_px_num"] += qty * float(r["price"])
             a["_px_den"] += qty
+        eb = r.get("entry_basis")
+        if eb is not None:
+            a["_eb_rows"].append((signed, qty, float(eb)))
 
     for a in agg.values():
         a["net_qty"] = a["carryover_qty"] + a["fills_qty"]
         a["avg_price"] = (a["_px_num"] / a["_px_den"]) if a["_px_den"] > 0 else None
+        # entry_basis: 포지션 증가 방향(부호 == net 부호)만 가중 (docstring 근거).
+        net_sign = (a["net_qty"] > 0) - (a["net_qty"] < 0)
+        eb_num = sum(q * eb for s, q, eb in a["_eb_rows"] if net_sign != 0 and (s > 0) == (net_sign > 0))
+        eb_den = sum(q for s, q, _ in a["_eb_rows"] if net_sign != 0 and (s > 0) == (net_sign > 0))
+        a["entry_basis"] = (eb_num / eb_den) if eb_den > 0 else None
         a.pop("_px_num", None)
         a.pop("_px_den", None)
+        a.pop("_eb_rows", None)
     return agg
 
 

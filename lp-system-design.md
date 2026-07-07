@@ -431,8 +431,8 @@ LP 작업은 Finance_Data DB + LS API를 광범위하게 *읽음*. main 쪽 데�
 **베이시스 인지 실행 라우터**: 헤지 티켓(B)·넷팅 바스켓(D)의 **모든 주문 leg**에 대해, 주식선물 상장 종목이면 현물 vs 선물 비교 후 라우팅. 판정 입력: 실시간 베이시스 vs **자체 이론 베이시스**(금리 2.8% × 잔존일 − 예상배당; 인포맥스 theoretical_basis는 금리 가정 불명 → 참고치, §9.7), 베이시스 z-score, 주식선물 유동성, 잔존일. 매도 leg는 베이시스 rich일 때, 매수 leg는 cheap일 때 선물 대체. 예: "삼성전자 매도 leg, 베이시스 +5,000(이론 +1,200 대비 +3,800 rich) → 선물 매도 대체" — 이때 **현물 롱 + 선물 숏 = 종목 베이시스 포지션이 자동 기장**됨.
 
 **베이시스 북 원장**: 북의 모든 베이시스 포지션을 명시적 분리 추적:
-- 지수 베이시스 (ETF vs 지수선물): 진입/현재/이론 대비 rich·cheap, 수렴 손익
-- 종목 베이시스 (현물 vs 주식선물): 진입→현재 베이시스, 만기 D-day(현금결제 — 만기 수렴 보장이나 **만기일 현물 leg 처리 액션 필수**), 연환산 수익률
+- 지수 베이시스 (ETF vs 지수선물): 진입/현재/이론 대비 rich·cheap, 수렴 손익. **선물지수 추종 ETF(114800·252670·251340, DB underlying_index 실측)는 두 leg 모두 선물 연동이라 현물-선물 베이시스 노출 ≈ 0 → etf_leg에서 제외** (가족 델타·헤지 티켓에는 포함 — 델타는 실재)
+- 종목 베이시스 (현물 vs 주식선물): 진입→현재 베이시스, 만기 D-day(현금결제 — 만기 수렴 보장이나 **만기일 현물 leg 처리 액션 필수**), 연환산 수익률. 같은 base 다월물(롤 주간 근월+차월)은 만기 순으로 현물 잔량 순차 배분 — 이중계상 금지
 - 만기 롤 스케줄 (매월 두 번째 목요일, memory `reference_stock_futures_expiry`) — 만기 전 액션 알림
 
 **북 4층 분해** (4대 숫자 패널 확장): 북 전체를 `방향 델타(≈0) + 지수 베이시스 노출(가족별 notional + 베이시스 10bp당 손익) + 종목 베이시스 노출 + 잔차`로 완전 분해. "지금 내 북 = K200 베이시스 42억 롱과 같다"가 한 줄로 보이게. 손익 분해(C)의 베이시스 항목과 1:1 대응.
@@ -465,8 +465,8 @@ LP 작업은 Finance_Data DB + LS API를 광범위하게 *읽음*. main 쪽 데�
 |---|---|---|
 | **1. 북 원장** | lens.db 원장 + 체결 로그 + 한눈 보드 + positions API 호환 레이어 | ✅ 2026-07-07 `c6de5bc` |
 | **2. 호가 보드** | FV_futures wire + 요구엣지·skew·제안 호가/수량 시트, 유니버스 12종 | ✅ 2026-07-07 PR-A `0cc9548` / PR-B `7a7a0b4` / PR-C `bbfbbab` (§13.8) |
-| **3. 헤지 티켓 + 실행 라우터** | 체결→선물 티켓(넷팅 판정·미니 라운딩) + 현물vs선물 대체 판정 + 베이시스 포지션 기장 | 다음 |
-| **4. 손익·베이시스 분해** | 5분해 + markout + 베이시스 북 원장 + 4층 분해 + 만기 롤 알림 + 한도 4개 | |
+| **3. 헤지 티켓 + 실행 라우터** | 체결→선물 티켓(넷팅 판정·미니 라운딩) + 현물vs선물 대체 판정 + 베이시스 포지션 기장 | ✅ 2026-07-07 `4a7e9dd` |
+| **4. 손익·베이시스 분해** | 5분해 + markout + 베이시스 북 원장 + 4층 분해 + 만기 롤 알림 + 한도 4개 | 🚧 PR-D 완료(베이시스 북 원장·4층 분해·만기 롤, §13.9). 남음: 5분해·markout·한도 4개 |
 | **5. 출구** | 베이시스 z-score 모니터 + 넷팅 바스켓 빌더 + 출구 3개 비교 + 알림 | |
 
 각 Phase는 독립적으로 쓸모 있게 (end-to-end 먼저 원칙 유지). 단계별 사용자 합의 후 다음 Phase.
@@ -487,3 +487,46 @@ LP 작업은 Finance_Data DB + LS API를 광범위하게 *읽음*. main 쪽 데�
 - 지수선물 front-month 일일 re-resolve (현재 기동 시 1회 — 만기 넘겨 장기 가동 시 만료물 구독 지속)
 - InternalFeed 지수선물 wire (내부망 실측 필요, TODO 주석)
 - 배당 시즌(4월) implied spot bias — v1 배당 무시 주석 참조
+
+### 13.9 Phase 4 PR-D 구현 기록 (2026-07-07 — 베이시스 북 원장 + 4층 분해 + 만기 롤)
+
+**목표 달성**: 북에 존재하는 모든 베이시스 포지션을 명시 분리 추적 + 북 전체 4층 분해로
+"지금 내 북 = K200 베이시스 42억 롱"이 한 줄로 보이게 (§13.4).
+
+**원장 확장**: `lp_ledger`에 `entry_basis REAL` 1급 시민화 (멱등 PRAGMA-guard ALTER). `POST
+/ledger/entry`에 optional `entry_basis`. 집계는 avg_price처럼 qty 가중 평균. BasisRouterPanel
+"선물 대체 기장"이 note(가독)와 entry_basis(수치) **병행** 기록. 소급 파싱 없음 (신규 기장부터).
+
+**Rust 단일 소스화**: scheduler 5초 poll을 `/api/lp/positions` → **`/api/lp/ledger`**로 확장.
+aggregates(instrument·base_code·entry_basis)에서 `DeskBook.positions`를 파생 → book_risk·hedge_ticket
+무변경, 베이시스 북은 같은 aggregates 소비. `basis_book` WS는 flush 내 1초 스로틀 broadcast —
+book_risk의 hedge_tickets(residual·existing)·잔차위험을 그대로 재사용 (계산 중복 없음).
+
+**4층 분해**: `방향 델타(Σ 티켓 residual) + 지수 베이시스(가족별 etf_leg×L vs 선물 existing 매칭
+notional·10bp 민감도) + 종목 베이시스(현물 vs 주식선물 페어) + 잔차(book_risk #3)`.
+
+**종목 베이시스 페어**: 같은 base의 현물 ±q vs 주식선물 ∓q' → 반대 부호일 때 페어, 수량
+불일치는 min 겹침만(잔여는 일반 포지션). 부호 규약 `matched_signed = sign(현물)×겹침`,
+`convergence_pnl = (entry_basis − basis_now) × matched_signed` — 4방향 일관 (현물롱+선물숏 축소=이익).
+만기 D-5 이내 = 현금결제 현물 leg 처리 액션 플래그. 지수 오버레이 front month D-2 = 롤 필요.
+
+**독립 검증 후 수정 4건 (H1·M1·M2·M3, 2026-07-07)**:
+- **H1 다월물 이중계상**: 같은 base의 선물 leg 여러 개(롤 주간 근월+차월)가 각각 현물 전량과
+  페어링되던 버그 → **만기 순 정렬 후 현물 잔량 순차 배분** (근월 우선, 잔여 선물은 unpaired).
+- **M1 만기 오귀속**: base→front 마스터만 봐서 차월물 만기가 근월물로 오표시 → futures_master
+  로더에 **by_code(front+back) 맵** 추가, 실보유 계약 코드로 만기·이름 매칭. 마스터 miss는
+  `expiry_known=false` = "만기 미상" (D-0 오독 액션 오경보 억제).
+- **M2 유령 지수 베이시스**: 선물지수 추종 ETF(114800·252670·251340)를 etf_leg에서 제외
+  (`futures_based` 필드, DB underlying_index 실측 근거 — §13.4 명기).
+- **M3 4층 비가산성**: 주식선물 델타가 어느 층에도 없어 델타중립 페어의 현물 leg 델타가 ①에
+  잔존 + 중복 지수 헤지 티켓 → hedge_ticket 가족 분해에 **주식선물을 base β로 포함** (주수 ×
+  선물가(폴백 현물가) × β). book_risk #2는 여전히 미포함(unmapped 표시) — 알려진 스코프.
+- entry_basis 집계는 **포지션 증가 방향 fill만** qty 가중 (청산 fill의 진입 평균 왜곡 방지).
+
+**검증**: Rust 단위테스트 +17 (총 60 통과) — 페어 인식·수량 불일치·부호 4방향·지수 매칭·
+notional 부호 + 다월물 배분 2·만기 미상·futures_based 제외·델타중립 넷팅 2. mock 라이브
+스모크: (a) 229200 롱+KQ150F 숏 → KQ150 베이시스 4473만 롱(10bp +4만) 실측 정합, (b)
+entry_basis round-trip, (c) 델타중립 페어 → ① 방향 델타 = 0, (d) H1 repro(현물 1만/근월 −1만/
+차월 −6천) → 페어 1개·matched 10,000주(이중계상이면 16,000), 차월 unpaired 델타는 ①로.
+UI: BookFourNumbers 바로 아래 BasisBookPanel (4층 요약 스트립 + 지수/종목 페어 테이블 + D-day
+warning 배지, stale 시 수렴손익 동반 숨김). ④ 잔차 = book_risk #3 동일 소스 확인.

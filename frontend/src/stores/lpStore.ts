@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import type {
+  BasisBookSnapshot,
   BookRiskSnapshot,
   FairValueMatrixSnapshot,
   LedgerAggregate,
@@ -33,6 +34,8 @@ export interface LedgerPrefill {
   qty: number
   price?: number | null
   note?: string | null
+  /** 진입 베이시스 (§13.4) — 선물 대체 기장 시 실측 베이시스 씨앗값. */
+  entry_basis?: number | null
   /** 매 클릭마다 증가 — 같은 값 재클릭도 EntryForm이 감지하도록. */
   nonce: number
 }
@@ -40,6 +43,8 @@ export interface LedgerPrefill {
 interface LpState {
   matrix: FairValueMatrixSnapshot | null
   bookRisk: BookRiskSnapshot | null
+  /** 베이시스 북(§13.4) — Rust 1초 주기 basis_book WS. */
+  basisBook: BasisBookSnapshot | null
   positions: Record<string, number>
   positionsUpdatedAt: string | null
   costInputs: LpCostInputs
@@ -59,6 +64,7 @@ interface LpState {
   ledgerPrefill: LedgerPrefill | null
   setMatrix: (m: FairValueMatrixSnapshot) => void
   setBookRisk: (b: BookRiskSnapshot) => void
+  setBasisBook: (b: BasisBookSnapshot) => void
   setPositions: (p: Record<string, number>, updatedAt?: string | null) => void
   setCostInputs: (c: LpCostInputs) => void
   setCorporateActionsToday: (items: CorporateActionToday[]) => void
@@ -73,6 +79,7 @@ interface LpState {
 export const useLpStore = create<LpState>((set) => ({
   matrix: null,
   bookRisk: null,
+  basisBook: null,
   positions: {},
   positionsUpdatedAt: null,
   costInputs: DEFAULT_COST,
@@ -86,6 +93,7 @@ export const useLpStore = create<LpState>((set) => ({
   ledgerPrefill: null,
   setMatrix: (m) => set({ matrix: m }),
   setBookRisk: (b) => set({ bookRisk: b }),
+  setBasisBook: (b) => set({ basisBook: b }),
   setPositions: (p, updatedAt) =>
     set({ positions: p, positionsUpdatedAt: updatedAt ?? null }),
   setCostInputs: (c) => set({ costInputs: c }),

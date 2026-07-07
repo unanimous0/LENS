@@ -79,6 +79,76 @@ export interface HedgeTicket {
   reason: string
 }
 
+// ---- 베이시스 북 (§13.4 Phase 4) — realtime/src/model/lp.rs 와 1:1 ----
+
+export interface StockBasisPair {
+  base_code: string
+  name: string
+  /** 현물 순 수량 (부호 有, 주). */
+  spot_qty: number
+  fut_code: string
+  /** 주식선물 순 수량 (부호 有, 주환산). */
+  fut_qty: number
+  /** 겹침 주수 (양수). */
+  matched_shares: number
+  /** 부호 적용 겹침 (= sign(spot)×matched). convergence_pnl 부호원. */
+  matched_signed_shares: number
+  spot_price: number
+  fut_price: number
+  /** 진입 베이시스 (주당 원). 없으면 null. */
+  entry_basis: number | null
+  /** 실측 베이시스 = 선물가 − 현물가. */
+  basis_now: number
+  basis_theory: number
+  excess_now: number
+  /** 수렴 손익 (원) = (entry − now) × matched_signed. 진입 없으면 null. */
+  convergence_pnl: number | null
+  /** 겹침 명목 (원) = matched_shares × spot_price. */
+  matched_notional_krw: number
+  /** 실보유 계약(front/back)의 만기 D-day. expiry_known=false면 무의미(0). */
+  days_to_expiry: number
+  /** 만기 확인 여부 — futures_master에 계약 코드 없으면 false (만기 미상). */
+  expiry_known: boolean
+  /** 현재 베이시스의 연환산 bp. */
+  annualized_bp: number
+  /** 만기 D-5 이내 (현금결제 — 현물 leg 처리 필요). 만기 미상이면 false. */
+  expiry_action_needed: boolean
+  usable: boolean
+  reason: string
+}
+
+export interface IndexBasisExposure {
+  family: string // "k200" | "kq150"
+  /** 지수형 ETF 지수 환산 델타 합 (부호 有, 원) = Σ 노출 × L. */
+  etf_leg_krw: number
+  /** 지수선물 오버레이 델타 (부호 有, 원). */
+  fut_leg_krw: number
+  /** 매칭된 베이시스 크기 (부호 有 — 양수=베이시스 롱). */
+  net_basis_notional_krw: number
+  /** 베이시스 10bp당 손익 (원). */
+  sensitivity_per_10bp_krw: number
+  days_to_expiry: number
+  /** front month D-2 이내 → 롤 필요. */
+  roll_needed: boolean
+  futures_code: string
+}
+
+export interface BasisBookSnapshot {
+  /** ① 방향 델타 (원) — 오버레이 후 잔여. */
+  directional_delta_krw: number
+  /** ② 지수 베이시스 (가족별). */
+  index_basis: IndexBasisExposure[]
+  /** ③ 종목 베이시스 페어. */
+  stock_basis: StockBasisPair[]
+  /** ③ 종목 베이시스 총 명목 (원). */
+  stock_basis_total_krw: number
+  /** ④ 잔차위험 1σ (원). */
+  residual_risk_krw: number
+  /** 만기 액션 필요 (종목 D-5 또는 지수 D-2). */
+  any_expiry_action: boolean
+  timestamp: string
+}
+
 export interface BookRiskSnapshot {
   beta_adj_delta_krw: number
   gross_delta_krw: number
@@ -150,6 +220,8 @@ export interface LedgerEntry {
   qty: number
   price: number | null
   note: string | null
+  /** 진입 베이시스 (선물가 − 현물가, 주당 원). §13.4 베이시스 대체 기장 leg에만. */
+  entry_basis?: number | null
   name?: string | null
 }
 
@@ -162,6 +234,8 @@ export interface LedgerAggregate {
   fills_qty_today: number
   net_qty: number
   avg_price: number | null
+  /** 진입 베이시스 qty 가중 평균 (주당 원). 없으면 null. */
+  entry_basis?: number | null
   /** 주식선물 → 기초 종목 6자리 (베이시스 페어 태그용). 그 외 null/미제공. */
   base_code?: string | null
 }

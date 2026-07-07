@@ -30,6 +30,7 @@ use crate::model::lp::{
 };
 use crate::model::message::WsMessage;
 
+use super::basis_book::compute_basis_book;
 use super::book_risk::{compute_book_risk, RiskParamsCache};
 use super::hedge_ticket::compute_hedge_tickets;
 use super::quote_board::{
@@ -38,7 +39,7 @@ use super::quote_board::{
 };
 use super::{
     apply_level3_costs, pdf_basket, stock_futures_intersect, CostInputs, EtfStaticInput,
-    MatrixConfig, PriceMap, PriceWithAge,
+    LedgerAgg, MatrixConfig, PriceMap, PriceWithAge,
 };
 
 /// 첫 빌드 Level 3 default cost params — backend에서 fetch 실패 시 fallback.
@@ -58,6 +59,11 @@ pub struct MatrixState {
     pub etfs: RwLock<HashMap<String, EtfStaticInput>>,
     pub cost: RwLock<CostInputs>,
     pub book: RwLock<DeskBook>,
+    /// 원장 집계 (§13.4 베이시스 북·book_risk·hedge_ticket의 단일 소스). 5초 poll이 채움.
+    /// `book`(positions map)은 여기서 파생 — 아래 poll_book_and_cost 참조.
+    pub ledger: RwLock<Vec<LedgerAgg>>,
+    /// basis_book broadcast 마지막 시각 (ms) — flush는 200ms지만 베이시스 북은 1초 주기.
+    pub last_basis_book_ms: AtomicU64,
     pub prices: DashMap<String, PriceWithAge>,
     pub etf_prices: DashMap<String, f64>,
     pub risk_cache: Arc<RiskParamsCache>,
@@ -84,6 +90,8 @@ impl MatrixState {
                 positions: HashMap::new(),
                 updated_at: "init".into(),
             }),
+            ledger: RwLock::new(Vec::new()),
+            last_basis_book_ms: AtomicU64::new(0),
             prices: DashMap::new(),
             etf_prices: DashMap::new(),
             risk_cache: Arc::new(RiskParamsCache::new()),
@@ -260,6 +268,14 @@ impl MatrixState {
             .map(|r| (r.key().clone(), *r.value()))
             .collect();
         let universe = self.quote_universe.read().await;
+        // 주식선물 코드 → base 6자리 (원장 집계 base_code). M3 — 주식선물 델타를 base β로
+        // 가족 분해에 포함해 델타중립 베이시스 페어의 중복 지수 헤지 티켓 차단.
+        let ledger = self.ledger.read().await;
+        let stock_fut_bases: HashMap<String, String> = ledger
+            .iter()
+            .filter(|a| a.instrument == "stock_fut")
+            .filter_map(|a| a.base_code.clone().map(|b| (a.code.clone(), b)))
+            .collect();
         book_risk_snap.hedge_tickets = compute_hedge_tickets(
             &book,
             &prices_snapshot,
@@ -267,8 +283,37 @@ impl MatrixState {
             risk.as_deref(),
             &universe,
             &idx_snapshot,
+            &stock_fut_bases,
             now_ms,
         );
+
+        // ─── 베이시스 북 (§13.4) — 1초 주기 broadcast (200ms 불필요) ────────
+        // book_risk의 헤지티켓(residual·existing) + 잔차위험을 그대로 소비 → 단일 소스.
+        // basis_book 계산은 원장 aggregates(instrument·base_code·entry_basis)가 필요.
+        let last_bb = self.last_basis_book_ms.load(Ordering::Relaxed);
+        if now_ms.saturating_sub(last_bb) >= 1_000 {
+            // 실보유 계약(front/back) 만기 매칭 소스 — mtime 캐시 Arc clone (cheap).
+            let fut_by_code = super::basis_route::master_by_code();
+            let basis_snap = compute_basis_book(
+                &ledger,
+                &prices_snapshot,
+                &etf_prices_snapshot,
+                &universe,
+                &idx_snapshot,
+                &book_risk_snap.hedge_tickets,
+                book_risk_snap.residual_risk_krw,
+                cost.base_rate_annual,
+                &fut_by_code,
+                now_ms,
+                today,
+                &now_iso,
+            );
+            self.last_basis_book_ms.store(now_ms, Ordering::Relaxed);
+            if tx.try_send(WsMessage::BasisBook(basis_snap)).is_err() {
+                MATRIX_TX_DROPPED.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        drop(ledger);
         drop(universe);
         if tx.try_send(WsMessage::BookRisk(book_risk_snap)).is_err() {
             MATRIX_TX_DROPPED.fetch_add(1, Ordering::Relaxed);
@@ -331,19 +376,29 @@ impl MatrixState {
         let base = fastapi_base.trim_end_matches('/');
         let client = reqwest::Client::new();
 
-        // positions
-        let url = format!("{}/api/lp/positions", base);
+        // ledger (§13.4 단일 소스) — aggregates에서 book(positions map) 파생 + 원장 캐시.
+        // 기존 /api/lp/positions(flat dict)의 상위 집합: instrument·base_code·entry_basis 포함
+        // → book_risk·hedge_ticket은 파생 positions로 무변경, 베이시스 북은 aggregates 소비.
+        let url = format!("{}/api/lp/ledger", base);
         match client.get(&url).timeout(Duration::from_secs(10)).send().await {
             Ok(resp) if resp.status().is_success() => {
-                if let Ok(payload) = resp.json::<PositionsPayload>().await {
+                if let Ok(payload) = resp.json::<LedgerPayload>().await {
+                    let positions: HashMap<String, i64> = payload
+                        .aggregates
+                        .iter()
+                        .filter(|a| a.net_qty != 0)
+                        .map(|a| (a.code.clone(), a.net_qty))
+                        .collect();
+                    let updated_at = payload.updated_at.clone().unwrap_or_default();
                     *self.book.write().await = DeskBook {
-                        positions: payload.positions,
-                        updated_at: payload.updated_at.unwrap_or_default(),
+                        positions,
+                        updated_at,
                     };
+                    *self.ledger.write().await = payload.aggregates;
                 }
             }
-            Ok(resp) => warn!("positions http {}", resp.status()),
-            Err(e) => warn!("positions fetch: {}", e),
+            Ok(resp) => warn!("ledger http {}", resp.status()),
+            Err(e) => warn!("ledger fetch: {}", e),
         }
 
         // cost-inputs
@@ -374,10 +429,11 @@ impl MatrixState {
     }
 }
 
+/// `GET /api/lp/ledger` 응답 — aggregates만 소비 (entries·names는 프론트 전용).
 #[derive(Debug, Deserialize)]
-struct PositionsPayload {
+struct LedgerPayload {
     #[serde(default)]
-    positions: HashMap<String, i64>,
+    aggregates: Vec<LedgerAgg>,
     updated_at: Option<String>,
 }
 

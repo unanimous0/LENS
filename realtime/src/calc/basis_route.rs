@@ -11,6 +11,7 @@
 //! [`decide_basis`]에 주입한다 (이 모듈은 파일 I/O·가격 조회와 분리된 순수 판정).
 #![allow(dead_code)]
 
+use std::sync::Arc;
 use std::sync::OnceLock;
 use std::sync::RwLock;
 
@@ -25,7 +26,8 @@ const BASIS_FUT_STALE_MS: u64 = 60_000;
 // futures_master.json (base_code → front 주식선물) mtime 캐시
 // =============================================================================
 
-/// 한 종목의 front-month 주식선물.
+/// 한 종목의 주식선물 계약 1건. `front_code`는 이 항목이 가리키는 계약 코드 —
+/// by_base 맵에서는 front 월물, by_code 맵에서는 그 코드 자신(front 또는 back).
 #[derive(Debug, Clone)]
 pub struct StockFuture {
     pub base_code: String,
@@ -38,6 +40,9 @@ pub struct StockFuture {
 struct MasterCache {
     mtime_secs: u64,
     by_base: std::collections::HashMap<String, StockFuture>,
+    /// 계약 코드(front/back 모두) → 그 계약. 베이시스 북이 **실보유 계약**의 만기를
+    /// 정확히 잡기 위함 (front 전용 by_base만 보면 차월물 만기가 근월물로 오귀속 — M1).
+    by_code: Arc<std::collections::HashMap<String, StockFuture>>,
 }
 
 fn master_slot() -> &'static RwLock<Option<MasterCache>> {
@@ -58,37 +63,56 @@ fn current_mtime_secs() -> u64 {
         .unwrap_or(0)
 }
 
-/// base_code(6자리) → front 주식선물. futures_master.json을 mtime 기준 lazy 캐시.
-pub fn lookup_stock_future(base_code: &str) -> Option<StockFuture> {
+/// 캐시 최신화 후 접근자 f 실행. mtime 기준 lazy reload (기존 lookup 정책 그대로).
+fn with_master<T>(f: impl FnOnce(&MasterCache) -> T) -> T {
     let disk_mtime = current_mtime_secs();
     // fast path — 캐시 유효
     {
         let guard = master_slot().read().unwrap();
         if let Some(c) = guard.as_ref() {
             if c.mtime_secs == disk_mtime {
-                return c.by_base.get(base_code).cloned();
+                return f(c);
             }
         }
     }
     // reload
-    let by_base = load_master();
-    let result = by_base.get(base_code).cloned();
-    *master_slot().write().unwrap() = Some(MasterCache {
+    let (by_base, by_code) = load_master();
+    let cache = MasterCache {
         mtime_secs: disk_mtime,
         by_base,
-    });
+        by_code: Arc::new(by_code),
+    };
+    let result = f(&cache);
+    *master_slot().write().unwrap() = Some(cache);
     result
 }
 
-fn load_master() -> std::collections::HashMap<String, StockFuture> {
-    let mut out = std::collections::HashMap::new();
+/// base_code(6자리) → front 주식선물. futures_master.json을 mtime 기준 lazy 캐시.
+pub fn lookup_stock_future(base_code: &str) -> Option<StockFuture> {
+    with_master(|c| c.by_base.get(base_code).cloned())
+}
+
+/// 계약 코드(front/back) → 그 계약 전체 맵 스냅샷. 베이시스 북이 실보유 계약별
+/// 만기·이름을 정확히 얻는 데 사용 (Arc clone — cheap).
+pub fn master_by_code() -> Arc<std::collections::HashMap<String, StockFuture>> {
+    with_master(|c| c.by_code.clone())
+}
+
+type MasterMaps = (
+    std::collections::HashMap<String, StockFuture>,
+    std::collections::HashMap<String, StockFuture>,
+);
+
+fn load_master() -> MasterMaps {
+    let mut by_base = std::collections::HashMap::new();
+    let mut by_code = std::collections::HashMap::new();
     let data = match std::fs::read_to_string(master_path()) {
         Ok(d) => d,
-        Err(_) => return out,
+        Err(_) => return (by_base, by_code),
     };
     let json: serde_json::Value = match serde_json::from_str(&data) {
         Ok(v) => v,
-        Err(_) => return out,
+        Err(_) => return (by_base, by_code),
     };
     if let Some(items) = json["items"].as_array() {
         for item in items {
@@ -96,24 +120,28 @@ fn load_master() -> std::collections::HashMap<String, StockFuture> {
             if base.is_empty() {
                 continue;
             }
-            let Some(front) = item.get("front") else { continue };
-            let code = front["code"].as_str().unwrap_or("").trim().to_uppercase();
-            if code.is_empty() {
-                continue;
-            }
-            out.insert(
-                base.clone(),
-                StockFuture {
+            // front + back 모두 by_code에 (실보유 계약 매칭). front만 by_base에 (라우팅용).
+            for leg in ["front", "back"] {
+                let Some(node) = item.get(leg) else { continue };
+                let code = node["code"].as_str().unwrap_or("").trim().to_uppercase();
+                if code.is_empty() {
+                    continue;
+                }
+                let sf = StockFuture {
                     base_code: base.clone(),
-                    front_code: code,
-                    name: front["name"].as_str().unwrap_or("").trim().to_string(),
-                    expiry: front["expiry"].as_str().unwrap_or("").trim().to_string(),
-                    multiplier: front["multiplier"].as_f64().unwrap_or(10.0),
-                },
-            );
+                    front_code: code.clone(),
+                    name: node["name"].as_str().unwrap_or("").trim().to_string(),
+                    expiry: node["expiry"].as_str().unwrap_or("").trim().to_string(),
+                    multiplier: node["multiplier"].as_f64().unwrap_or(10.0),
+                };
+                if leg == "front" {
+                    by_base.insert(base.clone(), sf.clone());
+                }
+                by_code.insert(code, sf);
+            }
         }
     }
-    out
+    (by_base, by_code)
 }
 
 /// 자유 입력 코드 → base 6자리 후보. (LS 6자리 / A+6 / KR7 ISIN)
@@ -309,7 +337,7 @@ pub fn decide_basis(
 }
 
 /// "YYYYMMDD" 만기 → 오늘까지 잔존일 (≥0). 파싱 실패 시 0.
-fn parse_expiry_days(expiry: &str, today: NaiveDate) -> i64 {
+pub(crate) fn parse_expiry_days(expiry: &str, today: NaiveDate) -> i64 {
     if expiry.len() != 8 {
         return 0;
     }

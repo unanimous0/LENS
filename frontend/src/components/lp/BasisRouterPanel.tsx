@@ -63,7 +63,8 @@ export function BasisRouterPanel() {
   }
   const bookFutures = () => {
     if (!result?.futures) return
-    // 원장은 주수 단위 — 계약수 × 승수(=주수)로 기장. 진입 베이시스는 note에 씨앗 기록(Phase 4).
+    // 원장은 주수 단위 — 계약수 × 승수(=주수)로 기장. 진입 베이시스는 note(가독)와
+    // entry_basis 수치 필드(§13.4 베이시스 북 1급 시민)에 병행 기록.
     const shares = result.qty_futures_contracts * result.futures.multiplier
     const sign = result.excess_bp >= 0 ? '+' : ''
     requestPrefill({
@@ -71,6 +72,7 @@ export function BasisRouterPanel() {
       side: result.side as 'buy' | 'sell',
       qty: shares,
       note: `basis routed: excess ${sign}${result.excess_bp.toFixed(1)}bp`,
+      entry_basis: result.basis_now,
     })
   }
 

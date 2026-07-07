@@ -71,6 +71,12 @@ pub struct QuoteUniverseEtf {
     /// 소속 지수 직전 종가 (r_implied 앵커).
     #[serde(default)]
     pub prev_index_close: Option<f64>,
+    /// 기초지수가 **선물지수**(F-K200/F-KQ150)인 ETF (114800·252670·251340 — DB
+    /// underlying_index 실측). 두 leg 모두 선물 연동이라 현물-선물 베이시스 노출 ≈ 0
+    /// → 베이시스 북의 지수 베이시스 etf_leg에서만 제외. 가족 델타·헤지 티켓에는
+    /// 그대로 포함 (델타는 실재함).
+    #[serde(default)]
+    pub futures_based: bool,
 }
 
 /// matrix-config `quote_params` — 호가 파라미터 (UI 조정 대상).
@@ -171,7 +177,7 @@ fn resolve_state<'a>(
 }
 
 /// 지수선물 코드에서 만기(2번째 목요일)까지 잔존일. 파싱 실패 시 0 (캐리 무시).
-fn days_to_expiry(code: &str, today: NaiveDate) -> i64 {
+pub(crate) fn days_to_expiry(code: &str, today: NaiveDate) -> i64 {
     use chrono::Datelike;
     match parse_index_fut_ym(code, today.year()) {
         Some((y, m)) => second_thursday(y, m)
@@ -445,6 +451,7 @@ mod tests {
             prev_nav: Some(130_125.0),
             prev_close: Some(130_125.0),
             prev_index_close: Some(1293.13),
+            futures_based: false,
         }
     }
 

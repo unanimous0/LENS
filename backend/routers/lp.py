@@ -76,6 +76,10 @@ QUOTE_UNIVERSE_CODES = [
 #   섹터/테마형은 KOSPI200(risk_estimator MARKET_CODE=K2G01P)에 대해 회귀하므로 'k200'.
 # leverage: 부호 있는 일일 배수 (+1/+2/-1/-2). 섹터형은 None (fv_mode='beta'로 β 사용).
 # fv_mode: 'index' (배수형) | 'beta' (섹터/테마형 — 지수 베타 + 잔차 프리미엄).
+# futures_based: 기초지수가 **선물지수**인 ETF — etf_master_daily.underlying_index 실측
+#   (2026-07-07): 114800·252670="코스피 200 선물지수", 251340="F-코스닥150 지수". 나머지는
+#   현물지수. 두 leg 모두 선물 연동 → 현물-선물 베이시스 노출 ≈ 0 → 베이시스 북(§13.4)
+#   지수 베이시스 etf_leg에서만 제외 (가족 델타·헤지 티켓에는 포함 — 델타는 실재).
 _QUOTE_UNIVERSE_FALLBACK: dict[str, dict] = {
     # 지수형 (배수)
     "069500": {"name": "KODEX 200", "index_family": "k200", "leverage": 1, "fv_mode": "index"},
@@ -83,9 +87,9 @@ _QUOTE_UNIVERSE_FALLBACK: dict[str, dict] = {
     "233740": {"name": "KODEX 코스닥150레버리지", "index_family": "kq150", "leverage": 2, "fv_mode": "index"},
     "102110": {"name": "TIGER 200", "index_family": "k200", "leverage": 1, "fv_mode": "index"},
     "229200": {"name": "KODEX 코스닥150", "index_family": "kq150", "leverage": 1, "fv_mode": "index"},
-    "114800": {"name": "KODEX 인버스", "index_family": "k200", "leverage": -1, "fv_mode": "index"},
-    "252670": {"name": "KODEX 200선물인버스2X", "index_family": "k200", "leverage": -2, "fv_mode": "index"},
-    "251340": {"name": "KODEX 코스닥150선물인버스", "index_family": "kq150", "leverage": -1, "fv_mode": "index"},
+    "114800": {"name": "KODEX 인버스", "index_family": "k200", "leverage": -1, "fv_mode": "index", "futures_based": True},
+    "252670": {"name": "KODEX 200선물인버스2X", "index_family": "k200", "leverage": -2, "fv_mode": "index", "futures_based": True},
+    "251340": {"name": "KODEX 코스닥150선물인버스", "index_family": "kq150", "leverage": -1, "fv_mode": "index", "futures_based": True},
     # 섹터/테마형 (베타)
     "091160": {"name": "KODEX 반도체", "index_family": "k200", "leverage": None, "fv_mode": "beta"},
     "396500": {"name": "TIGER 반도체TOP10", "index_family": "k200", "leverage": None, "fv_mode": "beta"},
@@ -284,6 +288,10 @@ class LedgerEntryPayload(BaseModel):
     kind: str = Field("fill", description="'fill' | 'carryover'")
     price: Optional[float] = Field(None, description="체결가/평단 (선택)")
     note: Optional[str] = Field(None, description="메모")
+    entry_basis: Optional[float] = Field(
+        None,
+        description="진입 베이시스 (선물가 − 현물가, 주당 원). §13.4 베이시스 대체 기장 leg에 기록",
+    )
     instrument: Optional[str] = Field(
         None, description="수동 override (etf|stock|index_fut|stock_fut). 미지정 시 자동 분류"
     )
@@ -378,6 +386,8 @@ async def build_quote_universe() -> list[dict]:
             "prev_nav": prev_close,       # ETF 직전 종가 = NAV 프록시 (위 docstring 근거)
             "prev_close": prev_close,
             "prev_index_close": prev_index_close,
+            # 선물지수 추종 ETF (베이시스 북 지수 베이시스 etf_leg 제외 대상 — 맵 주석 참조)
+            "futures_based": bool(fb.get("futures_based", False)),
         })
     return universe
 
@@ -521,6 +531,7 @@ async def add_ledger_entry(payload: LedgerEntryPayload):
         "qty": int(payload.qty),
         "price": payload.price,
         "note": payload.note,
+        "entry_basis": payload.entry_basis,
         "ts": payload.ts,
     })
     entry["name"] = _name_for(code, instrument)
