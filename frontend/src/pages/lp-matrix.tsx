@@ -1,7 +1,7 @@
 import { useLpInit } from '@/hooks/useLpInit'
 import { BookFourNumbers } from '@/components/lp/BookFourNumbers'
 import { FairValueMatrix } from '@/components/lp/FairValueMatrix'
-import { PositionEntry } from '@/components/lp/PositionEntry'
+import { LedgerBoard } from '@/components/lp/LedgerBoard'
 import { CostInputsPanel } from '@/components/lp/CostInputsPanel'
 import { ResidualPanel } from '@/components/lp/ResidualPanel'
 import { UnmappedPanel } from '@/components/lp/UnmappedPanel'
@@ -22,14 +22,12 @@ export function LpMatrixPage() {
     <div className="flex flex-col gap-1 p-1">
       <BookFourNumbers />
       <FairValueMatrix />
-      <div className="grid grid-cols-2 gap-1">
-        <PositionEntry />
-        <CostInputsPanel />
-      </div>
+      <LedgerBoard />
       <div className="grid grid-cols-2 gap-1">
         <ResidualPanel />
         <UnmappedPanel />
       </div>
+      <CostInputsPanel />
     </div>
   )
 }

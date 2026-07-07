@@ -16,6 +16,11 @@ export function useLpInit() {
         useLpStore.getState().setPositions(d.positions || {}, d.updated_at)
       )
       .catch(() => {})
+    // 북 원장(§13.5): 엔트리 + 집계
+    fetch('/api/lp/ledger')
+      .then((r) => r.json())
+      .then((d) => useLpStore.getState().setLedger(d))
+      .catch(() => {})
     fetch('/api/lp/cost-inputs')
       .then((r) => r.json())
       .then((c) => useLpStore.getState().setCostInputs(c))

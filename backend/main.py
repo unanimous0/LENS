@@ -38,12 +38,21 @@ for module_name in ("arbitrage", "backtest", "borrowing", "dividends", "etfs", "
 @app.on_event("startup")
 async def _ensure_schemas_on_startup() -> None:
     """SQLite 스키마 보장 — 라우터의 lazy _ensure는 안전망 (uvicorn reload race 회피)."""
-    for module_name in ("positions", "loan_rates"):
+    for module_name in ("positions", "loan_rates", "lp_ledger"):
         try:
             module = __import__(f"services.{module_name}", fromlist=["ensure_schema"])
             await module.ensure_schema()
         except Exception as e:  # noqa: BLE001
             logger.warning("startup schema ensure %s skipped: %s", module_name, e)
+    # LP 원장(§13.5): 기존 lp_positions.json → carryover 이관 (lp_meta 키로 평생 1회 —
+    # "원장 비어있음" 트리거 금지: 원장 전체 삭제 후 --reload 재기동 시 유령 부활 방지).
+    try:
+        from routers.lp import migrate_positions_json_once
+        n = await migrate_positions_json_once()
+        if n:
+            logger.info("lp_ledger migrated %d carryover entries from lp_positions.json", n)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("startup lp_ledger migration skipped: %s", e)
     # backtest 전략·실행 이력 (lens.db 공유) — backtest.md §6.
     try:
         from services.backtest import store as backtest_store

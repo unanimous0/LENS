@@ -74,6 +74,50 @@ export interface LpPositionsPayload {
   updated_at?: string | null
 }
 
+// ---- 북 원장 (§13.5 Phase 1) — backend/services/lp_ledger.py 와 1:1 ----
+
+export type LedgerInstrument = 'etf' | 'stock' | 'index_fut' | 'stock_fut'
+export type LedgerKind = 'carryover' | 'fill'
+export type LedgerSide = 'buy' | 'sell'
+
+export interface LedgerEntry {
+  id: string
+  ts: string
+  code: string
+  instrument: LedgerInstrument
+  kind: LedgerKind
+  side: LedgerSide
+  qty: number
+  price: number | null
+  note: string | null
+  name?: string | null
+}
+
+export interface LedgerAggregate {
+  code: string
+  name: string | null
+  instrument: LedgerInstrument
+  carryover_qty: number
+  fills_qty: number
+  fills_qty_today: number
+  net_qty: number
+  avg_price: number | null
+}
+
+export interface LedgerSnapshot {
+  entries: LedgerEntry[]
+  aggregates: LedgerAggregate[]
+  updated_at: string | null
+}
+
+/** 자산유형 그룹 표시 순서/라벨 */
+export const LEDGER_GROUPS: Array<{ instrument: LedgerInstrument; label: string }> = [
+  { instrument: 'etf', label: 'ETF 재고' },
+  { instrument: 'index_fut', label: '지수선물 오버레이' },
+  { instrument: 'stock_fut', label: '주식선물' },
+  { instrument: 'stock', label: '현물' },
+]
+
 /** UI에 표시할 5개 헤지 경로 컬럼 순서. ③④⑤는 첫 빌드 빈 셀(placeholder). */
 export const HEDGE_ROUTE_COLUMNS: Array<{
   kind: HedgeRoute['kind']

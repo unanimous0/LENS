@@ -60,7 +60,8 @@ LENS SQLite (lens.db)  ←──쓰기──  FastAPI (포지션·loan_rates·sa
 
 LENS의 현재 주력 방향은 단순 차익 모니터링이 아니라 **자체 fair value 체계 + 외부 플로우 탐지로 진정한 LP 전환**. 상세는 `lp-system-design.md`가 단일 진실원이고, 새 기능·리팩터·UI 설계는 거기 정의된 m×n 매트릭스(m=ETF, n=hedge route) + 5-level cascade + 4대 지표 (FV gap / beta-adjusted delta / residual risk / PnL decomp) 프레임에 맞춰서 한다.
 
-- 첫 build 검증 완료 (2026-05-21 라이브, memory `project_lp_first_build_handoff` / `project_zx_live_verified`). 다음 milestone은 §9.5 multi-factor / ETF 확장 / 인포맥스 금리(§9.7).
+- 첫 build 검증 완료 (2026-05-21 라이브, memory `project_lp_first_build_handoff` / `project_zx_live_verified`).
+- **2026-07-07 v2 재설계 합의** — 비교표에서 운영 사이클(호가→선물헤지→손익분해→넷팅바스켓 정리) 워크플로로 전환. OMS 제약(체결시 넷팅 불가·지수선물 헤지 1순위)이 전제. 정본은 `lp-system-design.md §13`, Phase 1 = 북 원장 가시화 (memory `project_lp_oms_constraints`).
 - M:N 통계차익 별도 트랙: PR-A~C3 (35 페어) 완료, 다음 PR-D Johansen / PR-E Sparse PCA / PR-F 통합 (memory `project_mn_screener_progress`).
 
 ## 종목코드 처리
