@@ -94,6 +94,46 @@ export function QuoteParamsPanel() {
         />
       </div>
 
+      {/* ── §13.3-C P&L·리스크 한도 ── */}
+      <div className="mt-3 pt-2 border-t border-bg-base">
+        <div className="text-[11px] text-t3 mb-2">P&amp;L · 리스크 한도 (§13.3-C)</div>
+        <div className="grid grid-cols-2 gap-3 text-[12px]">
+          <NumField
+            label="선물 수수료 (bp × 명목)"
+            value={params.futures_fee_bp}
+            step={0.1}
+            onChange={(v) => update({ futures_fee_bp: v })}
+          />
+          <NumField
+            label="베이시스 일변동성 (bp)"
+            value={params.basis_vol_bp_daily}
+            step={1}
+            onChange={(v) => update({ basis_vol_bp_daily: v })}
+          />
+          <NumField
+            label="순 델타 한도 (억)"
+            value={params.limit_net_delta_krw / 1e8}
+            step={1}
+            onChange={(v) => update({ limit_net_delta_krw: v * 1e8 })}
+          />
+          <NumField
+            label="잔차위험 한도 (억)"
+            value={params.limit_residual_krw / 1e8}
+            step={0.5}
+            onChange={(v) => update({ limit_residual_krw: v * 1e8 })}
+          />
+          <NumField
+            label="베이시스 VaR 한도 (억)"
+            value={params.limit_basis_var_krw / 1e8}
+            step={0.5}
+            onChange={(v) => update({ limit_basis_var_krw: v * 1e8 })}
+          />
+        </div>
+        <div className="mt-1 text-[10px] text-t4">
+          베이시스 VaR = (지수+종목 명목) × 일변동성 근사 — 조잡한 v1 상수.
+        </div>
+      </div>
+
       {codes.length > 0 && (
         <div className="mt-2">
           <button

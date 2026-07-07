@@ -149,6 +149,59 @@ export interface BasisBookSnapshot {
   timestamp: string
 }
 
+// ---- P&L 5분해 + markout + 한도 (§13.3-C Phase 4 PR-E) — realtime/src/model/lp.rs 와 1:1 ----
+
+export interface Unattributed {
+  /** 스프레드 미귀속 fill 건수 (fv_at_fill 없음). */
+  n: number
+  /** 미귀속 fill 명목 합 (원, 크기). */
+  notional_krw: number
+}
+
+export interface MarkoutStats {
+  n_5m: number
+  /** 5분 markout 평균 (bp). 음수 = 역선택. */
+  avg_5m_bp: number
+  n_30m: number
+  avg_30m_bp: number
+}
+
+export interface LimitGauge {
+  name: string
+  /** 현재값 (원, 크기). */
+  current: number
+  /** 한도 (원). 0이면 미설정. */
+  limit: number
+  /** 사용률 = current/limit. */
+  ratio: number
+  /** 부연 (최대 재고 ETF 코드 등). */
+  detail: string
+}
+
+export interface PnlDecompSnapshot {
+  as_of: string
+  /** 당일 북 MTM 총변화 (원, 전일 종가 대비). */
+  total_mtm: number
+  /** 스프레드 수익 (원) = Σ (fv_at_fill − fill_price) × signed_qty. */
+  spread: number
+  /** 베이시스 손익 — 종목 수렴손익 합 (원). */
+  basis_stock: number
+  /** 지수 베이시스 손익 상태 (v1 산출 불가 — 정직 표기). */
+  basis_index_status: string
+  /** 잔차/방향 손익 (원) — total − 나머지 역산 (완전 분해). */
+  residual_directional: number
+  /** 캐리 (원, 음수=비용). */
+  carry: number
+  /** 헤지 비용 (원, 음수). */
+  hedge_cost: number
+  unattributed: Unattributed
+  markout: MarkoutStats
+  /** 리스크 한도 4개 (§13.3-C). */
+  limits: LimitGauge[]
+  usable: boolean
+  caveats: string[]
+}
+
 export interface BookRiskSnapshot {
   beta_adj_delta_krw: number
   gross_delta_krw: number
@@ -222,6 +275,10 @@ export interface LedgerEntry {
   note: string | null
   /** 진입 베이시스 (선물가 − 현물가, 주당 원). §13.4 베이시스 대체 기장 leg에만. */
   entry_basis?: number | null
+  /** 체결 시점 FV_futures 스냅샷 (§13.3-C 스프레드 귀속). ETF 유니버스 fill만. */
+  fv_at_fill?: number | null
+  /** 체결 시점 현재가(mid) 스냅샷. */
+  mid_at_fill?: number | null
   name?: string | null
 }
 
@@ -323,6 +380,17 @@ export interface QuoteParams {
   max_futures_contracts: number
   /** 베이시스 라우터(§13.4) 선물 대체 임계 (bp). */
   basis_threshold_bp: number
+  // ── §13.3-C P&L·리스크 한도 (Phase 4 PR-E) ──
+  /** 선물 체결 수수료 (bp × 명목) — 헤지비용 분해 v1. */
+  futures_fee_bp: number
+  /** 베이시스 일변동성 근사 (bp) — 베이시스 VaR 조잡 상수. */
+  basis_vol_bp_daily: number
+  /** 북 순 베타델타 한도 (오버레이 후, 원). */
+  limit_net_delta_krw: number
+  /** 잔차위험 1σ 총량 한도 (원). */
+  limit_residual_krw: number
+  /** 베이시스 VaR 한도 (원). */
+  limit_basis_var_krw: number
 }
 
 export const DEFAULT_QUOTE_PARAMS: QuoteParams = {
@@ -334,6 +402,11 @@ export const DEFAULT_QUOTE_PARAMS: QuoteParams = {
   inventory_limit_overrides: {},
   max_futures_contracts: 100,
   basis_threshold_bp: 5,
+  futures_fee_bp: 0.3,
+  basis_vol_bp_daily: 15,
+  limit_net_delta_krw: 2_000_000_000,
+  limit_residual_krw: 100_000_000,
+  limit_basis_var_krw: 200_000_000,
 }
 
 /** matrix-config quote_universe 항목 — 모드 뱃지(배수/β)·override 편집용 메타. QuoteRow엔 없는 정적 입력. */

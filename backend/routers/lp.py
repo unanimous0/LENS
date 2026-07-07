@@ -110,6 +110,12 @@ DEFAULT_QUOTE_PARAMS = {
     "inventory_limit_overrides": {},  # {code: krw} ETF별 override
     "max_futures_contracts": 100,   # 선물 헤지 여력 (계약)
     "basis_threshold_bp": 5.0,      # 베이시스 라우터(§13.4) 선물 대체 임계 (bp)
+    # ── §13.3-C P&L·리스크 한도 (Phase 4 PR-E) ──
+    "futures_fee_bp": 0.3,          # 선물 체결 수수료 (bp × 명목) — 헤지비용 분해 v1
+    "basis_vol_bp_daily": 15.0,     # 베이시스 일변동성 근사 (bp) — VaR 조잡 상수
+    "limit_net_delta_krw": 2_000_000_000.0,    # 북 순 베타델타 한도 (오버레이 후, 20억)
+    "limit_residual_krw": 100_000_000.0,       # 잔차위험 1σ 총량 한도 (1억)
+    "limit_basis_var_krw": 200_000_000.0,      # 베이시스 VaR 한도 (2억)
 }
 
 
@@ -129,6 +135,22 @@ class QuoteParams(BaseModel):
     max_futures_contracts: int = Field(100, ge=0, description="선물 헤지 여력 (계약)")
     basis_threshold_bp: float = Field(
         5.0, ge=0, description="베이시스 라우터(§13.4) 선물 대체 임계 (bp)"
+    )
+    # ── §13.3-C P&L·리스크 한도 (Phase 4 PR-E) ──
+    futures_fee_bp: float = Field(
+        0.3, ge=0, description="선물 체결 수수료 (bp × 명목) — 헤지비용 분해 v1"
+    )
+    basis_vol_bp_daily: float = Field(
+        15.0, ge=0, description="베이시스 일변동성 근사 (bp) — 베이시스 VaR 조잡 상수"
+    )
+    limit_net_delta_krw: float = Field(
+        2_000_000_000.0, ge=0, description="북 순 베타델타 한도 (오버레이 후, 원)"
+    )
+    limit_residual_krw: float = Field(
+        100_000_000.0, ge=0, description="잔차위험 1σ 총량 한도 (원)"
+    )
+    limit_basis_var_krw: float = Field(
+        200_000_000.0, ge=0, description="베이시스 VaR 한도 (원)"
     )
 
     @field_validator("inventory_limit_overrides")
@@ -291,6 +313,13 @@ class LedgerEntryPayload(BaseModel):
     entry_basis: Optional[float] = Field(
         None,
         description="진입 베이시스 (선물가 − 현물가, 주당 원). §13.4 베이시스 대체 기장 leg에 기록",
+    )
+    fv_at_fill: Optional[float] = Field(
+        None,
+        description="체결 시점 FV_futures 스냅샷 (§13.3-C 스프레드 귀속). ETF 유니버스 fill만 첨부",
+    )
+    mid_at_fill: Optional[float] = Field(
+        None, description="체결 시점 현재가(mid) 스냅샷 (markout 기준선 참고)"
     )
     instrument: Optional[str] = Field(
         None, description="수동 override (etf|stock|index_fut|stock_fut). 미지정 시 자동 분류"
@@ -532,10 +561,47 @@ async def add_ledger_entry(payload: LedgerEntryPayload):
         "price": payload.price,
         "note": payload.note,
         "entry_basis": payload.entry_basis,
+        "fv_at_fill": payload.fv_at_fill,
+        "mid_at_fill": payload.mid_at_fill,
         "ts": payload.ts,
     })
     entry["name"] = _name_for(code, instrument)
     return entry
+
+
+class FillMarkPayload(BaseModel):
+    fill_id: str = Field(..., description="대상 fill 엔트리 id")
+    horizon: str = Field(..., description="'5m' | '30m'")
+    price: Optional[float] = Field(None, description="마크 시점 현재가")
+    fv: Optional[float] = Field(None, description="마크 시점 FV (ETF 유니버스만)")
+    marked_at: Optional[str] = Field(None, description="ISO 시각 (미지정 시 서버 now)")
+
+
+@router.post("/fill-marks")
+async def add_fill_mark(payload: FillMarkPayload):
+    """markout 기록 (§13.3-C) — Rust가 fill 후 5분/30분 경과 시 현재가·FV 첨부해 POST.
+
+    (fill_id, horizon) UNIQUE — 이미 있으면 무시(멱등). 재시도·재기동 시 이중 기록 안 됨.
+    """
+    await lp_ledger.ensure_schema_once()
+    if payload.horizon not in lp_ledger.VALID_HORIZONS:
+        raise HTTPException(status_code=400, detail=f"horizon invalid: {payload.horizon}")
+    inserted = await lp_ledger.add_fill_mark(payload.model_dump())
+    return {"inserted": inserted, "fill_id": payload.fill_id, "horizon": payload.horizon}
+
+
+@router.get("/fill-marks")
+async def get_fill_marks(date: str = "today"):
+    """markout 목록. date='today'(기본)/'all'/'YYYY-MM-DD'. Rust가 due 마크 dedup에 사용."""
+    await lp_ledger.ensure_schema_once()
+    if date == "all":
+        prefix = None
+    elif date == "today":
+        prefix = datetime.now().date().isoformat()
+    else:
+        prefix = date
+    marks = await lp_ledger.list_fill_marks(prefix)
+    return {"marks": marks, "date": date}
 
 
 @router.delete("/ledger/entry/{entry_id}")

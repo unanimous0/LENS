@@ -59,12 +59,19 @@ export function BasisRouterPanel() {
 
   const bookSpot = () => {
     if (!result) return
-    requestPrefill({ code: result.code, side: result.side as 'buy' | 'sell', qty: result.qty })
+    // §13.3-C: 현물 leg 기장에 현물가를 mid_at_fill로 첨부 (markout 기준선).
+    requestPrefill({
+      code: result.code,
+      side: result.side as 'buy' | 'sell',
+      qty: result.qty,
+      mid_at_fill: result.spot_price > 0 ? result.spot_price : null,
+    })
   }
   const bookFutures = () => {
     if (!result?.futures) return
     // 원장은 주수 단위 — 계약수 × 승수(=주수)로 기장. 진입 베이시스는 note(가독)와
     // entry_basis 수치 필드(§13.4 베이시스 북 1급 시민)에 병행 기록.
+    // §13.3-C: 선물 leg 기장엔 선물가를 mid_at_fill로 첨부 (markout 기준선).
     const shares = result.qty_futures_contracts * result.futures.multiplier
     const sign = result.excess_bp >= 0 ? '+' : ''
     requestPrefill({
@@ -73,6 +80,7 @@ export function BasisRouterPanel() {
       qty: shares,
       note: `basis routed: excess ${sign}${result.excess_bp.toFixed(1)}bp`,
       entry_basis: result.basis_now,
+      mid_at_fill: result.futures.price > 0 ? result.futures.price : null,
     })
   }
 

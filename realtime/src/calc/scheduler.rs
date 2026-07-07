@@ -17,7 +17,7 @@ use dashmap::DashMap;
 use serde::Deserialize;
 use tokio::sync::{mpsc, RwLock};
 use tokio::time::{interval, MissedTickBehavior};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 /// LP 매트릭스 워커 → bridge mpsc try_send 실패 누적.
 /// 정상 운영 0. 누적되면 "매트릭스가 왜 안 갱신됨?" 디버깅 첫 지표.
@@ -33,14 +33,35 @@ use crate::model::message::WsMessage;
 use super::basis_book::compute_basis_book;
 use super::book_risk::{compute_book_risk, RiskParamsCache};
 use super::hedge_ticket::compute_hedge_tickets;
+use super::pnl::compute_pnl;
 use super::quote_board::{
     compute_fv_futures, compute_quote_row, FvFutures, IndexFuturesState, QuoteParams,
     QuoteUniverseEtf,
 };
 use super::{
     apply_level3_costs, pdf_basket, stock_futures_intersect, CostInputs, EtfStaticInput,
-    LedgerAgg, MatrixConfig, PriceMap, PriceWithAge,
+    FillMark, LedgerAgg, LedgerEntry, MatrixConfig, PriceMap, PriceWithAge,
 };
+
+/// markout POST 유예 (ms) — due 시각으로부터 이 안에 처리해야 기록. poll(5s) 지터는
+/// 흡수하되, Rust가 window 통과 중 죽었다 뒤늦게 뜬 경우는 초과 → 미기록(§13.3-C 정직).
+const MARK_GRACE_MS: u64 = 180_000;
+
+/// markout horizon 정의 — (라벨, fill 후 경과 ms).
+const MARK_HORIZONS: [(&str, u64); 2] = [("5m", 300_000), ("30m", 1_800_000)];
+
+/// markout 스냅샷 가격 신선도 한도 (ms) — 마크 시점 가격이 이보다 오래되면 기록 skip.
+/// 장 마감 직전 fill의 30m due가 마감 후 도래하면 정지된 종가가 markout으로 무경고
+/// 기록되는 문제 차단. skip된 마크는 유예(MARK_GRACE_MS) 내 재시도, 초과 시 미기록(정직).
+const MARK_PRICE_MAX_AGE_MS: u64 = 60_000;
+
+/// 코드별 "당일 첫 관측가" — 비유니버스 포지션 MTM 전일종가 프록시 (§13.3-C).
+/// 날짜가 바뀌면 첫 틱으로 리셋 (handle_tick).
+#[derive(Debug, Clone, Copy)]
+pub struct DayOpen {
+    pub date: chrono::NaiveDate,
+    pub price: f64,
+}
 
 /// 첫 빌드 Level 3 default cost params — backend에서 fetch 실패 시 fallback.
 const DEFAULT_COST_INPUTS: CostInputs = CostInputs {
@@ -62,10 +83,25 @@ pub struct MatrixState {
     /// 원장 집계 (§13.4 베이시스 북·book_risk·hedge_ticket의 단일 소스). 5초 poll이 채움.
     /// `book`(positions map)은 여기서 파생 — 아래 poll_book_and_cost 참조.
     pub ledger: RwLock<Vec<LedgerAgg>>,
+    /// 원장 엔트리 (§13.3-C P&L 스프레드·markout 소스). 5초 poll이 채움.
+    pub ledger_entries: RwLock<Vec<LedgerEntry>>,
+    /// 당일 fill 마크 (markout 통계·dedup). 5초 poll이 채움.
+    pub fill_marks: RwLock<Vec<FillMark>>,
+    /// 코드별 당일 첫 관측가 (비유니버스 MTM 프록시). handle_tick이 lock-free 갱신.
+    pub day_open: DashMap<String, DayOpen>,
+    /// ETF 코드 → 최신 FV_futures (markout 스냅샷 시 FV 첨부용). flush가 갱신.
+    pub last_fv: DashMap<String, f64>,
     /// basis_book broadcast 마지막 시각 (ms) — flush는 200ms지만 베이시스 북은 1초 주기.
     pub last_basis_book_ms: AtomicU64,
     pub prices: DashMap<String, PriceWithAge>,
-    pub etf_prices: DashMap<String, f64>,
+    /// ETF 현재가 (EtfTick). PriceWithAge — markout 신선도 가드가 age를 봐야 함.
+    /// 호가 보드 표시 나이는 기존 철학(마지막 체결가 유효 → 0) 유지 (etf_price_age 참조).
+    pub etf_prices: DashMap<String, PriceWithAge>,
+    /// markout POST 등 재사용 HTTP 클라이언트 (poll마다 재생성 방지 — 커넥션 풀 유지).
+    pub http: reqwest::Client,
+    /// 프로세스가 장중(평일 09:00~15:45 KST)에 시작됐는지 — day_open이 재시작 후 첫
+    /// 관측가가 되어 폴백 MTM이 왜곡될 수 있음 (caveat 표기용).
+    pub started_mid_session: bool,
     pub risk_cache: Arc<RiskParamsCache>,
     /// FV_futures 호가 유니버스 12종 (§13.3-A). matrix-config에서 로드.
     pub quote_universe: RwLock<Vec<QuoteUniverseEtf>>,
@@ -83,6 +119,13 @@ impl Default for MatrixState {
 
 impl MatrixState {
     pub fn new() -> Self {
+        // 장중 재시작 감지 (평일 09:00~15:45 KST) — day_open 폴백 MTM 왜곡 caveat용.
+        let started_mid_session = {
+            use chrono::{Datelike, Timelike, Weekday};
+            let now = chrono::Local::now();
+            let mins = now.hour() * 60 + now.minute();
+            !matches!(now.weekday(), Weekday::Sat | Weekday::Sun) && (540..=945).contains(&mins)
+        };
         Self {
             etfs: RwLock::new(HashMap::new()),
             cost: RwLock::new(DEFAULT_COST_INPUTS),
@@ -91,9 +134,15 @@ impl MatrixState {
                 updated_at: "init".into(),
             }),
             ledger: RwLock::new(Vec::new()),
+            ledger_entries: RwLock::new(Vec::new()),
+            fill_marks: RwLock::new(Vec::new()),
+            day_open: DashMap::new(),
+            last_fv: DashMap::new(),
             last_basis_book_ms: AtomicU64::new(0),
             prices: DashMap::new(),
             etf_prices: DashMap::new(),
+            http: reqwest::Client::new(),
+            started_mid_session,
             risk_cache: Arc::new(RiskParamsCache::new()),
             quote_universe: RwLock::new(Vec::new()),
             quote_params: RwLock::new(QuoteParams::default()),
@@ -105,6 +154,7 @@ impl MatrixState {
     /// bridge 루프 안에서 직접 호출 (cheap).
     pub fn handle_tick(&self, msg: &WsMessage) {
         let now_ms = current_ms();
+        let today = chrono::Local::now().date_naive();
         match msg {
             WsMessage::StockTick(t) if t.price > 0.0 => {
                 self.prices.insert(
@@ -114,6 +164,7 @@ impl MatrixState {
                         updated_at_ms: now_ms,
                     },
                 );
+                self.record_day_open(&t.code, t.price, today);
             }
             WsMessage::FuturesTick(t) if t.price > 0.0 => {
                 self.prices.insert(
@@ -123,9 +174,17 @@ impl MatrixState {
                         updated_at_ms: now_ms,
                     },
                 );
+                self.record_day_open(&t.code, t.price, today);
             }
             WsMessage::EtfTick(t) if t.price > 0.0 => {
-                self.etf_prices.insert(t.code.clone(), t.price);
+                self.etf_prices.insert(
+                    t.code.clone(),
+                    PriceWithAge {
+                        price: t.price,
+                        updated_at_ms: now_ms,
+                    },
+                );
+                self.record_day_open(&t.code, t.price, today);
             }
             // 지수선물 (FC9) — product별 최신 상태 보관. FV_futures 앵커(§13.3-A).
             // product는 &'static str ("kospi200"|"mini_k200"|"kosdaq150").
@@ -140,9 +199,66 @@ impl MatrixState {
                         updated_at_ms: now_ms,
                     },
                 );
+                // 지수선물 포지션 MTM 프록시 — 코드별 첫 관측가 (전일종가 대체 없음).
+                self.record_day_open(&t.code, t.price, today);
             }
             _ => {}
         }
+    }
+
+    /// 코드별 당일 첫 관측가 기록 — 이미 오늘 값이 있으면 no-op, 날짜가 바뀌면 리셋.
+    fn record_day_open(&self, code: &str, price: f64, today: chrono::NaiveDate) {
+        match self.day_open.get(code) {
+            Some(d) if d.date == today => {} // 이미 오늘 첫 값 있음
+            _ => {
+                self.day_open
+                    .insert(code.to_string(), DayOpen { date: today, price });
+            }
+        }
+    }
+
+    /// 코드 현재가 — etf_prices(EtfTick) → prices(StockTick/선물) → index_futures(코드 매칭) 순.
+    /// MTM cur_price 통합 조회 (신선도 무관 — 마지막 체결가 유효 철학). 없으면 0.
+    fn current_price_of(&self, code: &str, idx_by_code: &HashMap<String, f64>) -> f64 {
+        if let Some(p) = self.etf_prices.get(code) {
+            if p.price > 0.0 {
+                return p.price;
+            }
+        }
+        if let Some(p) = self.prices.get(code) {
+            if p.price > 0.0 {
+                return p.price;
+            }
+        }
+        idx_by_code.get(code).copied().unwrap_or(0.0)
+    }
+
+    /// markout용 **신선 가격** — age ≤ max_age인 소스만 채택 (없으면 None → 마크 skip).
+    /// MTM용 current_price_of와 달리 신선도를 강제 — 장 마감 후 due 마크가 정지 종가를
+    /// 무경고 기록하는 것 차단. idx_by_code는 (price, updated_at_ms).
+    fn fresh_price_of(
+        &self,
+        code: &str,
+        idx_by_code: &HashMap<String, (f64, u64)>,
+        now_ms: u64,
+        max_age_ms: u64,
+    ) -> Option<f64> {
+        if let Some(p) = self.etf_prices.get(code) {
+            if p.price > 0.0 && now_ms.saturating_sub(p.updated_at_ms) <= max_age_ms {
+                return Some(p.price);
+            }
+        }
+        if let Some(p) = self.prices.get(code) {
+            if p.price > 0.0 && now_ms.saturating_sub(p.updated_at_ms) <= max_age_ms {
+                return Some(p.price);
+            }
+        }
+        if let Some(&(p, ts)) = idx_by_code.get(code) {
+            if p > 0.0 && now_ms.saturating_sub(ts) <= max_age_ms {
+                return Some(p);
+            }
+        }
+        None
     }
 
     /// 200ms throttle 워커가 호출 — 전체 셀 재계산 + 매트릭스/북리스크 broadcast.
@@ -170,14 +286,19 @@ impl MatrixState {
         let mut fv_map: HashMap<String, FvFutures> = HashMap::with_capacity(universe.len());
         for etf in universe.iter() {
             let fv = compute_fv_futures(etf, &idx_snapshot, cost.base_rate_annual, now_ms, today);
+            // markout FV 스냅샷용 최신 FV 보관 (유효할 때만 — stale/결측이면 이전값 유지).
+            if fv.no_quote_reason.is_empty() && fv.fair_value > 0.0 {
+                self.last_fv.insert(etf.code.clone(), fv.fair_value);
+            }
             fv_map.insert(etf.code.clone(), fv);
         }
 
         // ETF 현재가 + 나이 조회 (EtfTick은 etf_prices, StockTick으로 온 ETF는 prices).
-        // etf_prices는 나이 미보관 → 0(fresh). 한국 시장 마지막 체결가는 미체결이어도 유효.
+        // etf_prices 나이는 표시용으로 0(fresh) 유지 — 한국 시장 마지막 체결가는 미체결이어도
+        // 유효 (기존 철학). 실제 age는 markout 신선도 가드(fresh_price_of)만 사용.
         let etf_price_age = |code: &str| -> (f64, u32) {
             if let Some(p) = self.etf_prices.get(code) {
-                return (*p, 0);
+                return (p.price, 0);
             }
             if let Some(p) = prices_snapshot.get(code) {
                 let age = now_ms.saturating_sub(p.updated_at_ms).min(u32::MAX as u64) as u32;
@@ -189,7 +310,7 @@ impl MatrixState {
         // ─── Fair value 매트릭스 ─────────────────────────────────────────
         let mut etf_snaps: Vec<EtfFairValueSnapshot> = Vec::with_capacity(etfs.len());
         for (etf_code, etf) in etfs.iter() {
-            let etf_price = self.etf_prices.get(etf_code).map(|v| *v).unwrap_or(0.0);
+            let etf_price = self.etf_prices.get(etf_code).map(|v| v.price).unwrap_or(0.0);
             let mut cells: Vec<FairValueCell> = Vec::with_capacity(3);
             cells.push(pdf_basket::compute_pdf_basket(
                 etf,
@@ -265,7 +386,7 @@ impl MatrixState {
         let etf_prices_snapshot: HashMap<String, f64> = self
             .etf_prices
             .iter()
-            .map(|r| (r.key().clone(), *r.value()))
+            .map(|r| (r.key().clone(), r.value().price))
             .collect();
         let universe = self.quote_universe.read().await;
         // 주식선물 코드 → base 6자리 (원장 집계 base_code). M3 — 주식선물 델타를 base β로
@@ -309,7 +430,91 @@ impl MatrixState {
                 &now_iso,
             );
             self.last_basis_book_ms.store(now_ms, Ordering::Relaxed);
+
+            // ─── P&L 5분해 (§13.3-C) — basis_snap·book_risk 소비, 같은 1초 주기 ────
+            // cur_price/prev_close/etf_notionals를 book 포지션 기준으로 통합 구성.
+            let idx_by_code: HashMap<String, f64> = idx_snapshot
+                .values()
+                .map(|s| (s.code.clone(), s.price))
+                .collect();
+            let universe_prev: HashMap<&str, f64> = universe
+                .iter()
+                .filter_map(|e| e.prev_close.map(|pc| (e.code.as_str(), pc)))
+                .collect();
+            let universe_codes: std::collections::HashSet<&str> =
+                universe.iter().map(|e| e.code.as_str()).collect();
+            let entries = self.ledger_entries.read().await;
+            let mut cur_price: HashMap<String, f64> = HashMap::new();
+            let mut prev_close: HashMap<String, (f64, bool)> = HashMap::new();
+            let mut etf_notionals: HashMap<String, f64> = HashMap::new();
+            // baseline 단일 소스 헬퍼 — 포지션 항과 fill 항이 같은 기준가를 써야
+            // 왕복/신규진입에서 정확히 소거됨 (C1). 유니버스 EOD → day_open 폴백 순.
+            let put_baseline = |code: &str, prev_close: &mut HashMap<String, (f64, bool)>| {
+                if prev_close.contains_key(code) {
+                    return;
+                }
+                if let Some(&pc) = universe_prev.get(code) {
+                    prev_close.insert(code.to_string(), (pc, false));
+                } else if let Some(d) = self.day_open.get(code) {
+                    if d.date == today && d.price > 0.0 {
+                        prev_close.insert(code.to_string(), (d.price, true));
+                    }
+                }
+            };
+            for (code, &qty) in &book.positions {
+                if qty == 0 {
+                    continue;
+                }
+                let p = self.current_price_of(code, &idx_by_code);
+                if p > 0.0 {
+                    cur_price.insert(code.clone(), p);
+                    if universe_codes.contains(code.as_str()) {
+                        etf_notionals.insert(code.clone(), (qty as f64 * p).abs());
+                    }
+                }
+                put_baseline(code, &mut prev_close);
+            }
+            // 당일 fill 코드도 기준가 필요 (C1) — 왕복(포지션 0)·청산 fill의 실현손익 항.
+            let today_prefix = today.format("%Y-%m-%d").to_string();
+            for e in entries.iter() {
+                if e.kind == "fill" && e.ts.get(0..10) == Some(today_prefix.as_str()) {
+                    put_baseline(&e.code, &mut prev_close);
+                }
+            }
+            // 코드 → instrument (캐리 선물 제외 판정 — M1).
+            let instruments: HashMap<String, String> = ledger
+                .iter()
+                .map(|a| (a.code.clone(), a.instrument.clone()))
+                .collect();
+            let marks = self.fill_marks.read().await;
+            let day_fraction = {
+                use chrono::Timelike;
+                chrono::Local::now().num_seconds_from_midnight() as f64 / 86_400.0
+            };
+            let pnl_snap = compute_pnl(
+                &entries,
+                &marks,
+                today,
+                &book,
+                &cur_price,
+                &prev_close,
+                &etf_notionals,
+                &instruments,
+                &basis_snap,
+                &book_risk_snap,
+                &quote_params,
+                cost.base_rate_annual,
+                day_fraction,
+                self.started_mid_session,
+                &now_iso,
+            );
+            drop(entries);
+            drop(marks);
+
             if tx.try_send(WsMessage::BasisBook(basis_snap)).is_err() {
+                MATRIX_TX_DROPPED.fetch_add(1, Ordering::Relaxed);
+            }
+            if tx.try_send(WsMessage::PnlDecomp(pnl_snap)).is_err() {
                 MATRIX_TX_DROPPED.fetch_add(1, Ordering::Relaxed);
             }
         }
@@ -374,11 +579,12 @@ impl MatrixState {
 
     pub async fn poll_book_and_cost(&self, fastapi_base: &str) {
         let base = fastapi_base.trim_end_matches('/');
-        let client = reqwest::Client::new();
+        let client = &self.http; // 재사용 (poll마다 재생성 방지)
 
         // ledger (§13.4 단일 소스) — aggregates에서 book(positions map) 파생 + 원장 캐시.
         // 기존 /api/lp/positions(flat dict)의 상위 집합: instrument·base_code·entry_basis 포함
         // → book_risk·hedge_ticket은 파생 positions로 무변경, 베이시스 북은 aggregates 소비.
+        // entries는 §13.3-C P&L(스프레드·markout) 소스.
         let url = format!("{}/api/lp/ledger", base);
         match client.get(&url).timeout(Duration::from_secs(10)).send().await {
             Ok(resp) if resp.status().is_success() => {
@@ -395,10 +601,23 @@ impl MatrixState {
                         updated_at,
                     };
                     *self.ledger.write().await = payload.aggregates;
+                    *self.ledger_entries.write().await = payload.entries;
                 }
             }
             Ok(resp) => warn!("ledger http {}", resp.status()),
             Err(e) => warn!("ledger fetch: {}", e),
+        }
+
+        // fill-marks (§13.3-C markout) — 당일 마크. markout 통계 + due 마크 dedup 소스.
+        let url = format!("{}/api/lp/fill-marks?date=today", base);
+        match client.get(&url).timeout(Duration::from_secs(10)).send().await {
+            Ok(resp) if resp.status().is_success() => {
+                if let Ok(payload) = resp.json::<FillMarksPayload>().await {
+                    *self.fill_marks.write().await = payload.marks;
+                }
+            }
+            Ok(resp) => warn!("fill-marks http {}", resp.status()),
+            Err(e) => warn!("fill-marks fetch: {}", e),
         }
 
         // cost-inputs
@@ -427,14 +646,146 @@ impl MatrixState {
             Err(e) => warn!("quote-params fetch: {}", e),
         }
     }
+
+    /// markout 처리 (poll 기반, §13.3-C). 당일 fill × horizon(5m/30m)에 대해 due(경과 + 유예
+    /// 내)이면서 아직 기록 안 된 마크를 현재가·FV 스냅샷 → backend POST (재시도 1회).
+    ///
+    /// poll(5s) 주기로 due를 검사하므로 마킹은 horizon 도달 후 최대 ~5초 지연. 유예(MARK_GRACE_MS)
+    /// 초과분(= Rust가 window 통과 중 죽었다 뒤늦게 기동)은 미기록 — 소급 불가를 정직 반영.
+    /// dedup은 backend fill-marks (fill_id, horizon) UNIQUE + 여기 existing 셋 이중.
+    async fn process_markouts(&self, fastapi_base: &str) {
+        let base = fastapi_base.trim_end_matches('/');
+        let today = chrono::Local::now().date_naive();
+        let today_prefix = today.format("%Y-%m-%d").to_string();
+        let now_ms = current_ms();
+
+        let entries = self.ledger_entries.read().await.clone();
+        let existing: std::collections::HashSet<(String, String)> = self
+            .fill_marks
+            .read()
+            .await
+            .iter()
+            .map(|m| (m.fill_id.clone(), m.horizon.clone()))
+            .collect();
+
+        let mut due: Vec<(String, String, String)> = Vec::new(); // (fill_id, horizon, code)
+        for e in entries.iter() {
+            if e.kind != "fill" || e.ts.get(0..10) != Some(today_prefix.as_str()) {
+                continue;
+            }
+            let Some(fill_ms) = parse_local_iso_ms(&e.ts) else {
+                continue;
+            };
+            for (h, dur) in MARK_HORIZONS {
+                if existing.contains(&(e.id.clone(), h.to_string())) {
+                    continue;
+                }
+                let due_ms = fill_ms + dur;
+                if now_ms >= due_ms && now_ms.saturating_sub(due_ms) <= MARK_GRACE_MS {
+                    due.push((e.id.clone(), h.to_string(), e.code.clone()));
+                }
+            }
+        }
+        if due.is_empty() {
+            return;
+        }
+
+        let idx_by_code: HashMap<String, (f64, u64)> = self
+            .index_futures
+            .iter()
+            .map(|r| (r.value().code.clone(), (r.value().price, r.value().updated_at_ms)))
+            .collect();
+        for (fill_id, horizon, code) in due {
+            // 신선도 가드 — 마크 시점 가격 age > 60s면 skip (유예 내 재시도, 초과 시 미기록).
+            // 장 마감 후 30m due가 정지 종가를 markout으로 무경고 기록하는 것 차단.
+            let Some(price) =
+                self.fresh_price_of(&code, &idx_by_code, now_ms, MARK_PRICE_MAX_AGE_MS)
+            else {
+                debug!(
+                    "markout skip — 가격 stale/결측 (>{}s): fill={} horizon={} code={}",
+                    MARK_PRICE_MAX_AGE_MS / 1000,
+                    fill_id,
+                    horizon,
+                    code
+                );
+                continue;
+            };
+            let fv = self.last_fv.get(&code).map(|v| *v);
+            let mut ok =
+                post_fill_mark(&self.http, base, &fill_id, &horizon, Some(price), fv).await;
+            if !ok {
+                ok = post_fill_mark(&self.http, base, &fill_id, &horizon, Some(price), fv).await;
+            }
+            if !ok {
+                warn!("markout POST 실패 (재시도 후): fill={} horizon={}", fill_id, horizon);
+            }
+        }
+    }
 }
 
-/// `GET /api/lp/ledger` 응답 — aggregates만 소비 (entries·names는 프론트 전용).
+/// "YYYY-MM-DDTHH:MM:SS" (로컬 tz 없음, backend datetime.now().isoformat) → epoch ms.
+fn parse_local_iso_ms(ts: &str) -> Option<u64> {
+    use chrono::TimeZone;
+    let naive = chrono::NaiveDateTime::parse_from_str(ts, "%Y-%m-%dT%H:%M:%S").ok()?;
+    let dt = chrono::Local.from_local_datetime(&naive).single()?;
+    let ms = dt.timestamp_millis();
+    if ms < 0 {
+        None
+    } else {
+        Some(ms as u64)
+    }
+}
+
+/// markout 1건 POST. 성공(2xx) 여부 반환. price/fv는 null 허용.
+async fn post_fill_mark(
+    client: &reqwest::Client,
+    base: &str,
+    fill_id: &str,
+    horizon: &str,
+    price: Option<f64>,
+    fv: Option<f64>,
+) -> bool {
+    let url = format!("{}/api/lp/fill-marks", base);
+    let body = serde_json::json!({
+        "fill_id": fill_id,
+        "horizon": horizon,
+        "price": price,
+        "fv": fv,
+    });
+    match client
+        .post(&url)
+        .json(&body)
+        .timeout(Duration::from_secs(10))
+        .send()
+        .await
+    {
+        Ok(r) if r.status().is_success() => true,
+        Ok(r) => {
+            warn!("markout POST http {}", r.status());
+            false
+        }
+        Err(e) => {
+            warn!("markout POST err: {}", e);
+            false
+        }
+    }
+}
+
+/// `GET /api/lp/ledger` 응답 — aggregates(베이시스 북·book_risk) + entries(P&L).
 #[derive(Debug, Deserialize)]
 struct LedgerPayload {
     #[serde(default)]
     aggregates: Vec<LedgerAgg>,
+    #[serde(default)]
+    entries: Vec<LedgerEntry>,
     updated_at: Option<String>,
+}
+
+/// `GET /api/lp/fill-marks` 응답.
+#[derive(Debug, Deserialize)]
+struct FillMarksPayload {
+    #[serde(default)]
+    marks: Vec<FillMark>,
 }
 
 /// 경로 ③ 지수선물 FairValueCell — FV_futures 재사용.
@@ -571,6 +922,8 @@ pub fn spawn_workers(
                     }
                 }
                 st.poll_book_and_cost(&fb).await;
+                // markout 처리 (§13.3-C) — poll 직후 최신 entries·marks로 due 마크 POST.
+                st.process_markouts(&fb).await;
             }
         });
     }

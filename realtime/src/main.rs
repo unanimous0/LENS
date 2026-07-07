@@ -189,6 +189,7 @@ fn msg_pending_key(msg: &WsMessage) -> String {
         WsMessage::BookRisk(_) => "book_risk".to_string(),
         WsMessage::QuoteBoard(_) => "quote_board".to_string(),
         WsMessage::BasisBook(_) => "basis_book".to_string(),
+        WsMessage::PnlDecomp(_) => "pnl_decomp".to_string(),
     }
 }
 
@@ -208,6 +209,7 @@ fn msg_cache_key(msg: &WsMessage) -> Option<String> {
         WsMessage::BookRisk(_) => Some("book_risk".to_string()),
         WsMessage::QuoteBoard(_) => Some("quote_board".to_string()),
         WsMessage::BasisBook(_) => Some("basis_book".to_string()),
+        WsMessage::PnlDecomp(_) => Some("pnl_decomp".to_string()),
     }
 }
 

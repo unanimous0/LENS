@@ -466,7 +466,7 @@ LP 작업은 Finance_Data DB + LS API를 광범위하게 *읽음*. main 쪽 데�
 | **1. 북 원장** | lens.db 원장 + 체결 로그 + 한눈 보드 + positions API 호환 레이어 | ✅ 2026-07-07 `c6de5bc` |
 | **2. 호가 보드** | FV_futures wire + 요구엣지·skew·제안 호가/수량 시트, 유니버스 12종 | ✅ 2026-07-07 PR-A `0cc9548` / PR-B `7a7a0b4` / PR-C `bbfbbab` (§13.8) |
 | **3. 헤지 티켓 + 실행 라우터** | 체결→선물 티켓(넷팅 판정·미니 라운딩) + 현물vs선물 대체 판정 + 베이시스 포지션 기장 | ✅ 2026-07-07 `4a7e9dd` |
-| **4. 손익·베이시스 분해** | 5분해 + markout + 베이시스 북 원장 + 4층 분해 + 만기 롤 알림 + 한도 4개 | 🚧 PR-D 완료(베이시스 북 원장·4층 분해·만기 롤, §13.9). 남음: 5분해·markout·한도 4개 |
+| **4. 손익·베이시스 분해** | 5분해 + markout + 베이시스 북 원장 + 4층 분해 + 만기 롤 알림 + 한도 4개 | ✅ PR-D(베이시스 북 원장·4층 분해·만기 롤, §13.9) + PR-E(P&L 5분해·markout·한도 4개, §13.10) 완료 |
 | **5. 출구** | 베이시스 z-score 모니터 + 넷팅 바스켓 빌더 + 출구 3개 비교 + 알림 | |
 
 각 Phase는 독립적으로 쓸모 있게 (end-to-end 먼저 원칙 유지). 단계별 사용자 합의 후 다음 Phase.
@@ -530,3 +530,72 @@ entry_basis round-trip, (c) 델타중립 페어 → ① 방향 델타 = 0, (d) H
 차월 −6천) → 페어 1개·matched 10,000주(이중계상이면 16,000), 차월 unpaired 델타는 ①로.
 UI: BookFourNumbers 바로 아래 BasisBookPanel (4층 요약 스트립 + 지수/종목 페어 테이블 + D-day
 warning 배지, stale 시 수렴손익 동반 숨김). ④ 잔차 = book_risk #3 동일 소스 확인.
+
+### 13.10 Phase 4 PR-E 구현 기록 (2026-07-07 — P&L 5분해 + markout + 리스크 한도)
+
+**목표 달성**: 4대 숫자 #4(손익 분해) 스텁을 처음 채움. 당일 세션(전일 종가 대비) 북 MTM을
+5항으로 **완전 분해**(residual attribution) + fill 후 markout 역선택 통계 + §13.3-C 리스크 한도 4개.
+
+**원장 확장 (체결 시점 스냅샷)**: `lp_ledger`에 `fv_at_fill`·`mid_at_fill` REAL 컬럼 (멱등 ALTER,
+entry_basis 패턴). fill 기장 시 프론트가 quote_board의 해당 ETF `fv_futures`·현재가를 자동 첨부
+(LedgerBoard EntryForm — ETF 유니버스 종목만, 아니면 null). BasisRouterPanel 기장은 spot/선물가를
+`mid_at_fill`로 첨부. 신규 테이블 `lp_fill_marks {fill_id, horizon('5m'|'30m'), price, fv, marked_at}`,
+`(fill_id, horizon)` UNIQUE — POST는 INSERT OR IGNORE 멱등. `POST /api/lp/fill-marks`(Rust 호출)·
+`GET /api/lp/fill-marks?date=today`.
+
+**5분해 (Rust `calc/pnl.rs`, WS `pnl_decomp` 1초 throttle)** — 전부 pure, 단위테스트 10건:
+- **스프레드** = Σ 당일 fill `(fv_at_fill − fill_price) × signed_qty` (매수 FV보다 싸게=+, 매도
+  FV보다 비싸게=+, 4방향 부호 일관). fv_at_fill 없는 fill은 **unattributed**(건수·명목)로 별도 집계.
+- **베이시스(종목)** = basis_book `stock_basis` 수렴손익 합. **지수 베이시스는 당일 변화 미기록이라
+  v1 산출 불가** — `basis_index_status`로 정직 표기 (무리한 근사 금지).
+- **총 MTM** = 포지션 평가 항 `Σ qty_now × (price − baseline) × mult` **+ 당일 fill 현금흐름 항
+  `Σ −signed_qty × (fill_price − baseline) × mult`** (독립 검증 C1 수정 — 포지션 항만으론 왕복
+  실현손익 증발·당일 신규가 "전일종가→진입가" 유령 손익 획득). baseline은 코드당 단일 소스
+  (**유니버스 12종=real EOD, 그 외=day_open 폴백** — 포지션·fill 양쪽이 동일 기준가라 왕복·신규에서
+  정확히 소거, 실현은 체결가 기준). day_open은 handle_tick DashMap, 날짜 바뀌면 리셋. 폴백/결측/
+  fill 기준가 결측·**장중 재시작(day_open 왜곡 가능)** caveat. 지수선물은 승수 반영.
+- **캐리** = `−r × Σ(현물성 부호 노출) × (당일 경과일/365)` (독립 검증 M1 수정 — **선물(index/
+  stock_fut)은 증거금 상품이라 제외**(캐리는 베이시스에 내재), 현물·ETF는 부호 유지: 롱=비용(−)·
+  숏=매도대금 운용 이익(+), §9.2 carry_income 정합). 당일 fill 무시 근사 + "현물성 노출 단순 근사
+  (증거금·대차비용 미반영)" caveat 상시 명기.
+- **헤지 비용** = `−Σ 당일 선물 fill 명목 × futures_fee_bp` (quote-params 신설, default 0.3bp).
+- **잔차·방향** = `total_mtm − (스프레드+베이시스+캐리+헤지)` **역산** → `total = Σ 5항` 가산성 항등
+  보장 (스모크 실측 diff=0.000000, 단위테스트 `decomposition_is_additive`).
+
+**markout (poll 기반)**: scheduler 5초 poll이 당일 fill × horizon(5m/30m)에 대해 due(경과 + 유예
+`MARK_GRACE_MS`=3분 내)이면서 미기록인 마크를 현재가·FV(`last_fv` DashMap) 스냅샷 → backend POST
+(재시도 1회, 실패 로그, reqwest Client 재사용). dedup은 fill-marks GET의 (fill_id, horizon) 셋 +
+backend UNIQUE 이중. **Rust 재시작으로 유예 초과한 마크는 미기록**(소급 불가 — 정직). **가격 신선도
+가드**: 마크 시점 가격 age > 60s면 skip + debug 로그 (장 마감 후 due 마크가 정지 종가를 무경고
+기록하는 것 차단 — etf_prices를 PriceWithAge로 승격해 ETF도 age 추적. 호가 보드 표시 나이는 기존
+철학(0) 유지). markout_bp = `(mark−fill)/fill × 방향부호 × 1e4` (음수=역선택). 5m/30m 평균·건수 포함.
+
+**리스크 한도 4개 (§13.3-C)**: quote-params 신설 `limit_net_delta_krw`·`limit_residual_krw`·
+`limit_basis_var_krw`·`basis_vol_bp_daily`(15bp)·`futures_fee_bp`(0.3bp) — ETF별 재고 한도는 기존
+`inventory_limit` 재사용. ① 순 델타(오버레이 후 = basis.directional_delta) ② 잔차위험 1σ(book_risk #3)
+③ ETF 재고(유니버스 사용률 최대 종목) ④ 베이시스 VaR = (지수+종목 명목) × `basis_vol_bp_daily`
+(**조잡 근사 — 주석·UI 캡션 명시**). 각 `{current, limit, ratio}` → pnl_decomp.limits.
+
+**프론트**: BookFourNumbers #4 스텁 → 당일 P&L 총액 + 미니 분해(클릭 시 5행 펼침). 신규 **PnlPanel**
+(BasisBookPanel 아래) — 한도 게이지 4개(80%↑ warning·100%↑ down색) + 5분해 막대 + markout 통계 +
+unattributed·caveats 정직 표기. QuoteParamsPanel에 P&L·한도 필드 추가.
+
+**검증**: Rust 테스트 +15 (총 75 통과) — 스프레드 부호 매수/매도/역, 미귀속, 잔여 역산 가산성
+(total=Σ), 헤지비용, MTM 폴백, markout 부호 4방향·통계, 한도 ratio + **C1 4건**(왕복 +100만 정확·
+부분청산 잔여 MTM+실현·당일 신규 진입가 기준 +60만/잔차 오염 소멸·폴백 baseline 왕복 소거) +
+**M1 1건**(선물 제외·숏 캐리 + 부호·caveat). mock 라이브 스모크: (a) fill 기장 → fv_at_fill
+round-trip, (b) pnl_decomp 수신 spread 손계산 일치·가산성 diff=0.000000·한도 4게이지,
+(c) backdated fill로 markout POST 파이프라인 실증(5m 마크 기록·30m 미due), (d) 비ETF fill이
+unattributed로 분류, (e) **왕복 시나리오 total_mtm=+1,000,000 정확 실측** (수정 전 0 — C1 repro).
+테스트 원장·fill_marks 전량 정리(0/0). 기존 회귀(basis_book·book_risk·quote_board) 유지 —
+Playwright 실화면 확인.
+
+**독립 검증 후 수정 4건 (C1·M1 + 소소 2, 2026-07-07)**:
+- **C1 당일 fill 현금흐름 누락 (치명)**: total이 현재 포지션 MTM만 계산 — 왕복(포지션 0) 실현
+  +100만 증발, 부분청산 매도 leg 실현 누락, 당일 신규에 전일종가→진입가 유령 손익. → fill별
+  `−signed × (체결가 − baseline)` 항 추가, baseline 조회를 포지션 항과 단일 클로저로 통일
+  (불일치 시 폴백 종목 왕복 소거가 깨짐). 유령분이 잔차로 새던 오염도 소멸.
+- **M1 캐리 무차별 비용화**: gross_abs가 롱숏 불문 + 선물 명목(×승수)까지 포함 → 델타중립 북에
+  유령 캐리가 잔차로 역류. → 선물 제외 + 현물성 부호 반영 + caveat 명기.
+- markout 가격 신선도 가드 60s (정지 종가 무경고 기록 차단) / 장중 재시작 day_open caveat +
+  reqwest Client 재사용.

@@ -7,6 +7,7 @@ import type {
   LedgerEntry,
   LedgerSnapshot,
   LpCostInputs,
+  PnlDecompSnapshot,
   QuoteBoardSnapshot,
   QuoteParams,
   QuoteUniverseMeta,
@@ -36,6 +37,10 @@ export interface LedgerPrefill {
   note?: string | null
   /** 진입 베이시스 (§13.4) — 선물 대체 기장 시 실측 베이시스 씨앗값. */
   entry_basis?: number | null
+  /** 체결 시점 FV (§13.3-C 스프레드 귀속). 라우터/호가 프리필이 첨부. */
+  fv_at_fill?: number | null
+  /** 체결 시점 현재가(mid) 스냅샷. */
+  mid_at_fill?: number | null
   /** 매 클릭마다 증가 — 같은 값 재클릭도 EntryForm이 감지하도록. */
   nonce: number
 }
@@ -45,6 +50,8 @@ interface LpState {
   bookRisk: BookRiskSnapshot | null
   /** 베이시스 북(§13.4) — Rust 1초 주기 basis_book WS. */
   basisBook: BasisBookSnapshot | null
+  /** P&L 5분해(§13.3-C) — Rust 1초 주기 pnl_decomp WS. */
+  pnlDecomp: PnlDecompSnapshot | null
   positions: Record<string, number>
   positionsUpdatedAt: string | null
   costInputs: LpCostInputs
@@ -65,6 +72,7 @@ interface LpState {
   setMatrix: (m: FairValueMatrixSnapshot) => void
   setBookRisk: (b: BookRiskSnapshot) => void
   setBasisBook: (b: BasisBookSnapshot) => void
+  setPnlDecomp: (p: PnlDecompSnapshot) => void
   setPositions: (p: Record<string, number>, updatedAt?: string | null) => void
   setCostInputs: (c: LpCostInputs) => void
   setCorporateActionsToday: (items: CorporateActionToday[]) => void
@@ -80,6 +88,7 @@ export const useLpStore = create<LpState>((set) => ({
   matrix: null,
   bookRisk: null,
   basisBook: null,
+  pnlDecomp: null,
   positions: {},
   positionsUpdatedAt: null,
   costInputs: DEFAULT_COST,
@@ -94,6 +103,7 @@ export const useLpStore = create<LpState>((set) => ({
   setMatrix: (m) => set({ matrix: m }),
   setBookRisk: (b) => set({ bookRisk: b }),
   setBasisBook: (b) => set({ basisBook: b }),
+  setPnlDecomp: (p) => set({ pnlDecomp: p }),
   setPositions: (p, updatedAt) =>
     set({ positions: p, positionsUpdatedAt: updatedAt ?? null }),
   setCostInputs: (c) => set({ costInputs: c }),

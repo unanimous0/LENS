@@ -94,10 +94,42 @@ pub struct QuoteParams {
     /// 구버전 backend 대비 default.
     #[serde(default = "default_basis_threshold_bp")]
     pub basis_threshold_bp: f64,
+
+    // ── §13.3-C P&L·리스크 한도 (Phase 4 PR-E) — 구버전 backend 대비 serde default ──
+    /// 선물 체결 수수료 (bp × 명목) — 헤지비용 분해 v1.
+    #[serde(default = "default_futures_fee_bp")]
+    pub futures_fee_bp: f64,
+    /// 베이시스 일변동성 근사 (bp) — 베이시스 VaR 조잡 상수.
+    #[serde(default = "default_basis_vol_bp_daily")]
+    pub basis_vol_bp_daily: f64,
+    /// 북 순 베타델타 한도 (오버레이 후, 원).
+    #[serde(default = "default_limit_net_delta_krw")]
+    pub limit_net_delta_krw: f64,
+    /// 잔차위험 1σ 총량 한도 (원).
+    #[serde(default = "default_limit_residual_krw")]
+    pub limit_residual_krw: f64,
+    /// 베이시스 VaR 한도 (원).
+    #[serde(default = "default_limit_basis_var_krw")]
+    pub limit_basis_var_krw: f64,
 }
 
 fn default_basis_threshold_bp() -> f64 {
     5.0
+}
+fn default_futures_fee_bp() -> f64 {
+    0.3
+}
+fn default_basis_vol_bp_daily() -> f64 {
+    15.0
+}
+fn default_limit_net_delta_krw() -> f64 {
+    2_000_000_000.0
+}
+fn default_limit_residual_krw() -> f64 {
+    100_000_000.0
+}
+fn default_limit_basis_var_krw() -> f64 {
+    200_000_000.0
 }
 
 impl Default for QuoteParams {
@@ -111,6 +143,11 @@ impl Default for QuoteParams {
             inventory_limit_overrides: HashMap::new(),
             max_futures_contracts: 100,
             basis_threshold_bp: 5.0,
+            futures_fee_bp: 0.3,
+            basis_vol_bp_daily: 15.0,
+            limit_net_delta_krw: 2_000_000_000.0,
+            limit_residual_krw: 100_000_000.0,
+            limit_basis_var_krw: 200_000_000.0,
         }
     }
 }

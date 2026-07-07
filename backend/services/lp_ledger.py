@@ -75,12 +75,37 @@ def _ensure_schema_sync() -> None:
             );
             """
         )
-        # entry_basis 1급 시민화 (§13.4 Phase 4) — 베이시스 대체 기장 시 진입 베이시스
-        # (선물가 − 현물가, 주당 원)를 note 문자열과 병행해 수치로 보관. 멱등 마이그레이션:
-        # 기존 DB엔 컬럼이 없으므로 table_info로 존재 확인 후에만 ALTER (ADD COLUMN 재실행 방지).
+        # 1급 시민화 컬럼들 — 멱등 ALTER (기존 DB엔 없으므로 table_info로 확인 후에만).
+        #   entry_basis  : 진입 베이시스 (선물가 − 현물가, 주당 원). §13.4 베이시스 대체 기장.
+        #   fv_at_fill   : 체결 시점 FV_futures 스냅샷 (§13.3-C 스프레드 수익 귀속). ETF 유니버스만.
+        #   mid_at_fill  : 체결 시점 현재가(mid) 스냅샷 (markout 기준선 참고).
         cols = {r["name"] for r in conn.execute("PRAGMA table_info(lp_ledger)").fetchall()}
-        if "entry_basis" not in cols:
-            conn.execute("ALTER TABLE lp_ledger ADD COLUMN entry_basis REAL")
+        for col in ("entry_basis", "fv_at_fill", "mid_at_fill"):
+            if col not in cols:
+                conn.execute(f"ALTER TABLE lp_ledger ADD COLUMN {col} REAL")
+
+        # markout 기록 (§13.3-C) — fill 후 5분/30분 경과 시점 현재가·FV 스냅샷.
+        # Rust가 5초 poll 기반으로 due 마크를 계산해 POST /api/lp/fill-marks. (fill_id, horizon)
+        # UNIQUE로 이중 기록 차단 → POST는 INSERT OR IGNORE 멱등.
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS lp_fill_marks (
+                id        TEXT PRIMARY KEY,
+                fill_id   TEXT NOT NULL,
+                horizon   TEXT NOT NULL,          -- '5m' | '30m'
+                price     REAL,
+                fv        REAL,
+                marked_at TEXT NOT NULL           -- ISO datetime (로컬=KST)
+            )
+            """
+        )
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_lp_fill_marks_uniq "
+            "ON lp_fill_marks(fill_id, horizon)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_lp_fill_marks_marked ON lp_fill_marks(marked_at)"
+        )
         conn.commit()
 
 
@@ -121,8 +146,12 @@ def _signed(side: str, qty: int) -> int:
     return qty if side == "buy" else -qty
 
 
+def _opt_col(row: dict, key: str):
+    v = row[key] if key in row.keys() else None
+    return None if v is None else float(v)
+
+
 def _row_to_entry(row: dict) -> dict:
-    eb = row["entry_basis"] if "entry_basis" in row.keys() else None
     return {
         "id": row["id"],
         "ts": row["ts"],
@@ -133,7 +162,9 @@ def _row_to_entry(row: dict) -> dict:
         "qty": int(row["qty"]),
         "price": None if row["price"] is None else float(row["price"]),
         "note": row["note"],
-        "entry_basis": None if eb is None else float(eb),
+        "entry_basis": _opt_col(row, "entry_basis"),
+        "fv_at_fill": _opt_col(row, "fv_at_fill"),
+        "mid_at_fill": _opt_col(row, "mid_at_fill"),
     }
 
 
@@ -145,6 +176,8 @@ def _add_entry_sync(entry: dict) -> dict:
     eid = uuid.uuid4().hex
     ts = entry.get("ts") or datetime.now().isoformat(timespec="seconds")
     entry_basis = entry.get("entry_basis")
+    fv_at_fill = entry.get("fv_at_fill")
+    mid_at_fill = entry.get("mid_at_fill")
     row = (
         eid,
         ts,
@@ -156,11 +189,14 @@ def _add_entry_sync(entry: dict) -> dict:
         entry.get("price"),
         entry.get("note"),
         entry_basis,
+        fv_at_fill,
+        mid_at_fill,
     )
     with _connect() as conn:
         conn.execute(
-            "INSERT INTO lp_ledger (id, ts, code, instrument, kind, side, qty, price, note, entry_basis) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO lp_ledger "
+            "(id, ts, code, instrument, kind, side, qty, price, note, entry_basis, fv_at_fill, mid_at_fill) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             row,
         )
         conn.commit()
@@ -175,6 +211,8 @@ def _add_entry_sync(entry: dict) -> dict:
         "price": entry.get("price"),
         "note": entry.get("note"),
         "entry_basis": entry_basis,
+        "fv_at_fill": fv_at_fill,
+        "mid_at_fill": mid_at_fill,
     }
 
 
@@ -415,6 +453,69 @@ def _migrate_carryover_once_sync(items: list[tuple[str, str, int]]) -> int:
 
 async def migrate_carryover_once(items: list[tuple[str, str, int]]) -> int:
     return await asyncio.to_thread(_migrate_carryover_once_sync, items)
+
+
+# ---------------------------------------------------------------------------
+# fill markout (§13.3-C) — fill 후 5분/30분 스냅샷
+# ---------------------------------------------------------------------------
+
+VALID_HORIZONS = {"5m", "30m"}
+
+
+def _add_fill_mark_sync(mark: dict) -> bool:
+    """markout 1건 기록. (fill_id, horizon) UNIQUE라 이미 있으면 무시(멱등).
+
+    반환: 새로 삽입됐으면 True (이미 있었으면 False).
+    """
+    marked_at = mark.get("marked_at") or datetime.now().isoformat(timespec="seconds")
+    with _connect() as conn:
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO lp_fill_marks (id, fill_id, horizon, price, fv, marked_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                uuid.uuid4().hex,
+                mark["fill_id"],
+                mark["horizon"],
+                mark.get("price"),
+                mark.get("fv"),
+                marked_at,
+            ),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+
+
+async def add_fill_mark(mark: dict) -> bool:
+    return await asyncio.to_thread(_add_fill_mark_sync, mark)
+
+
+def _list_fill_marks_sync(date_prefix: Optional[str]) -> list[dict]:
+    """markout 목록. date_prefix('YYYY-MM-DD')가 주어지면 marked_at 해당일만, None이면 전체."""
+    with _connect() as conn:
+        if date_prefix:
+            rows = conn.execute(
+                "SELECT fill_id, horizon, price, fv, marked_at FROM lp_fill_marks "
+                "WHERE marked_at LIKE ? ORDER BY marked_at",
+                (f"{date_prefix}%",),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT fill_id, horizon, price, fv, marked_at FROM lp_fill_marks ORDER BY marked_at"
+            ).fetchall()
+        return [
+            {
+                "fill_id": r["fill_id"],
+                "horizon": r["horizon"],
+                "price": None if r["price"] is None else float(r["price"]),
+                "fv": None if r["fv"] is None else float(r["fv"]),
+                "marked_at": r["marked_at"],
+            }
+            for r in rows
+        ]
+
+
+async def list_fill_marks(date_prefix: Optional[str] = None) -> list[dict]:
+    return await asyncio.to_thread(_list_fill_marks_sync, date_prefix)
 
 
 # ---------------------------------------------------------------------------

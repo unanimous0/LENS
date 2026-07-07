@@ -1,6 +1,9 @@
 use serde::Serialize;
 
-use super::lp::{BasisBookSnapshot, BookRiskSnapshot, FairValueMatrixSnapshot, QuoteBoardSnapshot};
+use super::lp::{
+    BasisBookSnapshot, BookRiskSnapshot, FairValueMatrixSnapshot, PnlDecompSnapshot,
+    QuoteBoardSnapshot,
+};
 use super::tick::{EtfTick, FuturesTick, IndexFuturesTick, OrderbookTick, StockTick, VolumeTick};
 
 /// 프론트엔드로 전송하는 WebSocket 메시지.
@@ -34,4 +37,7 @@ pub enum WsMessage {
     /// LP 베이시스 북 — 북 4층 분해 + 종목/지수 베이시스 페어 (§13.4). 1초 주기 broadcast.
     #[serde(rename = "basis_book")]
     BasisBook(BasisBookSnapshot),
+    /// LP P&L 5분해 — 스프레드/베이시스/잔차·방향/캐리/헤지 + markout + 한도 (§13.3-C). 1초 주기.
+    #[serde(rename = "pnl_decomp")]
+    PnlDecomp(PnlDecompSnapshot),
 }

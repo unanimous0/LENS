@@ -276,8 +276,14 @@ function EntryForm() {
   const [note, setNote] = useState('')
   // 진입 베이시스 (§13.4) — 프리필로만 세팅. 수동 코드 편집 시 해제(오귀속 방지).
   const [entryBasis, setEntryBasis] = useState<number | null>(null)
+  // 체결 스냅샷 (§13.3-C) — 프리필(라우터)이 주면 그 값, 없으면 submit 시 quoteBoard에서 자동.
+  const [fvAtFill, setFvAtFill] = useState<number | null>(null)
+  const [midAtFill, setMidAtFill] = useState<number | null>(null)
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
+
+  // ETF 유니버스 fill 자동 첨부용 — quoteBoard 행(code → fv_futures/price).
+  const quoteBoard = useLpStore((s) => s.quoteBoard)
 
   // 헤지 티켓·베이시스 라우터 "기장 바로가기" → 폼 프리필 (nonce 변화 감지).
   const prefill = useLpStore((s) => s.ledgerPrefill)
@@ -290,10 +296,25 @@ function EntryForm() {
     setPrice(prefill.price != null ? String(prefill.price) : '')
     setNote(prefill.note ?? '')
     setEntryBasis(prefill.entry_basis ?? null)
+    setFvAtFill(prefill.fv_at_fill ?? null)
+    setMidAtFill(prefill.mid_at_fill ?? null)
     setErr('')
     // nonce만 의존 — 같은 값 재클릭도 반영.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [prefill?.nonce])
+
+  /** ETF 유니버스 fill이면 quoteBoard에서 (fv_futures, mid) 스냅샷 조회. 6자리/A+6 매칭. */
+  const lookupSnapshot = (raw: string): { fv: number | null; mid: number | null } => {
+    if (!quoteBoard) return { fv: null, mid: null }
+    const s = raw.trim().toUpperCase()
+    const key = s.length === 7 && s.startsWith('A') ? s.slice(1) : s
+    const row = quoteBoard.rows.find((r) => r.code === key)
+    if (!row) return { fv: null, mid: null }
+    return {
+      fv: row.usable && row.fv_futures > 0 ? row.fv_futures : null,
+      mid: row.price > 0 ? row.price : null,
+    }
+  }
 
   const submit = async () => {
     const c = code.trim()
@@ -316,6 +337,10 @@ function EntryForm() {
           body: JSON.stringify({ code: c, qty: signed, price: p, note: note || null }),
         })
       } else {
+        // §13.3-C 체결 스냅샷: 프리필 값 우선, 없으면 ETF 유니버스면 quoteBoard 자동 첨부.
+        const auto = lookupSnapshot(c)
+        const fv = fvAtFill ?? auto.fv
+        const mid = midAtFill ?? auto.mid ?? p
         r = await fetch('/api/lp/ledger/entry', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -326,6 +351,8 @@ function EntryForm() {
             price: p,
             note: note || null,
             entry_basis: entryBasis,
+            fv_at_fill: fv,
+            mid_at_fill: mid,
             kind: 'fill',
           }),
         })
@@ -341,6 +368,8 @@ function EntryForm() {
       setPrice('')
       setNote('')
       setEntryBasis(null)
+      setFvAtFill(null)
+      setMidAtFill(null)
     } finally {
       setBusy(false)
     }
@@ -382,7 +411,10 @@ function EntryForm() {
           value={code}
           onChange={(e) => {
             setCode(e.target.value)
-            setEntryBasis(null) // 수동 편집 시 프리필된 진입 베이시스 해제
+            // 수동 편집 시 프리필된 스냅샷 해제 (submit 시 quoteBoard 자동 첨부로 대체)
+            setEntryBasis(null)
+            setFvAtFill(null)
+            setMidAtFill(null)
           }}
           placeholder="코드 (자유 입력)"
           className="flex-1 bg-bg-base px-2 py-1 text-[11px] tabular-nums text-t1 outline-none focus:border-accent border border-transparent"

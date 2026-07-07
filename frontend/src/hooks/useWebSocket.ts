@@ -92,6 +92,8 @@ export function useWebSocket() {
         else if (m.type === 'quote_board') useLpStore.getState().setQuoteBoard(m.data)
         // 베이시스 북(§13.4) — Rust 1초 주기 basis_book. 즉시 store 반영.
         else if (m.type === 'basis_book') useLpStore.getState().setBasisBook(m.data)
+        // P&L 5분해(§13.3-C) — Rust 1초 주기 pnl_decomp. 즉시 store 반영.
+        else if (m.type === 'pnl_decomp') useLpStore.getState().setPnlDecomp(m.data)
         else if (!warnedTypes.has(m.type)) {
           warnedTypes.add(m.type)
           console.warn('[useWebSocket] unhandled tick type:', m.type, '— register in marketStore + dispatchOne')

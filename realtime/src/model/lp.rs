@@ -349,3 +349,72 @@ pub struct BasisBookSnapshot {
     pub any_expiry_action: bool,
     pub timestamp: String,
 }
+
+// =============================================================================
+// P&L 5분해 + markout + 리스크 한도 (§13.3-C Phase 4 PR-E)
+// =============================================================================
+
+/// 스프레드 미귀속 fill (fv_at_fill 없음 — 비ETF·수동 기장 등). 별도 합계로 정직 표기.
+#[derive(Debug, Clone, Serialize)]
+pub struct Unattributed {
+    pub n: i64,
+    /// 미귀속 fill 명목 합 (원, 크기).
+    pub notional_krw: f64,
+}
+
+/// markout 역선택 통계 (§13.3-C). fill 후 5분/30분 시점 가격변화 × 방향 부호 평균 (bp).
+/// 음수 = 역선택 (LP가 준 유동성 방향으로 시장이 불리하게 움직임).
+#[derive(Debug, Clone, Serialize)]
+pub struct MarkoutStats {
+    pub n_5m: i64,
+    pub avg_5m_bp: f64,
+    pub n_30m: i64,
+    pub avg_30m_bp: f64,
+}
+
+/// 리스크 한도 게이지 1개 (§13.3-C 한도 4개).
+#[derive(Debug, Clone, Serialize)]
+pub struct LimitGauge {
+    /// 표시명 ("순 델타(오버레이 후)" 등).
+    pub name: String,
+    /// 현재값 (원, 크기 — abs).
+    pub current: f64,
+    /// 한도 (원). 0이면 미설정.
+    pub limit: f64,
+    /// 사용률 = current / limit (limit>0). 0이면 미설정/미사용.
+    pub ratio: f64,
+    /// 부연 (최대 재고 ETF 코드 등). 없으면 빈 문자열.
+    pub detail: String,
+}
+
+/// P&L 5분해 스냅샷 (§13.3-C). 당일 세션 기준(전일 종가 대비). 1초 주기 broadcast.
+///
+/// 완전 분해 보장 — residual attribution:
+///   `total_mtm = spread + basis_stock + residual_directional + carry + hedge_cost`
+/// (residual_directional은 총 MTM에서 나머지 항을 뺀 잔여로 역산 → 가산성 항등).
+#[derive(Debug, Clone, Serialize)]
+pub struct PnlDecompSnapshot {
+    pub as_of: String,
+    /// 당일 북 MTM 총변화 (원) — 전일 종가(비유니버스는 당일 첫 관측가 폴백) 대비.
+    pub total_mtm: f64,
+    /// 스프레드 수익 (원) = Σ (fv_at_fill − fill_price) × signed_qty (당일 fill).
+    pub spread: f64,
+    /// 베이시스 손익 — 종목만 (basis_book 수렴손익 합). 지수는 산출 불가(status).
+    pub basis_stock: f64,
+    /// 지수 베이시스 손익 상태 — 당일 베이시스 변화 미기록이라 v1 산출 불가 (정직 표기).
+    pub basis_index_status: String,
+    /// 잔차/방향 손익 (원) = total_mtm − (spread + basis_stock + carry + hedge_cost). 역산.
+    pub residual_directional: f64,
+    /// 캐리 (원) = −r × Σ|노출| × (당일 경과일/365). 음수 = 비용.
+    pub carry: f64,
+    /// 헤지 비용 (원) = −Σ 당일 선물 fill 명목 × futures_fee_bp. 음수.
+    pub hedge_cost: f64,
+    pub unattributed: Unattributed,
+    pub markout: MarkoutStats,
+    /// 리스크 한도 4개 (§13.3-C).
+    pub limits: Vec<LimitGauge>,
+    /// 산출 가능 여부 (포지션·체결 아무것도 없으면 false).
+    pub usable: bool,
+    /// 근사·결측 경고 (정직 표기).
+    pub caveats: Vec<String>,
+}

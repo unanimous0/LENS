@@ -12,6 +12,7 @@ pub mod basis_route;
 pub mod book_risk;
 pub mod hedge_ticket;
 pub mod pdf_basket;
+pub mod pnl;
 pub mod quote_board;
 pub mod scheduler;
 pub mod stock_futures_intersect;
@@ -114,6 +115,40 @@ pub struct LedgerAgg {
     pub entry_basis: Option<f64>,
     #[serde(default)]
     pub name: Option<String>,
+}
+
+/// `GET /api/lp/ledger` entries[] 1건 — P&L(스프레드·markout)에 필요한 필드만 역직렬화.
+/// 표시 전용 필드(name·note·entry_basis 등)는 Rust 미사용이라 생략.
+#[derive(Debug, Clone, Deserialize)]
+pub struct LedgerEntry {
+    pub id: String,
+    pub ts: String,
+    pub code: String,
+    pub instrument: String,
+    pub kind: String,
+    pub side: String,
+    #[serde(default)]
+    pub qty: i64,
+    #[serde(default)]
+    pub price: Option<f64>,
+    /// 체결 시점 FV_futures 스냅샷 (스프레드 귀속). 없으면 unattributed.
+    #[serde(default)]
+    pub fv_at_fill: Option<f64>,
+    #[serde(default)]
+    pub mid_at_fill: Option<f64>,
+}
+
+/// `GET /api/lp/fill-marks` marks[] 1건 — markout 통계 소스.
+#[derive(Debug, Clone, Deserialize)]
+pub struct FillMark {
+    pub fill_id: String,
+    pub horizon: String,
+    #[serde(default)]
+    pub price: Option<f64>,
+    #[serde(default)]
+    pub fv: Option<f64>,
+    #[serde(default)]
+    pub marked_at: Option<String>,
 }
 
 /// 가격 맵 — 코드(주식/ETF/선물 모두) → (price, last_update_ms).

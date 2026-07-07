@@ -1,6 +1,7 @@
 import { useLpInit } from '@/hooks/useLpInit'
 import { BookFourNumbers } from '@/components/lp/BookFourNumbers'
 import { BasisBookPanel } from '@/components/lp/BasisBookPanel'
+import { PnlPanel } from '@/components/lp/PnlPanel'
 import { QuoteBoard } from '@/components/lp/QuoteBoard'
 import { HedgeTicketPanel } from '@/components/lp/HedgeTicketPanel'
 import { BasisRouterPanel } from '@/components/lp/BasisRouterPanel'
@@ -29,6 +30,8 @@ export function LpMatrixPage() {
       <BookFourNumbers />
       {/* 북 4층 분해 + 베이시스 북(§13.4) — 4대 숫자의 확장이므로 바로 아래 */}
       <BasisBookPanel />
+      {/* P&L 5분해 + 리스크 한도(§13.3-C) — #4 손익 분해의 상세 */}
+      <PnlPanel />
       <QuoteBoard />
       {/* ③ 헤지 티켓(§13.3-B) + 베이시스 라우터(§13.4) — QuoteBoard 아래·원장 위 한 행 */}
       <div className="grid grid-cols-2 gap-1">
