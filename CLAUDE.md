@@ -62,7 +62,7 @@ LENS SQLite (lens.db)  ←──쓰기──  FastAPI (포지션·loan_rates·sa
 LENS의 현재 주력 방향은 단순 차익 모니터링이 아니라 **자체 fair value 체계 + 외부 플로우 탐지로 진정한 LP 전환**. 상세는 `lp-system-design.md`가 단일 진실원이고, 새 기능·리팩터·UI 설계는 거기 정의된 m×n 매트릭스(m=ETF, n=hedge route) + 5-level cascade + 4대 지표 (FV gap / beta-adjusted delta / residual risk / PnL decomp) 프레임에 맞춰서 한다.
 
 - 첫 build 검증 완료 (2026-05-21 라이브, memory `project_lp_first_build_handoff` / `project_zx_live_verified`).
-- **2026-07-07 v2 재설계 합의** — 비교표에서 운영 사이클(호가→선물헤지→손익분해→넷팅바스켓 정리) 워크플로로 전환. OMS 제약(체결시 넷팅 불가·지수선물 헤지 1순위)이 전제. 정본은 `lp-system-design.md §13`, Phase 1 = 북 원장 가시화 (memory `project_lp_oms_constraints`).
+- **v2 완결 (2026-07-08)** — 비교표에서 운영 사이클(호가→선물헤지→손익분해→넷팅바스켓 정리) 워크플로로 전환 완료. Phase 1~5 전체 구현: 북 원장 / 지수선물 FC9 wire + FV_futures 호가 보드 12종 / 헤지 티켓·베이시스 라우터 / 베이시스 북 4층 분해·P&L 5분해·markout·한도 / 넷팅 바스켓 빌더·z-score·출구 3개 비교. 정본 `lp-system-design.md §13`(구현 기록 §13.8~§13.11), 사용법 `docs/lp-matrix-guide.md`, 진행 memory `project_lp_v2_progress` / 전제 `project_lp_oms_constraints`. 후속 트랙: watchdog stall 미감지, front-month 일일 re-resolve, 지수 베이시스 당일 기록, γ 튜닝.
 - M:N 통계차익 별도 트랙: PR-A~C3 (35 페어) 완료, 다음 PR-D Johansen / PR-E Sparse PCA / PR-F 통합 (memory `project_mn_screener_progress`).
 
 ## 종목코드 처리
