@@ -344,7 +344,11 @@ impl InternalFeed {
         state.is_futures = is_futures;
 
         if is_futures {
-            // 선물 → FuturesTick
+            // 선물 → FuturesTick (주식선물 JC0 상당).
+            // TODO(PR-A 지수선물): 내부망 WS는 지수선물을 'KA0166000'(9자리) 포맷으로 구독하는 것으로
+            // 추정(ls_rest.rs is_t1102_target 주석 단서)이나, 이 개발 박스에서 내부망 실측 불가라
+            // IndexFuturesTick wire는 보류. 내부망 접속 가능 환경에서 XKRF 지수선물 페이로드
+            // (ex/코드 포맷·이론가 필드) 확인 후 이 분기를 IndexFuturesTick으로 분기시킬 것.
             let underlying = if state.futures_ideal_trade > 0.0 {
                 state.futures_ideal_trade
             } else {

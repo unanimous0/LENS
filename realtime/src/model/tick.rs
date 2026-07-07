@@ -118,6 +118,43 @@ pub struct FuturesTick {
     pub open_interest_change: Option<i64>,
 }
 
+/// 지수선물 틱 (KOSPI200 / 미니 KOSPI200 / KOSDAQ150 선물 — LS FC9 체결).
+///
+/// 주식선물 `FuturesTick`(JC0)과 **별도 타입**으로 둔 이유:
+///   1. 이론가(theoryprice)·기초지수(k200jisu) 등 주식선물엔 없는 LP FV_futures 앵커 필드 보유
+///      (lp-system-design.md §13.3-A). 주식선물 소비처(stock-arbitrage 월물 토글·LedgerBoard)에
+///      지수선물 행이 섞여 들어가지 않게 스트림을 완전히 분리.
+///   2. WsMessage::IndexFuturesTick → scheduler는 이 variant를 무시(price map 미오염).
+#[derive(Debug, Clone, Serialize)]
+pub struct IndexFuturesTick {
+    pub code: String,
+    pub name: String,
+    /// 상품 구분: "kospi200" | "mini_k200" | "kosdaq150". 프론트 라우팅/디버그용.
+    pub product: &'static str,
+    pub price: f64,
+    /// 전일대비 (FC9 `change`).
+    pub change: f64,
+    /// 등락률 % (FC9 `drate`).
+    pub change_rate: f64,
+    /// 기초지수 레벨 (FC9 `k200jisu` — 현물 KOSPI200/KOSDAQ150 지수). 미제공 시 0.
+    pub underlying_index: f64,
+    /// 시장 베이시스 = 선물가 − 기초지수. `underlying_index == 0`이면 0.
+    pub basis: f64,
+    /// 이론가 (FC9 `theoryprice`). LP FV_futures 앵커. 미제공 시 None.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub theory_price: Option<f64>,
+    pub volume: u64,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub is_initial: bool,
+    /// 미결제약정수량 (FC9 `openyak`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub open_interest: Option<i64>,
+    /// 미결제약정 전일대비 증감 (FC9 `openyakcha`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub open_interest_change: Option<i64>,
+    pub timestamp: String,
+}
+
 /// 호가 단일 레벨 (가격 + 잔량)
 #[derive(Debug, Clone, Serialize)]
 pub struct OrderbookLevel {

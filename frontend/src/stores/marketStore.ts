@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { ETFTick, StockTick, FuturesTick, OrderbookTick, NetworkMode } from '../types/market'
+import type { ETFTick, StockTick, FuturesTick, IndexFuturesTick, OrderbookTick, NetworkMode } from '../types/market'
 
 export type FeedState = 'fresh' | 'quiet' | 'stale' | 'pre_open' | 'post_close' | 'closed' | 'mock' | 'internal' | 'unknown'
 
@@ -39,6 +39,10 @@ interface MarketState {
   futuresTicks: Record<string, FuturesTick>
   updateFuturesTick: (tick: FuturesTick) => void
   batchUpdateFutures: (ticks: Record<string, FuturesTick>) => void
+  /** 지수선물(FC9). 주식선물과 별도 — code(A+상품2+연1+월1+000) → 틱. */
+  indexFuturesTicks: Record<string, IndexFuturesTick>
+  updateIndexFuturesTick: (tick: IndexFuturesTick) => void
+  batchUpdateIndexFutures: (ticks: Record<string, IndexFuturesTick>) => void
   orderbookTicks: Record<string, OrderbookTick>
   updateOrderbookTick: (tick: OrderbookTick) => void
   batchUpdateOrderbooks: (ticks: Record<string, OrderbookTick>) => void
@@ -152,6 +156,23 @@ export const useMarketStore = create<MarketState>((set) => ({
         next[code] = tick
       }
       return changed ? { futuresTicks: next } : state
+    }),
+  indexFuturesTicks: {},
+  updateIndexFuturesTick: (tick) =>
+    set((state) => {
+      if (shouldSkip(tick, state.indexFuturesTicks[tick.code])) return state
+      return { indexFuturesTicks: { ...state.indexFuturesTicks, [tick.code]: tick } }
+    }),
+  batchUpdateIndexFutures: (ticks) =>
+    set((state) => {
+      const next = { ...state.indexFuturesTicks }
+      let changed = false
+      for (const [code, tick] of Object.entries(ticks)) {
+        if (shouldSkip(tick, next[code])) continue
+        changed = true
+        next[code] = tick
+      }
+      return changed ? { indexFuturesTicks: next } : state
     }),
   orderbookTicks: {},
   updateOrderbookTick: (tick) =>

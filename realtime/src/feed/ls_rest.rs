@@ -964,6 +964,223 @@ pub async fn fetch_t8407_volumes(
     }
 }
 
+// ─── 지수선물 front-month 해석 (t8467 지수선물마스터) ─────────────────────────
+// LP FV_futures 앵커(lp-system-design.md §13.3-A / §13.7 Phase 2 전제조건)용.
+// 기동 시 1회 t8467로 KOSPI200(01)/미니(05)/KOSDAQ150(06) 최근월물 코드를 해석.
+
+/// t8467 엔드포인트 — futureoption/market-data (t8402와 동일 그룹).
+const INDEX_FUT_MASTER_URL: &str = T8402_URL;
+
+/// 만기 임박 롤 임계치(일). 만기(2번째 목요일)까지 남은 일수가 이 값 미만이면 그 월물을
+/// 건너뛰고 차근월물을 front로 선택. (만기 당일=0·전일=1 → 롤. 스펙 "만기 당일~전일 차근월물".)
+const INDEX_FUT_ROLL_THRESHOLD_DAYS: i64 = 2;
+
+/// 해석된 지수선물 front-month 1건.
+#[derive(Clone, Debug)]
+pub struct ResolvedIndexFuture {
+    /// "kospi200" | "mini_k200" | "kosdaq150"
+    pub product: &'static str,
+    /// FC9 tr_key (A + 상품2 + 연1 + 월1 + 000, 8자리).
+    pub code: String,
+    pub name: String,
+}
+
+static RESOLVED_INDEX_FUTURES: OnceLock<std::sync::RwLock<Vec<ResolvedIndexFuture>>> = OnceLock::new();
+fn resolved_slot() -> &'static std::sync::RwLock<Vec<ResolvedIndexFuture>> {
+    RESOLVED_INDEX_FUTURES.get_or_init(|| std::sync::RwLock::new(Vec::new()))
+}
+
+/// /debug/stats 노출용. (product, code, name) 리스트. 해석 전이면 빈 Vec.
+pub fn resolved_index_futures() -> Vec<(String, String, String)> {
+    resolved_slot()
+        .read()
+        .unwrap()
+        .iter()
+        .map(|r| (r.product.to_string(), r.code.clone(), r.name.clone()))
+        .collect()
+}
+
+fn index_product_of(prefix: &str) -> Option<&'static str> {
+    match prefix {
+        "01" => Some("kospi200"),
+        "05" => Some("mini_k200"),
+        "06" => Some("kosdaq150"),
+        _ => None,
+    }
+}
+
+/// 월 코드 문자 → 월(1~12). '1'..'9' + 'A'=10,'B'=11,'C'=12.
+fn month_from_code(c: char) -> Option<u32> {
+    match c {
+        '1'..='9' => Some(c as u32 - '0' as u32),
+        'A' => Some(10),
+        'B' => Some(11),
+        'C' => Some(12),
+        _ => None,
+    }
+}
+
+/// 지수선물 코드(A + 상품2 + 연1 + 월1 + 000)에서 (year, month) 파싱.
+/// 한 자리 연도는 today 기준 가장 가까운 미래 decade로 보정.
+pub(crate) fn parse_index_fut_ym(code: &str, today_year: i32) -> Option<(i32, u32)> {
+    let b = code.as_bytes();
+    if code.len() != 8 || b[0] != b'A' {
+        return None;
+    }
+    let year_digit = (b[3] as char).to_digit(10)? as i32;
+    let month = month_from_code(b[4] as char)?;
+    let decade = today_year - today_year % 10;
+    let mut y = decade + year_digit;
+    if y < today_year - 1 {
+        y += 10;
+    }
+    Some((y, month))
+}
+
+/// 해당 연월의 2번째 목요일 (KRX 지수선물/옵션 만기일).
+fn second_thursday(year: i32, month: u32) -> Option<chrono::NaiveDate> {
+    use chrono::{Datelike, NaiveDate};
+    let first = NaiveDate::from_ymd_opt(year, month, 1)?;
+    let dow = first.weekday().num_days_from_monday(); // Mon=0..Sun=6, Thu=3
+    let first_thu_day = 1 + ((3 + 7 - dow as i64) % 7) as u32;
+    NaiveDate::from_ymd_opt(year, month, first_thu_day + 7)
+}
+
+/// t8467(지수선물마스터)로 KOSPI200/미니/KOSDAQ150 front-month를 해석.
+/// - t8467이 세 상품을 모두 반환하면 각자 최근월물(만기 임박 제외)을 선택.
+/// - 미니/KOSDAQ150 미반환 시 KOSPI200 front에서 상품 prefix 치환으로 파생(best-effort, 경고 로그).
+///
+/// 실패/빈 응답 시 Err/빈 Vec — 호출자는 "지수선물 없이 진행".
+pub async fn fetch_index_futures_front_months(
+    app_key: &str,
+    app_secret: &str,
+) -> Result<Vec<ResolvedIndexFuture>, String> {
+    use chrono::{Datelike, Local};
+
+    let token = get_or_fetch_token(app_key, app_secret).await?;
+    let client = reqwest::Client::new();
+    let body = serde_json::json!({"t8467InBlock": {"gubun": ""}});
+    let mut last_err = String::new();
+    let mut resp_data: Option<serde_json::Value> = None;
+    for attempt in 0..=MAX_RETRIES {
+        if attempt > 0 {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+        match client
+            .post(INDEX_FUT_MASTER_URL)
+            .header("Content-Type", "application/json")
+            .header("authorization", format!("Bearer {token}"))
+            .header("tr_cd", "t8467")
+            .header("tr_cont", "N")
+            .json(&body)
+            .send()
+            .await
+        {
+            Ok(resp) if resp.status().is_success() => match resp.json::<serde_json::Value>().await {
+                Ok(data) => {
+                    resp_data = Some(data);
+                    break;
+                }
+                Err(e) => last_err = format!("parse: {e}"),
+            },
+            Ok(resp)
+                if resp.status() == reqwest::StatusCode::UNAUTHORIZED
+                    || resp.status() == reqwest::StatusCode::FORBIDDEN =>
+            {
+                invalidate_token_cache().await;
+                return Err(format!("http {} (token invalidated)", resp.status()));
+            }
+            Ok(resp) => last_err = format!("http {}", resp.status()),
+            Err(e) => last_err = format!("send: {e}"),
+        }
+    }
+    let data = resp_data.ok_or(last_err)?;
+    let arr = data["t8467OutBlock"].as_array().ok_or_else(|| {
+        data.get("rsp_msg")
+            .and_then(|v| v.as_str())
+            .unwrap_or("t8467OutBlock 누락")
+            .to_string()
+    })?;
+
+    let today = Local::now().date_naive();
+    let today_year = today.year();
+
+    // product prefix → 후보 (year, month, code, name).
+    let mut by_product: HashMap<&'static str, Vec<(i32, u32, String, String)>> = HashMap::new();
+    let mut all_shcodes: Vec<String> = Vec::new(); // A06 가설 실측용 원 응답 로깅
+    for item in arr {
+        let shcode = item.get("shcode").and_then(|v| v.as_str()).unwrap_or("");
+        // 스프레드(shcode 'D...')·비정규 코드 제외. 정규 지수선물만 A + 8자리.
+        if shcode.len() != 8 || !shcode.starts_with('A') {
+            continue;
+        }
+        all_shcodes.push(shcode.to_string());
+        let prod = match index_product_of(&shcode[1..3]) {
+            Some(p) => p,
+            None => continue,
+        };
+        let hname = item
+            .get("hname")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if let Some((y, m)) = parse_index_fut_ym(shcode, today_year) {
+            by_product.entry(prod).or_default().push((y, m, shcode.to_string(), hname));
+        }
+    }
+    info!(
+        "t8467 지수선물마스터: 정규 {} 계약 (products: {:?}, shcode 샘플: {:?})",
+        all_shcodes.len(),
+        by_product.keys().collect::<Vec<_>>(),
+        &all_shcodes[..all_shcodes.len().min(12)]
+    );
+
+    // product별 front = 만기 임박(threshold 미만) 제외 후 가장 이른 만기.
+    let pick_front = |cands: &[(i32, u32, String, String)]| -> Option<(String, String)> {
+        cands
+            .iter()
+            .filter(|(y, m, _, _)| {
+                second_thursday(*y, *m)
+                    .map(|exp| (exp - today).num_days() >= INDEX_FUT_ROLL_THRESHOLD_DAYS)
+                    .unwrap_or(false)
+            })
+            .min_by_key(|(y, m, _, _)| (*y, *m))
+            .map(|(_, _, code, name)| (code.clone(), name.clone()))
+    };
+
+    let mut resolved: Vec<ResolvedIndexFuture> = Vec::new();
+    for &prod in &["kospi200", "mini_k200", "kosdaq150"] {
+        if let Some(cands) = by_product.get(prod) {
+            if let Some((code, name)) = pick_front(cands) {
+                resolved.push(ResolvedIndexFuture { product: prod, code, name });
+            }
+        }
+    }
+
+    // t8467이 미니/KOSDAQ150 미반환 → KOSPI200 front에서 prefix 치환으로 파생.
+    // 세 지수선물 모두 분기물 만기 사이클 공유(2번째 목요일). 단 미니는 월물 존재 가능 →
+    // 파생은 best-effort, FC9 실측으로 검증 필요.
+    if let Some(kospi) = resolved.iter().find(|r| r.product == "kospi200").cloned() {
+        for &(prod, prefix) in &[("mini_k200", "05"), ("kosdaq150", "06")] {
+            if !resolved.iter().any(|r| r.product == prod) {
+                let derived = format!("A{}{}", prefix, &kospi.code[3..]);
+                warn!(
+                    "지수선물 {prod}: t8467 미반환 → KOSPI200 front에서 파생 {derived} (만기 사이클 미검증, FC9 실측 필요)"
+                );
+                resolved.push(ResolvedIndexFuture {
+                    product: prod,
+                    code: derived,
+                    name: format!("{prod} F(derived)"),
+                });
+            }
+        }
+    }
+
+    *resolved_slot().write().unwrap() = resolved.clone();
+    Ok(resolved)
+}
+
 #[allow(dead_code)] // t8407 배치로 대체됨. 단건 디버그/폴백용 보존.
 async fn fetch_t1102(client: &reqwest::Client, token: &str, code: &str) -> Result<serde_json::Map<String, serde_json::Value>, String> {
     let body = serde_json::json!({"t1102InBlock": {"shcode": code}});

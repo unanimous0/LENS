@@ -76,6 +76,31 @@ export interface FuturesTick {
   open_interest_change?: number
 }
 
+/** 지수선물 (KOSPI200/미니/KOSDAQ150, LS FC9). 주식선물 FuturesTick과 별도 스트림.
+ *  LP FV_futures 앵커(lp-system-design.md §13.3-A)용 이론가·기초지수 포함. */
+export interface IndexFuturesTick {
+  code: string
+  name: string
+  /** "kospi200" | "mini_k200" | "kosdaq150" */
+  product: 'kospi200' | 'mini_k200' | 'kosdaq150'
+  price: number
+  /** 전일대비 */
+  change: number
+  /** 등락률 % */
+  change_rate: number
+  /** 기초지수 레벨 (FC9 k200jisu). 없으면 0. */
+  underlying_index: number
+  /** 시장 베이시스 = 선물가 - 기초지수. */
+  basis: number
+  /** 이론가 (FC9 theoryprice). LP FV_futures 앵커. */
+  theory_price?: number
+  volume: number
+  open_interest?: number
+  open_interest_change?: number
+  timestamp: string
+  is_initial?: boolean
+}
+
 export interface OrderbookLevel {
   price: number
   quantity: number

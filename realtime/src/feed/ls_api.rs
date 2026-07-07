@@ -12,7 +12,7 @@ use tracing::{debug, info, warn};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::model::message::WsMessage;
-use crate::model::tick::{EtfTick, FuturesTick, OrderbookLevel, OrderbookTick, StockTick};
+use crate::model::tick::{EtfTick, FuturesTick, IndexFuturesTick, OrderbookLevel, OrderbookTick, StockTick};
 use crate::Stats;
 
 use super::{MarketFeed, SubCommand};
@@ -462,8 +462,50 @@ impl MarketFeed for LsApiFeed {
         let last_data_orderbook = self.last_data_orderbook_us.clone();
         spawn_futures_connections(
             &initial_futures, &app_key, &app_secret, &names, &stock_codes,
-            &futures_to_spot, &tx, &cancel, &futures_cancel, &stats, &last_data_us, &last_subscribe_us, &last_data_futures,
+            &futures_to_spot, &tx, &cancel, &futures_cancel, &stats, &last_data_us, &last_subscribe_us, &last_data_futures, 100,
         );
+
+        // ─── 지수선물 (FC9) — LP FV_futures 앵커 (lp-system-design.md §13.3-A / §13.7 Phase 2) ───
+        // 기동 시 t8467로 KOSPI200/미니/KOSDAQ150 front-month 해석 → 전용 FC9 연결(키A) 스폰.
+        // 실패해도 기동은 막지 않음 (지수선물 없이 진행). 월물 토글(futures_cancel)과 무관하게
+        // 항상 살아있도록 별도 cancel 토큰(global cancel에만 종속) 사용.
+        {
+            let ak = self.app_key.clone();
+            let as_ = self.app_secret.clone();
+            let names = self.names.clone();
+            let stock_codes = self.stock_codes.clone();
+            let futures_to_spot = self.futures_to_spot.clone();
+            let tx_if = tx.clone();
+            let cancel_if = cancel.clone();
+            let stats = self.stats.clone();
+            let last_data_us = self.last_data_us.clone();
+            let last_subscribe_us = self.last_subscribe_us.clone();
+            // FC9 전용 stream atomic — JC0의 last_data_futures_us와 공유 금지 (크로스마스킹).
+            let stream_us = index_futures_stream_us().clone();
+            tokio::spawn(async move {
+                // t8467은 마스터라 장 외에도 가능. REST 키는 시간대 기준(rest_credentials).
+                let (ak_r, as_r) = super::ls_rest::rest_credentials();
+                match super::ls_rest::fetch_index_futures_front_months(&ak_r, &as_r).await {
+                    Ok(resolved) if !resolved.is_empty() => {
+                        let subs: Vec<(String, String)> =
+                            resolved.iter().map(|r| ("FC9".to_string(), r.code.clone())).collect();
+                        info!(
+                            "지수선물 front-month 해석 완료: {}",
+                            resolved.iter().map(|r| format!("{}={}", r.product, r.code)).collect::<Vec<_>>().join(" ")
+                        );
+                        // idle grace anchor — 해석 완료 시각부터 age 측정 (0=미수신과 구분).
+                        stream_us.store(now_us(), Ordering::Relaxed);
+                        // futures_cancel 대신 global cancel을 두 번 넘겨 월물 토글에 영향받지 않게.
+                        spawn_futures_connections(
+                            &subs, &ak, &as_, &names, &stock_codes, &futures_to_spot,
+                            &tx_if, &cancel_if, &cancel_if, &stats, &last_data_us, &last_subscribe_us, &stream_us, 700,
+                        );
+                    }
+                    Ok(_) => warn!("지수선물: t8467가 사용 가능한 계약을 반환하지 않음 — 지수선물 없이 진행"),
+                    Err(e) => warn!("지수선물 front-month 해석 실패: {e} — 지수선물 없이 진행"),
+                }
+            });
+        }
 
         // 호가 전용 연결 (온디맨드)
         let mut ob_cancel = CancellationToken::new();
@@ -554,7 +596,7 @@ impl MarketFeed for LsApiFeed {
                             futures_cancel = CancellationToken::new();
                             spawn_futures_connections(
                                 &new_futures, &app_key, &app_secret, &names, &stock_codes,
-                                &futures_to_spot, &tx, &cancel, &futures_cancel, &stats, &last_data_us, &last_subscribe_us, &last_data_futures,
+                                &futures_to_spot, &tx, &cancel, &futures_cancel, &stats, &last_data_us, &last_subscribe_us, &last_data_futures, 100,
                             );
                         }
                         Some(SubCommand::Unsubscribe(_)) => {
@@ -572,7 +614,7 @@ impl MarketFeed for LsApiFeed {
                             info!("Reverting futures to front baseline: {} codes", baseline_futures.len());
                             spawn_futures_connections(
                                 &baseline_futures, &app_key, &app_secret, &names, &stock_codes,
-                                &futures_to_spot, &tx, &cancel, &futures_cancel, &stats, &last_data_us, &last_subscribe_us, &last_data_futures,
+                                &futures_to_spot, &tx, &cancel, &futures_cancel, &stats, &last_data_us, &last_subscribe_us, &last_data_futures, 100,
                             );
                         }
                         Some(SubCommand::SubscribeStocks(codes)) => {
@@ -884,6 +926,7 @@ fn spawn_futures_connections(
     last_data_us: &Arc<AtomicU64>,
     last_subscribe_us: &Arc<AtomicU64>,
     stream_data_us: &Arc<AtomicU64>,
+    conn_base: usize,
 ) {
     let chunks: Vec<Vec<(String, String)>> = futures
         .chunks(MAX_SUBS_PER_CONNECTION).map(|c| c.to_vec()).collect();
@@ -919,8 +962,8 @@ fn spawn_futures_connections(
             let mut silent_count = 0u32;
             loop {
                 if combined_cancel.is_cancelled() { return; }
-                if !crate::phase::wait_until_active(&combined_cancel, &format!("futures[{i}]")).await { return; }
-                let conn_id = 100 + i; // 고정 그룹과 구분
+                if !crate::phase::wait_until_active(&combined_cancel, &format!("futures[{}]", conn_base + i)).await { return; }
+                let conn_id = conn_base + i; // 고정 그룹(0..)·JC0(100..)·지수선물(700..) 구분
                 let ticks_before = stats.tick_count.load(Ordering::Relaxed);
                 match run_single_connection(
                     conn_id, &ak, &as_, &chunk, &n, &sc, &f2s, &tx, &combined_cancel, &last_data_us, &last_subscribe_us, &stream_data_us,
@@ -1166,7 +1209,7 @@ fn spawn_orderbook_connection(
         .collect();
 
     for (i, chunk) in chunks.into_iter().enumerate() {
-        let conn_id = 400 + i; // fixed=0+, futures=100+, stocks=200+, inav=300+, orderbook=400+
+        let conn_id = 400 + i; // fixed=0+, futures=100+, stocks=200+, inav=300+, orderbook=400+, index_futures=700+
         let chunk_codes = chunk;
         let tx = tx.clone();
         let gc = global_cancel.clone();
@@ -1475,6 +1518,51 @@ async fn handle_tick(
             // 현물은 S3_/K3_로 별도 구독 중이고, 여기서 보내면 cum_volume을 0으로 덮어써버려
             // 현물대금이 빈 칸이 되는 문제가 발생함.
         }
+        // 지수선물 체결 (FC9: KOSPI200 01 / 미니 05 / KOSDAQ150 06). 주식선물(JC0)과 별도 IndexFuturesTick.
+        "FC9" => {
+            let price = pf(&body["price"]);
+            // 첫 FC9 체결을 상품 prefix별 1회 raw dump — A06(KOSDAQ150) 수신 여부·필드 실측용.
+            {
+                static FC9_SEEN: AtomicU64 = AtomicU64::new(0);
+                let bit: u64 = match tr_key.get(1..3) { Some("01") => 1, Some("05") => 2, Some("06") => 4, _ => 0 };
+                if bit != 0 && FC9_SEEN.fetch_or(bit, Ordering::Relaxed) & bit == 0 {
+                    tracing::info!("FC9 최초 수신 [{}]: code={} body={}", tr_key.get(1..3).unwrap_or("?"), tr_key, body);
+                }
+            }
+            let product = match tr_key.get(1..3) {
+                Some("05") => "mini_k200",
+                Some("06") => "kosdaq150",
+                _ => "kospi200",
+            };
+            let underlying = pf(&body["k200jisu"]);
+            let basis = if underlying > 0.0 { price - underlying } else { 0.0 };
+            let theory = body.get("theoryprice").filter(|v| !v.is_null()).map(pf).filter(|v| *v > 0.0);
+            let oi = body.get("openyak").filter(|v| !v.is_null()).map(pi);
+            let oi_change = body.get("openyakcha").filter(|v| !v.is_null()).map(pi);
+            // FC9 `change`는 부호 없는 크기 — `sign`(1/2=상승, 4/5=하락)으로 부호 복원.
+            // drate는 이미 signed. FV_futures 소비처가 signed change를 기대하므로 여기서 맞춤.
+            let change_mag = pf(&body["change"]);
+            let change = match body["sign"].as_str() {
+                Some("4") | Some("5") => -change_mag,
+                _ => change_mag,
+            };
+            try_send_tick(tx, WsMessage::IndexFuturesTick(IndexFuturesTick {
+                code: tr_key.into(),
+                name: index_futures_display_name(tr_key, product),
+                product,
+                price,
+                change,
+                change_rate: pf(&body["drate"]),
+                underlying_index: underlying,
+                basis: r2(basis),
+                theory_price: theory,
+                volume: pu(&body["volume"]),
+                is_initial: false,
+                open_interest: oi,
+                open_interest_change: oi_change,
+                timestamp: now,
+            }));
+        }
         // 주식 호가 (KOSPI H1_, KOSDAQ HA_): 10호가
         "H1_" | "HA_" => {
             let (asks, bids) = parse_orderbook_levels(body, 10);
@@ -1568,6 +1656,20 @@ fn parse_orderbook_levels(body: &serde_json::Value, levels: usize) -> (Vec<Order
     (asks, bids)
 }
 
+/// 지수선물(FC9) 스트림 **전용** last_data_us.
+///
+/// JC0(주식선물)의 `last_data_futures_us`와 공유하면 안 됨 — run_single_connection의
+/// idle 판정은 stream별 last_data 전제인데, KOSPI200 지수선물은 장중 거의 연속 체결이라
+/// JC0이 silent stall해도 FC9 틱이 freshness를 계속 갱신 → idle watchdog 미발동 →
+/// 재접속 안 됨 (역방향 동일). 2026-05-15 stream별 분리 fix와 같은 원리.
+///
+/// LsApiFeed 필드가 아닌 전역인 이유: /debug/stats(main.rs)가 AppState 플럼빙 없이
+/// 읽기 위함 (TX_DROPPED와 동일 패턴). 값 0 = 아직 데이터 없음.
+pub fn index_futures_stream_us() -> &'static Arc<AtomicU64> {
+    static SLOT: std::sync::OnceLock<Arc<AtomicU64>> = std::sync::OnceLock::new();
+    SLOT.get_or_init(|| Arc::new(AtomicU64::new(0)))
+}
+
 /// LS feed → bridge mpsc 채널이 full이거나 receiver dropped 시 drop 카운터.
 /// 핫 path에서 `.await` blocking을 피하기 위해 try_send 사용 — 거의 0이어야 정상.
 /// /debug/stats 의 tx_dropped 로 노출.
@@ -1578,6 +1680,24 @@ fn try_send_tick(tx: &mpsc::Sender<WsMessage>, msg: WsMessage) {
     if tx.try_send(msg).is_err() {
         TX_DROPPED.fetch_add(1, Ordering::Relaxed);
     }
+}
+
+/// 지수선물 표시명 — code(A+상품2+연1+월1+000)에서 "코스피200 F 2609" 형태 생성.
+/// names 마스터에 지수선물이 없으므로 코드에서 직접 구성.
+/// 연도는 ls_rest::parse_index_fut_ym이 현재 연도 기준 가장 가까운 decade로 해석
+/// (한 자리 연도 코드라 "2X" 하드코딩 시 2030년대부터 오표기).
+fn index_futures_display_name(code: &str, product: &str) -> String {
+    use chrono::Datelike;
+    let label = match product {
+        "kospi200" => "코스피200",
+        "mini_k200" => "미니 코스피200",
+        "kosdaq150" => "코스닥150",
+        _ => "지수",
+    };
+    if let Some((y, m)) = super::ls_rest::parse_index_fut_ym(code, chrono::Local::now().year()) {
+        return format!("{label} F {:02}{m:02}", y % 100);
+    }
+    format!("{label} F {code}")
 }
 
 fn pf(v: &serde_json::Value) -> f64 {

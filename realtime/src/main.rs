@@ -178,6 +178,7 @@ fn msg_pending_key(msg: &WsMessage) -> String {
     match msg {
         WsMessage::StockTick(t) => format!("stock_tick:{}", t.code),
         WsMessage::FuturesTick(t) => format!("futures_tick:{}", t.code),
+        WsMessage::IndexFuturesTick(t) => format!("index_futures_tick:{}", t.code),
         WsMessage::EtfTick(t) => format!("etf_tick:{}", t.code),
         WsMessage::OrderbookTick(t) => format!("orderbook_tick:{}", t.code),
         WsMessage::VolumeTick(t) => format!("volume_tick:{}", t.code),
@@ -192,6 +193,8 @@ fn msg_cache_key(msg: &WsMessage) -> Option<String> {
     match msg {
         WsMessage::StockTick(t) => Some(format!("stock_tick:{}", t.code)),
         WsMessage::FuturesTick(t) => Some(format!("futures_tick:{}", t.code)),
+        // 지수선물 캐시 — 신규 클라이언트 연결 시 마지막 값 즉시 복원.
+        WsMessage::IndexFuturesTick(t) => Some(format!("index_futures_tick:{}", t.code)),
         WsMessage::EtfTick(t) => Some(format!("etf_tick:{}", t.code)),
         WsMessage::OrderbookTick(_) => None,
         // 거래대금은 캐시 — 신규 클라이언트가 전체 순위를 즉시 매길 수 있게.
@@ -1428,6 +1431,14 @@ async fn debug_stats(State(state): State<AppState>) -> Json<serde_json::Value> {
         .unwrap_or(0);
     let futures_master_stale = loaded_mtime > 0 && current_mtime > loaded_mtime;
 
+    // FC9(지수선물) 스트림 age — 0이면 아직 해석/수신 전 → null.
+    let index_fut_us = feed::ls_api::index_futures_stream_us().load(Ordering::Relaxed);
+    let index_futures_age_sec = if index_fut_us == 0 {
+        serde_json::Value::Null
+    } else {
+        serde_json::json!(now_us().saturating_sub(index_fut_us) as f64 / 1_000_000.0)
+    };
+
     Json(serde_json::json!({
         "uptime_sec": uptime_s,
         "ticks_total": ticks,
@@ -1454,6 +1465,14 @@ async fn debug_stats(State(state): State<AppState>) -> Json<serde_json::Value> {
             "current_mtime": current_mtime,
             "stale": futures_master_stale,
         },
+        // 지수선물(FC9) front-month 해석 결과. [[product, code, name], ...]. 미해석/타 모드면 빈 배열.
+        "index_futures": feed::ls_rest::resolved_index_futures()
+            .into_iter()
+            .map(|(p, c, n)| serde_json::json!([p, c, n]))
+            .collect::<Vec<_>>(),
+        // FC9 스트림 전용 마지막 데이터 age (초). JC0과 분리된 idle 판정 atomic 그대로 노출.
+        // null = 아직 해석 전 (mock/internal 모드 포함). 해석 직후엔 anchor 시각 기준.
+        "index_futures_age_sec": index_futures_age_sec,
         "serialize": {
             "calls": ser_calls,
             "total_ns": ser_ns,

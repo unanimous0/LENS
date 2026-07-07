@@ -9,7 +9,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 use crate::model::message::WsMessage;
-use crate::model::tick::{EtfTick, FuturesTick, OrderbookLevel, OrderbookTick, StockTick};
+use crate::model::tick::{EtfTick, FuturesTick, IndexFuturesTick, OrderbookLevel, OrderbookTick, StockTick};
 
 use super::{MarketFeed, SubCommand};
 
@@ -160,6 +160,34 @@ fn make_futures_tick(code: &str, fut_price: f64, underlying: f64, base: f64, rng
     }
 }
 
+/// 지수선물 합성 틱 (장외 개발/미리보기용). 기초지수 대비 소폭 콘탱고.
+fn make_index_futures_tick(
+    code: &'static str,
+    name: &'static str,
+    product: &'static str,
+    price: f64,
+    underlying: f64,
+    rng: &mut impl Rng,
+) -> IndexFuturesTick {
+    let now = Utc::now().format("%Y-%m-%dT%H:%M:%S%.6f").to_string();
+    IndexFuturesTick {
+        code: code.to_string(),
+        name: name.to_string(),
+        product,
+        price: round2(price),
+        change: round2(price - underlying * 0.999),
+        change_rate: round2((price / (underlying * 0.999) - 1.0) * 100.0),
+        underlying_index: round2(underlying),
+        basis: round2(price - underlying),
+        theory_price: Some(round2(underlying * 1.0008)),
+        volume: rng.random_range(1_000..80_000),
+        is_initial: false,
+        open_interest: Some(250_000),
+        open_interest_change: Some(rng.random_range(-2_000..2_000)),
+        timestamp: now,
+    }
+}
+
 /// 선물 base 베이시스 결정 (콘탱고/백워데이션/근사 zero) — 코드별 고정.
 fn futures_basis_bias(code: &str) -> f64 {
     match fnv(code) % 3 {
@@ -208,6 +236,21 @@ static MOCK_FUTURES: &[MockFuture] = &[
     MockFuture { code: "101S6", name: "KOSPI200 근월물", base_price: 350.0 },
     MockFuture { code: "101S9", name: "KOSPI200 원월물", base_price: 351.5 },
     MockFuture { code: "106S6", name: "KOSDAQ150 근월물", base_price: 1250.0 },
+];
+
+struct MockIndexFuture {
+    code: &'static str,
+    name: &'static str,
+    product: &'static str,
+    base_fut: f64,
+    base_idx: f64,
+}
+
+/// 지수선물 3종 합성 (FC9 대응). 코드는 A+상품2+연1+월1+000 형식 예시(9월물).
+static MOCK_INDEX_FUTURES: &[MockIndexFuture] = &[
+    MockIndexFuture { code: "A0169000", name: "코스피200 F 2609", product: "kospi200", base_fut: 350.5, base_idx: 350.0 },
+    MockIndexFuture { code: "A0569000", name: "미니 코스피200 F 2609", product: "mini_k200", base_fut: 350.5, base_idx: 350.0 },
+    MockIndexFuture { code: "A0669000", name: "코스닥150 F 2609", product: "kosdaq150", base_fut: 1251.0, base_idx: 1250.0 },
 ];
 
 pub struct MockFeed;
@@ -362,6 +405,14 @@ impl MarketFeed for MockFeed {
                     let next = walk_price(prev, f.base_price, &mut rng);
                     futures_prices.insert(f.code.to_string(), next);
                     if tx.send(WsMessage::FuturesTick(make_futures_tick(f.code, next, f.base_price, f.base_price, &mut rng))).await.is_err() { return; }
+                }
+                // 지수선물 3종 (FC9 대응 IndexFuturesTick).
+                for f in MOCK_INDEX_FUTURES {
+                    let prev = *futures_prices.get(f.code).unwrap_or(&f.base_fut);
+                    let next = walk_price(prev, f.base_fut, &mut rng);
+                    futures_prices.insert(f.code.to_string(), next);
+                    let idx = walk_price(f.base_idx, f.base_idx, &mut rng);
+                    if tx.send(WsMessage::IndexFuturesTick(make_index_futures_tick(f.code, f.name, f.product, next, idx, &mut rng))).await.is_err() { return; }
                 }
             }
 
