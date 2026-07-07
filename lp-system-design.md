@@ -461,12 +461,29 @@ LP 작업은 Finance_Data DB + LS API를 광범위하게 *읽음*. main 쪽 데�
 
 ### 13.7 빌드 순서 (v2 Phase — §9.5/§11 순서 대체)
 
-| Phase | 내용 | 비고 |
+| Phase | 내용 | 상태 |
 |---|---|---|
-| **1. 북 원장** | lens.db 원장 + 체결 로그 + 한눈 보드 + positions API 호환 레이어 | 사용자 1순위. 코드 구현은 opus-coder 위임 |
-| **2. 호가 보드** | FV_futures wire + 요구엣지·skew·제안 호가/수량 시트 | 유니버스 12종 목표 (memory `reference_lp_etf_universe`), 레버리지·인버스 배수 처리 |
-| **3. 헤지 티켓 + 실행 라우터** | 체결→선물 티켓(넷팅 판정·미니 라운딩) + 현물vs선물 대체 판정 + 베이시스 포지션 기장 | |
+| **1. 북 원장** | lens.db 원장 + 체결 로그 + 한눈 보드 + positions API 호환 레이어 | ✅ 2026-07-07 `c6de5bc` |
+| **2. 호가 보드** | FV_futures wire + 요구엣지·skew·제안 호가/수량 시트, 유니버스 12종 | ✅ 2026-07-07 PR-A `0cc9548` / PR-B `7a7a0b4` / PR-C `bbfbbab` (§13.8) |
+| **3. 헤지 티켓 + 실행 라우터** | 체결→선물 티켓(넷팅 판정·미니 라운딩) + 현물vs선물 대체 판정 + 베이시스 포지션 기장 | 다음 |
 | **4. 손익·베이시스 분해** | 5분해 + markout + 베이시스 북 원장 + 4층 분해 + 만기 롤 알림 + 한도 4개 | |
 | **5. 출구** | 베이시스 z-score 모니터 + 넷팅 바스켓 빌더 + 출구 3개 비교 + 알림 | |
 
 각 Phase는 독립적으로 쓸모 있게 (end-to-end 먼저 원칙 유지). 단계별 사용자 합의 후 다음 Phase.
+
+### 13.8 Phase 2 구현 기록 (2026-07-07 완료)
+
+**실측으로 확정된 사실**:
+- **FC9는 A01(K200)·A05(미니)·A06(KQ150) 모두 수신** — t2112 폴링 fallback 불필요 (첫 빌드 §9.1의 미해결 가설 해소). FC9 응답에 theoryprice·k200jisu(기초지수)·미결제 포함.
+- **t8467은 KOSPI200(A01)만 반환** → front month는 A01을 t8467로 확정 후 01→05/06 프리픽스 치환 파생 (3상품 분기 만기 공유, 만기 D-2 롤, 기동 시 1회 해석).
+- **etf_master_daily NAV 컬럼은 신뢰 불가** (252670에서 ~10배 오차 실측) → prev_nav는 ohlcv_daily 전일 adj_close 프록시.
+- **DB tracking_multiple은 레버리지 ETF에도 "일반(1)"** → 12종 family/배수는 `routers/lp.py`의 fallback 맵이 정본.
+- 폭락일(K200 −8.4%, CB 발동·해제) 라이브 검증 통과 — no_quote→복구 경로 실증, r_implied 극단 가드 ±15%(CB-2 기준).
+
+**구현 요약**: FC9 전용 커넥션(키A, conn 700번대, 전용 신선도 atomic) → `quote_board.rs`가 S_impl=F/(1+r·d/365), FV=prev_adj_close×(1+L·r_impl|β·r_impl), skew=−γ·q억·σ%²·h(예약가격 이동), KRX 호가단위 구간 스냅 → WS `quote_board` 200ms → QuoteBoard UI(12행 고정 순서·행 확장 분해·QuoteParamsPanel). PDF 확장 없음 — 12종은 ETF 틱 + 지수선물 3종만 소비 (구독 +10 코드).
+
+**후속 트랙 (Phase 3 진입 전 선택)**:
+- LS WS idle watchdog이 stall을 4.7h 미감지한 건 — `select!` 내 sleep 재생성으로 idle 브랜치 굶는 가설 (미확정, 별도 조사)
+- 지수선물 front-month 일일 re-resolve (현재 기동 시 1회 — 만기 넘겨 장기 가동 시 만료물 구독 지속)
+- InternalFeed 지수선물 wire (내부망 실측 필요, TODO 주석)
+- 배당 시즌(4월) implied spot bias — v1 배당 무시 주석 참조
