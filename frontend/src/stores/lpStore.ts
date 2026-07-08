@@ -5,6 +5,7 @@ import type {
   FairValueMatrixSnapshot,
   LedgerAggregate,
   LedgerEntry,
+  HedgeReconResponse,
   LedgerSnapshot,
   LpCostInputs,
   NettingBasketResponse,
@@ -83,6 +84,8 @@ interface LpState {
   nettingBasket: NettingBasketResponse | null
   /** 베이시스 라우터 프리필 (넷팅 바스켓 주식선물 배지 → BasisRouterPanel). */
   basisRoutePrefill: BasisRoutePrefill | null
+  /** 헤지 정합 보드(§13.12) — 원장 진단 스냅샷 (버튼 or 원장 변경 시 재계산). */
+  hedgeRecon: HedgeReconResponse | null
   setMatrix: (m: FairValueMatrixSnapshot) => void
   setBookRisk: (b: BookRiskSnapshot) => void
   setBasisBook: (b: BasisBookSnapshot) => void
@@ -99,6 +102,7 @@ interface LpState {
   setNettingBasket: (b: NettingBasketResponse | null) => void
   /** 베이시스 라우터 프리필 요청 — nonce 자동 증가. */
   requestBasisRoutePrefill: (p: Omit<BasisRoutePrefill, 'nonce'>) => void
+  setHedgeRecon: (r: HedgeReconResponse | null) => void
 }
 
 export const useLpStore = create<LpState>((set) => ({
@@ -119,6 +123,7 @@ export const useLpStore = create<LpState>((set) => ({
   ledgerPrefill: null,
   nettingBasket: null,
   basisRoutePrefill: null,
+  hedgeRecon: null,
   setMatrix: (m) => set({ matrix: m }),
   setBookRisk: (b) => set({ bookRisk: b }),
   setBasisBook: (b) => set({ basisBook: b }),
@@ -145,4 +150,5 @@ export const useLpStore = create<LpState>((set) => ({
     set((s) => ({
       basisRoutePrefill: { ...p, nonce: (s.basisRoutePrefill?.nonce ?? 0) + 1 },
     })),
+  setHedgeRecon: (r) => set({ hedgeRecon: r }),
 }))

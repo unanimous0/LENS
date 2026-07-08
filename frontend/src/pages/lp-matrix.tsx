@@ -8,6 +8,7 @@ import { QuoteBoard } from '@/components/lp/QuoteBoard'
 import { HedgeTicketPanel } from '@/components/lp/HedgeTicketPanel'
 import { BasisRouterPanel } from '@/components/lp/BasisRouterPanel'
 import { FairValueMatrix } from '@/components/lp/FairValueMatrix'
+import { HedgeReconPanel } from '@/components/lp/HedgeReconPanel'
 import { LedgerBoard } from '@/components/lp/LedgerBoard'
 import { CostInputsPanel } from '@/components/lp/CostInputsPanel'
 import { QuoteParamsPanel } from '@/components/lp/QuoteParamsPanel'
@@ -47,6 +48,8 @@ export function LpMatrixPage() {
         <HedgeTicketPanel />
         <BasisRouterPanel />
       </div>
+      {/* 헤지 정합 보드(§13.12) — 원장의 진단이므로 LedgerBoard 바로 위 */}
+      <HedgeReconPanel />
       <LedgerBoard />
       <FairValueMatrix />
       <div className="grid grid-cols-2 gap-1">

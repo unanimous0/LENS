@@ -607,6 +607,136 @@ export interface BasisZscoreResponse {
   caveat: string
 }
 
+// ---- 헤지 정합 보드 (§13.12) — backend/services/hedge_recon.py 와 1:1 ----
+
+/** macro_offset = 주문 0(net 커버)이지만 |gapδ|가 임계 초과 — 상쇄 뒤 숨은 스프레드 리스크 (H2). */
+export type HedgeReconClass = 'aligned_spot' | 'alt_hedge' | 'macro' | 'macro_offset' | 'unexplained'
+
+export interface HedgeReconStock {
+  code: string
+  name: string | null
+  /** 요구 헤지 수량 (부호 有, 주) = −Σ units_signed×pdf_shares. 롱 ETF는 음수(숏 필요). */
+  required: number
+  /** 실제 헤지 = 현물 + 주식선물 (부호 有, 주). */
+  actual: number
+  actual_spot: number
+  actual_stockfut: number
+  /** gap = actual − required = 남은 순 방향 노출 (주). */
+  gap: number
+  /** gap × price × β (원). 가격 결측이면 null. */
+  gap_delta_krw: number | null
+  family: string
+  tolerance: number
+  price: number | null
+  adv20_vol: number | null
+  has_stock_future: boolean
+  classification: HedgeReconClass
+  /** 리밸런싱 주문 (미설명만). */
+  order_side: 'buy' | 'sell' | null
+  order_shares: number
+  order_notional: number | null
+  adv_ratio: number | null
+  adv_capped: boolean
+}
+
+export interface HedgeReconIndexRouteEtf {
+  code: string
+  name: string | null
+  net_qty: number
+  family: string
+  /** 부호 있는 배수 (+1/+2/−1/−2). 섹터형은 null. */
+  leverage: number | null
+  price: number | null
+  /** 요구 델타 (원, 부호 有) = net_qty × price × L. 지수선물로만 헤지. */
+  required_delta_krw: number | null
+  reason: string
+}
+
+export interface HedgeReconEtfContribution {
+  etf_code: string
+  name: string | null
+  /** 이 ETF가 해당 종목 required에 기여한 주수 (부호 有). */
+  contribution: number
+}
+
+export interface HedgeReconIndexFutPosition {
+  code: string
+  name: string | null
+  net_qty: number
+  mult: number
+}
+
+export interface HedgeReconFamily {
+  family: string
+  /** 미정합 gap 델타(K200 풀) + 지수선물경로 ETF 델타 (부호 有 원, net). */
+  needed_delta_krw: number
+  /** Σ|gapδ| — 부호 넷팅 은닉 방지 병기 (H2). */
+  gross_delta_krw: number
+  /** 원장 지수선물 오버레이 델타 (부호 有 원). */
+  index_fut_delta_krw: number
+  /** 반대 방향 선물이 커버한 크기 = min(|fut|,|needed|) (원). */
+  explained_delta_krw: number
+  /** 종목 리밸런싱 몫 = needed×(1−cov) (부호 有 원). */
+  unexplained_delta_krw: number
+  /** 선물 초과/동방향 잔여 = (needed+fut) − unexplained (부호 有 원) — 헤지 티켓 몫. */
+  futures_excess_krw: number
+  /** min(|fut|,|needed|)/|needed| — 반대 방향 선물만, fut에 단조 (H1). */
+  coverage_ratio: number
+  /** gross > 3×|net| & gross > offset_warn — 종목 간 상쇄 큼 (잔차 위험 잔존). */
+  offset_warning: boolean
+  index_fut_positions: HedgeReconIndexFutPosition[]
+}
+
+export interface HedgeReconSummary {
+  n_stocks: number
+  n_aligned_spot: number
+  n_alt_hedge: number
+  n_macro: number
+  /** 매크로(상쇄) — 주문 0이지만 |gapδ| 임계 초과 (H2). */
+  n_macro_offset: number
+  n_unexplained: number
+  /** 가족별 미설명(종목 몫) 델타 (부호 有 원). */
+  unexplained_delta_by_family: Record<string, number>
+  /** Σ |가족 미설명| (원, 크기). */
+  unexplained_delta_total: number
+  /** 가족별 선물 초과 델타 (부호 有 원) — 티켓 몫. */
+  futures_excess_by_family: Record<string, number>
+  futures_excess_total: number
+  n_rebalance_orders: number
+  rebalance_gross_notional: number
+  n_adv_capped: number
+  /** 미설명 0종목 + 미설명·선물초과 δ < 100만원. */
+  fully_aligned: boolean
+}
+
+export interface HedgeReconOrder {
+  code: string
+  name: string | null
+  side: 'buy' | 'sell'
+  shares: number
+  est_notional: number | null
+  adv_ratio: number | null
+  adv_capped: boolean
+  has_stock_future: boolean
+}
+
+export interface HedgeReconResponse {
+  as_of: string | null
+  stocks: HedgeReconStock[]
+  index_route_etfs: HedgeReconIndexRouteEtf[]
+  /** 종목 → 기여 ETF 목록 (롤업). */
+  etf_rollup: Record<string, HedgeReconEtfContribution[]>
+  families: Record<string, HedgeReconFamily>
+  summary: HedgeReconSummary
+  rebalance_orders: HedgeReconOrder[]
+  tolerance_params: { abs_shares: number; pct: number; offset_warn_krw: number }
+  adv_cap_pct: number
+  n_etfs_held: number
+  n_etfs_convertible: number
+  n_etfs_index_route: number
+  caveats: string[]
+}
+
 /** matrix-config quote_universe 항목 — 모드 뱃지(배수/β)·override 편집용 메타. QuoteRow엔 없는 정적 입력. */
 export interface QuoteUniverseMeta {
   code: string

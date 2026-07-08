@@ -888,6 +888,36 @@ async def post_netting_basket():
     return await lp_netting.build_netting_basket()
 
 
+class HedgeReconParams(BaseModel):
+    tol_abs_shares: float = Field(
+        1.0, ge=0, description="정합 tolerance 절대 하한 (주). 기본 1주"
+    )
+    tol_pct: float = Field(
+        0.005, ge=0, description="정합 tolerance = max(abs, |required|×pct). 기본 0.5%"
+    )
+    offset_warn_krw: float = Field(
+        50_000_000.0, ge=0,
+        description="상쇄 경고 임계 (원) — 주문 0인데 |gapδ| 초과 시 '매크로(상쇄)' + "
+                    "가족 gross 상쇄 경고 하한. 기본 5천만",
+    )
+
+
+@router.post("/hedge-recon")
+async def post_hedge_recon(payload: Optional[HedgeReconParams] = None):
+    """헤지 정합 보드 (§13.12) — 무기억 진단.
+
+    현재 원장이 PDF 기준으로 알맞게 헤지돼 있는지, 어디가 어긋났는지, 델타가 얼마나 떠
+    있는지를 원장 스냅샷 하나만으로 진단. 과거 체결·의도 기록 미사용. 상세·부호 규약·
+    분류 캐스케이드·커버리지 산식(H1 단조 수정)은 services/hedge_recon.py docstring 참조.
+    """
+    from services import hedge_recon
+    p = payload or HedgeReconParams()
+    return await hedge_recon.build_hedge_recon(
+        tol_abs_shares=p.tol_abs_shares, tol_pct=p.tol_pct,
+        offset_warn_krw=p.offset_warn_krw,
+    )
+
+
 # 지수 베이시스 raw 행 캐시 (1시간). key='01'/'06' → (computed_at_monotonic, rows).
 # excess 통계는 금리(cost_inputs) 의존이라 캐시하지 않고 요청마다 재계산 (60 floats, 저렴)
 # — 사용자가 금리를 바꾸면 즉시 반영.
