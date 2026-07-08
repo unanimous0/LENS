@@ -66,6 +66,19 @@ fn deterministic_base(code: &str) -> f64 {
     (r / ts).round() * ts
 }
 
+/// 하드코딩 mock 종목(ETF 12종·주식·선물)이면 그 base_price, 아니면 deterministic_base.
+/// 호가(mid) 합성이 ETF 실가와 정합하도록 — deterministic_base를 쓰면 호가 mid가 엉뚱한
+/// base로 mean-revert해 last(=base_price 근처)와 큰 유령 갭이 생김 (§13.13 MID 검증 왜곡).
+fn mock_base_for(code: &str) -> f64 {
+    if let Some(e) = MOCK_ETFS.iter().find(|e| e.code == code) {
+        return e.base_price;
+    }
+    if let Some(s) = MOCK_STOCKS.iter().find(|s| s.code == code) {
+        return s.base_price;
+    }
+    deterministic_base(code)
+}
+
 /// KRX 호가 단위.
 fn tick_size(price: f64) -> f64 {
     if price < 2_000.0 { 1.0 }
@@ -362,9 +375,12 @@ impl MarketFeed for MockFeed {
                 if tx.send(msg).await.is_err() { return; }
             }
 
-            // ── 호가 (ob_subs) — 5% 샘플 ──
+            // ── 호가 (ob_subs) 샘플 ──
+            // 소규모 구독(LP 유니버스 ~12종)은 높은 확률로 매 ~2-3초 갱신 → quote_board mid가
+            // MID_FRESH_MS(6s) 내 유지. 대규모(ETF 스크리너 수백종)는 5%로 부하 억제.
+            let ob_p = if ob_subs.len() <= 40 { 0.30 } else { 0.05 };
             let ob_sample: Vec<(String, f64, usize)> = ob_subs.iter()
-                .filter(|_| rng.random::<f64>() < 0.05)
+                .filter(|_| rng.random::<f64>() < ob_p)
                 .cloned()
                 .collect();
             for (code, base, levels) in &ob_sample {
@@ -435,7 +451,9 @@ impl MarketFeed for MockFeed {
                             SubCommand::SubscribeOrderbook { codes } => {
                                 ob_subs.clear();
                                 for (tr, code) in &codes {
-                                    let base = deterministic_base(code);
+                                    // LP 유니버스 등 하드코딩 종목은 실 base_price 사용 (§13.13
+                                    // MID: 호가 mid가 ETF last와 정합해야 유령 갭 방지).
+                                    let base = mock_base_for(code);
                                     let levels = if tr == "JH0" { 5 } else { 10 };
                                     ob_subs.push((code.clone(), base, levels));
                                 }

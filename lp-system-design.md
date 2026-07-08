@@ -760,3 +760,56 @@ caveat 명기) (b) 지수선물 δ = 현물지수 직전 종가×승수 프록�
 (e) 기초 미해석 주식선물·현물지수 종가 결측은 caveat으로 명시(조용한 소실 금지). **테스트 원장
 전량 정리(0/0)**. 기존 회귀(ledger·netting-basket·quote-params) 유지 — Playwright 실화면(부분 헤지
 + 과다 헤지 2시나리오) 확인·콘솔 에러 0.
+
+### 13.13 화면 전/후 재구성 + MID 기반 호가 + 매수차/매도차 프레이밍 (2026-07-09)
+
+**목표**: 화면이 세로로 길어져(패널 12개) 매매 사이클 단계가 뒤섞임 → **매매 흐름을 서브탭
+2개로 분리**. 동시에 호가 앵커 갭이 last(체결가) 기준이라 스프레드 넓은 ETF에서 왜곡 → **호가
+mid 기준가**로 보강하고, 갭을 지수 차익 데스크 언어(**매수차/매도차 + 진입선 도달률**)로 표현.
+
+**Part 1 — 화면 전/후 재구성 (프론트 무로직변경 이동)**: `/lp-matrix`를 상단 4대 숫자 공통 고정
+아래 서브탭 2개로 — **[체결 전·호가·기회]** = QuoteBoard(메인) + 지수 베이시스 z 요약 스트립
+(`IndexBasisStrip` 신규, useBasisZscore 재사용·읽기전용) + 조작(CostInputs·QuoteParams);
+**[체결 후·북 관리]** = HedgeRecon → HedgeTicket·BasisRouter → Ledger → BasisBook → Pnl → 넷팅
+바스켓·출구 → FairValueMatrix·Residual·Unmapped. 서브탭은 URL query `?view=pre|post`에 반영(새로고침
+유지, `replace` — history 미오염). **display 토글**(둘 다 마운트·CSS `hidden`) 채택 — 조건부 언마운트
+대신: (a) 컴포넌트 로컬 상태(원장 입력 draft·행 확장) 보존, (b) 호가 구독·WS 재구독 폭주 방지.
+숨겨진 뷰는 lpStore/WS 전역 단일 소스라 저비용 memo 렌더만(200ms QuoteBoard·1s pnl/basis).
+
+**Part 2 — MID 기반 보강 (Rust)**: 유니버스 12종 호가 구독은 **페이지 레벨**
+`usePageOrderbookBulk(universeCodes)` — 기존 ETF 스크리너와 동일 `/orderbook/subscribe-bulk` →
+`SubCommand::SubscribeOrderbook`(**키B WS**, 09:00~15:45; 윈도우 밖·내부망·mock은 자연 폴백).
+탭 레벨이 아니라 페이지 레벨이라 서브탭 전환에 재구독 없음(replace+cancel 폭주 회피). Rust
+`scheduler.handle_tick`이 `OrderbookTick` → `etf_orderbooks: DashMap<code, (best_bid,best_ask,age)>`
+적재(구독 코드만·lock-free). `flush` 호가 루프가 `MID_FRESH_MS`(6s) 내 갱신 + bid/ask>0면 mid를
+`compute_quote_row`에 fresh로 전달 → **mid를 갭·차익 기준가**(ref_price)로, stale/결측이면 **last
+폴백**. QuoteRow 신규 필드(serde 하위호환·프론트 optional): `ref_price·price_source('mid'|'last'|
+'none')·best_bid·best_ask·gap_bp`(서버 산출, mid 반영). 역전 호가(bid>ask)는 mid 거부→last.
+MockFeed: 12종 합성 호가의 base를 `mock_base_for`(하드코딩 base_price)로 교정(deterministic_base
+쓰면 mid가 엉뚱한 base로 mean-revert해 유령 갭) + 소규모 구독(≤40) 호가 샘플 30%로 상향
+(mid가 MID_FRESH_MS 내 유지).
+
+**Part 3 — 매수차/매도차 프레이밍 (계산 재활용, 서버 산출)**: `compute_quote_row`가 기준가 갭
+부호로 방향 판정 — **매수차**(gap<0 저평가 → ETF 매수+선물 매도, 요구엣지 = edge_bid_bp) /
+**매도차**(gap>0 고평가 → edge_ask_bp; skew 비대칭 자연 반영). **진입선 도달률** `reach_pct =
+|gap_bp| / arb_edge_bp × 100`, `at_entry = reach ≥ 100`. QuoteRow 신규 필드 `arb_side·arb_edge_bp·
+reach_pct·at_entry`. UI(QuoteBoard): 기존 갭 컬럼을 **차익·진입선 도달률** 확장 셀로 대체 —
+방향 라벨(매수차 초록/매도차 빨강) + |갭|bp + 도달률 게이지(요구엣지=100%, at_entry면 accent) +
+진입선 bp. 진입선 도달 행은 배경 subtle 하이라이트(방향색 6% + 좌측 2px inset). 현재가 옆
+mid/last 소스 배지. 구 Rust 스냅샷은 클라이언트 폴백(gap_bp 없으면 row.price로 재계산).
+
+**검증**: Rust `cargo build/clippy` 신규 0 + 단위테스트 **+7**(총 82 통과) — mid_fresh 갭·mid_stale
+폴백·호가결측 none·역전 거부·매수차 reach·매도차 at_entry·no_quote 프레이밍 억제. `tsc`/`lint` 0.
+mock 8200 라이브 스모크: (a) 구독 전 12행 `src=last`·bid/ask 0, (b) `/orderbook/subscribe-bulk` 후
+12행 `src=mid`·ref=mid·bid/ask 실 ETF가 정합(069500 last 136,600 → mid 136,650), (c) 언구독 +8s(>6s)
+→ 전량 `src=last`·ref=last 복귀·bid/ask 참고값 잔존, (d) 매수차/매도차·도달률·at_entry 산출·렌더,
+(e) 서브탭 전환 `?view` 반영·`reconnect_count=0`(WS 유지)·pre뷰 마운트 유지(display 토글)·post 12패널
+전원 렌더·콘솔 에러 0. **호가 구독은 키B(09:00~15:45)·mock만 실측 — ls_api 장중 실호가 mid는
+익일 장중 검증 필요**(mock으로 mid 경로 자체는 검증). 테스트 원장 무변경(0/0). Playwright 2탭
+스크린샷.
+
+**알려진 v1 근사/스코프**: (a) mock 갭은 하드코딩 base_price vs 지수선물 파생 FV 불일치로 과대
+(±500bp) — mid/last·프레이밍 *기전*만 검증, 실갭은 장중 실측 (b) `etf_orderbooks`는 구독 전 코드
+전부 적재(ETF 스크리너 수백종 동시엔 map 커짐 — 구독 범위 제한이라 실용상 무해) (c) mid는 best
+1호가 중간값(호가 잔량 가중 X) (d) 페이지 레벨 호가 구독은 replace 시맨틱이라 LP/ETF-스크리너
+동시 마운트 불가 전제(라우트 분리라 실무 무영향).

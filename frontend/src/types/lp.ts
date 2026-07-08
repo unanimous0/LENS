@@ -454,6 +454,26 @@ export interface QuoteRow {
   usable: boolean
   /** 불가 사유 (usable=false일 때). 빈 문자열이면 usable. */
   no_quote_reason: string
+
+  // ── MID 기반 보강 + 차익 프레이밍 (§13.13). 구 Rust 호환 위해 전부 optional. ──
+  /** 갭·차익 기준가 (mid fresh면 mid, 아니면 last). 0이면 결측. */
+  ref_price?: number
+  /** 기준가 소스 배지. */
+  price_source?: 'mid' | 'last' | 'none'
+  /** 최우선 매수호가 (0=미수신). */
+  best_bid?: number
+  /** 최우선 매도호가 (0=미수신). */
+  best_ask?: number
+  /** 갭 (bp) = (ref_price − FV)/FV × 1e4. 음수=저평가(매수차). 서버 산출(mid 반영). */
+  gap_bp?: number
+  /** 차익 방향: buy(매수차·저평가) | sell(매도차·고평가) | none. */
+  arb_side?: 'buy' | 'sell' | 'none'
+  /** 그 방향 요구 엣지 (bp) — buy=edge_bid_bp, sell=edge_ask_bp. */
+  arb_edge_bp?: number
+  /** 진입선 도달률 (%) = |gap_bp| / arb_edge_bp × 100. */
+  reach_pct?: number
+  /** 진입선 도달 (reach_pct ≥ 100) — 행 하이라이트. */
+  at_entry?: boolean
 }
 
 export interface QuoteBoardSnapshot {

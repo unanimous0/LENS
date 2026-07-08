@@ -171,6 +171,31 @@ pub struct QuoteRow {
     pub usable: bool,
     /// 불가 사유 (usable=false일 때). 빈 문자열이면 usable.
     pub no_quote_reason: String,
+
+    // ── MID 기반 보강 (2026-07-09, §13.13) — 갭·차익 프레이밍 기준가 ──
+    /// 갭·차익 프레이밍의 기준가. 호가 mid((best_bid+best_ask)/2)가 fresh면 mid,
+    /// stale/결측이면 last(체결가) 폴백. 둘 다 없으면 0.
+    pub ref_price: f64,
+    /// 기준가 소스: "mid" | "last" | "none". UI 소형 배지.
+    pub price_source: String,
+    /// 최우선 매수호가 (0이면 호가 미수신). fresh 여부와 무관하게 마지막 관측값.
+    pub best_bid: f64,
+    /// 최우선 매도호가 (0이면 호가 미수신).
+    pub best_ask: f64,
+    /// 갭 (bp) = (ref_price − FV)/FV × 1e4. 음수=저평가(매수차 기회). 결측 시 0.
+    /// 프론트가 row.price로 재계산하던 것을 mid 반영 기준가로 서버 산출 (단일 소스).
+    pub gap_bp: f64,
+
+    // ── 차익거래 프레이밍 (§13.13, 지수 차익 데스크 언어) ──
+    /// 차익 방향: "buy"(저평가→ETF 매수+선물 매도=매수차) | "sell"(고평가=매도차) | "none".
+    pub arb_side: String,
+    /// 그 방향의 요구 엣지 (bp) — buy면 edge_bid_bp, sell이면 edge_ask_bp (skew 비대칭 반영).
+    pub arb_edge_bp: f64,
+    /// 진입선 도달률 (%) = |gap_bp| / arb_edge_bp × 100. 100% 이상이면 진입선 도달.
+    /// arb_edge_bp ≤ 0 이거나 미usable이면 0.
+    pub reach_pct: f64,
+    /// 진입선 도달 여부 (arb_side ≠ none 이고 reach_pct ≥ 100) — 행 하이라이트 트리거.
+    pub at_entry: bool,
 }
 
 /// 호가 보드 스냅샷 — 200ms throttle broadcast (매트릭스와 함께).

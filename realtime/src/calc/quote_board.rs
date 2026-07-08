@@ -25,6 +25,11 @@ use crate::model::lp::{QuoteComponents, QuoteRow};
 /// 장중 FC9는 초당 여러 틱. mock은 ~5초 간격이라 15초 여유.
 pub const INDEX_FUT_STALE_MS: u64 = 15_000;
 
+/// ETF 호가(mid) 신선도 임계 (ms). 이 안에 갱신된 best_bid/ask만 mid로 채택, 아니면 last 폴백.
+/// 장중 H1_는 초당 다수 갱신 → 실질 "호가 피드 살아있나" 게이트. 키B 윈도우 밖·내부망·mock
+/// 저빈도에서 자연히 last로 떨어진다. mock 호가는 소규모 구독(≤40) 시 ~2-3초 주기라 여유 확보.
+pub const MID_FRESH_MS: u64 = 6_000;
+
 /// r_implied 극단 컷 — 이 이상이면 서킷/데이터오류 의심 (soft flag: FV는 계산·표시하되 usable=false).
 /// KRX 서킷브레이커: 1단계 −8% / 2단계 −15% / 3단계 −20%. 목적은 *데이터 오류*(스케일
 /// 불일치 → 30%+, 지수 결측 → 거대값) 차단이지 정상적 대변동일(−8% CB-1) 봉쇄가 아님.
@@ -337,8 +342,10 @@ fn snap_ask(price: f64) -> f64 {
 /// 한 ETF의 호가 row 계산.
 ///
 /// - `fv`: 위 [`compute_fv_futures`] 결과.
-/// - `price`: ETF 현재가 (0이면 결측). `price_age_ms`: 알 수 없으면 0 (한국 시장 마지막
-///   체결가는 미체결이어도 유효 — 코드베이스 STALE 철학과 동일. 신선도 주신호는 지수선물).
+/// - `price`: ETF 현재가(last 체결가, 0이면 결측). `price_age_ms`: 알 수 없으면 0 (한국 시장
+///   마지막 체결가는 미체결이어도 유효 — 코드베이스 STALE 철학과 동일. 신선도 주신호는 지수선물).
+/// - `best_bid`/`best_ask`: 최우선 호가 (0이면 미수신). `mid_fresh`: 호가 mid를 기준가로 쓸지
+///   (scheduler가 MID_FRESH_MS 신선도 판정 후 전달). fresh면 mid, 아니면 last로 갭·차익 산출.
 /// - `qty`: 원장 순 수량 (부호 有). `hold_days`: 캐리 회전 가정.
 #[allow(clippy::too_many_arguments)]
 pub fn compute_quote_row(
@@ -347,6 +354,9 @@ pub fn compute_quote_row(
     params: &QuoteParams,
     price: f64,
     price_age_ms: u32,
+    best_bid: f64,
+    best_ask: f64,
+    mid_fresh: bool,
     qty: i64,
     hold_days: i32,
 ) -> QuoteRow {
@@ -423,6 +433,49 @@ pub fn compute_quote_row(
 
     let inputs_age_ms = fv.inputs_age_ms.max(price_age_ms);
 
+    // ─── MID 기반 기준가 (§13.13) ───
+    // best_bid/ask 유효(양수·비역전) + fresh면 mid를 갭·차익 기준가로. 아니면 last 폴백.
+    let bb = best_bid.max(0.0);
+    let ba = best_ask.max(0.0);
+    let mid = if bb > 0.0 && ba > 0.0 && ba >= bb {
+        (bb + ba) / 2.0
+    } else {
+        0.0
+    };
+    let (ref_price, price_source) = if mid_fresh && mid > 0.0 {
+        (mid, "mid")
+    } else if price > 0.0 {
+        (price, "last")
+    } else {
+        (0.0, "none")
+    };
+
+    // 갭 (bp) — 기준가 vs FV. 음수=저평가(현재가 < FV = 매수 기회).
+    let gap_bp = if ref_price > 0.0 && fair_value > 0.0 {
+        (ref_price - fair_value) / fair_value * 10_000.0
+    } else {
+        0.0
+    };
+
+    // ─── 차익 프레이밍 (§13.13 매수차/매도차 + 진입선 도달률) ───
+    // gap<0(저평가) → 매수차: ETF 매수 + 선물 매도. 요구 엣지는 매수측(edge_bid_bp).
+    // gap>0(고평가) → 매도차: 반대. 요구 엣지는 매도측(edge_ask_bp).
+    // 도달률 = |gap| / 요구엣지 — 100%면 시장이 우리 진입 호가선까지 도달.
+    let framing_ok = usable && ref_price > 0.0 && fair_value > 0.0;
+    let (arb_side, arb_edge_bp) = if framing_ok && gap_bp < 0.0 {
+        ("buy".to_string(), edge_bid_bp)
+    } else if framing_ok && gap_bp > 0.0 {
+        ("sell".to_string(), edge_ask_bp)
+    } else {
+        ("none".to_string(), 0.0)
+    };
+    let reach_pct = if arb_edge_bp > 0.0 {
+        gap_bp.abs() / arb_edge_bp * 100.0
+    } else {
+        0.0
+    };
+    let at_entry = arb_side != "none" && reach_pct >= 100.0;
+
     QuoteRow {
         code: etf.code.clone(),
         name,
@@ -452,6 +505,15 @@ pub fn compute_quote_row(
         inputs_age_ms,
         usable,
         no_quote_reason: reason,
+        ref_price,
+        price_source: price_source.to_string(),
+        best_bid: bb,
+        best_ask: ba,
+        gap_bp,
+        arb_side,
+        arb_edge_bp,
+        reach_pct,
+        at_entry,
     }
 }
 
@@ -542,7 +604,7 @@ mod tests {
         let params = QuoteParams::default();
         // 롱 재고 10억: qty = 10억 / 130125 ≈ 7685주.
         let qty = (1_000_000_000.0_f64 / 130_125.0).floor() as i64;
-        let row = compute_quote_row(&etf, &fv, &params, 130_125.0, 0, qty, 1);
+        let row = compute_quote_row(&etf, &fv, &params, 130_125.0, 0, 0.0, 0.0, false, qty, 1);
         assert!(row.usable);
         // 롱 → skew 음수 → edge_ask < edge_bid (매도 공격적).
         assert!(row.skew_bp < 0.0, "skew={}", row.skew_bp);
@@ -559,7 +621,7 @@ mod tests {
         let today = NaiveDate::from_ymd_opt(2026, 7, 7).unwrap();
         let fv = compute_fv_futures(&etf, &fut, 0.028, now, today);
         let params = QuoteParams::default();
-        let row = compute_quote_row(&etf, &fv, &params, 130_125.0, 0, 0, 1);
+        let row = compute_quote_row(&etf, &fv, &params, 130_125.0, 0, 0.0, 0.0, false, 0, 1);
         assert!((row.skew_bp).abs() < 1e-9);
         assert!((row.edge_bid_bp - row.edge_ask_bp).abs() < 1e-9);
         assert_eq!(row.components.hedge_cost, params.hedge_cost_bp);
@@ -599,7 +661,7 @@ mod tests {
         let mut etf = base_etf();
         etf.prev_nav = Some(1_997.0);
         let params = QuoteParams::default(); // half = 8bp → raw_ask = 1999×1.0008 ≈ 2000.6
-        let row = compute_quote_row(&etf, &fv, &params, 1_999.0, 0, 0, 1);
+        let row = compute_quote_row(&etf, &fv, &params, 1_999.0, 0, 0.0, 0.0, false, 0, 1);
         assert!(row.usable);
         // ask는 2,000 이상 구간 → 5원 배수여야 함 (2,001 같은 무효 가격 금지).
         assert_eq!(row.suggested_ask, 2_005.0, "ask={}", row.suggested_ask);
@@ -628,7 +690,7 @@ mod tests {
         assert!((etf_ret - 1.25 * fv.r_implied).abs() < 1e-9);
         // residual charge가 edge에 가산.
         let params = QuoteParams::default();
-        let row = compute_quote_row(&etf, &fv, &params, 44_500.0, 0, 0, 1);
+        let row = compute_quote_row(&etf, &fv, &params, 44_500.0, 0, 0.0, 0.0, false, 0, 1);
         let expected_residual = 0.008 * 100.0 * RESIDUAL_CHARGE_K;
         assert!((row.components.residual - expected_residual).abs() < 1e-9);
         assert!((row.edge_bid_bp - (5.0 + 3.0 + expected_residual)).abs() < 1e-9);
@@ -652,7 +714,7 @@ mod tests {
         assert!(fv.fair_value > 0.0);
         assert!(fv.r_implied > 0.15);
         // row는 no_quote (제안 가격 0).
-        let row = compute_quote_row(&etf, &fv, &QuoteParams::default(), 130_125.0, 0, 0, 1);
+        let row = compute_quote_row(&etf, &fv, &QuoteParams::default(), 130_125.0, 0, 0.0, 0.0, false, 0, 1);
         assert!(!row.usable);
         assert_eq!(row.suggested_bid, 0.0);
     }
@@ -670,8 +732,143 @@ mod tests {
             adverse_buffer_bp: 0.0,
             ..QuoteParams::default()
         };
-        let row = compute_quote_row(&etf, &fv, &params, 130_125.0, 0, 0, 1);
+        let row = compute_quote_row(&etf, &fv, &params, 130_125.0, 0, 0.0, 0.0, false, 0, 1);
         assert!(row.suggested_ask >= row.suggested_bid, "bid/ask 역전: {} > {}", row.suggested_bid, row.suggested_ask);
         assert!(row.edge_bid_bp >= 0.0);
+    }
+
+    // ── MID 기반 보강 + 차익 프레이밍 (§13.13) ─────────────────────────────
+
+    /// fresh mid면 갭이 last가 아니라 mid 기준. best_bid/ask도 그대로 노출.
+    #[test]
+    fn mid_fresh_uses_mid_for_gap() {
+        let now = 1_000_000_u64;
+        let fut = k200_futures(1295.0, now);
+        let etf = base_etf();
+        let today = NaiveDate::from_ymd_opt(2026, 7, 7).unwrap();
+        let fv = compute_fv_futures(&etf, &fut, 0.028, now, today);
+        let params = QuoteParams::default();
+        // last=FV(갭 0), 그러나 mid = (FV-100 + FV-80)/2 = FV-90 → 저평가 갭 음수여야.
+        let last = fv.fair_value;
+        let bid = fv.fair_value - 100.0;
+        let ask = fv.fair_value - 80.0;
+        let row = compute_quote_row(&etf, &fv, &params, last, 0, bid, ask, true, 0, 1);
+        assert_eq!(row.price_source, "mid");
+        assert_eq!(row.best_bid, bid);
+        assert_eq!(row.best_ask, ask);
+        let mid = (bid + ask) / 2.0;
+        assert!((row.ref_price - mid).abs() < 1e-9);
+        // 갭이 mid 기준(음수) — last 기준이면 0이었을 것.
+        assert!(row.gap_bp < 0.0, "gap={}", row.gap_bp);
+        let expected = (mid - fv.fair_value) / fv.fair_value * 10_000.0;
+        assert!((row.gap_bp - expected).abs() < 1e-9);
+    }
+
+    /// mid stale이면 last 폴백 + 소스 last (bid/ask는 참고용으로 여전히 노출).
+    #[test]
+    fn mid_stale_falls_back_to_last() {
+        let now = 1_000_000_u64;
+        let fut = k200_futures(1295.0, now);
+        let etf = base_etf();
+        let today = NaiveDate::from_ymd_opt(2026, 7, 7).unwrap();
+        let fv = compute_fv_futures(&etf, &fut, 0.028, now, today);
+        let params = QuoteParams::default();
+        let last = fv.fair_value - 50.0;
+        // mid_fresh=false → last 사용. bid/ask 값은 있어도 기준가로 안 씀.
+        let row = compute_quote_row(&etf, &fv, &params, last, 0, last - 100.0, last - 80.0, false, 0, 1);
+        assert_eq!(row.price_source, "last");
+        assert!((row.ref_price - last).abs() < 1e-9);
+        // best_bid/ask는 여전히 노출 (표시용).
+        assert!((row.best_bid - (last - 100.0)).abs() < 1e-9);
+        let expected = (last - fv.fair_value) / fv.fair_value * 10_000.0;
+        assert!((row.gap_bp - expected).abs() < 1e-9);
+    }
+
+    /// 호가 완전 결측(bid=ask=0)이면 mid_fresh여도 last 폴백, 소스 last. last도 0이면 none.
+    #[test]
+    fn no_orderbook_uses_last_or_none() {
+        let now = 1_000_000_u64;
+        let fut = k200_futures(1295.0, now);
+        let etf = base_etf();
+        let today = NaiveDate::from_ymd_opt(2026, 7, 7).unwrap();
+        let fv = compute_fv_futures(&etf, &fut, 0.028, now, today);
+        let params = QuoteParams::default();
+        // bid=ask=0 → mid 0 → last 폴백.
+        let row = compute_quote_row(&etf, &fv, &params, 130_125.0, 0, 0.0, 0.0, true, 0, 1);
+        assert_eq!(row.price_source, "last");
+        assert!((row.ref_price - 130_125.0).abs() < 1e-9);
+        // last=0 & 호가 없음 → none.
+        let row0 = compute_quote_row(&etf, &fv, &params, 0.0, u32::MAX, 0.0, 0.0, false, 0, 1);
+        assert_eq!(row0.price_source, "none");
+        assert_eq!(row0.ref_price, 0.0);
+        assert_eq!(row0.arb_side, "none");
+    }
+
+    /// 역전 호가(bid>ask)는 mid 산출 거부 → last 폴백.
+    #[test]
+    fn crossed_orderbook_rejected() {
+        let now = 1_000_000_u64;
+        let fut = k200_futures(1295.0, now);
+        let etf = base_etf();
+        let today = NaiveDate::from_ymd_opt(2026, 7, 7).unwrap();
+        let fv = compute_fv_futures(&etf, &fut, 0.028, now, today);
+        let params = QuoteParams::default();
+        // bid > ask (역전) → mid 무효.
+        let row = compute_quote_row(&etf, &fv, &params, 130_125.0, 0, 130_200.0, 130_100.0, true, 0, 1);
+        assert_eq!(row.price_source, "last");
+    }
+
+    /// 매수차(저평가) 프레이밍 + 진입선 도달률 계산.
+    #[test]
+    fn arb_buy_side_reach_pct() {
+        let now = 1_000_000_u64;
+        let fut = k200_futures(1295.0, now);
+        let etf = base_etf();
+        let today = NaiveDate::from_ymd_opt(2026, 7, 7).unwrap();
+        let fv = compute_fv_futures(&etf, &fut, 0.028, now, today);
+        let params = QuoteParams::default(); // flat 재고 → edge_bid = edge_ask = 8bp
+        // last를 FV보다 4bp 아래로 → 저평가(매수차). 도달률 = 4/8 = 50%.
+        let last = fv.fair_value * (1.0 - 4.0 / 10_000.0);
+        let row = compute_quote_row(&etf, &fv, &params, last, 0, 0.0, 0.0, false, 0, 1);
+        assert_eq!(row.arb_side, "buy");
+        assert!((row.arb_edge_bp - row.edge_bid_bp).abs() < 1e-9);
+        assert!((row.gap_bp - (-4.0)).abs() < 0.05, "gap={}", row.gap_bp);
+        assert!((row.reach_pct - 50.0).abs() < 0.5, "reach={}", row.reach_pct);
+        assert!(!row.at_entry);
+    }
+
+    /// 매도차(고평가) 진입선 도달 — |gap| ≥ 요구엣지 → at_entry.
+    #[test]
+    fn arb_sell_side_at_entry() {
+        let now = 1_000_000_u64;
+        let fut = k200_futures(1295.0, now);
+        let etf = base_etf();
+        let today = NaiveDate::from_ymd_opt(2026, 7, 7).unwrap();
+        let fv = compute_fv_futures(&etf, &fut, 0.028, now, today);
+        let params = QuoteParams::default(); // edge_ask = 8bp
+        // FV보다 10bp 위 → 고평가(매도차), 도달률 = 10/8 = 125% ≥ 100 → 진입선 도달.
+        let last = fv.fair_value * (1.0 + 10.0 / 10_000.0);
+        let row = compute_quote_row(&etf, &fv, &params, last, 0, 0.0, 0.0, false, 0, 1);
+        assert_eq!(row.arb_side, "sell");
+        assert!((row.arb_edge_bp - row.edge_ask_bp).abs() < 1e-9);
+        assert!(row.reach_pct >= 100.0, "reach={}", row.reach_pct);
+        assert!(row.at_entry);
+    }
+
+    /// no_quote(usable=false) 행은 차익 프레이밍 억제 (arb_side none, at_entry false).
+    #[test]
+    fn no_quote_suppresses_framing() {
+        let now = 1_000_000_u64;
+        // r_implied 극단 → usable=false.
+        let fut = k200_futures(1500.0, now);
+        let etf = base_etf();
+        let today = NaiveDate::from_ymd_opt(2026, 7, 7).unwrap();
+        let fv = compute_fv_futures(&etf, &fut, 0.028, now, today);
+        let params = QuoteParams::default();
+        let row = compute_quote_row(&etf, &fv, &params, 100_000.0, 0, 0.0, 0.0, false, 0, 1);
+        assert!(!row.usable);
+        assert_eq!(row.arb_side, "none");
+        assert!(!row.at_entry);
+        assert_eq!(row.reach_pct, 0.0);
     }
 }

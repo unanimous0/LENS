@@ -5,11 +5,17 @@ import { FreshnessBadge } from './FreshnessBadge'
 import { cn } from '@/lib/utils'
 
 /**
- * 호가 제안 보드 (§13.3-A FV_futures) — /lp-matrix 메인 패널.
+ * 호가 제안 보드 (§13.3-A FV_futures) — /lp-matrix "체결 전" 탭 메인 패널.
  *
  * Rust 8200이 200ms throttle로 보내는 quote_board 스냅샷을 그대로 렌더.
- * **자동 제출 없음** — 전부 "제안" 수치. 유니버스 12종 고정 순서(행 안정성) +
- * |갭| 하이라이트. 트레이딩 화면이라 행이 튀지 않도록 정렬은 config 순서 유지.
+ * **자동 제출 없음** — 전부 "제안" 수치. 유니버스 12종 고정 순서(행 안정성).
+ *
+ * §13.13 보강:
+ *  - **MID 기반**: Rust가 호가 mid(fresh)를 갭 기준가로 쓰면 `price_source='mid'`(배지),
+ *    stale/결측이면 last 폴백. `gap_bp`는 서버 산출(mid 반영) — 프론트 재계산 안 함(fallback만).
+ *  - **매수차/매도차 프레이밍**: 갭 컬럼을 차익 방향 + 진입선 도달률 게이지로 확장.
+ *    매수차 = 저평가(ETF 매수+선물 매도), 매도차 = 고평가. 도달률 = |갭|/요구엣지.
+ *    진입선 도달(≥100%) 행은 배경 subtle 하이라이트.
  *
  * QuoteRow엔 leverage/beta가 없어 모드 뱃지(배수/β)는 quoteUniverse 메타로 보강.
  */
@@ -20,6 +26,7 @@ export function QuoteBoard() {
 
   const rows = board?.rows ?? []
   const usableCount = rows.filter((r) => r.usable).length
+  const entryCount = rows.filter((r) => arbFraming(r).atEntry).length
 
   return (
     <div className="bg-bg-primary">
@@ -27,13 +34,18 @@ export function QuoteBoard() {
         <div>
           <div className="text-[13px] text-t2 font-medium">호가 제안 보드</div>
           <div className="text-[11px] text-t4">
-            FV_futures 앵커 · 200ms · 자동 제출 X (제안 수치) · 재고 skew 반영
+            FV_futures 앵커 · 200ms · 자동 제출 X (제안 수치) · 호가 mid 기준가 · 재고 skew 반영
           </div>
         </div>
         {rows.length > 0 && (
-          <div className="text-[11px] text-t3 tabular-nums">
-            <span className="text-up">{usableCount}</span>
-            <span className="text-t4"> / {rows.length} 호가 가능</span>
+          <div className="text-[11px] text-t3 tabular-nums flex items-center gap-3">
+            {entryCount > 0 && (
+              <span className="text-accent">진입선 도달 {entryCount}</span>
+            )}
+            <span>
+              <span className="text-up">{usableCount}</span>
+              <span className="text-t4"> / {rows.length} 호가 가능</span>
+            </span>
           </div>
         )}
       </div>
@@ -45,7 +57,7 @@ export function QuoteBoard() {
               <th className="text-left px-3 py-2 sticky left-0 bg-bg-primary z-10">종목</th>
               <th className="text-right px-2 py-2">현재가</th>
               <th className="text-right px-2 py-2">FV_futures</th>
-              <th className="text-right px-2 py-2">갭 bp</th>
+              <th className="text-left px-2 py-2">차익 · 진입선 도달률</th>
               <th className="text-right px-2 py-2">제안 매수</th>
               <th className="text-right px-2 py-2">제안 매도</th>
               <th className="text-right px-2 py-2">제안 수량</th>
@@ -77,8 +89,11 @@ export function QuoteBoard() {
         </table>
       </div>
       <div className="px-3 py-1.5 text-[10px] text-t4 border-t border-bg-base">
-        갭 = (현재가 − FV)/FV. <span className="text-up">저평가(초록)</span> = 매수 기회 ·{' '}
-        <span className="text-down">고평가(빨강)</span>. 행 클릭 → 요구엣지 분해(base/buffer/잔차/skew).
+        <span className="text-up">매수차</span> = ETF 저평가(갭 음수) → ETF 매수 + 선물 매도 ·{' '}
+        <span className="text-down">매도차</span> = 고평가 → 반대. 도달률 = |갭| / 요구엣지,{' '}
+        <span className="text-accent">100%↑ = 진입선 도달</span>. 기준가:{' '}
+        <span className="text-accent">mid</span> = 호가 중간(fresh) · <span>last</span> = 체결가 폴백.
+        행 클릭 → 요구엣지 분해.
       </div>
     </div>
   )
@@ -102,6 +117,108 @@ function modeBadge(row: QuoteRow, meta?: QuoteUniverseMeta): string {
   return beta != null ? `β${beta.toFixed(2)}` : `${fam} β`
 }
 
+/**
+ * 차익 프레이밍 파생 — 서버 산출(§13.13) 우선, 구 Rust 스냅샷은 클라이언트 폴백.
+ * gap<0=저평가(매수차), gap>0=고평가(매도차). 도달률 = |gap|/요구엣지.
+ */
+function arbFraming(row: QuoteRow) {
+  const gapBp =
+    row.gap_bp ??
+    (row.price > 0 && row.fv_futures > 0
+      ? ((row.price - row.fv_futures) / row.fv_futures) * 10000
+      : null)
+  const side: 'buy' | 'sell' | 'none' =
+    row.arb_side ??
+    (!row.usable || gapBp == null
+      ? 'none'
+      : gapBp < 0
+        ? 'buy'
+        : gapBp > 0
+          ? 'sell'
+          : 'none')
+  const edge =
+    row.arb_edge_bp ??
+    (side === 'buy' ? row.edge_bid_bp : side === 'sell' ? row.edge_ask_bp : 0)
+  const reach =
+    row.reach_pct ?? (edge > 0 && gapBp != null ? (Math.abs(gapBp) / edge) * 100 : 0)
+  const atEntry = row.at_entry ?? (side !== 'none' && reach >= 100)
+  const source = row.price_source ?? 'last'
+  return { gapBp, side, edge, reach, atEntry, source }
+}
+
+/** 방향별 색상 (매수차=저평가=up 초록 / 매도차=고평가=down 빨강). */
+const SIDE_COLOR: Record<'buy' | 'sell' | 'none', string> = {
+  buy: 'text-up',
+  sell: 'text-down',
+  none: 'text-t3',
+}
+const SIDE_BAR: Record<'buy' | 'sell' | 'none', string> = {
+  buy: 'bg-up',
+  sell: 'bg-down',
+  none: 'bg-t4',
+}
+const SIDE_LABEL: Record<'buy' | 'sell' | 'none', string> = {
+  buy: '매수차',
+  sell: '매도차',
+  none: '중립',
+}
+
+/** 차익 방향 + 진입선 도달률 게이지 셀 (갭 컬럼 확장 표현). */
+function ArbCell({ row }: { row: QuoteRow }) {
+  const { gapBp, side, edge, reach, atEntry } = arbFraming(row)
+  if (gapBp == null || side === 'none') {
+    return <span className="text-t4 text-[11px]">-</span>
+  }
+  const reachClamped = Math.min(Math.max(reach, 0), 100)
+  return (
+    <div className="min-w-[150px] max-w-[190px]">
+      <div className="flex items-baseline justify-between gap-2">
+        <span className={cn('text-[11px] font-medium', SIDE_COLOR[side])}>
+          {SIDE_LABEL[side]} {Math.abs(gapBp).toFixed(1)}bp
+        </span>
+        <span
+          className={cn(
+            'text-[10px] tabular-nums font-mono',
+            atEntry ? 'text-accent font-medium' : 'text-t4',
+          )}
+        >
+          {reach.toFixed(0)}%
+        </span>
+      </div>
+      {/* 도달률 게이지 — 진입선(요구엣지)까지 얼마나 왔나. 100%=진입선. */}
+      <div className="mt-1 h-1 w-full bg-bg-surface rounded-sm overflow-hidden relative">
+        <div
+          className={cn('h-full rounded-sm', atEntry ? 'bg-accent' : SIDE_BAR[side])}
+          style={{ width: `${reachClamped}%` }}
+        />
+      </div>
+      <div className="text-[9px] text-t4 mt-0.5 tabular-nums">
+        진입선 {edge.toFixed(1)}bp
+      </div>
+    </div>
+  )
+}
+
+/** mid/last 기준가 소스 배지. */
+function SourceBadge({ source }: { source: 'mid' | 'last' | 'none' }) {
+  if (source === 'none') return null
+  return (
+    <span
+      className={cn(
+        'inline-block px-1 py-0 text-[8px] leading-[13px] rounded-sm align-middle',
+        source === 'mid' ? 'bg-accent/15 text-accent' : 'bg-bg-surface text-t4',
+      )}
+      title={
+        source === 'mid'
+          ? '호가 중간값(mid) 기준 — best_bid/ask fresh'
+          : '체결가(last) 기준 — 호가 mid stale/결측'
+      }
+    >
+      {source}
+    </span>
+  )
+}
+
 const QuoteRowView = memo(
   function QuoteRowView({
     row,
@@ -115,17 +232,7 @@ const QuoteRowView = memo(
     onToggle: () => void
   }) {
     const dim = !row.usable
-    const gapBp =
-      row.price > 0 && row.fv_futures > 0
-        ? ((row.price - row.fv_futures) / row.fv_futures) * 10000
-        : null
-    // 저평가(현재가 < FV, 갭<0) = 매수 기회 → 초록. 고평가 → 빨강.
-    const gapColor =
-      gapBp == null || Math.abs(gapBp) < 0.05
-        ? 'text-t3'
-        : gapBp < 0
-          ? 'text-up'
-          : 'text-down'
+    const { side, atEntry, source } = arbFraming(row)
 
     const skew = row.skew_bp
     const skewGlyph = Math.abs(skew) < 0.05 ? '' : skew < 0 ? '▼' : '▲'
@@ -142,6 +249,11 @@ const QuoteRowView = memo(
           onClick={onToggle}
           className={cn(
             'border-b border-bg-base/30 hover:bg-bg-surface/40 cursor-pointer',
+            // 진입선 도달 행 subtle 하이라이트 (튀지 않게 — 방향색 6% + 좌측 얇은 라인).
+            atEntry &&
+              (side === 'buy'
+                ? 'bg-up/[0.06] shadow-[inset_2px_0_0_0] shadow-up/60'
+                : 'bg-down/[0.06] shadow-[inset_2px_0_0_0] shadow-down/60'),
             dim && 'opacity-45',
           )}
         >
@@ -159,20 +271,20 @@ const QuoteRowView = memo(
               </div>
             </div>
           </td>
-          {/* 현재가 */}
+          {/* 현재가 + 기준가 소스 배지 */}
           <td className="px-2 py-1.5 text-right tabular-nums text-t1 font-mono">
-            {fmtPrice(row.price)}
+            <div className="flex items-center justify-end gap-1">
+              <span>{fmtPrice(row.price)}</span>
+              <SourceBadge source={source} />
+            </div>
           </td>
           {/* FV_futures */}
           <td className="px-2 py-1.5 text-right tabular-nums text-t2 font-mono">
             {fmtPrice(row.fv_futures)}
           </td>
-          {/* 갭 bp */}
-          <td
-            className={cn('px-2 py-1.5 text-right tabular-nums font-mono', gapColor)}
-            title="현재가 vs FV_futures (음수=저평가=매수 기회)"
-          >
-            {gapBp == null ? '-' : `${gapBp > 0 ? '+' : ''}${gapBp.toFixed(1)}`}
+          {/* 차익 · 진입선 도달률 (갭 확장 표현) */}
+          <td className="px-2 py-1.5">
+            <ArbCell row={row} />
           </td>
           {/* 제안 매수 */}
           <td className="px-2 py-1.5 text-right font-mono">
@@ -271,7 +383,14 @@ const QuoteRowView = memo(
     a.row.edge_ask_bp === b.row.edge_ask_bp &&
     a.row.inputs_age_ms === b.row.inputs_age_ms &&
     a.row.usable === b.row.usable &&
-    a.row.no_quote_reason === b.row.no_quote_reason,
+    a.row.no_quote_reason === b.row.no_quote_reason &&
+    // §13.13 MID·차익 프레이밍 필드 — 바뀌면 리렌더.
+    a.row.ref_price === b.row.ref_price &&
+    a.row.price_source === b.row.price_source &&
+    a.row.gap_bp === b.row.gap_bp &&
+    a.row.reach_pct === b.row.reach_pct &&
+    a.row.arb_side === b.row.arb_side &&
+    a.row.at_entry === b.row.at_entry,
 )
 
 /** bp 칩 한 개. */
@@ -290,8 +409,30 @@ function BpChip({ label, value, color }: { label: string; value: number; color?:
 function RowDetail({ row, meta }: { row: QuoteRow; meta?: QuoteUniverseMeta }) {
   const c = row.components
   const remainEok = row.inventory_remaining_krw / 1e8
+  const { gapBp, side, edge, reach, source } = arbFraming(row)
+  const midStr =
+    row.best_bid != null && row.best_ask != null && row.best_bid > 0 && row.best_ask > 0
+      ? `${fmtPrice(row.best_bid)} / ${fmtPrice(row.best_ask)}`
+      : '-'
   return (
     <div className="flex flex-wrap items-start gap-x-6 gap-y-2">
+      {/* 차익 프레이밍 */}
+      <div>
+        <div className="text-[10px] text-t4 mb-1">차익 프레이밍</div>
+        <div className="grid grid-cols-2 gap-x-4 gap-y-0.5 text-[11px] tabular-nums font-mono">
+          <span className="text-t4">방향</span>
+          <span className={cn('text-right', SIDE_COLOR[side])}>{SIDE_LABEL[side]}</span>
+          <span className="text-t4">갭 (bp)</span>
+          <span className="text-t2 text-right">
+            {gapBp == null ? '-' : `${gapBp > 0 ? '+' : ''}${gapBp.toFixed(2)}`}
+          </span>
+          <span className="text-t4">요구엣지 (bp)</span>
+          <span className="text-t2 text-right">{edge > 0 ? edge.toFixed(2) : '-'}</span>
+          <span className="text-t4">도달률</span>
+          <span className="text-t2 text-right">{reach.toFixed(0)}%</span>
+        </div>
+      </div>
+
       {/* 요구엣지 분해 */}
       <div>
         <div className="text-[10px] text-t4 mb-1">요구엣지 분해 (bp)</div>
@@ -299,17 +440,7 @@ function RowDetail({ row, meta }: { row: QuoteRow; meta?: QuoteUniverseMeta }) {
           <BpChip label="기본" value={c.base} />
           <BpChip label="버퍼" value={c.buffer} />
           <BpChip label="잔차" value={c.residual} />
-          <BpChip
-            label="skew"
-            value={c.skew}
-            color={
-              Math.abs(c.skew) < 0.05
-                ? 'text-t3'
-                : c.skew < 0
-                  ? 'text-blue'
-                  : 'text-blue'
-            }
-          />
+          <BpChip label="skew" value={c.skew} color="text-blue" />
           <BpChip label="헤지비용" value={c.hedge_cost} color="text-t3" />
         </div>
         <div className="text-[10px] text-t4 mt-1">
@@ -318,10 +449,16 @@ function RowDetail({ row, meta }: { row: QuoteRow; meta?: QuoteUniverseMeta }) {
         </div>
       </div>
 
-      {/* FV 입력 */}
+      {/* FV 입력 + 호가 */}
       <div>
-        <div className="text-[10px] text-t4 mb-1">FV_futures 입력</div>
+        <div className="text-[10px] text-t4 mb-1">FV_futures 입력 · 호가</div>
         <div className="grid grid-cols-2 gap-x-4 gap-y-0.5 text-[11px] tabular-nums font-mono">
+          <span className="text-t4">기준가 ({source})</span>
+          <span className="text-t2 text-right">
+            {row.ref_price != null && row.ref_price > 0 ? fmtPrice(row.ref_price) : '-'}
+          </span>
+          <span className="text-t4">최우선 매수/매도</span>
+          <span className="text-t2 text-right">{midStr}</span>
           <span className="text-t4">r_implied</span>
           <span className="text-t2 text-right">
             {(row.r_implied * 100).toFixed(2)}%

@@ -36,7 +36,7 @@ use super::hedge_ticket::compute_hedge_tickets;
 use super::pnl::compute_pnl;
 use super::quote_board::{
     compute_fv_futures, compute_quote_row, FvFutures, IndexFuturesState, QuoteParams,
-    QuoteUniverseEtf,
+    QuoteUniverseEtf, MID_FRESH_MS,
 };
 use super::{
     apply_level3_costs, pdf_basket, stock_futures_intersect, CostInputs, EtfStaticInput,
@@ -61,6 +61,15 @@ const MARK_PRICE_MAX_AGE_MS: u64 = 60_000;
 pub struct DayOpen {
     pub date: chrono::NaiveDate,
     pub price: f64,
+}
+
+/// ETF 최우선 호가 스냅샷 (§13.13 MID 기반) — OrderbookTick에서 갱신. mid = (bid+ask)/2.
+/// 갱신 나이(MID_FRESH_MS)로 quote_board가 mid/last 소스를 결정.
+#[derive(Debug, Clone, Copy)]
+pub struct OrderbookQuote {
+    pub best_bid: f64,
+    pub best_ask: f64,
+    pub updated_at_ms: u64,
 }
 
 /// 첫 빌드 Level 3 default cost params — backend에서 fetch 실패 시 fallback.
@@ -109,6 +118,9 @@ pub struct MatrixState {
     pub quote_params: RwLock<QuoteParams>,
     /// 지수선물 최신 상태 — product("kospi200"|"mini_k200"|"kosdaq150") → state. lock-free.
     pub index_futures: DashMap<String, IndexFuturesState>,
+    /// ETF 최우선 호가 (§13.13 MID) — code → (best_bid, best_ask, age). H1_/HA_ OrderbookTick으로
+    /// 갱신. quote_board가 fresh mid면 갭 기준가로 last 대신 사용. lock-free. 구독 코드만 채워짐.
+    pub etf_orderbooks: DashMap<String, OrderbookQuote>,
 }
 
 impl Default for MatrixState {
@@ -147,6 +159,7 @@ impl MatrixState {
             quote_universe: RwLock::new(Vec::new()),
             quote_params: RwLock::new(QuoteParams::default()),
             index_futures: DashMap::new(),
+            etf_orderbooks: DashMap::new(),
         }
     }
 
@@ -201,6 +214,22 @@ impl MatrixState {
                 );
                 // 지수선물 포지션 MTM 프록시 — 코드별 첫 관측가 (전일종가 대체 없음).
                 self.record_day_open(&t.code, t.price, today);
+            }
+            // ETF 호가 (H1_/HA_) — 최우선 bid/ask 저장 (§13.13 MID 기준가). 구독된 코드만
+            // OrderbookTick이 오므로 map은 구독 범위로 자연 제한. 나이로 mid/last 소스 결정.
+            WsMessage::OrderbookTick(t) => {
+                let best_bid = t.bids.first().map(|l| l.price).unwrap_or(0.0);
+                let best_ask = t.asks.first().map(|l| l.price).unwrap_or(0.0);
+                if best_bid > 0.0 || best_ask > 0.0 {
+                    self.etf_orderbooks.insert(
+                        t.code.clone(),
+                        OrderbookQuote {
+                            best_bid,
+                            best_ask,
+                            updated_at_ms: now_ms,
+                        },
+                    );
+                }
             }
             _ => {}
         }
@@ -362,7 +391,29 @@ impl MatrixState {
                     let fv = &fv_map[&etf.code];
                     let (price, age) = etf_price_age(&etf.code);
                     let qty = book.positions.get(&etf.code).copied().unwrap_or(0);
-                    compute_quote_row(etf, fv, &quote_params, price, age, qty, cost.hold_days)
+                    // 호가 mid — 최근(MID_FRESH_MS 내) 갱신이면 fresh. best_bid/ask는 나이 무관
+                    // 표시용으로 항상 전달 (stale이면 source=last지만 참고값은 노출).
+                    let (best_bid, best_ask, mid_fresh) = match self.etf_orderbooks.get(&etf.code) {
+                        Some(ob) => {
+                            let fresh = now_ms.saturating_sub(ob.updated_at_ms) <= MID_FRESH_MS
+                                && ob.best_bid > 0.0
+                                && ob.best_ask > 0.0;
+                            (ob.best_bid, ob.best_ask, fresh)
+                        }
+                        None => (0.0, 0.0, false),
+                    };
+                    compute_quote_row(
+                        etf,
+                        fv,
+                        &quote_params,
+                        price,
+                        age,
+                        best_bid,
+                        best_ask,
+                        mid_fresh,
+                        qty,
+                        cost.hold_days,
+                    )
                 })
                 .collect();
             drop(book);
