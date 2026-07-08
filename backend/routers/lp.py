@@ -20,13 +20,13 @@ from typing import Optional
 import logging
 
 import numpy as np
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import text
 
 from core.database import korea_async_session
 from routers.etfs import _cache as etf_cache, _ensure_loaded, _norm_code
-from services import lp_ledger
+from services import ledger_import, lp_ledger
 from services.pdf_futures_match import get_intersect_for_etf
 from services.risk_estimator import get_risk_params
 from services.stock_code import normalize_stock_code
@@ -253,16 +253,22 @@ def _classify_futures(code: str) -> str:
     return "stock_fut"
 
 
-async def _classify(raw: str, override: Optional[str] = None) -> tuple[str, str]:
-    """자유 입력 코드 → (정규화 코드, instrument).
+def _classify_sync(
+    raw: str, etf_codes: set[str], override: Optional[str] = None
+) -> tuple[str, str]:
+    """자유 입력 코드 → (정규화 코드, instrument). 순수 동기 (ETF 코드 집합 주입).
 
     - 선물(8자리 A+7 또는 KR4 ISIN)은 정규화하지 않고 8자리 유지.
     - 나머지는 stock_code.normalize_stock_code 로 6자리 정규화.
     - override 주어지면 instrument 는 그대로 채택 (코드 정규화만 수행).
+    - 정규화 불가/빈 코드는 ValueError (배치 import 가 excluded 로 흡수).
+
+    엑셀 import(services.ledger_import)와 원장 CRUD 라우트가 **같은 분류 로직**을
+    쓰도록 순수 함수로 추출 — 드리프트 방지.
     """
     s = str(raw or "").strip().upper()
     if not s:
-        raise HTTPException(status_code=400, detail="code required")
+        raise ValueError("code required")
 
     # 선물 ISIN 'KR4A' + 7 + 체크1 (12자) → 'A' + 7
     if len(s) == 12 and s.startswith("KR4"):
@@ -276,17 +282,27 @@ async def _classify(raw: str, override: Optional[str] = None) -> tuple[str, str]
     # 주식/ETF → 6자리 정규화
     code = normalize_stock_code(s)
     if not code:
-        raise HTTPException(status_code=400, detail=f"cannot normalize code: {raw}")
+        raise ValueError(f"cannot normalize code: {raw}")
     if override in lp_ledger.VALID_INSTRUMENTS:
         return code, override
+    if code in etf_codes:
+        return code, "etf"
+    return code, "stock"
+
+
+async def _classify(raw: str, override: Optional[str] = None) -> tuple[str, str]:
+    """자유 입력 코드 → (정규화 코드, instrument). ETF 마스터 로드 후 `_classify_sync` 위임."""
+    etf_codes: set[str] = set()
     try:
         await _ensure_loaded()
-        if code in etf_cache.etfs:
-            return code, "etf"
+        etf_codes = set(etf_cache.etfs.keys())
     except Exception:
         # ETF 마스터 로드 실패 → 주식으로 폴백 (원장 입력을 막지 않음).
         pass
-    return code, "stock"
+    try:
+        return _classify_sync(raw, etf_codes, override)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 def _name_for(code: str, instrument: str) -> Optional[str]:
@@ -632,6 +648,122 @@ async def set_ledger_carryover(payload: CarryoverPayload):
     if a:
         a["name"] = _name_for(code, instrument)
     return {"code": code, "instrument": instrument, "aggregate": a}
+
+
+# ---- 원장 엑셀 업로드 (회사 원장 → LP 매트릭스 반영) ------------------------
+
+@router.post("/ledger/import-excel")
+async def import_ledger_excel(
+    files: list[UploadFile] = File(...),
+    dry_run: bool = Form(True),
+    futures_unit: str = Form("contracts"),
+    replace_all: bool = Form(True),
+):
+    """회사 원장 엑셀(5264/3454/2514) 업로드 → 파싱 후 미리보기(dry_run) 또는 반영.
+
+    - dry_run=True(기본): 파싱 결과 전체 반환 (positions/fills/excluded/warnings +
+      replace_all 시 삭제될 기존 원장 종목 + 선물 환산 명세). DB 무변경.
+    - dry_run=False: 트랜잭션으로 반영. replace_all=True 면 원장 전체 삭제 후 재구성
+      (실계좌 스냅샷이 정본 → 청산 종목 유령 방지), False 면 포함 종목만 교체.
+
+    자세한 규칙은 services/ledger_import.py docstring.
+    """
+    await lp_ledger.ensure_schema_once()
+    if futures_unit not in ("contracts", "shares"):
+        raise HTTPException(status_code=400, detail=f"futures_unit invalid: {futures_unit}")
+
+    # 파일 바이트 읽기 (빈 파일 방지).
+    blobs: list[tuple[str, bytes]] = []
+    for uf in files:
+        data = await uf.read()
+        if not data:
+            continue
+        blobs.append((uf.filename or "unnamed", data))
+    if not blobs:
+        raise HTTPException(status_code=400, detail="빈 업로드 (파일 없음)")
+
+    # ETF 마스터 + 선물 마스터 로드 후 동기 분류기 주입.
+    etf_codes: set[str] = set()
+    try:
+        await _ensure_loaded()
+        etf_codes = set(etf_cache.etfs.keys())
+    except Exception:  # noqa: BLE001
+        pass
+    _load_futures_master()
+
+    def classify(raw: str) -> tuple[str, str]:
+        return _classify_sync(raw, etf_codes)
+
+    parsed = ledger_import.parse_ledger_files(blobs, classify, futures_unit)
+
+    # 삭제 예상 종목 (replace_all): 현재 원장에 있으나 새 스냅샷에 없는 코드.
+    removed: list[dict] = []
+    if replace_all:
+        new_codes = {p["code"] for p in parsed["positions"]}
+        agg = await lp_ledger.aggregate()
+        for code, a in agg.items():
+            if a["net_qty"] != 0 and code not in new_codes:
+                removed.append({
+                    "code": code, "name": _name_for(code, a["instrument"]),
+                    "instrument": a["instrument"], "net_qty": a["net_qty"],
+                })
+        removed.sort(key=lambda x: x["code"])
+
+    result = {
+        "dry_run": dry_run,
+        "futures_unit": futures_unit,
+        "replace_all": replace_all,
+        "files": parsed["files"],
+        "positions": parsed["positions"],
+        "excluded": parsed["excluded"],
+        "warnings": parsed["warnings"],
+        "summary": parsed["summary"],
+        "removed": removed,
+    }
+
+    if dry_run:
+        return result
+
+    # ── 확정 가드 (dry_run=false) ──
+    # M1: 파싱 실패 파일이 섞인 채 확정하면, 그 파일에 있던 포지션이 replace_all 로
+    # 조용히 삭제됨 → 전면 거부. 미리보기는 부분 결과 + 에러 표시를 유지.
+    bad_files = [f["filename"] for f in parsed["files"] if f.get("error")]
+    if bad_files:
+        raise HTTPException(
+            status_code=400,
+            detail=f"파싱 실패 파일 {len(bad_files)}개 — 확정 거부. "
+                   f"실패 파일을 제외하고 다시 업로드: {', '.join(bad_files)}",
+        )
+    # H1: 빈 스냅샷 + 전체 교체 = 원장 전멸. 서버측에서 무조건 거부
+    # (UI 는 버튼 disabled 로 막지만 API 직접 호출 방어).
+    if replace_all and not parsed["positions"]:
+        raise HTTPException(
+            status_code=400,
+            detail="포지션 0건 — 전체 교체 거부 (원장 전멸 방지). "
+                   "3454/2514 파일이 포함됐는지 확인하세요 (5264 는 경고 추출 전용).",
+        )
+
+    # 반영 — carryover(이월 평단) + 당일 체결(fill). fv_at_fill 없음(스프레드 미귀속·정직).
+    import_positions: list[dict] = []
+    for p in parsed["positions"]:
+        note = f"excel import: {', '.join(p['sources'])}"
+        fills = [
+            {"side": f["side"], "qty": f["qty"], "price": f.get("price"),
+             "note": f"excel import: {f.get('source', '')}"}
+            for f in p["fills"]
+        ]
+        import_positions.append({
+            "code": p["code"], "instrument": p["instrument"],
+            "carryover_signed": p["carryover_qty"],
+            # carryover 행 평단 — 이월 가중 평균 (표시용 avg_price 는 blended VWAP
+            # 시뮬레이션이라 여기 쓰면 fill 이 이중 가중됨).
+            "price": p.get("carryover_avg_price"),
+            "note": note, "fills": fills,
+        })
+    write_stats = await lp_ledger.import_positions(import_positions, replace_all)
+    result["applied"] = write_stats
+    result["updated_at"] = await lp_ledger.latest_ts()
+    return result
 
 
 async def migrate_positions_json_once() -> int:

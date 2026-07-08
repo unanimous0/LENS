@@ -311,6 +311,98 @@ export const LEDGER_GROUPS: Array<{ instrument: LedgerInstrument; label: string 
   { instrument: 'stock', label: '현물' },
 ]
 
+// ---- 원장 엑셀 업로드 (회사 원장 → 반영) — backend/services/ledger_import.py 와 1:1 ----
+
+export interface ImportFill {
+  side: LedgerSide
+  qty: number
+  price: number | null
+  source: string
+}
+
+export interface ImportPosition {
+  code: string
+  name: string | null
+  instrument: LedgerInstrument
+  /** 이월 수량 (부호). */
+  carryover_qty: number
+  prev_book_signed: number
+  /** 반영 후 원장 보드와 동일 산식(blended VWAP)으로 시뮬레이션한 평단. */
+  avg_price: number | null
+  /** 이월 행에 기록될 평단 (이월 가중 평균). */
+  carryover_avg_price: number | null
+  fills: ImportFill[]
+  /** 당일 체결 부호합. */
+  fills_qty_today: number
+  /** 반영될 순 수량 (= 경제적 당일 장부). */
+  net_qty: number
+  sources: string[]
+  reconciled: boolean
+  recon_detail: string | null
+  /** 선물 계약→주수 환산 명세 ("A1167000: 3,000계약 → 30,000주"). */
+  conversion_note: string | null
+}
+
+export interface ImportFileInfo {
+  filename: string
+  screen: string // '3454' | '2514' | '5264' | 'duplicate' | 'unknown' | 'error'
+  fund_types: string[]
+  parsed_rows: number
+  error?: string
+  /** 정보성 비고 (중복 파일 무시 등 — 에러 아님). */
+  note?: string
+}
+
+export interface ImportExcluded {
+  code: string
+  name: string | null
+  source: string
+  reason: string
+}
+
+export interface ImportWarning {
+  type: 'reconcile' | 'collateral_negative' | 'duplicate_file' | 'set_mix'
+  code: string
+  name: string | null
+  source: string
+  detail: string
+}
+
+export interface ImportRemoved {
+  code: string
+  name: string | null
+  instrument: LedgerInstrument
+  net_qty: number
+}
+
+export interface ImportSummary {
+  n_positions: number
+  n_fills: number
+  n_excluded: number
+  n_warnings: number
+  n_reconcile_warnings: number
+  n_collateral_warnings: number
+  n_conversions: number
+  n_files_ok: number
+  n_files_error: number
+  /** 내용 동일(SHA-256)로 무시된 중복 파일 수. */
+  n_files_duplicate: number
+}
+
+export interface LedgerImportResult {
+  dry_run: boolean
+  futures_unit: 'contracts' | 'shares'
+  replace_all: boolean
+  files: ImportFileInfo[]
+  positions: ImportPosition[]
+  excluded: ImportExcluded[]
+  warnings: ImportWarning[]
+  summary: ImportSummary
+  removed: ImportRemoved[]
+  applied?: { carryover: number; fills: number; codes: number }
+  updated_at?: string | null
+}
+
 // ---- 호가 보드 (§13.3-A Phase 2 PR-B/PR-C) — realtime/src/model/lp.rs QuoteRow 와 1:1 ----
 
 export interface QuoteComponents {

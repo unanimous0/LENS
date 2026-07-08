@@ -303,6 +303,67 @@ async def replace_all_carryover(items: list[tuple[str, str, int]]) -> None:
     await asyncio.to_thread(_replace_all_carryover_sync, items)
 
 
+def _import_positions_sync(positions: list[dict], replace_all: bool) -> dict:
+    """엑셀 원장 반영 — carryover(평단 포함) + 당일 체결(fill)을 원자적으로 기입.
+
+    positions 각 항목:
+        {code, instrument, carryover_signed(부호), price(평단 nullable), note,
+         fills: [{side, qty(양수), price(nullable), note, ts(nullable)}]}
+
+    - replace_all=True: 원장 전체 삭제 후 재구성 (실계좌 스냅샷이 정본 → 청산 종목 유령 방지).
+    - replace_all=False: positions 에 포함된 code 만 (carryover+fill 전부) 삭제 후 재삽입.
+      나머지 code 는 손대지 않음 ("포함 종목만 교체").
+
+    전체가 하나의 BEGIN IMMEDIATE 트랜잭션 — 중간 실패 시 롤백(원자성).
+    반환: {carryover: 삽입된 이월 수, fills: 삽입된 체결 수, codes: 처리 code 수}.
+    """
+    now = datetime.now().isoformat(timespec="seconds")
+    n_carry = 0
+    n_fill = 0
+    with _connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        if replace_all:
+            conn.execute("DELETE FROM lp_ledger")
+        else:
+            for p in positions:
+                conn.execute("DELETE FROM lp_ledger WHERE code = ?", (p["code"],))
+        for p in positions:
+            code = p["code"]
+            instrument = p["instrument"]
+            cs = int(p.get("carryover_signed", 0) or 0)
+            if cs != 0:
+                side = "buy" if cs > 0 else "sell"
+                conn.execute(
+                    "INSERT INTO lp_ledger (id, ts, code, instrument, kind, side, qty, price, note) "
+                    "VALUES (?, ?, ?, ?, 'carryover', ?, ?, ?, ?)",
+                    (
+                        uuid.uuid4().hex, now, code, instrument, side,
+                        abs(cs), p.get("price"), p.get("note"),
+                    ),
+                )
+                n_carry += 1
+            for f in p.get("fills", []):
+                q = int(f.get("qty", 0) or 0)
+                side = f.get("side")
+                if q <= 0 or side not in VALID_SIDES:
+                    continue
+                conn.execute(
+                    "INSERT INTO lp_ledger (id, ts, code, instrument, kind, side, qty, price, note) "
+                    "VALUES (?, ?, ?, ?, 'fill', ?, ?, ?, ?)",
+                    (
+                        uuid.uuid4().hex, f.get("ts") or now, code, instrument, side,
+                        q, f.get("price"), f.get("note"),
+                    ),
+                )
+                n_fill += 1
+        conn.commit()
+    return {"carryover": n_carry, "fills": n_fill, "codes": len(positions)}
+
+
+async def import_positions(positions: list[dict], replace_all: bool) -> dict:
+    return await asyncio.to_thread(_import_positions_sync, positions, replace_all)
+
+
 # ---------------------------------------------------------------------------
 # aggregation
 # ---------------------------------------------------------------------------

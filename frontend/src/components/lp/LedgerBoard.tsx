@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { useLpStore } from '@/stores/lpStore'
 import { useMarketStore } from '@/stores/marketStore'
 import { LEDGER_GROUPS, type LedgerAggregate, type LedgerInstrument } from '@/types/lp'
+import { LedgerImportModal } from './LedgerImportModal'
 
 /**
  * 북 원장 보드 (§13.5 Phase 1).
@@ -62,6 +63,8 @@ export function LedgerBoard() {
   const futuresTicks = useMarketStore((s) => s.futuresTicks)
   const indexFuturesTicks = useMarketStore((s) => s.indexFuturesTicks)
 
+  const [importOpen, setImportOpen] = useState(false)
+
   const priceOf = (code: string, instrument: LedgerInstrument): number => {
     if (instrument === 'etf') return etfTicks[code]?.price || 0
     if (instrument === 'stock') return stockTicks[code]?.price || 0
@@ -108,7 +111,16 @@ export function LedgerBoard() {
       {/* 상단 요약 스트립 */}
       <div className="bg-bg-primary p-3 flex items-center gap-6">
         <div>
-          <div className="text-[13px] text-t2 font-medium">북 원장</div>
+          <div className="flex items-center gap-2">
+            <div className="text-[13px] text-t2 font-medium">북 원장</div>
+            <button
+              onClick={() => setImportOpen(true)}
+              className="text-[10px] px-2 py-0.5 bg-bg-surface text-t2 hover:text-t1 rounded-sm"
+              title="회사 원장 엑셀(5264/3454/2514) 업로드 → 원장 반영"
+            >
+              엑셀 업로드
+            </button>
+          </div>
           <div className="text-[10px] text-t4">
             {updatedAt ? `최종 갱신: ${updatedAt.replace('T', ' ')}` : '엔트리 없음'}
           </div>
@@ -119,6 +131,10 @@ export function LedgerBoard() {
           <Summary label="순 노출" value={grouped.longExp + grouped.shortExp} tone="net" />
         </div>
       </div>
+
+      {importOpen && (
+        <LedgerImportModal onClose={() => setImportOpen(false)} onApplied={refreshLedger} />
+      )}
 
       {/* 자산유형별 그룹 테이블 */}
       <div className="bg-bg-primary p-3">
