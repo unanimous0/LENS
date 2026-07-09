@@ -258,7 +258,7 @@ def _classify_sync(
 ) -> tuple[str, str]:
     """자유 입력 코드 → (정규화 코드, instrument). 순수 동기 (ETF 코드 집합 주입).
 
-    - 선물(8자리 A+7 또는 KR4 ISIN)은 정규화하지 않고 8자리 유지.
+    - 선물(8자리 영숫자 — A+7 또는 '1GNW4000' 등, 또는 KR4 ISIN)은 정규화 없이 유지.
     - 나머지는 stock_code.normalize_stock_code 로 6자리 정규화.
     - override 주어지면 instrument 는 그대로 채택 (코드 정규화만 수행).
     - 정규화 불가/빈 코드는 ValueError (배치 import 가 excluded 로 흡수).
@@ -274,8 +274,10 @@ def _classify_sync(
     if len(s) == 12 and s.startswith("KR4"):
         s = "A" + s[4:11]
 
-    # 선물 단축코드: A + 7 (8자)
-    if len(s) == 8 and s.startswith("A") and s[1:].isalnum():
+    # 선물 단축코드: 8자 영숫자 (A+7 또는 '1GNW4000' 등 비-A 접두 포함).
+    # 주식 6자·A+6(7자)·ISIN 12자와 자릿수로 구분되어 8자 영숫자는 선물로 안전 판정.
+    # 순수 8자리 숫자만 제외(정규화 대상 아님이나 선물 단축코드도 아님).
+    if len(s) == 8 and s.isalnum() and not s.isdigit():
         inst = override if override in lp_ledger.VALID_INSTRUMENTS else _classify_futures(s)
         return s, inst
 

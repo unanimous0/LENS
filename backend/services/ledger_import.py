@@ -13,6 +13,9 @@
   정합이 맞으면 이 값은 자연히 −(전일장부) / +(전일장부) 로 떨어진다.
 - **2514 수량 = 계약수 기본** (futures_unit='contracts'|'shares'). LENS 기장 단위:
   주식선물 = 주수(계약 × 10), 지수선물 = 계약수 그대로. 옵션·미인식 코드는 excluded.
+  신양식(10열: 종목/종목명/매매구분/수량/…)은 **수량이 절대값**이라 매매구분(매수=+/
+  매도=−)으로 부호 결정. 가격·금액 컬럼은 신뢰 불가 → 평단 미기록. 헤더 기반 파싱이라
+  구양식(5열)도 겸용.
 - **5264** 는 포지션 소스로 쓰지 않고 담보가능수량 < 0 종목 경고만 추출.
 
 3454 는 중복 컬럼명(수량/단가/금액 ×2, 매매가능수량/장부수량 ×2)이라 **위치 기반**
@@ -99,7 +102,10 @@ def detect_screen(df) -> str:
     ncols = df.shape[1]
     hdr = [_norm_header(c) for c in df.iloc[0].tolist()]
     hset = set(hdr)
-    if ncols == 5 and {"종목코드", "수량", "가격"} <= hset:
+    # 2514 신양식(10열, 매매구분 포함) — 매매구분은 3454/5264에 없는 고유 시그니처.
+    if "매매구분" in hset:
+        return "2514"
+    if ncols == 5 and {"종목코드", "수량", "가격"} <= hset:  # 2514 구양식
         return "2514"
     if ncols == 14 and "담보가능수량" in hset:
         return "5264"
@@ -233,7 +239,12 @@ def parse_3454(df, filename: str, classify: ClassifyFn) -> dict:
 
 
 def parse_2514(df, filename: str, classify: ClassifyFn, futures_unit: str) -> dict:
-    """2514 파생상품 파서 (5열). 수량 부호 그대로. 계약↔주수 환산 명세 포함."""
+    """2514 파생상품 파서 (헤더 기반, 신·구 양식 겸용). 계약↔주수 환산 명세 포함.
+
+    - 신양식(10열): 종목/종목명/매매구분/수량/평균단가/현재가/... — 수량은 **절대값**,
+      부호는 매매구분(매수=+/매도=−)으로 결정. 가격·금액 컬럼은 신뢰 불가 → avg_price None.
+    - 구양식(5열): 종목코드/종목명/수량/가격/금액 — 수량 부호 그대로, 가격 사용.
+    """
     records: list[dict] = []
     excluded: list[dict] = []
     warnings: list[dict] = []
@@ -243,14 +254,44 @@ def parse_2514(df, filename: str, classify: ClassifyFn, futures_unit: str) -> di
     prefix = filename.split("_", 1)[0]
     file_fund_code = prefix if len(prefix) == 6 and prefix.isdigit() else None
 
+    # 헤더로 컬럼 위치 해석 (컬럼 순서 변경에 견고).
+    hdr = [_norm_header(c) for c in df.iloc[0].tolist()]
+
+    def _col(*names, default=None):
+        for nm in names:
+            if nm in hdr:
+                return hdr.index(nm)
+        return default
+
+    code_idx = _col("종목", "종목코드", default=0)
+    name_idx = _col("종목명", default=1)
+    tt_idx = _col("매매구분")                     # 신양식만 존재
+    qty_idx = _col("수량", default=(3 if tt_idx is not None else 2))
+    price_idx = _col("가격") if tt_idx is None else None  # 신양식 가격은 신뢰 불가
+
     for i in range(1, df.shape[0]):
         row = df.iloc[i]
-        code_raw = _cell(row.iloc[0])
+        code_raw = _cell(row.iloc[code_idx])
         if not code_raw:
             continue
-        name = _cell(row.iloc[1])
-        qty_raw = _int(row.iloc[2])   # 계약수(기본) — 부호 그대로
-        price = _num(row.iloc[3]) or None
+        name = _cell(row.iloc[name_idx])
+        price = (_num(row.iloc[price_idx]) or None) if price_idx is not None else None
+
+        if tt_idx is not None:
+            # 신양식: 수량 절대값 + 매매구분으로 부호.
+            trade_type = _cell(row.iloc[tt_idx])
+            qty_abs = abs(_int(row.iloc[qty_idx]))
+            if trade_type == "매수":
+                qty_raw = qty_abs
+            elif trade_type == "매도":
+                qty_raw = -qty_abs
+            else:
+                excluded.append({"code": code_raw, "name": name, "source": filename,
+                                 "reason": f"매매구분 미인식: '{trade_type}'"})
+                continue
+        else:
+            qty_raw = _int(row.iloc[qty_idx])   # 구양식: 부호 그대로
+
         if qty_raw == 0:
             continue
 
