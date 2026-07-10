@@ -29,14 +29,14 @@ export function HedgeTicketPanel() {
     <div className="bg-bg-primary">
       <div className="px-3 py-2 border-b border-bg-base">
         <div className="text-[13px] text-t2 font-medium">헤지 티켓 (§13.3-B)</div>
-        <div className="text-[11px] text-t4">
+        <div className="text-[11px] text-t2">
           북 순 델타 → 지수선물 상시 티켓 · 넷팅 자동 · 자동 제출 X
         </div>
       </div>
 
       <div className="p-2 flex flex-col gap-1.5">
         {tickets.length === 0 && (
-          <div className="text-center py-6 text-t4 text-xs">
+          <div className="text-center py-6 text-t3 text-xs">
             가족 델타 없음 — 지수형 ETF/현물 재고가 없거나 book_risk 대기 중
           </div>
         )}
@@ -59,16 +59,16 @@ function TicketCard({ ticket: t }: { ticket: HedgeTicket }) {
           <span className="text-[12px] text-t1 font-medium">{fam} 선물</span>
           {t.usable ? (
             hasTicket ? (
-              <span className="text-[10px] px-1.5 py-0.5 rounded-sm bg-warning/15 text-warning">
+              <span className="text-[11px] px-1.5 py-0.5 rounded-sm bg-warning/15 text-warning">
                 헤지 필요
               </span>
             ) : (
-              <span className="text-[10px] px-1.5 py-0.5 rounded-sm bg-accent/15 text-accent">
+              <span className="text-[11px] px-1.5 py-0.5 rounded-sm bg-accent/15 text-accent">
                 헤지 불필요 (넷팅)
               </span>
             )
           ) : (
-            <span className="text-[10px] px-1.5 py-0.5 rounded-sm bg-down/15 text-down">
+            <span className="text-[11px] px-1.5 py-0.5 rounded-sm bg-down/15 text-down">
               산출 불가
             </span>
           )}
@@ -91,12 +91,12 @@ function TicketCard({ ticket: t }: { ticket: HedgeTicket }) {
           {t.ticket.map((leg) => (
             <LegRow key={leg.code} leg={leg} />
           ))}
-          <div className="text-[10px] text-t4 mt-0.5">
+          <div className="text-[11px] text-t3 mt-0.5">
             라운딩 잔차 {fmtKrw(t.rounding_residual_krw)} (본계약+미니로 못 잡는 델타)
           </div>
         </div>
       ) : (
-        <div className="text-[11px] text-t3">
+        <div className="text-[11px] text-t2">
           반대 재고/기존 선물이 순 델타를 상쇄 — 추가 헤지 계약 0.
         </div>
       )}
@@ -121,7 +121,7 @@ function DeltaCell({
         : 'text-down'
   return (
     <div>
-      <div className="text-[9px] text-t4">{label}</div>
+      <div className="text-[10px] text-t4">{label}</div>
       <div className={cn(emphasize ? 'text-[13px]' : 'text-[12px]', color)}>
         {fmtKrw(value)}
       </div>
@@ -138,12 +138,12 @@ function LegRow({ leg }: { leg: HedgeLeg }) {
     <div className="flex items-center justify-between bg-bg-base px-2 py-1">
       <div className="flex items-baseline gap-2 min-w-0">
         <span className="text-[11px] text-t2 truncate">{leg.name}</span>
-        <span className="text-[10px] text-t4 font-mono tabular-nums">{leg.code}</span>
+        <span className="text-[11px] text-t4 font-mono tabular-nums">{leg.code}</span>
       </div>
       <div className="flex items-center gap-2 shrink-0">
         <span className="text-[12px] font-mono tabular-nums">
           <span className="text-t1">{leg.contracts}</span>
-          <span className="text-t4 text-[10px]">계약</span>{' '}
+          <span className="text-t4 text-[11px]">계약</span>{' '}
           <span className={sideColor}>{sideKo}</span>
         </span>
         <button
@@ -151,7 +151,7 @@ function LegRow({ leg }: { leg: HedgeLeg }) {
             requestPrefill({ code: leg.code, side: leg.side, qty: leg.contracts })
           }
           title="원장 입력 폼에 프리필"
-          className="text-[10px] px-2 py-0.5 bg-bg-surface text-t3 hover:text-t1 border border-transparent hover:border-accent"
+          className="text-[11px] px-2 py-0.5 bg-bg-surface text-t3 hover:text-t1 border border-transparent hover:border-accent"
         >
           기장
         </button>

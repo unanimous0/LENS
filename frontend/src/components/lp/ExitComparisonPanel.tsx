@@ -34,7 +34,7 @@ export function ExitComparisonPanel() {
     return (
       <div className="bg-bg-primary">
         <Header />
-        <div className="px-3 py-6 text-[11px] text-t4">
+        <div className="px-3 py-6 text-[11px] text-t2">
           넷팅 바스켓을 먼저 생성하면 세 출구를 재고 명목 대비 순 bp로 비교합니다.
         </div>
       </div>
@@ -138,28 +138,28 @@ export function ExitComparisonPanel() {
               <div className="flex items-center gap-1.5">
                 <span className="text-[12px] text-t1 font-medium">{c.title}</span>
                 {c.badge && (
-                  <span className="text-[9px] px-1 py-0.5 rounded-sm bg-blue/15 text-blue">{c.badge}</span>
+                  <span className="text-[10px] px-1 py-0.5 rounded-sm bg-blue/15 text-blue">{c.badge}</span>
                 )}
                 {c.bp === bestBp && invOk && (
-                  <span className="text-[9px] px-1 py-0.5 rounded-sm bg-accent/15 text-accent">최선</span>
+                  <span className="text-[10px] px-1 py-0.5 rounded-sm bg-accent/15 text-accent">최선</span>
                 )}
               </div>
               <div className="text-right">
                 <div className={cn('text-[15px] font-mono tabular-nums', bpClass(c.bp))}>{fmtBp(c.bp)}</div>
-                <div className="text-[9px] text-t4">순 {fmtKrw(c.net)}</div>
+                <div className="text-[10px] text-t4">순 {fmtKrw(c.net)}</div>
               </div>
             </div>
             <div className="grid grid-cols-3 gap-x-3 gap-y-0.5">
               {c.rows.map(([k, v], i) => (
                 <div key={i} className="flex flex-col">
-                  <span className="text-[9px] text-t4">{k}</span>
+                  <span className="text-[10px] text-t4">{k}</span>
                   <span className="text-[11px] font-mono tabular-nums text-t2">{v}</span>
                 </div>
               ))}
             </div>
             {c.daysInput && (
               <div className="flex items-center gap-2 mt-1.5">
-                <span className="text-[10px] text-t4">예상 소요일</span>
+                <span className="text-[11px] text-t4">예상 소요일</span>
                 <input
                   type="number"
                   min={0}
@@ -170,7 +170,7 @@ export function ExitComparisonPanel() {
                 />
               </div>
             )}
-            <div className="text-[9px] text-t4 leading-relaxed mt-1.5">
+            <div className="text-[10px] text-t3 leading-relaxed mt-1.5">
               {c.notes.map((n, i) => (
                 <div key={i}>· {n}</div>
               ))}
@@ -178,7 +178,7 @@ export function ExitComparisonPanel() {
           </div>
         ))}
       </div>
-      <div className="px-3 py-2 border-t border-bg-base text-[9px] text-t4 leading-relaxed">
+      <div className="px-3 py-2 border-t border-bg-base text-[10px] text-t2 leading-relaxed">
         순 bp = (편익 − 비용) / 재고 명목. 세 값의 직접 비교용 근사치 — 실집행 비용은 호가 깊이·
         임팩트로 달라짐. 넷팅 바스켓/설정환매는 비용만, 자연 건조는 스프레드 편익이 있어 부호가 갈림.
       </div>
@@ -191,11 +191,11 @@ function Header({ inv }: { inv?: number }) {
     <div className="px-3 py-2 border-b border-bg-base flex items-center justify-between">
       <div>
         <div className="text-[13px] text-t2 font-medium">출구 3개 비교 (§13.3-D)</div>
-        <div className="text-[11px] text-t4">넷팅 바스켓 / 자연 건조 / 설정·환매 — 순 bp 정렬</div>
+        <div className="text-[11px] text-t3">넷팅 바스켓 / 자연 건조 / 설정·환매 — 순 bp 정렬</div>
       </div>
       {inv != null && inv > 0 && (
         <div className="text-right">
-          <div className="text-[9px] text-t4">재고 명목</div>
+          <div className="text-[10px] text-t4">재고 명목</div>
           <div className="text-[13px] font-mono tabular-nums text-t2">{fmtKrw(inv)}</div>
         </div>
       )}

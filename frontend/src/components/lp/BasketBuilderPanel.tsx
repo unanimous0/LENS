@@ -91,7 +91,7 @@ export function BasketBuilderPanel() {
       <div className="px-3 py-2 border-b border-bg-base flex items-center justify-between">
         <div>
           <div className="text-[13px] text-t2 font-medium">넷팅 바스켓 빌더 (§13.3-D 메인 출구)</div>
-          <div className="text-[11px] text-t4">
+          <div className="text-[11px] text-t2">
             보유 ETF PDF 합산 → 종목별 순 주수 주문표 (겹침 자동 넷팅)
           </div>
         </div>
@@ -117,7 +117,7 @@ export function BasketBuilderPanel() {
       {err && <div className="px-3 py-2 text-[11px] text-down">{err}</div>}
 
       {!basket ? (
-        <div className="px-3 py-6 text-[11px] text-t4">
+        <div className="px-3 py-6 text-[11px] text-t2">
           "넷팅 바스켓 생성"을 눌러 현재 ETF 재고의 순 실행 주문표를 계산합니다.
         </div>
       ) : (
@@ -147,7 +147,7 @@ export function BasketBuilderPanel() {
           {/* ── 선물 오버레이 청산 안내 ── */}
           {overlayLegs.length > 0 && (
             <div className="px-3 py-2 border-b border-bg-base bg-bg-base/30">
-              <div className="text-[10px] text-t3 uppercase tracking-wide mb-1">선물 오버레이 청산 (역방향)</div>
+              <div className="text-[11px] text-t3 uppercase tracking-wide mb-1">선물 오버레이 청산 (역방향)</div>
               <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] font-mono tabular-nums">
                 {overlayLegs.map((a) => {
                   const closeSide = a.net_qty > 0 ? '매도' : '매수'
@@ -161,7 +161,7 @@ export function BasketBuilderPanel() {
                   )
                 })}
               </div>
-              <div className="text-[9px] text-t4 mt-1">
+              <div className="text-[10px] text-t3 mt-1">
                 바스켓 청산과 동시에 현 선물 오버레이를 반대 방향으로 청산 (델타 중립 유지).
               </div>
             </div>
@@ -169,13 +169,13 @@ export function BasketBuilderPanel() {
 
           {/* ── 주문표 ── */}
           {basket.legs.length === 0 ? (
-            <div className="px-3 py-4 text-[11px] text-t4">
+            <div className="px-3 py-4 text-[11px] text-t3">
               실행 주문 없음 — 재고가 완전히 넷팅되었거나 바스켓 대상 ETF 재고가 없습니다.
             </div>
           ) : (
             <div className="px-3 py-2 max-h-[420px] overflow-y-auto">
               <table className="w-full text-[11px]">
-                <thead className="text-t4 text-[10px] sticky top-0 bg-bg-primary">
+                <thead className="text-t4 text-[11px] sticky top-0 bg-bg-primary">
                   <tr>
                     <th className="text-left py-1 font-normal">종목</th>
                     <th className="text-center py-1 font-normal">방향</th>
@@ -191,7 +191,7 @@ export function BasketBuilderPanel() {
                     <tr key={l.code} className="border-t border-bg-base/40">
                       <td className="py-1 text-t2">
                         <span className="text-t1">{l.code}</span>
-                        {l.name && <span className="text-t4 ml-1 text-[10px]">{l.name}</span>}
+                        {l.name && <span className="text-t4 ml-1 text-[11px]">{l.name}</span>}
                       </td>
                       <td className="py-1 text-center">
                         <span className={l.side === 'buy' ? 'text-up' : 'text-down'}>
@@ -216,13 +216,13 @@ export function BasketBuilderPanel() {
                         {l.has_stock_future ? (
                           <button
                             onClick={() => requestRoute({ code: l.code, side: l.side, qty: l.shares })}
-                            className="text-[10px] px-1.5 py-0.5 rounded-sm bg-blue/15 text-blue hover:bg-blue/25"
+                            className="text-[11px] px-1.5 py-0.5 rounded-sm bg-blue/15 text-blue hover:bg-blue/25"
                             title="베이시스 라우터에서 현물 vs 주식선물 대체 판정"
                           >
                             선물 ↗
                           </button>
                         ) : (
-                          <span className="text-t4 text-[10px]">-</span>
+                          <span className="text-t4 text-[11px]">-</span>
                         )}
                       </td>
                     </tr>
@@ -235,10 +235,10 @@ export function BasketBuilderPanel() {
           {/* ── excluded ── */}
           {basket.excluded.length > 0 && (
             <div className="px-3 py-2 border-t border-bg-base">
-              <div className="text-[10px] text-t3 uppercase tracking-wide mb-1">제외 ETF (바스켓 환산 불가)</div>
+              <div className="text-[11px] text-t3 uppercase tracking-wide mb-1">제외 ETF (바스켓 환산 불가)</div>
               {basket.excluded.map((e) => (
-                <div key={e.etf_code} className="text-[10px] text-t4">
-                  · <span className="text-t3">{e.name ?? e.etf_code}</span> ({e.etf_code}) — {e.reason}
+                <div key={e.etf_code} className="text-[11px] text-t3">
+                  · <span className="text-t2">{e.name ?? e.etf_code}</span> ({e.etf_code}) — {e.reason}
                 </div>
               ))}
             </div>
@@ -247,7 +247,7 @@ export function BasketBuilderPanel() {
           {/* ── caveats ── */}
           {basket.caveats.length > 0 && (
             <div className="px-3 py-2 border-t border-bg-base">
-              <div className="text-[10px] text-t4 leading-relaxed">
+              <div className="text-[11px] text-t2 leading-relaxed">
                 {basket.caveats.map((c, i) => (
                   <div key={i}>· {c}</div>
                 ))}
@@ -271,7 +271,7 @@ function Stat({
 }) {
   return (
     <div className="flex flex-col justify-between min-w-[92px]">
-      <div className="text-[10px] text-t3">{label}</div>
+      <div className="text-[11px] text-t3">{label}</div>
       <div className={cn('text-[14px] font-mono tabular-nums mt-0.5', valueClass)}>{value}</div>
     </div>
   )

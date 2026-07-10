@@ -115,13 +115,13 @@ export function LedgerBoard() {
             <div className="text-[13px] text-t2 font-medium">북 원장</div>
             <button
               onClick={() => setImportOpen(true)}
-              className="text-[10px] px-2 py-0.5 bg-bg-surface text-t2 hover:text-t1 rounded-sm"
+              className="text-[11px] px-2 py-0.5 bg-bg-surface text-t2 hover:text-t1 rounded-sm"
               title="회사 원장 엑셀(5264/3454/2514) 업로드 → 원장 반영"
             >
               엑셀 업로드
             </button>
           </div>
-          <div className="text-[10px] text-t4">
+          <div className="text-[11px] text-t3">
             {updatedAt ? `최종 갱신: ${updatedAt.replace('T', ' ')}` : '엔트리 없음'}
           </div>
         </div>
@@ -139,7 +139,7 @@ export function LedgerBoard() {
       {/* 자산유형별 그룹 테이블 */}
       <div className="bg-bg-primary p-3">
         <table className="w-full text-[11px]">
-          <thead className="text-t4 text-[10px]">
+          <thead className="text-t4 text-[11px]">
             <tr>
               <th className="text-left py-1 font-normal">코드 / 이름</th>
               <th className="text-right py-1 font-normal">이월</th>
@@ -197,7 +197,7 @@ function Summary({ label, value, tone }: { label: string; value: number; tone: '
           : 'var(--color-down)'
   return (
     <div>
-      <div className="text-[10px] text-t4">{label}</div>
+      <div className="text-[11px] text-t4">{label}</div>
       <div className="text-[15px]" style={{ color }}>
         {fmtNotional(value)}
       </div>
@@ -230,7 +230,7 @@ function GroupSection({
   return (
     <>
       <tr>
-        <td colSpan={8} className="pt-2 pb-1 text-[10px] text-t3 uppercase tracking-wide">
+        <td colSpan={8} className="pt-2 pb-1 text-[11px] text-t3 uppercase tracking-wide">
           {label}
         </td>
       </tr>
@@ -244,10 +244,10 @@ function GroupSection({
           <tr key={a.code} className="border-t border-bg-base/40">
             <td className="py-1 text-t2">
               <span className="text-t1">{a.code}</span>
-              {a.name && <span className="text-t4 ml-1 text-[10px]">{a.name}</span>}
+              {a.name && <span className="text-t4 ml-1 text-[11px]">{a.name}</span>}
               {basisPaired.has(a.code) && (
                 <span
-                  className="ml-1.5 px-1 py-0.5 text-[9px] rounded-sm bg-blue/15 text-blue align-middle"
+                  className="ml-1.5 px-1 py-0.5 text-[10px] rounded-sm bg-blue/15 text-blue align-middle"
                   title="현물 반대 포지션과 종목 베이시스 페어 (상세 원장은 Phase 4)"
                 >
                   베이시스
@@ -260,7 +260,7 @@ function GroupSection({
             </td>
             <td className="py-1 text-right font-medium" style={{ color: qtyColor(a.net_qty) }}>
               {fmtQty(a.net_qty)}
-              {unit && <span className="text-t4 text-[9px] ml-0.5">{unit}</span>}
+              {unit && <span className="text-t4 text-[10px] ml-0.5">{unit}</span>}
             </td>
             <td className="py-1 text-right text-t3">{fmtPx(a.avg_price)}</td>
             <td className="py-1 text-right text-t3">{p > 0 ? p.toLocaleString('ko-KR') : '-'}</td>
@@ -271,7 +271,7 @@ function GroupSection({
               <button
                 onClick={() => del(a)}
                 title="이월 삭제"
-                className="text-[10px] text-t4 hover:text-down px-1"
+                className="text-[11px] text-t4 hover:text-down px-1"
               >
                 ×
               </button>
@@ -464,8 +464,8 @@ function EntryForm() {
           {busy ? '...' : '추가'}
         </button>
       </div>
-      {err && <div className="text-[10px] text-down mt-1">{err}</div>}
-      <div className="text-[10px] text-t4 mt-1">
+      {err && <div className="text-[11px] text-down mt-1">{err}</div>}
+      <div className="text-[11px] text-t3 mt-1">
         {kind === 'carryover'
           ? '이월: 해당 코드 기존 이월을 이 수량으로 교체 (당일 체결 보존)'
           : '체결: 당일 체결 로그에 누적'}
@@ -490,7 +490,7 @@ function FillLog({ entries }: { entries: import('@/types/lp').LedgerEntry[] }) {
       <div className="text-[12px] text-t2 font-medium mb-2">체결 로그 (최신순)</div>
       <div className="max-h-64 overflow-y-auto">
         <table className="w-full text-[11px]">
-          <thead className="text-t4 text-[10px] sticky top-0 bg-bg-primary">
+          <thead className="text-t4 text-[11px] sticky top-0 bg-bg-primary">
             <tr>
               <th className="text-left py-1 font-normal">시각</th>
               <th className="text-left py-1 font-normal">코드</th>
@@ -511,11 +511,11 @@ function FillLog({ entries }: { entries: import('@/types/lp').LedgerEntry[] }) {
             )}
             {entries.map((e) => (
               <tr key={e.id} className="border-t border-bg-base/40">
-                <td className="py-1 text-t4 text-[10px]">{e.ts.slice(5, 16).replace('T', ' ')}</td>
+                <td className="py-1 text-t4 text-[11px]">{e.ts.slice(5, 16).replace('T', ' ')}</td>
                 <td className="py-1 text-t2">
                   {e.code}
                   {e.kind === 'carryover' && (
-                    <span className="text-t4 ml-1 text-[9px]">이월</span>
+                    <span className="text-t4 ml-1 text-[10px]">이월</span>
                   )}
                 </td>
                 <td
@@ -526,11 +526,11 @@ function FillLog({ entries }: { entries: import('@/types/lp').LedgerEntry[] }) {
                 </td>
                 <td className="py-1 text-right text-t2">{e.qty.toLocaleString('ko-KR')}</td>
                 <td className="py-1 text-right text-t3">{e.price == null ? '-' : e.price.toLocaleString('ko-KR')}</td>
-                <td className="py-1 text-left text-t4 text-[10px] pl-2 truncate max-w-[120px]">{e.note ?? ''}</td>
+                <td className="py-1 text-left text-t4 text-[11px] pl-2 truncate max-w-[120px]">{e.note ?? ''}</td>
                 <td className="py-1 text-right">
                   <button
                     onClick={() => del(e.id)}
-                    className="text-[10px] text-t4 hover:text-down px-1"
+                    className="text-[11px] text-t4 hover:text-down px-1"
                   >
                     ×
                   </button>

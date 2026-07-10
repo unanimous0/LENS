@@ -146,48 +146,48 @@ export function HedgeReconPanel() {
               <div className="text-[13px] text-t2 font-medium">헤지 정합 보드</div>
               {s &&
                 (s.fully_aligned ? (
-                  <span className="text-[10px] px-2 py-0.5 rounded-sm bg-accent/15 text-accent font-medium">
+                  <span className="text-[11px] px-2 py-0.5 rounded-sm bg-accent/15 text-accent font-medium">
                     ✓ 헤지 정합
                   </span>
                 ) : s.n_unexplained > 0 ? (
-                  <span className="text-[10px] px-2 py-0.5 rounded-sm bg-down/15 text-down font-medium">
+                  <span className="text-[11px] px-2 py-0.5 rounded-sm bg-down/15 text-down font-medium">
                     미설명 {s.n_unexplained}종목
                   </span>
                 ) : (
                   // 종목은 0건인데 가족 델타(선물 과다·미설명 잔여)만 뜬 케이스 — 문구 구분.
-                  <span className="text-[10px] px-2 py-0.5 rounded-sm bg-warning/15 text-warning font-medium">
+                  <span className="text-[11px] px-2 py-0.5 rounded-sm bg-warning/15 text-warning font-medium">
                     가족 델타 미설명 {fmtSize(s.unexplained_delta_total + s.futures_excess_total)}
                   </span>
                 ))}
             </div>
-            <div className="text-[10px] text-t4 mt-0.5">
+            <div className="text-[11px] text-t2 mt-0.5">
               원장이 PDF 기준으로 헤지됐는지 · 어디가 어긋났는지 · 델타가 얼마나 떠 있는지 (무기억 진단)
             </div>
           </div>
           <div className="flex items-center gap-3">
-            <label className="text-[10px] text-t4 flex items-center gap-1">
+            <label className="text-[11px] text-t4 flex items-center gap-1">
               tol
               <input
                 value={tolAbs}
                 onChange={(e) => setTolAbs(e.target.value)}
-                className="w-10 bg-bg-base px-1 py-0.5 text-[10px] tabular-nums text-right text-t2 outline-none focus:border-accent border border-transparent"
+                className="w-10 bg-bg-base px-1 py-0.5 text-[11px] tabular-nums text-right text-t2 outline-none focus:border-accent border border-transparent"
                 title="정합 tolerance 절대 하한 (주)"
               />
               주 /
               <input
                 value={tolPct}
                 onChange={(e) => setTolPct(e.target.value)}
-                className="w-10 bg-bg-base px-1 py-0.5 text-[10px] tabular-nums text-right text-t2 outline-none focus:border-accent border border-transparent"
+                className="w-10 bg-bg-base px-1 py-0.5 text-[11px] tabular-nums text-right text-t2 outline-none focus:border-accent border border-transparent"
                 title="정합 tolerance = max(주, |요구|×%)"
               />
               %
             </label>
-            <label className="text-[10px] text-t4 flex items-center gap-1">
+            <label className="text-[11px] text-t4 flex items-center gap-1">
               상쇄
               <input
                 value={offsetWarnMan}
                 onChange={(e) => setOffsetWarnMan(e.target.value)}
-                className="w-12 bg-bg-base px-1 py-0.5 text-[10px] tabular-nums text-right text-t2 outline-none focus:border-accent border border-transparent"
+                className="w-12 bg-bg-base px-1 py-0.5 text-[11px] tabular-nums text-right text-t2 outline-none focus:border-accent border border-transparent"
                 title="상쇄 경고 임계 (만원) — 주문 0인데 |gap δ| 초과 시 매크로(상쇄) 표시"
               />
               만
@@ -259,7 +259,7 @@ export function HedgeReconPanel() {
               )}
             </div>
             {/* M2 — 이중 실행 방어 상시 문구 */}
-            <div className="mt-2 text-[10px] text-warning/90">
+            <div className="mt-2 text-[11px] text-warning/90">
               ⚠ 리밸런싱 주문 실행·기장 후 헤지 티켓이 자동 재계산됨 — 티켓과 동시 실행 금지 (같은 델타의
               회계 분해이지 주문 중복 제거가 아님).
             </div>
@@ -268,7 +268,7 @@ export function HedgeReconPanel() {
       </div>
 
       {!recon ? (
-        <div className="bg-bg-primary px-3 py-6 text-[11px] text-t4">
+        <div className="bg-bg-primary px-3 py-6 text-[11px] text-t2">
           "정합 진단"을 눌러 현재 원장의 PDF 헤지 정합을 계산합니다 (원장 변경 시 자동 재계산).
         </div>
       ) : (
@@ -277,9 +277,9 @@ export function HedgeReconPanel() {
           <div className="bg-bg-primary p-3">
             <div className="flex items-center justify-between mb-2">
               <div className="text-[12px] text-t2 font-medium">
-                종목 정합 <span className="text-t4 text-[10px]">(미설명 우선 · 행 클릭 시 ETF 롤업)</span>
+                종목 정합 <span className="text-t3 text-[11px]">(미설명 우선 · 행 클릭 시 ETF 롤업)</span>
               </div>
-              <label className="text-[10px] text-t4 flex items-center gap-1 cursor-pointer">
+              <label className="text-[11px] text-t4 flex items-center gap-1 cursor-pointer">
                 <input
                   type="checkbox"
                   checked={showAligned}
@@ -290,7 +290,7 @@ export function HedgeReconPanel() {
             </div>
             <div className="max-h-[480px] overflow-y-auto">
               <table className="w-full text-[11px]">
-                <thead className="text-t4 text-[10px] sticky top-0 bg-bg-primary">
+                <thead className="text-t4 text-[11px] sticky top-0 bg-bg-primary">
                   <tr>
                     <th className="text-left py-1 font-normal">종목</th>
                     <th className="text-right py-1 font-normal">요구</th>
@@ -333,12 +333,12 @@ export function HedgeReconPanel() {
             <div className="bg-bg-primary p-3">
               <div className="text-[12px] text-t2 font-medium mb-1">
                 지수선물 헤지 경로 ETF{' '}
-                <span className="text-t4 text-[10px]">
+                <span className="text-t3 text-[11px]">
                   (선물지수추종·레버리지 — PDF 환산 불가, 요구 델타만 지수선물로 헤지)
                 </span>
               </div>
               <table className="w-full text-[11px]">
-                <thead className="text-t4 text-[10px]">
+                <thead className="text-t4 text-[11px]">
                   <tr>
                     <th className="text-left py-1 font-normal">ETF</th>
                     <th className="text-right py-1 font-normal">순 수량</th>
@@ -353,7 +353,7 @@ export function HedgeReconPanel() {
                     <tr key={e.code} className="border-t border-bg-base/40">
                       <td className="py-1 text-t2">
                         <span className="text-t1">{e.code}</span>
-                        {e.name && <span className="text-t4 ml-1 text-[10px]">{e.name}</span>}
+                        {e.name && <span className="text-t4 ml-1 text-[11px]">{e.name}</span>}
                       </td>
                       <td className="py-1 text-right text-t2">{fmtQty(e.net_qty)}</td>
                       <td className="py-1 text-center text-t3">{famLabel(e.family)}</td>
@@ -371,7 +371,7 @@ export function HedgeReconPanel() {
                       >
                         {e.required_delta_krw != null ? fmtKrw(e.required_delta_krw) : '-'}
                       </td>
-                      <td className="py-1 text-left text-t4 text-[10px] pl-3">{e.reason}</td>
+                      <td className="py-1 text-left text-t3 text-[11px] pl-3">{e.reason}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -383,10 +383,10 @@ export function HedgeReconPanel() {
           <div className="bg-bg-primary p-3">
             <div className="text-[12px] text-t2 font-medium mb-1">
               가족별 매크로 델타 대조{' '}
-              <span className="text-t4 text-[10px]">(미정합 gap + 지수선물경로 ETF vs 지수선물 오버레이)</span>
+              <span className="text-t3 text-[11px]">(미정합 gap + 지수선물경로 ETF vs 지수선물 오버레이)</span>
             </div>
             <table className="w-full text-[11px]">
-              <thead className="text-t4 text-[10px]">
+              <thead className="text-t4 text-[11px]">
                 <tr>
                   <th className="text-left py-1 font-normal">가족</th>
                   <th className="text-right py-1 font-normal">요구 δ (net)</th>
@@ -411,7 +411,7 @@ export function HedgeReconPanel() {
                         {famLabel(f.family)}
                         {f.offset_warning && (
                           <span
-                            className="ml-1.5 px-1 py-0.5 text-[9px] rounded-sm bg-warning/15 text-warning align-middle"
+                            className="ml-1.5 px-1 py-0.5 text-[10px] rounded-sm bg-warning/15 text-warning align-middle"
                             title="gross가 net의 3배 초과 — 종목 간 상쇄 큼. 델타는 중립이나 잔차 위험 잔존 (#3 참조)"
                           >
                             상쇄 큼
@@ -460,14 +460,14 @@ export function HedgeReconPanel() {
                     f.gross_delta_krw <= 1,
                 ) && (
                   <tr>
-                    <td colSpan={7} className="text-center text-t4 py-2 text-[10px]">
+                    <td colSpan={7} className="text-center text-t4 py-2 text-[11px]">
                       매크로 델타 없음 (전부 종목 레벨 정합 또는 미설명 델타 0)
                     </td>
                   </tr>
                 )}
               </tbody>
             </table>
-            <div className="text-[10px] text-t4 mt-1.5">
+            <div className="text-[11px] text-t2 mt-1.5">
               미설명 δ(종목)는 리밸런싱 주문으로, 선물 초과분은 <span className="text-t3">헤지 티켓</span>에서
               지수선물로 마감 — 같은 델타의 회계 분해이므로 두 패널 동시 실행 금지.
             </div>
@@ -476,7 +476,7 @@ export function HedgeReconPanel() {
           {/* ── caveats ── */}
           {recon.caveats.length > 0 && (
             <div className="bg-bg-primary px-3 py-2">
-              <div className="text-[10px] text-t4 leading-relaxed">
+              <div className="text-[11px] text-t2 leading-relaxed">
                 {recon.caveats.map((c, i) => (
                   <div key={i}>· {c}</div>
                 ))}
@@ -500,7 +500,7 @@ function Stat({
 }) {
   return (
     <div className="flex flex-col justify-between min-w-[64px]">
-      <div className="text-[10px] text-t3">{label}</div>
+      <div className="text-[11px] text-t3">{label}</div>
       <div className={cn('text-[14px] font-mono tabular-nums mt-0.5', valueClass)}>{value}</div>
     </div>
   )
@@ -530,25 +530,25 @@ function StockRow({
         onClick={onToggle}
       >
         <td className="py-1 text-t2">
-          <span className="text-t4 text-[9px] mr-1">{expanded ? '▾' : '▸'}</span>
+          <span className="text-t4 text-[10px] mr-1">{expanded ? '▾' : '▸'}</span>
           <span className="text-t1">{row.code}</span>
-          {row.name && <span className="text-t4 ml-1 text-[10px]">{row.name}</span>}
+          {row.name && <span className="text-t4 ml-1 text-[11px]">{row.name}</span>}
         </td>
         <td className="py-1 text-right text-t3">{fmtQty(reqRounded)}</td>
         <td className="py-1 text-right text-t2">{fmtQty(row.actual)}</td>
-        <td className="py-1 text-right text-t4/80 text-[10px]">{fmtQty(row.actual_spot)}</td>
-        <td className="py-1 text-right text-t4/80 text-[10px]">
+        <td className="py-1 text-right text-t4/80 text-[11px]">{fmtQty(row.actual_spot)}</td>
+        <td className="py-1 text-right text-t4/80 text-[11px]">
           {row.actual_stockfut !== 0 ? fmtQty(row.actual_stockfut) : '-'}
         </td>
         <td className="py-1 text-right font-medium" style={{ color: gapColor(row.gap) }}>
           {row.gap > 0 ? '+' : ''}
           {fmtQty(Math.round(row.gap))}
         </td>
-        <td className="py-1 text-right text-[10px]" style={{ color: gapColor(row.gap) }}>
+        <td className="py-1 text-right text-[11px]" style={{ color: gapColor(row.gap) }}>
           {row.gap_delta_krw != null ? fmtKrw(row.gap_delta_krw) : '-'}
         </td>
         <td className="py-1 text-center">
-          <span className={cn('px-1.5 py-0.5 text-[9px] rounded-sm', meta.cls)} title={meta.title}>
+          <span className={cn('px-1.5 py-0.5 text-[10px] rounded-sm', meta.cls)} title={meta.title}>
             {meta.label}
           </span>
         </td>
@@ -565,7 +565,7 @@ function StockRow({
                     e.stopPropagation()
                     onRoute()
                   }}
-                  className="text-[9px] px-1 py-0.5 rounded-sm bg-blue/15 text-blue hover:bg-blue/25"
+                  className="text-[10px] px-1 py-0.5 rounded-sm bg-blue/15 text-blue hover:bg-blue/25"
                   title="베이시스 라우터에서 현물 vs 주식선물 대체 판정"
                 >
                   선물 ↗
@@ -573,13 +573,13 @@ function StockRow({
               )}
             </span>
           ) : (
-            <span className="text-t4 text-[10px]">-</span>
+            <span className="text-t4 text-[11px]">-</span>
           )}
         </td>
       </tr>
       {expanded && (
         <tr className="bg-bg-base/20">
-          <td colSpan={9} className="px-3 py-1.5 text-[10px] text-t4">
+          <td colSpan={9} className="px-3 py-1.5 text-[11px] text-t4">
             <span className="text-t3">요구 출처 ETF:</span>{' '}
             {rollup.length === 0 ? (
               <span>없음 (현물/선물 보유만 — 요구=0)</span>

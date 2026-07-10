@@ -105,7 +105,7 @@ export function BasisRouterPanel() {
     <div className="bg-bg-primary">
       <div className="px-3 py-2 border-b border-bg-base">
         <div className="text-[13px] text-t2 font-medium">베이시스 실행 라우터 (§13.4)</div>
-        <div className="text-[11px] text-t4">
+        <div className="text-[11px] text-t2">
           주문 leg → 현물 vs 주식선물 대체 판정 (이론 대비 excess)
         </div>
       </div>
@@ -142,7 +142,7 @@ export function BasisRouterPanel() {
             {busy ? '...' : '판정'}
           </button>
         </div>
-        {err && <div className="text-[10px] text-down">{err}</div>}
+        {err && <div className="text-[11px] text-down">{err}</div>}
 
         {result && <ResultCard r={result} onBookSpot={bookSpot} onBookFutures={bookFutures} />}
       </div>
@@ -176,9 +176,9 @@ function ResultCard({
           <span className={cn('text-[11px] px-2 py-0.5 rounded-sm font-medium', badgeColor)}>
             {VERDICT_LABEL[r.verdict] ?? r.verdict}
           </span>
-          <span className="text-[10px] text-t3">{r.code}</span>
+          <span className="text-[11px] text-t3">{r.code}</span>
         </div>
-        <span className="text-[10px] text-t4 tabular-nums">
+        <span className="text-[11px] text-t4 tabular-nums">
           excess{' '}
           <span className={r.excess_bp >= 0 ? 'text-up' : 'text-down'}>
             {r.excess_bp >= 0 ? '+' : ''}
@@ -219,7 +219,7 @@ function ResultCard({
         <Metric label="excess" value={r.excess_basis} emphasize />
       </div>
 
-      <div className="text-[10px] text-t4">{r.verdict_reason}</div>
+      <div className="text-[11px] text-t2">{r.verdict_reason}</div>
 
       {/* 기장 버튼 2개 */}
       <div className="flex gap-1">
@@ -262,7 +262,7 @@ function SideBox({
 }) {
   return (
     <div className={cn('px-2 py-1.5', active ? 'bg-bg-base ring-1 ring-accent/30' : 'bg-bg-base/40')}>
-      <div className={cn('text-[10px] mb-1', active ? 'text-t1 font-medium' : 'text-t4')}>
+      <div className={cn('text-[11px] mb-1', active ? 'text-t1 font-medium' : 'text-t4')}>
         {title}
         {active && <span className="ml-1 text-accent">✓</span>}
       </div>
@@ -290,7 +290,7 @@ function Metric({
   const color = Math.abs(value) < 0.005 ? 'text-t3' : value > 0 ? 'text-up' : 'text-down'
   return (
     <div>
-      <div className="text-[9px] text-t4">{label}</div>
+      <div className="text-[10px] text-t4">{label}</div>
       <div className={cn(emphasize ? 'text-[13px]' : 'text-[12px]', color)}>
         {value >= 0 ? '+' : '−'}
         {Math.abs(value).toLocaleString('ko-KR', { maximumFractionDigits: 1 })}

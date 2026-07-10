@@ -19,12 +19,21 @@ import { cn } from '@/lib/utils'
  *
  * QuoteRow엔 leverage/beta가 없어 모드 뱃지(배수/β)는 quoteUniverse 메타로 보강.
  */
+/**
+ * 표시 필터 — 섹터/주식형 ETF(fv_mode 'beta')만 노출. 지수형('index')·파생형(레버리지·인버스)은
+ * NAV/FV 신뢰 불가로 임시 제외(별도 작업 예정). 복원: 이 값을 false로 두면 12종 전체 표시.
+ * (backend·WS는 12종 전부 계산·전송 유지 — 프론트 표시 필터일 뿐.)
+ */
+const BETA_ONLY = true
+
 export function QuoteBoard() {
   const board = useLpStore((s) => s.quoteBoard)
   const universe = useLpStore((s) => s.quoteUniverse)
   const [expanded, setExpanded] = useState<string | null>(null)
 
-  const rows = board?.rows ?? []
+  const allRows = board?.rows ?? []
+  const rows = BETA_ONLY ? allRows.filter((r) => r.fv_mode === 'beta') : allRows
+  const hiddenCount = allRows.length - rows.length
   const usableCount = rows.filter((r) => r.usable).length
   const entryCount = rows.filter((r) => arbFraming(r).atEntry).length
 
@@ -33,9 +42,15 @@ export function QuoteBoard() {
       <div className="px-3 py-2 border-b border-bg-base flex items-baseline justify-between">
         <div>
           <div className="text-[13px] text-t2 font-medium">호가 제안 보드</div>
-          <div className="text-[11px] text-t4">
+          <div className="text-[11px] text-t3">
             FV_futures 앵커 · 200ms · 자동 제출 X (제안 수치) · 호가 mid 기준가 · 재고 skew 반영
           </div>
+          {BETA_ONLY && (
+            <div className="text-[11px] text-warning mt-0.5">
+              섹터/주식형 {rows.length}종만 표시
+              {hiddenCount > 0 && ` (지수·파생형 ${hiddenCount}종 제외 — NAV 이상, 별도 작업 예정)`}
+            </div>
+          )}
         </div>
         {rows.length > 0 && (
           <div className="text-[11px] text-t3 tabular-nums flex items-center gap-3">
@@ -51,7 +66,21 @@ export function QuoteBoard() {
       </div>
 
       <div className="overflow-x-auto">
-        <table className="w-full text-[12px]">
+        {/* table-fixed + colgroup: 열 폭을 내용과 무관하게 고정 → 200ms 틱마다 값이 바뀌어도
+            테이블/열 폭 불변(좌우 흔들림 제거). 종목 컬럼은 sticky left 유지. */}
+        <table className="w-full text-[12px] table-fixed">
+          <colgroup>
+            <col style={{ width: 160 }} />
+            <col style={{ width: 96 }} />
+            <col style={{ width: 92 }} />
+            <col style={{ width: 190 }} />
+            <col style={{ width: 108 }} />
+            <col style={{ width: 108 }} />
+            <col style={{ width: 92 }} />
+            <col style={{ width: 76 }} />
+            <col style={{ width: 76 }} />
+            <col style={{ width: 88 }} />
+          </colgroup>
           <thead className="text-t3 text-[11px]">
             <tr className="border-b border-bg-base">
               <th className="text-left px-3 py-2 sticky left-0 bg-bg-primary z-10">종목</th>
@@ -170,15 +199,16 @@ function ArbCell({ row }: { row: QuoteRow }) {
     return <span className="text-t4 text-[11px]">-</span>
   }
   const reachClamped = Math.min(Math.max(reach, 0), 100)
+  // 고정폭 셀(col 190px)을 채움 — 자릿수·값 변동에도 폭 불변(w-full, min/max 제거).
   return (
-    <div className="min-w-[150px] max-w-[190px]">
+    <div className="w-full">
       <div className="flex items-baseline justify-between gap-2">
-        <span className={cn('text-[11px] font-medium', SIDE_COLOR[side])}>
+        <span className={cn('text-[11px] font-medium tabular-nums', SIDE_COLOR[side])}>
           {SIDE_LABEL[side]} {Math.abs(gapBp).toFixed(1)}bp
         </span>
         <span
           className={cn(
-            'text-[10px] tabular-nums font-mono',
+            'text-[11px] tabular-nums font-mono',
             atEntry ? 'text-accent font-medium' : 'text-t4',
           )}
         >
@@ -192,7 +222,7 @@ function ArbCell({ row }: { row: QuoteRow }) {
           style={{ width: `${reachClamped}%` }}
         />
       </div>
-      <div className="text-[9px] text-t4 mt-0.5 tabular-nums">
+      <div className="text-[10px] text-t4 mt-0.5 tabular-nums">
         진입선 {edge.toFixed(1)}bp
       </div>
     </div>

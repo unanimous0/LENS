@@ -67,10 +67,10 @@ export function BasisBookPanel() {
       <div className="px-3 py-2 border-b border-bg-base flex items-center justify-between">
         <div>
           <div className="text-[13px] text-t2 font-medium">베이시스 북 (§13.4)</div>
-          <div className="text-[11px] text-t4">북 4층 분해 + 종목·지수 베이시스 추적</div>
+          <div className="text-[11px] text-t2">북 4층 분해 + 종목·지수 베이시스 추적</div>
         </div>
         {bb?.any_expiry_action && (
-          <span className="text-[10px] px-2 py-0.5 rounded-sm bg-warning/15 text-warning font-medium">
+          <span className="text-[11px] px-2 py-0.5 rounded-sm bg-warning/15 text-warning font-medium">
             ⚠ 만기 액션 필요
           </span>
         )}
@@ -101,7 +101,7 @@ export function BasisBookPanel() {
                         <span className={signClass(e.net_basis_notional_krw)}>
                           {fmtSize(e.net_basis_notional_krw)} {e.net_basis_notional_krw > 0 ? '롱' : '숏'}
                         </span>{' '}
-                        <span className="text-t4 text-[10px]">
+                        <span className="text-t4 text-[11px]">
                           (10bp당 {fmtKrw(e.sensitivity_per_10bp_krw)})
                         </span>
                       </div>
@@ -126,12 +126,12 @@ export function BasisBookPanel() {
           {/* ── 지수 베이시스 가족별 ── */}
           {bb.index_basis.length > 0 && (
             <div className="px-3 py-2">
-              <div className="text-[10px] text-t3 uppercase tracking-wide mb-1">
+              <div className="text-[11px] text-t3 uppercase tracking-wide mb-1">
                 지수 베이시스 (가족별)
-                <span className="text-t4 normal-case ml-2">· z-score: 만기 정규화 excess 60일 분포 대비 (월물 혼합 무해)</span>
+                <span className="text-t3 normal-case ml-2">· z-score: 만기 정규화 excess 60일 분포 대비 (월물 혼합 무해)</span>
               </div>
               <table className="w-full text-[11px]">
-                <thead className="text-t4 text-[10px]">
+                <thead className="text-t4 text-[11px]">
                   <tr>
                     <th className="text-left py-1 font-normal">가족</th>
                     <th className="text-right py-1 font-normal">ETF leg</th>
@@ -153,12 +153,12 @@ export function BasisBookPanel() {
 
           {/* ── 종목 베이시스 페어 ── */}
           <div className="px-3 py-2 border-t border-bg-base">
-            <div className="text-[10px] text-t3 uppercase tracking-wide mb-1">종목 베이시스 페어</div>
+            <div className="text-[11px] text-t3 uppercase tracking-wide mb-1">종목 베이시스 페어</div>
             {bb.stock_basis.length === 0 ? (
-              <div className="text-[11px] text-t4 py-2">종목 베이시스 페어 없음 (현물 ↔ 주식선물 반대 포지션 시 자동 인식)</div>
+              <div className="text-[11px] text-t3 py-2">종목 베이시스 페어 없음 (현물 ↔ 주식선물 반대 포지션 시 자동 인식)</div>
             ) : (
               <table className="w-full text-[11px]">
-                <thead className="text-t4 text-[10px]">
+                <thead className="text-t4 text-[11px]">
                   <tr>
                     <th className="text-left py-1 font-normal">종목</th>
                     <th className="text-right py-1 font-normal">겹침(주)</th>
@@ -186,9 +186,9 @@ export function BasisBookPanel() {
 function Layer({ label, hint, children }: { label: string; hint: string; children: React.ReactNode }) {
   return (
     <div className="flex flex-col justify-between min-w-[120px]">
-      <div className="text-[10px] text-t3">{label}</div>
+      <div className="text-[11px] text-t3">{label}</div>
       <div className="my-0.5">{children}</div>
-      <div className="text-[9px] text-t4">{hint}</div>
+      <div className="text-[10px] text-t3">{hint}</div>
     </div>
   )
 }
@@ -219,7 +219,7 @@ function IndexRow({ e, zf }: { e: IndexBasisExposure; zf: BasisZFamily | undefin
         {e.futures_code ? (
           <span className={e.roll_needed ? 'text-warning' : 'text-t3'}>
             D-{e.days_to_expiry}
-            {e.roll_needed && <span className="ml-1 text-[9px]">롤</span>}
+            {e.roll_needed && <span className="ml-1 text-[10px]">롤</span>}
           </span>
         ) : (
           <span className="text-t4">-</span>
@@ -234,8 +234,8 @@ function StockRow({ p }: { p: StockBasisPair }) {
     <tr className="border-t border-bg-base/40">
       <td className="py-1 text-t2">
         <span className="text-t1">{p.base_code}</span>
-        {p.name && <span className="text-t4 ml-1 text-[10px]">{p.name}</span>}
-        <div className="text-t4 text-[9px] leading-tight">
+        {p.name && <span className="text-t4 ml-1 text-[11px]">{p.name}</span>}
+        <div className="text-t4 text-[10px] leading-tight">
           현물 {p.spot_qty.toLocaleString('ko-KR')} / 선물 {p.fut_qty.toLocaleString('ko-KR')}
         </div>
       </td>
@@ -277,7 +277,7 @@ function StockRow({ p }: { p: StockBasisPair }) {
         ) : p.expiry_action_needed ? (
           <span className="text-warning" title="현금결제 — 만기일 현물 leg 처리 필요">
             D-{p.days_to_expiry}
-            <div className="text-[9px] leading-tight">현물 leg 처리</div>
+            <div className="text-[10px] leading-tight">현물 leg 처리</div>
           </span>
         ) : (
           <span className="text-t3">D-{p.days_to_expiry}</span>
