@@ -21,16 +21,16 @@ export function ResidualPanel() {
     <div className="bg-bg-primary p-3">
       <div className="text-[13px] text-t2 font-medium mb-2">잔차 기여 / 섹터 노출</div>
 
-      <div className="grid grid-cols-2 gap-3 text-[11px]">
+      <div className="grid grid-cols-2 gap-3 text-[12px]">
         <div>
-          <div className="text-[10px] text-t4 mb-1">잔차 기여 top 10 (|노출| × σ)</div>
+          <div className="text-[11px] text-t3 mb-1">잔차 기여 top 10 (|노출| × σ)</div>
           {bookRisk?.top_residual_contributors.length ? (
             <table className="w-full font-mono tabular-nums">
               <tbody>
                 {bookRisk.top_residual_contributors.map(([code, v]) => (
-                  <tr key={code} className="border-t border-bg-base/40">
-                    <td className="py-1 text-t2">{code}</td>
-                    <td className="py-1 text-right text-warning">{fmt(v)}</td>
+                  <tr key={code} className="border-b border-white/[0.06] hover:bg-bg-surface/40">
+                    <td className="py-1.5 text-t2">{code}</td>
+                    <td className="py-1.5 text-right text-warning">{fmt(v)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -41,7 +41,7 @@ export function ResidualPanel() {
         </div>
 
         <div>
-          <div className="text-[10px] text-t4 mb-1">섹터별 노출 (원화)</div>
+          <div className="text-[11px] text-t3 mb-1">섹터별 노출 (원화)</div>
           {bookRisk && Object.keys(bookRisk.sector_exposures).length > 0 ? (
             <table className="w-full font-mono tabular-nums">
               <tbody>
@@ -49,9 +49,9 @@ export function ResidualPanel() {
                   .sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]))
                   .slice(0, 10)
                   .map(([sec, v]) => (
-                    <tr key={sec} className="border-t border-bg-base/40">
-                      <td className="py-1 text-t2 truncate max-w-[120px]">{sec}</td>
-                      <td className={cn('py-1 text-right', v > 0 ? 'text-up' : 'text-down')}>
+                    <tr key={sec} className="border-b border-white/[0.06] hover:bg-bg-surface/40">
+                      <td className="py-1.5 text-t2 truncate max-w-[120px]">{sec}</td>
+                      <td className={cn('py-1.5 text-right', v > 0 ? 'text-up' : 'text-down')}>
                         {v > 0 ? '+' : ''}{fmt(v)}
                       </td>
                     </tr>

@@ -189,7 +189,7 @@ function DecompRow({
           }}
         />
       </div>
-      <span className={cn('w-20 text-right text-[12px] font-mono tabular-nums', signClass(value))}>
+      <span className={cn('w-20 text-right text-[13px] font-medium font-mono tabular-nums', signClass(value))}>
         {fmtKrw(value)}
       </span>
     </div>

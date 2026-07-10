@@ -23,7 +23,7 @@ export function IndexBasisStrip() {
       <div className="px-3 py-2 border-b border-bg-base flex items-baseline justify-between">
         <div>
           <div className="text-[13px] text-t2 font-medium">지수 베이시스 (진입 참고)</div>
-          <div className="text-[11px] text-t4">
+          <div className="text-[11px] text-t3">
             만기 정규화 excess 60일 분포 대비 z — rich(+)면 매도차 우호, cheap(−)면 매수차 우호
           </div>
         </div>
@@ -62,10 +62,10 @@ function FamilyCard({ label, zf }: { label: string; zf: BasisZFamily }) {
         <span className="text-[12px] text-t1 font-medium">{label}</span>
         <span className={cn('text-[13px] tabular-nums font-mono font-medium', zColor)}>
           {z == null ? 'z —' : `z ${z > 0 ? '+' : ''}${z.toFixed(2)}`}
-          {extreme && <span className="ml-1 text-[9px]">⚠</span>}
+          {extreme && <span className="ml-1 text-[10px]">⚠</span>}
         </span>
       </div>
-      <div className="mt-1 grid grid-cols-2 gap-x-3 gap-y-0.5 text-[10px] tabular-nums font-mono">
+      <div className="mt-1 grid grid-cols-2 gap-x-3 gap-y-0.5 text-[11px] tabular-nums font-mono">
         <span className="text-t4">excess</span>
         <span className="text-t2 text-right">
           {excess == null ? '-' : `${excess > 0 ? '+' : ''}${excess.toFixed(2)}`}

@@ -20,7 +20,7 @@ export function FairValueMatrix() {
     <div className="bg-bg-primary">
       <div className="px-3 py-2 border-b border-bg-base">
         <div className="text-[13px] text-t2 font-medium">Fair Value 매트릭스</div>
-        <div className="text-[11px] text-t4">
+        <div className="text-[11px] text-t3">
           200ms throttle · ETF × 헤지경로 (Level 2 raw · Level 3 net · 신선도)
         </div>
       </div>
@@ -34,7 +34,7 @@ export function FairValueMatrix() {
                 <th key={col.kind} className="text-right px-3 py-2 min-w-[160px]">
                   <div className={cn(!col.wiredInFirstBuild && 'text-t4')}>{col.label}</div>
                   {!col.wiredInFirstBuild && (
-                    <div className="text-[9px] text-t4 normal-case">다음 빌드</div>
+                    <div className="text-[10px] text-t4 normal-case">다음 빌드</div>
                   )}
                 </th>
               ))}
@@ -79,7 +79,7 @@ function CorporateActionBanner({ items }: { items: CorporateActionToday[] }) {
 
 function EtfRow({ snap }: { snap: EtfFairValueSnapshot }) {
   return (
-    <tr className="border-b border-bg-base/30 hover:bg-bg-surface/30">
+    <tr className="border-b border-white/[0.06] hover:bg-bg-surface/40">
       <td className="px-3 py-2 sticky left-0 bg-bg-primary">
         <div className="text-t1 font-medium tabular-nums">{snap.etf_code}</div>
         <div className="text-t3 text-[11px] tabular-nums">
@@ -138,11 +138,11 @@ function CellView({
       <div className="flex justify-end items-center gap-1 mt-0.5">
         <FreshnessBadge ageMs={cell.inputs_age_ms} />
         {cell.inputs_covered_pct < 1 && (
-          <span className="text-[9px] text-warning" title={`결측 ${cell.missing_components.length}개`}>
+          <span className="text-[10px] text-warning" title={`결측 ${cell.missing_components.length}개`}>
             {(cell.inputs_covered_pct * 100).toFixed(0)}%
           </span>
         )}
-        {!cell.usable && <span className="text-[9px] text-down">✗</span>}
+        {!cell.usable && <span className="text-[10px] text-down">✗</span>}
       </div>
     </div>
   )

@@ -3,6 +3,7 @@ import { useLpStore } from '@/stores/lpStore'
 import { useMarketStore } from '@/stores/marketStore'
 import { LEDGER_GROUPS, type LedgerAggregate, type LedgerInstrument } from '@/types/lp'
 import { LedgerImportModal } from './LedgerImportModal'
+import { cn } from '@/lib/utils'
 
 /**
  * 북 원장 보드 (§13.5 Phase 1).
@@ -138,16 +139,16 @@ export function LedgerBoard() {
 
       {/* 자산유형별 그룹 테이블 */}
       <div className="bg-bg-primary p-3">
-        <table className="w-full text-[11px]">
-          <thead className="text-t4 text-[11px]">
-            <tr>
-              <th className="text-left py-1 font-normal">코드 / 이름</th>
-              <th className="text-right py-1 font-normal">이월</th>
-              <th className="text-right py-1 font-normal">당일 체결</th>
-              <th className="text-right py-1 font-normal">순 수량</th>
-              <th className="text-right py-1 font-normal">평단</th>
-              <th className="text-right py-1 font-normal">현재가</th>
-              <th className="text-right py-1 font-normal">평가 노출</th>
+        <table className="w-full text-[12px]">
+          <thead className="text-t3 text-[11px] sticky top-0 bg-bg-primary z-10">
+            <tr className="border-b border-white/[0.08]">
+              <th className="text-left py-1.5 font-normal">코드 / 이름</th>
+              <th className="text-right py-1.5 font-normal">이월</th>
+              <th className="text-right py-1.5 font-normal">당일 체결</th>
+              <th className="text-right py-1.5 font-normal">순 수량</th>
+              <th className="text-right py-1.5 font-normal">평단</th>
+              <th className="text-right py-1.5 font-normal">현재가</th>
+              <th className="text-right py-1.5 font-normal">평가 노출</th>
               <th className="w-6"></th>
             </tr>
           </thead>
@@ -197,8 +198,8 @@ function Summary({ label, value, tone }: { label: string; value: number; tone: '
           : 'var(--color-down)'
   return (
     <div>
-      <div className="text-[11px] text-t4">{label}</div>
-      <div className="text-[15px]" style={{ color }}>
+      <div className="text-[11px] text-t3">{label}</div>
+      <div className="text-[16px] font-medium" style={{ color }}>
         {fmtNotional(value)}
       </div>
     </div>
@@ -230,21 +231,27 @@ function GroupSection({
   return (
     <>
       <tr>
-        <td colSpan={8} className="pt-2 pb-1 text-[11px] text-t3 uppercase tracking-wide">
+        <td colSpan={8} className="pt-2.5 pb-1 text-[11px] text-t3 uppercase tracking-wide font-medium">
           {label}
         </td>
       </tr>
-      {rows.map((a) => {
+      {rows.map((a, i) => {
         const p = priceOf(a.code, a.instrument)
         const exp = exposureOf(a, p)
         const unit = qtyUnit(a.instrument)
         const qtyColor = (q: number) =>
           q > 0 ? '' : q < 0 ? 'var(--color-down)' : 'var(--color-t4)'
         return (
-          <tr key={a.code} className="border-t border-bg-base/40">
-            <td className="py-1 text-t2">
-              <span className="text-t1">{a.code}</span>
-              {a.name && <span className="text-t4 ml-1 text-[11px]">{a.name}</span>}
+          <tr
+            key={a.code}
+            className={cn(
+              'border-b border-white/[0.06] hover:bg-bg-surface/50',
+              i % 2 === 1 && 'bg-white/[0.03]',
+            )}
+          >
+            <td className="py-1.5 text-t2">
+              <span className="text-t1 font-medium">{a.code}</span>
+              {a.name && <span className="text-t3 ml-1.5">{a.name}</span>}
               {basisPaired.has(a.code) && (
                 <span
                   className="ml-1.5 px-1 py-0.5 text-[10px] rounded-sm bg-blue/15 text-blue align-middle"
@@ -254,24 +261,24 @@ function GroupSection({
                 </span>
               )}
             </td>
-            <td className="py-1 text-right text-t3">{fmtQty(a.carryover_qty)}</td>
-            <td className="py-1 text-right" style={{ color: qtyColor(a.fills_qty_today) }}>
+            <td className="py-1.5 text-right text-t3">{fmtQty(a.carryover_qty)}</td>
+            <td className="py-1.5 text-right" style={{ color: qtyColor(a.fills_qty_today) }}>
               {a.fills_qty_today > 0 ? `+${fmtQty(a.fills_qty_today)}` : fmtQty(a.fills_qty_today)}
             </td>
-            <td className="py-1 text-right font-medium" style={{ color: qtyColor(a.net_qty) }}>
+            <td className="py-1.5 text-right text-[13px] font-medium" style={{ color: qtyColor(a.net_qty) }}>
               {fmtQty(a.net_qty)}
               {unit && <span className="text-t4 text-[10px] ml-0.5">{unit}</span>}
             </td>
-            <td className="py-1 text-right text-t3">{fmtPx(a.avg_price)}</td>
-            <td className="py-1 text-right text-t3">{p > 0 ? p.toLocaleString('ko-KR') : '-'}</td>
-            <td className="py-1 text-right" style={{ color: exp === 0 ? 'var(--color-t4)' : exp > 0 ? '' : 'var(--color-down)' }}>
+            <td className="py-1.5 text-right text-t3">{fmtPx(a.avg_price)}</td>
+            <td className="py-1.5 text-right text-t2">{p > 0 ? p.toLocaleString('ko-KR') : '-'}</td>
+            <td className="py-1.5 text-right text-[13px] font-medium" style={{ color: exp === 0 ? 'var(--color-t4)' : exp > 0 ? 'var(--color-t1)' : 'var(--color-down)' }}>
               {p > 0 ? fmtNotional(exp) : '-'}
             </td>
-            <td className="py-1 text-right">
+            <td className="py-1.5 text-right">
               <button
                 onClick={() => del(a)}
                 title="이월 삭제"
-                className="text-[11px] text-t4 hover:text-down px-1"
+                className="text-[13px] text-t4 hover:text-down px-1"
               >
                 ×
               </button>
@@ -489,15 +496,15 @@ function FillLog({ entries }: { entries: import('@/types/lp').LedgerEntry[] }) {
     <div className="bg-bg-primary p-3">
       <div className="text-[12px] text-t2 font-medium mb-2">체결 로그 (최신순)</div>
       <div className="max-h-64 overflow-y-auto">
-        <table className="w-full text-[11px]">
-          <thead className="text-t4 text-[11px] sticky top-0 bg-bg-primary">
-            <tr>
-              <th className="text-left py-1 font-normal">시각</th>
-              <th className="text-left py-1 font-normal">코드</th>
-              <th className="text-center py-1 font-normal">방향</th>
-              <th className="text-right py-1 font-normal">수량</th>
-              <th className="text-right py-1 font-normal">가격</th>
-              <th className="text-left py-1 font-normal pl-2">메모</th>
+        <table className="w-full text-[12px]">
+          <thead className="text-t3 text-[11px] sticky top-0 bg-bg-primary">
+            <tr className="border-b border-white/[0.08]">
+              <th className="text-left py-1.5 font-normal">시각</th>
+              <th className="text-left py-1.5 font-normal">코드</th>
+              <th className="text-center py-1.5 font-normal">방향</th>
+              <th className="text-right py-1.5 font-normal">수량</th>
+              <th className="text-right py-1.5 font-normal">가격</th>
+              <th className="text-left py-1.5 font-normal pl-2">메모</th>
               <th className="w-6"></th>
             </tr>
           </thead>
@@ -509,28 +516,34 @@ function FillLog({ entries }: { entries: import('@/types/lp').LedgerEntry[] }) {
                 </td>
               </tr>
             )}
-            {entries.map((e) => (
-              <tr key={e.id} className="border-t border-bg-base/40">
-                <td className="py-1 text-t4 text-[11px]">{e.ts.slice(5, 16).replace('T', ' ')}</td>
-                <td className="py-1 text-t2">
+            {entries.map((e, i) => (
+              <tr
+                key={e.id}
+                className={cn(
+                  'border-b border-white/[0.06] hover:bg-bg-surface/50',
+                  i % 2 === 1 && 'bg-white/[0.03]',
+                )}
+              >
+                <td className="py-1.5 text-t3">{e.ts.slice(5, 16).replace('T', ' ')}</td>
+                <td className="py-1.5 text-t2">
                   {e.code}
                   {e.kind === 'carryover' && (
                     <span className="text-t4 ml-1 text-[10px]">이월</span>
                   )}
                 </td>
                 <td
-                  className="py-1 text-center"
+                  className="py-1.5 text-center font-medium"
                   style={{ color: e.side === 'buy' ? 'var(--color-up)' : 'var(--color-down)' }}
                 >
                   {e.side === 'buy' ? '매수' : '매도'}
                 </td>
-                <td className="py-1 text-right text-t2">{e.qty.toLocaleString('ko-KR')}</td>
-                <td className="py-1 text-right text-t3">{e.price == null ? '-' : e.price.toLocaleString('ko-KR')}</td>
-                <td className="py-1 text-left text-t4 text-[11px] pl-2 truncate max-w-[120px]">{e.note ?? ''}</td>
-                <td className="py-1 text-right">
+                <td className="py-1.5 text-right text-t2">{e.qty.toLocaleString('ko-KR')}</td>
+                <td className="py-1.5 text-right text-t3">{e.price == null ? '-' : e.price.toLocaleString('ko-KR')}</td>
+                <td className="py-1.5 text-left text-t3 pl-2 truncate max-w-[120px]">{e.note ?? ''}</td>
+                <td className="py-1.5 text-right">
                   <button
                     onClick={() => del(e.id)}
-                    className="text-[11px] text-t4 hover:text-down px-1"
+                    className="text-[13px] text-t4 hover:text-down px-1"
                   >
                     ×
                   </button>

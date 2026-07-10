@@ -174,35 +174,41 @@ export function BasketBuilderPanel() {
             </div>
           ) : (
             <div className="px-3 py-2 max-h-[420px] overflow-y-auto">
-              <table className="w-full text-[11px]">
-                <thead className="text-t4 text-[11px] sticky top-0 bg-bg-primary">
-                  <tr>
-                    <th className="text-left py-1 font-normal">종목</th>
-                    <th className="text-center py-1 font-normal">방향</th>
-                    <th className="text-right py-1 font-normal">주수</th>
-                    <th className="text-right py-1 font-normal">예상대금</th>
-                    <th className="text-right py-1 font-normal">ADV%</th>
-                    <th className="text-right py-1 font-normal">거래세</th>
-                    <th className="text-center py-1 font-normal">주식선물</th>
+              <table className="w-full text-[12px]">
+                <thead className="text-t3 text-[11px] sticky top-0 bg-bg-primary">
+                  <tr className="border-b border-white/[0.08]">
+                    <th className="text-left py-1.5 font-normal">종목</th>
+                    <th className="text-center py-1.5 font-normal">방향</th>
+                    <th className="text-right py-1.5 font-normal">주수</th>
+                    <th className="text-right py-1.5 font-normal">예상대금</th>
+                    <th className="text-right py-1.5 font-normal">ADV%</th>
+                    <th className="text-right py-1.5 font-normal">거래세</th>
+                    <th className="text-center py-1.5 font-normal">주식선물</th>
                   </tr>
                 </thead>
                 <tbody className="font-mono tabular-nums">
-                  {basket.legs.map((l) => (
-                    <tr key={l.code} className="border-t border-bg-base/40">
-                      <td className="py-1 text-t2">
-                        <span className="text-t1">{l.code}</span>
-                        {l.name && <span className="text-t4 ml-1 text-[11px]">{l.name}</span>}
+                  {basket.legs.map((l, i) => (
+                    <tr
+                      key={l.code}
+                      className={cn(
+                        'border-b border-white/[0.06] hover:bg-bg-surface/50',
+                        i % 2 === 1 && 'bg-white/[0.03]',
+                      )}
+                    >
+                      <td className="py-1.5 text-t2">
+                        <span className="text-t1 font-medium">{l.code}</span>
+                        {l.name && <span className="text-t3 ml-1.5">{l.name}</span>}
                       </td>
-                      <td className="py-1 text-center">
-                        <span className={l.side === 'buy' ? 'text-up' : 'text-down'}>
+                      <td className="py-1.5 text-center">
+                        <span className={cn('font-medium', l.side === 'buy' ? 'text-up' : 'text-down')}>
                           {l.side === 'buy' ? '매수' : '매도'}
                         </span>
                       </td>
-                      <td className="py-1 text-right text-t1">{l.shares.toLocaleString('ko-KR')}</td>
-                      <td className="py-1 text-right text-t2">
+                      <td className="py-1.5 text-right text-[13px] text-t1 font-medium">{l.shares.toLocaleString('ko-KR')}</td>
+                      <td className="py-1.5 text-right text-t2">
                         {l.est_notional != null ? fmtSize(l.est_notional) : <span className="text-t4">-</span>}
                       </td>
-                      <td className={cn('py-1 text-right', l.adv_capped ? 'text-down font-medium' : 'text-t3')}>
+                      <td className={cn('py-1.5 text-right', l.adv_capped ? 'text-down font-medium' : 'text-t3')}>
                         {l.adv_ratio != null ? (
                           <span title={l.adv_capped ? `ADV의 ${l.adv_ratio.toFixed(1)}% — 캡(${basket.adv_cap_pct}%) 초과` : ''}>
                             {l.adv_ratio.toFixed(2)}%{l.adv_capped && ' ⚠'}
@@ -211,8 +217,8 @@ export function BasketBuilderPanel() {
                           <span className="text-t4">-</span>
                         )}
                       </td>
-                      <td className="py-1 text-right text-t4">{l.tax_bp > 0 ? `${l.tax_bp}bp` : '-'}</td>
-                      <td className="py-1 text-center">
+                      <td className="py-1.5 text-right text-t3">{l.tax_bp > 0 ? `${l.tax_bp}bp` : '-'}</td>
+                      <td className="py-1.5 text-center">
                         {l.has_stock_future ? (
                           <button
                             onClick={() => requestRoute({ code: l.code, side: l.side, qty: l.shares })}

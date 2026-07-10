@@ -289,18 +289,18 @@ export function HedgeReconPanel() {
               </label>
             </div>
             <div className="max-h-[480px] overflow-y-auto">
-              <table className="w-full text-[11px]">
-                <thead className="text-t4 text-[11px] sticky top-0 bg-bg-primary">
-                  <tr>
-                    <th className="text-left py-1 font-normal">종목</th>
-                    <th className="text-right py-1 font-normal">요구</th>
-                    <th className="text-right py-1 font-normal">실제</th>
-                    <th className="text-right py-1 font-normal text-t4/70">현물</th>
-                    <th className="text-right py-1 font-normal text-t4/70">선물</th>
-                    <th className="text-right py-1 font-normal">gap</th>
-                    <th className="text-right py-1 font-normal">gap δ</th>
-                    <th className="text-center py-1 font-normal">분류</th>
-                    <th className="text-right py-1 font-normal">리밸런싱</th>
+              <table className="w-full text-[12px]">
+                <thead className="text-t3 text-[11px] sticky top-0 bg-bg-primary">
+                  <tr className="border-b border-white/[0.08]">
+                    <th className="text-left py-1.5 font-normal">종목</th>
+                    <th className="text-right py-1.5 font-normal">요구</th>
+                    <th className="text-right py-1.5 font-normal">실제</th>
+                    <th className="text-right py-1.5 font-normal text-t4">현물</th>
+                    <th className="text-right py-1.5 font-normal text-t4">선물</th>
+                    <th className="text-right py-1.5 font-normal">gap</th>
+                    <th className="text-right py-1.5 font-normal">gap δ</th>
+                    <th className="text-center py-1.5 font-normal">분류</th>
+                    <th className="text-right py-1.5 font-normal">리밸런싱</th>
                   </tr>
                 </thead>
                 <tbody className="font-mono tabular-nums">
@@ -313,10 +313,11 @@ export function HedgeReconPanel() {
                       </td>
                     </tr>
                   )}
-                  {visibleStocks.map((r) => (
+                  {visibleStocks.map((r, i) => (
                     <StockRow
                       key={r.code}
                       row={r}
+                      zebra={i % 2 === 1}
                       rollup={recon.etf_rollup[r.code] ?? []}
                       expanded={expanded.has(r.code)}
                       onToggle={() => toggle(r.code)}
@@ -337,29 +338,29 @@ export function HedgeReconPanel() {
                   (선물지수추종·레버리지 — PDF 환산 불가, 요구 델타만 지수선물로 헤지)
                 </span>
               </div>
-              <table className="w-full text-[11px]">
-                <thead className="text-t4 text-[11px]">
-                  <tr>
-                    <th className="text-left py-1 font-normal">ETF</th>
-                    <th className="text-right py-1 font-normal">순 수량</th>
-                    <th className="text-center py-1 font-normal">가족</th>
-                    <th className="text-center py-1 font-normal">배수</th>
-                    <th className="text-right py-1 font-normal">요구 델타</th>
-                    <th className="text-left py-1 font-normal pl-3">사유</th>
+              <table className="w-full text-[12px]">
+                <thead className="text-t3 text-[11px]">
+                  <tr className="border-b border-white/[0.08]">
+                    <th className="text-left py-1.5 font-normal">ETF</th>
+                    <th className="text-right py-1.5 font-normal">순 수량</th>
+                    <th className="text-center py-1.5 font-normal">가족</th>
+                    <th className="text-center py-1.5 font-normal">배수</th>
+                    <th className="text-right py-1.5 font-normal">요구 델타</th>
+                    <th className="text-left py-1.5 font-normal pl-3">사유</th>
                   </tr>
                 </thead>
                 <tbody className="font-mono tabular-nums">
                   {recon.index_route_etfs.map((e) => (
-                    <tr key={e.code} className="border-t border-bg-base/40">
-                      <td className="py-1 text-t2">
-                        <span className="text-t1">{e.code}</span>
-                        {e.name && <span className="text-t4 ml-1 text-[11px]">{e.name}</span>}
+                    <tr key={e.code} className="border-b border-white/[0.06] hover:bg-bg-surface/40">
+                      <td className="py-1.5 text-t2">
+                        <span className="text-t1 font-medium">{e.code}</span>
+                        {e.name && <span className="text-t3 ml-1.5">{e.name}</span>}
                       </td>
-                      <td className="py-1 text-right text-t2">{fmtQty(e.net_qty)}</td>
-                      <td className="py-1 text-center text-t3">{famLabel(e.family)}</td>
-                      <td className="py-1 text-center text-t3">{e.leverage != null ? `×${e.leverage}` : 'β'}</td>
+                      <td className="py-1.5 text-right text-t2">{fmtQty(e.net_qty)}</td>
+                      <td className="py-1.5 text-center text-t3">{famLabel(e.family)}</td>
+                      <td className="py-1.5 text-center text-t3">{e.leverage != null ? `×${e.leverage}` : 'β'}</td>
                       <td
-                        className="py-1 text-right"
+                        className="py-1.5 text-right"
                         style={{
                           color:
                             e.required_delta_krw == null
@@ -371,7 +372,7 @@ export function HedgeReconPanel() {
                       >
                         {e.required_delta_krw != null ? fmtKrw(e.required_delta_krw) : '-'}
                       </td>
-                      <td className="py-1 text-left text-t3 text-[11px] pl-3">{e.reason}</td>
+                      <td className="py-1.5 text-left text-t3 pl-3">{e.reason}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -385,16 +386,16 @@ export function HedgeReconPanel() {
               가족별 매크로 델타 대조{' '}
               <span className="text-t3 text-[11px]">(미정합 gap + 지수선물경로 ETF vs 지수선물 오버레이)</span>
             </div>
-            <table className="w-full text-[11px]">
-              <thead className="text-t4 text-[11px]">
-                <tr>
-                  <th className="text-left py-1 font-normal">가족</th>
-                  <th className="text-right py-1 font-normal">요구 δ (net)</th>
-                  <th className="text-right py-1 font-normal">gross Σ|δ|</th>
-                  <th className="text-right py-1 font-normal">지수선물 오버레이</th>
-                  <th className="text-right py-1 font-normal">커버리지</th>
-                  <th className="text-right py-1 font-normal">미설명 δ (종목)</th>
-                  <th className="text-right py-1 font-normal">선물 초과 (→티켓)</th>
+            <table className="w-full text-[12px]">
+              <thead className="text-t3 text-[11px]">
+                <tr className="border-b border-white/[0.08]">
+                  <th className="text-left py-1.5 font-normal">가족</th>
+                  <th className="text-right py-1.5 font-normal">요구 δ (net)</th>
+                  <th className="text-right py-1.5 font-normal">gross Σ|δ|</th>
+                  <th className="text-right py-1.5 font-normal">지수선물 오버레이</th>
+                  <th className="text-right py-1.5 font-normal">커버리지</th>
+                  <th className="text-right py-1.5 font-normal">미설명 δ (종목)</th>
+                  <th className="text-right py-1.5 font-normal">선물 초과 (→티켓)</th>
                 </tr>
               </thead>
               <tbody className="font-mono tabular-nums">
@@ -406,8 +407,8 @@ export function HedgeReconPanel() {
                       f.gross_delta_krw > 1,
                   )
                   .map((f) => (
-                    <tr key={f.family} className="border-t border-bg-base/40">
-                      <td className="py-1 text-t1">
+                    <tr key={f.family} className="border-b border-white/[0.06] hover:bg-bg-surface/40">
+                      <td className="py-1.5 text-t1 font-medium">
                         {famLabel(f.family)}
                         {f.offset_warning && (
                           <span
@@ -418,12 +419,12 @@ export function HedgeReconPanel() {
                           </span>
                         )}
                       </td>
-                      <td className="py-1 text-right text-t2">{fmtKrw(f.needed_delta_krw)}</td>
-                      <td className="py-1 text-right text-t3">{fmtSize(f.gross_delta_krw)}</td>
-                      <td className="py-1 text-right text-t3">{fmtKrw(f.index_fut_delta_krw)}</td>
-                      <td className="py-1 text-right text-t3">{(f.coverage_ratio * 100).toFixed(0)}%</td>
+                      <td className="py-1.5 text-right text-t2">{fmtKrw(f.needed_delta_krw)}</td>
+                      <td className="py-1.5 text-right text-t3">{fmtSize(f.gross_delta_krw)}</td>
+                      <td className="py-1.5 text-right text-t3">{fmtKrw(f.index_fut_delta_krw)}</td>
+                      <td className="py-1.5 text-right text-t3">{(f.coverage_ratio * 100).toFixed(0)}%</td>
                       <td
-                        className="py-1 text-right font-medium"
+                        className="py-1.5 text-right font-medium"
                         style={{
                           color:
                             Math.abs(f.unexplained_delta_krw) < 1
@@ -436,7 +437,7 @@ export function HedgeReconPanel() {
                         {fmtKrw(f.unexplained_delta_krw)}
                       </td>
                       <td
-                        className="py-1 text-right"
+                        className="py-1.5 text-right"
                         style={{
                           color:
                             Math.abs(f.futures_excess_krw) < 1
@@ -508,12 +509,14 @@ function Stat({
 
 function StockRow({
   row,
+  zebra,
   rollup,
   expanded,
   onToggle,
   onRoute,
 }: {
   row: HedgeReconStock
+  zebra: boolean
   rollup: import('@/types/lp').HedgeReconEtfContribution[]
   expanded: boolean
   onToggle: () => void
@@ -526,36 +529,39 @@ function StockRow({
   return (
     <>
       <tr
-        className="border-t border-bg-base/40 cursor-pointer hover:bg-bg-surface/30"
+        className={cn(
+          'border-b border-white/[0.06] cursor-pointer hover:bg-bg-surface/50',
+          zebra && 'bg-white/[0.03]',
+        )}
         onClick={onToggle}
       >
-        <td className="py-1 text-t2">
+        <td className="py-1.5 text-t2">
           <span className="text-t4 text-[10px] mr-1">{expanded ? '▾' : '▸'}</span>
-          <span className="text-t1">{row.code}</span>
-          {row.name && <span className="text-t4 ml-1 text-[11px]">{row.name}</span>}
+          <span className="text-t1 font-medium">{row.code}</span>
+          {row.name && <span className="text-t3 ml-1.5">{row.name}</span>}
         </td>
-        <td className="py-1 text-right text-t3">{fmtQty(reqRounded)}</td>
-        <td className="py-1 text-right text-t2">{fmtQty(row.actual)}</td>
-        <td className="py-1 text-right text-t4/80 text-[11px]">{fmtQty(row.actual_spot)}</td>
-        <td className="py-1 text-right text-t4/80 text-[11px]">
-          {row.actual_stockfut !== 0 ? fmtQty(row.actual_stockfut) : '-'}
+        <td className="py-1.5 text-right text-t3">{fmtQty(reqRounded)}</td>
+        <td className="py-1.5 text-right text-t2">{fmtQty(row.actual)}</td>
+        <td className="py-1.5 text-right text-t3">{fmtQty(row.actual_spot)}</td>
+        <td className="py-1.5 text-right text-t3">
+          {row.actual_stockfut !== 0 ? fmtQty(row.actual_stockfut) : <span className="text-t4">-</span>}
         </td>
-        <td className="py-1 text-right font-medium" style={{ color: gapColor(row.gap) }}>
+        <td className="py-1.5 text-right text-[13px] font-medium" style={{ color: gapColor(row.gap) }}>
           {row.gap > 0 ? '+' : ''}
           {fmtQty(Math.round(row.gap))}
         </td>
-        <td className="py-1 text-right text-[11px]" style={{ color: gapColor(row.gap) }}>
+        <td className="py-1.5 text-right font-medium" style={{ color: gapColor(row.gap) }}>
           {row.gap_delta_krw != null ? fmtKrw(row.gap_delta_krw) : '-'}
         </td>
-        <td className="py-1 text-center">
-          <span className={cn('px-1.5 py-0.5 text-[10px] rounded-sm', meta.cls)} title={meta.title}>
+        <td className="py-1.5 text-center">
+          <span className={cn('px-1.5 py-0.5 text-[11px] rounded-sm', meta.cls)} title={meta.title}>
             {meta.label}
           </span>
         </td>
-        <td className="py-1 text-right">
+        <td className="py-1.5 text-right">
           {row.order_side ? (
             <span className="inline-flex items-center gap-1">
-              <span className={row.order_side === 'buy' ? 'text-up' : 'text-down'}>
+              <span className={cn('font-medium', row.order_side === 'buy' ? 'text-up' : 'text-down')}>
                 {row.order_side === 'buy' ? '매수' : '매도'} {fmtQty(row.order_shares)}
                 {row.adv_capped && <span title="ADV 캡 초과"> ⚠</span>}
               </span>
@@ -565,7 +571,7 @@ function StockRow({
                     e.stopPropagation()
                     onRoute()
                   }}
-                  className="text-[10px] px-1 py-0.5 rounded-sm bg-blue/15 text-blue hover:bg-blue/25"
+                  className="text-[11px] px-1 py-0.5 rounded-sm bg-blue/15 text-blue hover:bg-blue/25"
                   title="베이시스 라우터에서 현물 vs 주식선물 대체 판정"
                 >
                   선물 ↗
@@ -573,13 +579,13 @@ function StockRow({
               )}
             </span>
           ) : (
-            <span className="text-t4 text-[11px]">-</span>
+            <span className="text-t4">-</span>
           )}
         </td>
       </tr>
       {expanded && (
-        <tr className="bg-bg-base/20">
-          <td colSpan={9} className="px-3 py-1.5 text-[11px] text-t4">
+        <tr className="bg-bg-base/40">
+          <td colSpan={9} className="px-3 py-1.5 text-[12px] text-t3">
             <span className="text-t3">요구 출처 ETF:</span>{' '}
             {rollup.length === 0 ? (
               <span>없음 (현물/선물 보유만 — 요구=0)</span>
@@ -595,7 +601,7 @@ function StockRow({
                 </span>
               ))
             )}
-            <span className="ml-3 text-t4">
+            <span className="ml-3 text-t3">
               tol {Math.round(row.tolerance)}주 · gap δ{' '}
               {row.gap_delta_krw != null ? fmtKrw(row.gap_delta_krw) : 'n/a'} · 가족 {famLabel(row.family)}
             </span>

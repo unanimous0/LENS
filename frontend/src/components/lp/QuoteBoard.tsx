@@ -117,7 +117,7 @@ export function QuoteBoard() {
           </tbody>
         </table>
       </div>
-      <div className="px-3 py-1.5 text-[10px] text-t4 border-t border-bg-base">
+      <div className="px-3 py-1.5 text-[11px] text-t3 border-t border-bg-base">
         <span className="text-up">매수차</span> = ETF 저평가(갭 음수) → ETF 매수 + 선물 매도 ·{' '}
         <span className="text-down">매도차</span> = 고평가 → 반대. 도달률 = |갭| / 요구엣지,{' '}
         <span className="text-accent">100%↑ = 진입선 도달</span>. 기준가:{' '}
@@ -203,7 +203,7 @@ function ArbCell({ row }: { row: QuoteRow }) {
   return (
     <div className="w-full">
       <div className="flex items-baseline justify-between gap-2">
-        <span className={cn('text-[11px] font-medium tabular-nums', SIDE_COLOR[side])}>
+        <span className={cn('text-[12px] font-medium tabular-nums', SIDE_COLOR[side])}>
           {SIDE_LABEL[side]} {Math.abs(gapBp).toFixed(1)}bp
         </span>
         <span
@@ -222,7 +222,7 @@ function ArbCell({ row }: { row: QuoteRow }) {
           style={{ width: `${reachClamped}%` }}
         />
       </div>
-      <div className="text-[10px] text-t4 mt-0.5 tabular-nums">
+      <div className="text-[11px] text-t3 mt-0.5 tabular-nums">
         진입선 {edge.toFixed(1)}bp
       </div>
     </div>
@@ -278,7 +278,7 @@ const QuoteRowView = memo(
         <tr
           onClick={onToggle}
           className={cn(
-            'border-b border-bg-base/30 hover:bg-bg-surface/40 cursor-pointer',
+            'border-b border-white/[0.06] hover:bg-bg-surface/50 cursor-pointer',
             // 진입선 도달 행 subtle 하이라이트 (튀지 않게 — 방향색 6% + 좌측 얇은 라인).
             atEntry &&
               (side === 'buy'
@@ -295,7 +295,7 @@ const QuoteRowView = memo(
                 <div className="text-t1 font-medium tabular-nums leading-tight">
                   {row.code}
                 </div>
-                <div className="text-t3 text-[10px] truncate max-w-[130px] leading-tight">
+                <div className="text-t3 text-[11px] truncate max-w-[130px] leading-tight">
                   {row.name}
                 </div>
               </div>
@@ -321,7 +321,7 @@ const QuoteRowView = memo(
             {row.usable && row.suggested_bid > 0 ? (
               <>
                 <span className="text-t1 tabular-nums">{fmtPrice(row.suggested_bid)}</span>
-                <span className="text-t4 text-[10px] tabular-nums ml-1">
+                <span className="text-t3 text-[10px] tabular-nums ml-1">
                   {row.edge_bid_bp.toFixed(1)}bp
                 </span>
               </>
@@ -334,7 +334,7 @@ const QuoteRowView = memo(
             {row.usable && row.suggested_ask > 0 ? (
               <>
                 <span className="text-t1 tabular-nums">{fmtPrice(row.suggested_ask)}</span>
-                <span className="text-t4 text-[10px] tabular-nums ml-1">
+                <span className="text-t3 text-[10px] tabular-nums ml-1">
                   {row.edge_ask_bp.toFixed(1)}bp
                 </span>
               </>

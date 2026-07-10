@@ -31,7 +31,7 @@ export function BookFourNumbers() {
             <div className={cn('text-2xl font-mono tabular-nums', signColor(bookRisk.beta_adj_delta_krw))}>
               {bookRisk.beta_adj_delta_krw > 0 ? '+' : ''}{fmt(bookRisk.beta_adj_delta_krw)}
             </div>
-            <div className="text-[11px] text-t3 tabular-nums">
+            <div className="text-[12px] text-t3 tabular-nums">
               gross: {bookRisk.gross_delta_krw > 0 ? '+' : ''}{fmt(bookRisk.gross_delta_krw)}
             </div>
           </>
@@ -44,7 +44,7 @@ export function BookFourNumbers() {
             <div className="text-2xl font-mono tabular-nums text-warning">
               ±{fmt(bookRisk.residual_risk_krw)}
             </div>
-            <div className="text-[11px] text-t3">
+            <div className="text-[12px] text-t3 tabular-nums">
               top 기여: {bookRisk.top_residual_contributors[0]?.[0] || '-'}
             </div>
           </>
@@ -74,13 +74,13 @@ export function BookFourNumbers() {
               {signed(pnl.total_mtm)}
             </div>
             {!pnlOpen ? (
-              <div className="text-[10px] text-t3 tabular-nums truncate">
+              <div className="text-[12px] text-t3 tabular-nums leading-snug">
                 스프 {signed(pnl.spread)} · 베 {signed(pnl.basis_stock)} · 잔·방{' '}
                 {signed(pnl.residual_directional)} · 캐 {signed(pnl.carry)} · 헤{' '}
                 {signed(pnl.hedge_cost)}
               </div>
             ) : (
-              <div className="text-[10px] tabular-nums space-y-0.5 mt-0.5">
+              <div className="text-[12px] tabular-nums space-y-0.5 mt-0.5">
                 <PnlLine label="스프레드" v={pnl.spread} fmt={signed} />
                 <PnlLine label="베이시스(종목)" v={pnl.basis_stock} fmt={signed} />
                 <PnlLine label="잔차·방향" v={pnl.residual_directional} fmt={signed} />
@@ -102,7 +102,7 @@ export function BookFourNumbers() {
 function PnlLine({ label, v, fmt }: { label: string; v: number; fmt: (n: number) => string }) {
   return (
     <div className="flex justify-between gap-2">
-      <span className="text-t4">{label}</span>
+      <span className="text-t3">{label}</span>
       <span className={v > 0 ? 'text-up' : v < 0 ? 'text-down' : 'text-t3'}>{fmt(v)}</span>
     </div>
   )
@@ -111,9 +111,9 @@ function PnlLine({ label, v, fmt }: { label: string; v: number; fmt: (n: number)
 function Card({ label, hint, children }: { label: string; hint: string; children: React.ReactNode }) {
   return (
     <div className="bg-bg-primary px-3 py-2">
-      <div className="text-[11px] text-t3 mb-1">{label}</div>
+      <div className="text-[12px] text-t3 mb-1">{label}</div>
       <div className="min-h-[44px]">{children}</div>
-      <div className="text-[10px] text-t4 mt-1">{hint}</div>
+      <div className="text-[11px] text-t3 mt-1">{hint}</div>
     </div>
   )
 }

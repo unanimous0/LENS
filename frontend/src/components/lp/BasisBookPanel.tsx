@@ -130,16 +130,16 @@ export function BasisBookPanel() {
                 지수 베이시스 (가족별)
                 <span className="text-t3 normal-case ml-2">· z-score: 만기 정규화 excess 60일 분포 대비 (월물 혼합 무해)</span>
               </div>
-              <table className="w-full text-[11px]">
-                <thead className="text-t4 text-[11px]">
-                  <tr>
-                    <th className="text-left py-1 font-normal">가족</th>
-                    <th className="text-right py-1 font-normal">ETF leg</th>
-                    <th className="text-right py-1 font-normal">선물 leg</th>
-                    <th className="text-right py-1 font-normal">순 베이시스</th>
-                    <th className="text-right py-1 font-normal">10bp당</th>
-                    <th className="text-right py-1 font-normal">z-score</th>
-                    <th className="text-right py-1 font-normal">만기</th>
+              <table className="w-full text-[12px]">
+                <thead className="text-t3 text-[11px]">
+                  <tr className="border-b border-white/[0.08]">
+                    <th className="text-left py-1.5 font-normal">가족</th>
+                    <th className="text-right py-1.5 font-normal">ETF leg</th>
+                    <th className="text-right py-1.5 font-normal">선물 leg</th>
+                    <th className="text-right py-1.5 font-normal">순 베이시스</th>
+                    <th className="text-right py-1.5 font-normal">10bp당</th>
+                    <th className="text-right py-1.5 font-normal">z-score</th>
+                    <th className="text-right py-1.5 font-normal">만기</th>
                   </tr>
                 </thead>
                 <tbody className="font-mono tabular-nums">
@@ -157,16 +157,16 @@ export function BasisBookPanel() {
             {bb.stock_basis.length === 0 ? (
               <div className="text-[11px] text-t3 py-2">종목 베이시스 페어 없음 (현물 ↔ 주식선물 반대 포지션 시 자동 인식)</div>
             ) : (
-              <table className="w-full text-[11px]">
-                <thead className="text-t4 text-[11px]">
-                  <tr>
-                    <th className="text-left py-1 font-normal">종목</th>
-                    <th className="text-right py-1 font-normal">겹침(주)</th>
-                    <th className="text-right py-1 font-normal">진입→현재</th>
-                    <th className="text-right py-1 font-normal">excess</th>
-                    <th className="text-right py-1 font-normal">수렴손익</th>
-                    <th className="text-right py-1 font-normal">연환산</th>
-                    <th className="text-right py-1 font-normal">만기</th>
+              <table className="w-full text-[12px]">
+                <thead className="text-t3 text-[11px]">
+                  <tr className="border-b border-white/[0.08]">
+                    <th className="text-left py-1.5 font-normal">종목</th>
+                    <th className="text-right py-1.5 font-normal">겹침(주)</th>
+                    <th className="text-right py-1.5 font-normal">진입→현재</th>
+                    <th className="text-right py-1.5 font-normal">excess</th>
+                    <th className="text-right py-1.5 font-normal">수렴손익</th>
+                    <th className="text-right py-1.5 font-normal">연환산</th>
+                    <th className="text-right py-1.5 font-normal">만기</th>
                   </tr>
                 </thead>
                 <tbody className="font-mono tabular-nums">
@@ -188,7 +188,7 @@ function Layer({ label, hint, children }: { label: string; hint: string; childre
     <div className="flex flex-col justify-between min-w-[120px]">
       <div className="text-[11px] text-t3">{label}</div>
       <div className="my-0.5">{children}</div>
-      <div className="text-[10px] text-t3">{hint}</div>
+      <div className="text-[11px] text-t3">{hint}</div>
     </div>
   )
 }
@@ -196,11 +196,11 @@ function Layer({ label, hint, children }: { label: string; hint: string; childre
 function IndexRow({ e, zf }: { e: IndexBasisExposure; zf: BasisZFamily | undefined }) {
   const hasPos = e.net_basis_notional_krw !== 0
   return (
-    <tr className="border-t border-bg-base/40">
-      <td className="py-1 text-t1">{FAMILY_LABEL[e.family] ?? e.family}</td>
-      <td className={cn('py-1 text-right', signClass(e.etf_leg_krw))}>{fmtKrw(e.etf_leg_krw)}</td>
-      <td className={cn('py-1 text-right', signClass(e.fut_leg_krw))}>{fmtKrw(e.fut_leg_krw)}</td>
-      <td className="py-1 text-right">
+    <tr className="border-b border-white/[0.06] hover:bg-bg-surface/40">
+      <td className="py-1.5 text-t1 font-medium">{FAMILY_LABEL[e.family] ?? e.family}</td>
+      <td className={cn('py-1.5 text-right', signClass(e.etf_leg_krw))}>{fmtKrw(e.etf_leg_krw)}</td>
+      <td className={cn('py-1.5 text-right', signClass(e.fut_leg_krw))}>{fmtKrw(e.fut_leg_krw)}</td>
+      <td className="py-1.5 text-right">
         {hasPos ? (
           <span className={signClass(e.net_basis_notional_krw)}>
             {fmtSize(e.net_basis_notional_krw)} {e.net_basis_notional_krw > 0 ? '롱' : '숏'}
@@ -209,13 +209,13 @@ function IndexRow({ e, zf }: { e: IndexBasisExposure; zf: BasisZFamily | undefin
           <span className="text-t4">- (방향)</span>
         )}
       </td>
-      <td className={cn('py-1 text-right', signClass(e.sensitivity_per_10bp_krw))}>
+      <td className={cn('py-1.5 text-right', signClass(e.sensitivity_per_10bp_krw))}>
         {hasPos ? fmtKrw(e.sensitivity_per_10bp_krw) : '-'}
       </td>
-      <td className="py-1 text-right">
+      <td className="py-1.5 text-right">
         <ZCell zf={zf} />
       </td>
-      <td className="py-1 text-right">
+      <td className="py-1.5 text-right">
         {e.futures_code ? (
           <span className={e.roll_needed ? 'text-warning' : 'text-t3'}>
             D-{e.days_to_expiry}
@@ -231,16 +231,16 @@ function IndexRow({ e, zf }: { e: IndexBasisExposure; zf: BasisZFamily | undefin
 
 function StockRow({ p }: { p: StockBasisPair }) {
   return (
-    <tr className="border-t border-bg-base/40">
-      <td className="py-1 text-t2">
-        <span className="text-t1">{p.base_code}</span>
-        {p.name && <span className="text-t4 ml-1 text-[11px]">{p.name}</span>}
-        <div className="text-t4 text-[10px] leading-tight">
+    <tr className="border-b border-white/[0.06] hover:bg-bg-surface/40">
+      <td className="py-1.5 text-t2">
+        <span className="text-t1 font-medium">{p.base_code}</span>
+        {p.name && <span className="text-t3 ml-1.5">{p.name}</span>}
+        <div className="text-t4 text-[11px] leading-tight">
           현물 {p.spot_qty.toLocaleString('ko-KR')} / 선물 {p.fut_qty.toLocaleString('ko-KR')}
         </div>
       </td>
-      <td className="py-1 text-right text-t2">{p.matched_shares.toLocaleString('ko-KR')}</td>
-      <td className="py-1 text-right">
+      <td className="py-1.5 text-right text-t2">{p.matched_shares.toLocaleString('ko-KR')}</td>
+      <td className="py-1.5 text-right">
         {!p.usable ? (
           <span className="text-t4" title={p.reason}>
             {p.reason || '-'}
@@ -253,10 +253,10 @@ function StockRow({ p }: { p: StockBasisPair }) {
           </span>
         )}
       </td>
-      <td className={cn('py-1 text-right', p.usable ? signClass(p.excess_now) : 'text-t4')}>
+      <td className={cn('py-1.5 text-right', p.usable ? signClass(p.excess_now) : 'text-t4')}>
         {p.usable ? fmtBasis(p.excess_now) : '-'}
       </td>
-      <td className="py-1 text-right">
+      <td className="py-1.5 text-right">
         {/* 표시 일관성: 진입→현재를 숨기는 stale/결측이면 수렴손익도 숨김 */}
         {!p.usable || p.convergence_pnl == null ? (
           <span className="text-t4">-</span>
@@ -264,12 +264,12 @@ function StockRow({ p }: { p: StockBasisPair }) {
           <span className={signClass(p.convergence_pnl)}>{fmtKrw(p.convergence_pnl)}</span>
         )}
       </td>
-      <td className={cn('py-1 text-right', p.usable ? signClass(p.annualized_bp) : 'text-t4')}>
+      <td className={cn('py-1.5 text-right', p.usable ? signClass(p.annualized_bp) : 'text-t4')}>
         {p.usable && p.expiry_known
           ? `${p.annualized_bp >= 0 ? '+' : '−'}${Math.abs(p.annualized_bp).toFixed(0)}bp`
           : '-'}
       </td>
-      <td className="py-1 text-right">
+      <td className="py-1.5 text-right">
         {!p.expiry_known ? (
           <span className="text-t4" title="futures_master에 계약 코드 없음 — 만기 확인 불가">
             만기 미상
