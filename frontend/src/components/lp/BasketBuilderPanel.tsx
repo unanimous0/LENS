@@ -91,7 +91,7 @@ export function BasketBuilderPanel() {
       <div className="px-3 py-2 border-b border-bg-base flex items-center justify-between">
         <div>
           <div className="text-[13px] text-t2 font-medium">넷팅 바스켓 빌더 (§13.3-D 메인 출구)</div>
-          <div className="text-[11px] text-t2">
+          <div className="text-[11px] text-t3">
             보유 ETF PDF 합산 → 종목별 순 주수 주문표 (겹침 자동 넷팅)
           </div>
         </div>
@@ -117,7 +117,7 @@ export function BasketBuilderPanel() {
       {err && <div className="px-3 py-2 text-[11px] text-down">{err}</div>}
 
       {!basket ? (
-        <div className="px-3 py-6 text-[11px] text-t2">
+        <div className="px-3 py-6 text-[11px] text-t3">
           "넷팅 바스켓 생성"을 눌러 현재 ETF 재고의 순 실행 주문표를 계산합니다.
         </div>
       ) : (

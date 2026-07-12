@@ -34,7 +34,7 @@ export function ExitComparisonPanel() {
     return (
       <div className="bg-bg-primary">
         <Header />
-        <div className="px-3 py-6 text-[11px] text-t2">
+        <div className="px-3 py-6 text-[11px] text-t3">
           넷팅 바스켓을 먼저 생성하면 세 출구를 재고 명목 대비 순 bp로 비교합니다.
         </div>
       </div>

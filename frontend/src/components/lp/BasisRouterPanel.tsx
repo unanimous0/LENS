@@ -105,7 +105,7 @@ export function BasisRouterPanel() {
     <div className="bg-bg-primary">
       <div className="px-3 py-2 border-b border-bg-base">
         <div className="text-[13px] text-t2 font-medium">베이시스 실행 라우터 (§13.4)</div>
-        <div className="text-[11px] text-t2">
+        <div className="text-[11px] text-t3">
           주문 leg → 현물 vs 주식선물 대체 판정 (이론 대비 excess)
         </div>
       </div>

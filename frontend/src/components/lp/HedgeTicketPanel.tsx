@@ -29,7 +29,7 @@ export function HedgeTicketPanel() {
     <div className="bg-bg-primary">
       <div className="px-3 py-2 border-b border-bg-base">
         <div className="text-[13px] text-t2 font-medium">헤지 티켓 (§13.3-B)</div>
-        <div className="text-[11px] text-t2">
+        <div className="text-[11px] text-t3">
           북 순 델타 → 지수선물 상시 티켓 · 넷팅 자동 · 자동 제출 X
         </div>
       </div>

@@ -48,7 +48,7 @@ export function PnlPanel() {
       <div className="px-3 py-2 border-b border-bg-base flex items-center justify-between">
         <div>
           <div className="text-[13px] text-t2 font-medium">손익 분해 · 리스크 한도 (§13.3-C)</div>
-          <div className="text-[11px] text-t2">당일 세션(전일 종가 대비) P&amp;L 5분해 + markout + 한도 4개</div>
+          <div className="text-[11px] text-t3">당일 세션(전일 종가 대비) P&amp;L 5분해 + markout + 한도 4개</div>
         </div>
         {pnl && (
           <span className={cn('text-[15px] font-mono tabular-nums', signClass(pnl.total_mtm))}>
@@ -118,7 +118,7 @@ export function PnlPanel() {
           {/* ── caveats ── */}
           {pnl.caveats.length > 0 && (
             <div className="px-3 py-2">
-              <div className="text-[11px] text-t2 leading-relaxed">
+              <div className="text-[11px] text-t3 leading-relaxed">
                 {pnl.caveats.map((c, i) => (
                   <div key={i}>· {c}</div>
                 ))}

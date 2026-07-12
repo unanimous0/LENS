@@ -160,7 +160,7 @@ export function HedgeReconPanel() {
                   </span>
                 ))}
             </div>
-            <div className="text-[11px] text-t2 mt-0.5">
+            <div className="text-[11px] text-t3 mt-0.5">
               원장이 PDF 기준으로 헤지됐는지 · 어디가 어긋났는지 · 델타가 얼마나 떠 있는지 (무기억 진단)
             </div>
           </div>
@@ -468,7 +468,7 @@ export function HedgeReconPanel() {
                 )}
               </tbody>
             </table>
-            <div className="text-[11px] text-t2 mt-1.5">
+            <div className="text-[11px] text-t3 mt-1.5">
               미설명 δ(종목)는 리밸런싱 주문으로, 선물 초과분은 <span className="text-t3">헤지 티켓</span>에서
               지수선물로 마감 — 같은 델타의 회계 분해이므로 두 패널 동시 실행 금지.
             </div>
@@ -477,7 +477,7 @@ export function HedgeReconPanel() {
           {/* ── caveats ── */}
           {recon.caveats.length > 0 && (
             <div className="bg-bg-primary px-3 py-2">
-              <div className="text-[11px] text-t2 leading-relaxed">
+              <div className="text-[11px] text-t3 leading-relaxed">
                 {recon.caveats.map((c, i) => (
                   <div key={i}>· {c}</div>
                 ))}

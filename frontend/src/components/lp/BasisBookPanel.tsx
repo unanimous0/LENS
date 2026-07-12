@@ -67,7 +67,7 @@ export function BasisBookPanel() {
       <div className="px-3 py-2 border-b border-bg-base flex items-center justify-between">
         <div>
           <div className="text-[13px] text-t2 font-medium">베이시스 북 (§13.4)</div>
-          <div className="text-[11px] text-t2">북 4층 분해 + 종목·지수 베이시스 추적</div>
+          <div className="text-[11px] text-t3">북 4층 분해 + 종목·지수 베이시스 추적</div>
         </div>
         {bb?.any_expiry_action && (
           <span className="text-[11px] px-2 py-0.5 rounded-sm bg-warning/15 text-warning font-medium">
