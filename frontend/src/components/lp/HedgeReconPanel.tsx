@@ -58,6 +58,7 @@ export function HedgeReconPanel() {
   const [copied, setCopied] = useState(false)
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [showAligned, setShowAligned] = useState(false)
+  const [showAllStocks, setShowAllStocks] = useState(false)
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const run = useCallback(async () => {
@@ -135,6 +136,11 @@ export function HedgeReconPanel() {
   const visibleStocks = recon
     ? recon.stocks.filter((r) => showAligned || r.classification !== 'aligned_spot')
     : []
+  // 기본은 (미설명 우선 정렬된) 상위 15행만 — 대형 원장에서 세로 폭주 방지. 토글 시 전체를
+  // max-height 내부 스크롤로 노출. 정렬 순서는 백엔드 미설명 우선 유지(재정렬 안 함).
+  const STOCK_PREVIEW = 15
+  const hasMoreStocks = visibleStocks.length > STOCK_PREVIEW
+  const shownStocks = showAllStocks ? visibleStocks : visibleStocks.slice(0, STOCK_PREVIEW)
 
   return (
     <div className="flex flex-col gap-1">
@@ -277,16 +283,34 @@ export function HedgeReconPanel() {
           <div className="bg-bg-primary p-3">
             <div className="flex items-center justify-between mb-2">
               <div className="text-[12px] text-t2 font-medium">
-                종목 정합 <span className="text-t3 text-[11px]">(미설명 우선 · 행 클릭 시 ETF 롤업)</span>
+                종목 정합{' '}
+                <span className="text-t3 text-[11px]">
+                  (미설명 우선 · 행 클릭 시 ETF 롤업
+                  {!showAllStocks && hasMoreStocks
+                    ? ` · 상위 ${STOCK_PREVIEW}/${visibleStocks.length}`
+                    : ''}
+                  )
+                </span>
               </div>
-              <label className="text-[11px] text-t4 flex items-center gap-1 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={showAligned}
-                  onChange={(e) => setShowAligned(e.target.checked)}
-                />
-                정합 종목도 표시
-              </label>
+              <div className="flex items-center gap-3">
+                {hasMoreStocks && (
+                  <button
+                    type="button"
+                    onClick={() => setShowAllStocks((v) => !v)}
+                    className="text-[11px] px-2 py-0.5 bg-bg-surface text-t2 hover:text-t1 rounded-sm"
+                  >
+                    {showAllStocks ? `상위 ${STOCK_PREVIEW}개만` : `전체 ${visibleStocks.length}개 보기`}
+                  </button>
+                )}
+                <label className="text-[11px] text-t4 flex items-center gap-1 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={showAligned}
+                    onChange={(e) => setShowAligned(e.target.checked)}
+                  />
+                  정합 종목도 표시
+                </label>
+              </div>
             </div>
             <div className="max-h-[480px] overflow-y-auto">
               <table className="w-full text-[12px]">
@@ -313,7 +337,7 @@ export function HedgeReconPanel() {
                       </td>
                     </tr>
                   )}
-                  {visibleStocks.map((r, i) => (
+                  {shownStocks.map((r, i) => (
                     <StockRow
                       key={r.code}
                       row={r}

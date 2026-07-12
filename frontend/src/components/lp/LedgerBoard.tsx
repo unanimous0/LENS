@@ -137,46 +137,32 @@ export function LedgerBoard() {
         <LedgerImportModal onClose={() => setImportOpen(false)} onApplied={refreshLedger} />
       )}
 
-      {/* 자산유형별 그룹 테이블 */}
-      <div className="bg-bg-primary p-3">
-        <table className="w-full text-[12px]">
-          <thead className="text-t3 text-[11px] sticky top-0 bg-bg-primary z-10">
-            <tr className="border-b border-white/[0.08]">
-              <th className="text-left py-1.5 font-normal">코드 / 이름</th>
-              <th className="text-right py-1.5 font-normal">이월</th>
-              <th className="text-right py-1.5 font-normal">당일 체결</th>
-              <th className="text-right py-1.5 font-normal">순 수량</th>
-              <th className="text-right py-1.5 font-normal">평단</th>
-              <th className="text-right py-1.5 font-normal">현재가</th>
-              <th className="text-right py-1.5 font-normal">평가 노출</th>
-              <th className="w-6"></th>
-            </tr>
-          </thead>
-          <tbody className="font-mono tabular-nums">
-            {aggregates.length === 0 && (
-              <tr>
-                <td colSpan={8} className="text-center text-t4 py-3 text-xs">
-                  원장 비어 있음 — 아래에서 체결/이월 입력
-                </td>
-              </tr>
-            )}
-            {LEDGER_GROUPS.map((g) => {
-              const rows = grouped.byInst[g.instrument]
-              if (!rows || rows.length === 0) return null
-              return (
-                <GroupSection
-                  key={g.instrument}
-                  label={g.label}
-                  rows={rows}
-                  priceOf={priceOf}
-                  basisPaired={grouped.basisPaired}
-                  onDelete={refreshLedger}
-                />
-              )
-            })}
-          </tbody>
-        </table>
-      </div>
+      {/* 자산유형별 그룹 — 접기/펼치기 카드. 대형 그룹(현물 수백 종)은 max-height 내부 스크롤로
+          격리해 페이지 세로 길이 폭주를 막는다 (CLAUDE.md "테이블 자체 스크롤 금지"의 의도적 예외). */}
+      {aggregates.length === 0 ? (
+        <div className="bg-bg-primary px-3 py-4 text-center text-t4 text-xs">
+          원장 비어 있음 — 아래에서 체결/이월 입력
+        </div>
+      ) : (
+        <div className="flex flex-col gap-1">
+          {LEDGER_GROUPS.map((g) => {
+            const rows = grouped.byInst[g.instrument]
+            if (!rows || rows.length === 0) return null
+            return (
+              <GroupCard
+                key={g.instrument}
+                label={g.label}
+                rows={rows}
+                priceOf={priceOf}
+                basisPaired={grouped.basisPaired}
+                onDelete={refreshLedger}
+                // 현물은 수백 종이라 기본 접힘, 나머지(ETF·선물 소수)는 기본 펼침.
+                defaultOpen={g.instrument !== 'stock'}
+              />
+            )
+          })}
+        </div>
+      )}
 
       {/* 체결 입력 폼 + 당일 체결 로그 */}
       <div className="grid grid-cols-2 gap-1">
@@ -206,19 +192,23 @@ function Summary({ label, value, tone }: { label: string; value: number; tone: '
   )
 }
 
-function GroupSection({
+function GroupCard({
   label,
   rows,
   priceOf,
   basisPaired,
   onDelete,
+  defaultOpen,
 }: {
   label: string
   rows: LedgerAggregate[]
   priceOf: (code: string, instrument: LedgerInstrument) => number
   basisPaired: Set<string>
   onDelete: () => void
+  defaultOpen: boolean
 }) {
+  const [open, setOpen] = useState(defaultOpen)
+
   const del = async (agg: LedgerAggregate) => {
     if (!confirm(`${agg.code} 이월(carryover) 삭제? (당일 체결은 유지)`)) return
     await fetch('/api/lp/ledger/carryover', {
@@ -228,65 +218,127 @@ function GroupSection({
     })
     onDelete()
   }
+
+  // 그룹 순 노출 (요약 표시용) — 가격 있는 행만 exposure 합산.
+  const netExp = useMemo(() => {
+    let net = 0
+    for (const a of rows) {
+      const p = priceOf(a.code, a.instrument)
+      if (p > 0) net += exposureOf(a, p)
+    }
+    return net
+    // priceOf는 tick 참조 — ticks 변경 시 상위 grouped memo 재계산과 함께 rows 참조가 바뀜.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rows])
+
+  const netColor =
+    netExp === 0 ? 'var(--color-t4)' : netExp > 0 ? 'var(--color-up)' : 'var(--color-down)'
+
   return (
-    <>
-      <tr>
-        <td colSpan={8} className="pt-2.5 pb-1 text-[11px] text-t3 uppercase tracking-wide font-medium">
-          {label}
-        </td>
-      </tr>
-      {rows.map((a, i) => {
-        const p = priceOf(a.code, a.instrument)
-        const exp = exposureOf(a, p)
-        const unit = qtyUnit(a.instrument)
-        const qtyColor = (q: number) =>
-          q > 0 ? '' : q < 0 ? 'var(--color-down)' : 'var(--color-t4)'
-        return (
-          <tr
-            key={a.code}
-            className={cn(
-              'border-b border-white/[0.06] hover:bg-bg-surface/50',
-              i % 2 === 1 && 'bg-white/[0.03]',
-            )}
+    <div className="bg-bg-primary">
+      {/* 그룹 헤더 — 유형 · 종목수 · 순 노출 요약. 클릭으로 접기/펼치기. */}
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="w-full flex items-center gap-3 px-3 py-2 hover:bg-bg-surface/40 text-left"
+      >
+        <span className="text-t4 text-[11px] w-3">{open ? '▾' : '▸'}</span>
+        <span className="text-[12px] text-t2 uppercase tracking-wide font-medium">{label}</span>
+        <span className="text-[11px] text-t3 tabular-nums">{rows.length}종목</span>
+        <span className="ml-auto text-[11px] text-t3">순 노출</span>
+        <span className="text-[13px] font-mono tabular-nums font-medium" style={{ color: netColor }}>
+          {fmtNotional(netExp)}
+        </span>
+      </button>
+
+      {open && (
+        <div className="px-3 pb-2 max-h-[380px] overflow-y-auto">
+          <table className="w-full text-[12px]">
+            <thead className="text-t3 text-[11px] sticky top-0 bg-bg-primary z-10">
+              <tr className="border-b border-white/[0.08]">
+                <th className="text-left py-1.5 font-normal">코드 / 이름</th>
+                <th className="text-right py-1.5 font-normal">이월</th>
+                <th className="text-right py-1.5 font-normal">당일 체결</th>
+                <th className="text-right py-1.5 font-normal">순 수량</th>
+                <th className="text-right py-1.5 font-normal">평단</th>
+                <th className="text-right py-1.5 font-normal">현재가</th>
+                <th className="text-right py-1.5 font-normal">평가 노출</th>
+                <th className="w-6"></th>
+              </tr>
+            </thead>
+            <tbody className="font-mono tabular-nums">
+              {rows.map((a, i) => (
+                <LedgerRow
+                  key={a.code}
+                  agg={a}
+                  zebra={i % 2 === 1}
+                  price={priceOf(a.code, a.instrument)}
+                  basisPaired={basisPaired.has(a.code)}
+                  onDelete={() => del(a)}
+                />
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function LedgerRow({
+  agg: a,
+  zebra,
+  price: p,
+  basisPaired,
+  onDelete,
+}: {
+  agg: LedgerAggregate
+  zebra: boolean
+  price: number
+  basisPaired: boolean
+  onDelete: () => void
+}) {
+  const exp = exposureOf(a, p)
+  const unit = qtyUnit(a.instrument)
+  const qtyColor = (q: number) => (q > 0 ? '' : q < 0 ? 'var(--color-down)' : 'var(--color-t4)')
+  return (
+    <tr
+      className={cn('border-b border-white/[0.06] hover:bg-bg-surface/50', zebra && 'bg-white/[0.03]')}
+    >
+      <td className="py-1.5 text-t2">
+        <span className="text-t1 font-medium">{a.code}</span>
+        {a.name && <span className="text-t3 ml-1.5">{a.name}</span>}
+        {basisPaired && (
+          <span
+            className="ml-1.5 px-1 py-0.5 text-[10px] rounded-sm bg-blue/15 text-blue align-middle"
+            title="현물 반대 포지션과 종목 베이시스 페어 (상세 원장은 Phase 4)"
           >
-            <td className="py-1.5 text-t2">
-              <span className="text-t1 font-medium">{a.code}</span>
-              {a.name && <span className="text-t3 ml-1.5">{a.name}</span>}
-              {basisPaired.has(a.code) && (
-                <span
-                  className="ml-1.5 px-1 py-0.5 text-[10px] rounded-sm bg-blue/15 text-blue align-middle"
-                  title="현물 반대 포지션과 종목 베이시스 페어 (상세 원장은 Phase 4)"
-                >
-                  베이시스
-                </span>
-              )}
-            </td>
-            <td className="py-1.5 text-right text-t3">{fmtQty(a.carryover_qty)}</td>
-            <td className="py-1.5 text-right" style={{ color: qtyColor(a.fills_qty_today) }}>
-              {a.fills_qty_today > 0 ? `+${fmtQty(a.fills_qty_today)}` : fmtQty(a.fills_qty_today)}
-            </td>
-            <td className="py-1.5 text-right text-[13px] font-medium" style={{ color: qtyColor(a.net_qty) }}>
-              {fmtQty(a.net_qty)}
-              {unit && <span className="text-t4 text-[10px] ml-0.5">{unit}</span>}
-            </td>
-            <td className="py-1.5 text-right text-t3">{fmtPx(a.avg_price)}</td>
-            <td className="py-1.5 text-right text-t2">{p > 0 ? p.toLocaleString('ko-KR') : '-'}</td>
-            <td className="py-1.5 text-right text-[13px] font-medium" style={{ color: exp === 0 ? 'var(--color-t4)' : exp > 0 ? 'var(--color-t1)' : 'var(--color-down)' }}>
-              {p > 0 ? fmtNotional(exp) : '-'}
-            </td>
-            <td className="py-1.5 text-right">
-              <button
-                onClick={() => del(a)}
-                title="이월 삭제"
-                className="text-[13px] text-t4 hover:text-down px-1"
-              >
-                ×
-              </button>
-            </td>
-          </tr>
-        )
-      })}
-    </>
+            베이시스
+          </span>
+        )}
+      </td>
+      <td className="py-1.5 text-right text-t3">{fmtQty(a.carryover_qty)}</td>
+      <td className="py-1.5 text-right" style={{ color: qtyColor(a.fills_qty_today) }}>
+        {a.fills_qty_today > 0 ? `+${fmtQty(a.fills_qty_today)}` : fmtQty(a.fills_qty_today)}
+      </td>
+      <td className="py-1.5 text-right text-[13px] font-medium" style={{ color: qtyColor(a.net_qty) }}>
+        {fmtQty(a.net_qty)}
+        {unit && <span className="text-t4 text-[10px] ml-0.5">{unit}</span>}
+      </td>
+      <td className="py-1.5 text-right text-t3">{fmtPx(a.avg_price)}</td>
+      <td className="py-1.5 text-right text-t2">{p > 0 ? p.toLocaleString('ko-KR') : '-'}</td>
+      <td
+        className="py-1.5 text-right text-[13px] font-medium"
+        style={{ color: exp === 0 ? 'var(--color-t4)' : exp > 0 ? 'var(--color-t1)' : 'var(--color-down)' }}
+      >
+        {p > 0 ? fmtNotional(exp) : '-'}
+      </td>
+      <td className="py-1.5 text-right">
+        <button onClick={onDelete} title="이월 삭제" className="text-[13px] text-t4 hover:text-down px-1">
+          ×
+        </button>
+      </td>
+    </tr>
   )
 }
 
