@@ -866,6 +866,16 @@ async fn warmup_and_discover(
     for e in &universe.etfs {
         names.insert(series_key(AssetType::Etf, &e.code), e.name.clone());
     }
+    // ETF 이름 보강 — top-N·당일 스냅샷에서 빠졌지만 cache에 잔존하는 ETF도 종목명 채움.
+    // (마스터 적재 지연/유동성 하락으로 universe.etfs에서 누락된 ETF의 raw key `E:495050` 폴백 방지)
+    match universe::load_all_etf_names(pool).await {
+        Ok(etf_names) => {
+            for (code, nm) in &etf_names {
+                names.insert(series_key(AssetType::Etf, code), nm.clone());
+            }
+        }
+        Err(e) => warn!("[names] 전체 ETF 이름 로딩 실패(top-N 이름만 사용): {e}"),
+    }
     for i in &universe.indices {
         names.insert(series_key(AssetType::Index, &i.code), i.name.clone());
     }

@@ -6,6 +6,7 @@
 
 use serde::Serialize;
 use sqlx::PgPool;
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct UniverseStock {
@@ -89,6 +90,25 @@ pub async fn load_active_etfs(pool: &PgPool, top_n: i32) -> Result<Vec<UniverseE
             avg_value,
         })
         .collect())
+}
+
+/// 전체 ETF 코드 → 종목명 맵. `load_active_etfs`(거래대금 top-N·당일 스냅샷)와 달리
+/// **필터 없이 코드별 '가장 최근 스냅샷의 kr_name'** 을 반환한다.
+///
+/// 존재 이유: 가격 cache(`DashMap`)는 한 번 적재된 종목을 영구 보관하는데, `names` 맵은
+/// top-N·당일 스냅샷 ETF로만 만들어진다. 그래서 (1) 마스터 적재 지연으로 당일 스냅샷에
+/// 아직 안 들어온 ETF, (2) 거래대금이 떨어져 top-100 밖으로 밀린 ETF 가 발굴 결과에
+/// 나오면 종목명이 없어 raw series_key(`E:495050`)가 이름 자리에 노출됐다.
+/// 이 맵으로 ETF 이름을 보강해 폴백 노출을 막는다. (예: 495050 → "RISE 코리아밸류업")
+pub async fn load_all_etf_names(pool: &PgPool) -> Result<HashMap<String, String>, sqlx::Error> {
+    let sql = r#"
+        SELECT DISTINCT ON (etf_code) etf_code, kr_name
+        FROM etf_master_daily
+        WHERE kr_name IS NOT NULL AND kr_name != ''
+        ORDER BY etf_code, snapshot_date DESC
+    "#;
+    let rows: Vec<(String, String)> = sqlx::query_as(sql).fetch_all(pool).await?;
+    Ok(rows.into_iter().collect())
 }
 
 /// 주요 지수 — 고정 리스트. 가끔만 갱신 (KRX 신규 지수 출시 시).
