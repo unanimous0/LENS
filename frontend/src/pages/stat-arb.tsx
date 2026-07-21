@@ -1,6 +1,4 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
-
 import { keyToCode } from '@/lib/stat-arb-keys'
 
 type Group = {
@@ -128,7 +126,6 @@ const COL_TOOLTIPS: Record<SortKey | 'pair', string> = {
 }
 
 export function StatArbPage() {
-  const navigate = useNavigate()
   const [pairs, setPairs] = useState<Pair[]>([])
   const [meta, setMeta] = useState<Pick<PairsResp, 'total' | 'filtered' | 'last_run_ms'>>({
     total: 0,
@@ -614,8 +611,10 @@ export function StatArbPage() {
                 <tr
                   key={`${p.left_key}-${p.right_key}`}
                   onClick={() =>
-                    navigate(
-                      `/stat-arb/pair/${encodeURIComponent(p.left_key)}/${encodeURIComponent(p.right_key)}`
+                    window.open(
+                      `/stat-arb/pair/${encodeURIComponent(p.left_key)}/${encodeURIComponent(p.right_key)}`,
+                      '_blank',
+                      'noopener,noreferrer'
                     )
                   }
                   className="cursor-pointer border-b border-bg-surface/50 hover:bg-bg-surface/40"
