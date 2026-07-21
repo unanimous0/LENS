@@ -208,13 +208,12 @@ pub fn benchmark_family(underlying_index: &str, kr_name: &str) -> Option<&'stati
         return None;
     }
     // 기준지수 판정 — 위 제외를 통과한 순수 광범위만 남음(선물/레버리지/인버스/TR 변종 포함).
-    if both.contains("코스피100") || both.contains("KOSPI100") {
+    // 코스피 계열: 코스피200/100 + **코스피 종합지수(코스피지수·코스피TR)** + 바 200.
+    if both.contains("코스피") || both.contains("KOSPI") || both.contains("200") {
         return Some("KOSPI_BROAD");
     }
-    if both.contains("코스피200") || both.contains("KOSPI200") || both.contains("200") {
-        return Some("KOSPI_BROAD");
-    }
-    if both.contains("코스닥150") || both.contains("KOSDAQ150") || both.contains("150") {
+    // 코스닥 계열: 코스닥150 + 코스닥 종합지수 + 바 150.
+    if both.contains("코스닥") || both.contains("KOSDAQ") || both.contains("150") {
         return Some("KOSDAQ_BROAD");
     }
     None

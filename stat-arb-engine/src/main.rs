@@ -290,9 +290,11 @@ async fn list_pairs(State(state): State<AppState>, Query(q): Query<PairsQuery>) 
     let basis = q.basis.as_deref().unwrap_or("exclude");
 
     // group + basis 까지 반영한 모수. category_counts는 이 시점에 집계.
+    // 지수 시계열 leg(코스피/코스피200 등 raw index)는 매매 불가 → 모든 뷰에서 제외.
     let base: Vec<&PairResult> = s
         .pairs
         .iter()
+        .filter(|p| p.left_class != "index" && p.right_class != "index")
         .filter(|p| match &group_members {
             Some(members) => members.contains(&p.left_key) && members.contains(&p.right_key),
             None => true,
