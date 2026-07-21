@@ -8,6 +8,9 @@ use serde::Serialize;
 use sqlx::PgPool;
 use std::collections::HashMap;
 
+use crate::classify::{benchmark_family, classify_etf, EtfCategory};
+use crate::data::bars::{series_key, AssetType};
+
 #[derive(Debug, Clone, Serialize)]
 pub struct UniverseStock {
     pub code: String,
@@ -109,6 +112,49 @@ pub async fn load_all_etf_names(pool: &PgPool) -> Result<HashMap<String, String>
     "#;
     let rows: Vec<(String, String)> = sqlx::query_as(sql).fetch_all(pool).await?;
     Ok(rows.into_iter().collect())
+}
+
+/// ETF 분류 메타. `load_all_etf_names`와 같은 정책(코드별 최신 스냅샷)으로 로딩하되
+/// 카테고리 태깅 + 기초지수 문자열까지 담는다. 발굴 결과 엔리치(페어 leg 분류, 베이시스형
+/// 판정)에만 쓰이는 부가 메타 — 발굴 게이팅엔 개입 안 함.
+#[derive(Debug, Clone)]
+pub struct EtfMeta {
+    pub category: EtfCategory,
+    /// 원본 기초지수 문자열(빈 문자열 가능). 동일 기초지수 완전일치 베이시스 판정 키.
+    pub underlying_index: String,
+    /// 광범위 복제 패밀리(`KOSPI_BROAD`/`KOSDAQ_BROAD`) — 두 leg 일치 시 베이시스. 별상품은 None.
+    pub family: Option<&'static str>,
+}
+
+/// 전체 ETF 메타 맵 — `series_key(Etf, code)`(=`E:{code}`) → EtfMeta.
+///
+/// `load_all_etf_names`와 동일 정책(필터 없이 코드별 가장 최근 스냅샷)으로 로딩해
+/// 가격 cache에 잔존하는 ETF(top-N/당일 스냅샷 밖)까지 커버한다. 분류 후크 3개
+/// (underlying_index·kr_name·replication)를 `classify_etf`에 넘겨 카테고리 확정.
+pub async fn load_all_etf_meta(pool: &PgPool) -> Result<HashMap<String, EtfMeta>, sqlx::Error> {
+    let sql = r#"
+        SELECT DISTINCT ON (etf_code)
+               etf_code, kr_name, COALESCE(underlying_index, '') AS ui, COALESCE(replication, '') AS repl
+        FROM etf_master_daily
+        WHERE kr_name IS NOT NULL AND kr_name != ''
+        ORDER BY etf_code, snapshot_date DESC
+    "#;
+    let rows: Vec<(String, String, String, String)> = sqlx::query_as(sql).fetch_all(pool).await?;
+    Ok(rows
+        .into_iter()
+        .map(|(code, name, ui, repl)| {
+            let category = classify_etf(&ui, &name, &repl);
+            let family = benchmark_family(&ui, &name);
+            (
+                series_key(AssetType::Etf, &code),
+                EtfMeta {
+                    category,
+                    underlying_index: ui,
+                    family,
+                },
+            )
+        })
+        .collect())
 }
 
 /// 주요 지수 — 고정 리스트. 가끔만 갱신 (KRX 신규 지수 출시 시).

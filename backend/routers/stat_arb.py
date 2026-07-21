@@ -33,10 +33,26 @@ async def _proxy_get(path: str, params: dict[str, Any]) -> dict:
 async def list_pairs(
     limit: int = Query(100, ge=0, le=10000),
     group: Optional[str] = None,
+    basis: Optional[str] = None,
+    exclude_categories: Optional[str] = None,
+    asset_combo: Optional[str] = None,
 ) -> dict:
+    """통계차익 1:1 페어 리스트.
+
+    basis 미지정 시 엔진 기본값 exclude(베이시스형=같은 기초지수 복제 페어 제외).
+    basis=only 로 베이시스형만, all 로 전체 조회.
+    exclude_categories: 카테고리 태그 CSV(어느 한 leg라도 해당하면 제외).
+    asset_combo: etf_etf|etf_stock|stock_stock|any.
+    """
     params: dict[str, Any] = {"limit": limit}
     if group:
         params["group"] = group
+    if basis:
+        params["basis"] = basis
+    if exclude_categories:
+        params["exclude_categories"] = exclude_categories
+    if asset_combo:
+        params["asset_combo"] = asset_combo
     return await _proxy_get("/pairs", params)
 
 

@@ -49,6 +49,10 @@ type Pair = {
   z_score: number
   sample_size: number
   score: number
+  // ETF 분류 (엔진 신규): leg 분류 태그 + 베이시스형 여부
+  left_class?: string
+  right_class?: string
+  same_underlying?: boolean
 }
 
 type PairsResp = {
@@ -57,6 +61,8 @@ type PairsResp = {
   last_run_ms: number
   last_run_duration_ms: number
   pairs: Pair[]
+  // group+basis 반영·category/combo 미반영 모수 기준 카테고리별 카운트 (칩 배지용)
+  category_counts?: Record<string, number>
 }
 
 type GroupsResp = {
@@ -70,6 +76,40 @@ const KIND_LABELS: Record<string, string> = {
   etf: 'ETF',
   etf_category: 'ETF 카테고리',
 }
+
+// leg 분류 태그 → 한글 라벨 (엔진 left_class/right_class 값)
+const CLASS_LABELS: Record<string, string> = {
+  broad_index: '광범위지수',
+  leverage_inverse: '레버리지·인버스',
+  sector: '섹터',
+  theme: '테마',
+  bond_rates: '채권·금리',
+  factor: '팩터',
+  overseas: '해외',
+  commodity: '원자재',
+  active: '액티브',
+  other: '기타',
+  stock: '주식',
+  index: '지수',
+}
+
+// 배지 색 — 저채도, 과하지 않게. 미지정은 text-t3.
+const CLASS_COLORS: Record<string, string> = {
+  broad_index: 'text-blue',
+  leverage_inverse: 'text-warning',
+  sector: 'text-t2',
+  theme: 'text-t2',
+  bond_rates: 'text-t2',
+  factor: 'text-t2',
+  overseas: 'text-t2',
+  commodity: 'text-t2',
+  active: 'text-t2',
+  stock: 'text-t3',
+  index: 'text-t3',
+}
+
+type BasisView = 'exclude' | 'only' | 'all'
+type AssetCombo = 'any' | 'etf_etf' | 'etf_stock' | 'stock_stock'
 
 // 정렬 가능한 컬럼
 type SortKey = 'score' | 'z' | 'hl' | 'r2' | 'adf' | 'corr' | 'beta' | 'loanrate'
@@ -98,6 +138,11 @@ export function StatArbPage() {
   const [groups, setGroups] = useState<Group[]>([])
   const [groupFilter, setGroupFilter] = useState<string>('')
   const [kindFilter, setKindFilter] = useState<string>('')
+  // ETF 분류·베이시스 필터 (엔진 신규 API)
+  const [basisView, setBasisView] = useState<BasisView>('exclude') // 통계차익(베이시스 제외)이 기본
+  const [assetCombo, setAssetCombo] = useState<AssetCombo>('any')
+  const [excludeCats, setExcludeCats] = useState<Set<string>>(new Set())
+  const [catCounts, setCatCounts] = useState<Record<string, number>>({})
   const [search, setSearch] = useState<string>('')
   const [sortKey, setSortKey] = useState<SortKey>('score')
   const [sortAsc, setSortAsc] = useState<boolean>(false) // 기본 내림차순
@@ -161,21 +206,42 @@ export function StatArbPage() {
     // 전체 로드 — 검색이 score 낮은 페어까지 찾도록. 렌더는 visiblePairs에서 상위 500만.
     const params = new URLSearchParams({ limit: '10000' })
     if (groupFilter) params.set('group', groupFilter)
+    params.set('basis', basisView)
+    params.set('asset_combo', assetCombo)
+    if (excludeCats.size > 0) params.set('exclude_categories', Array.from(excludeCats).join(','))
     fetch(`/api/stat-arb/pairs?${params}`)
       .then((r) => r.json())
       .then((d: PairsResp) => {
         setPairs(d.pairs)
         setMeta({ total: d.total, filtered: d.filtered, last_run_ms: d.last_run_ms })
+        setCatCounts(d.category_counts ?? {})
       })
       .catch((e) => setError(`pairs: ${String(e)}`))
       .finally(() => setLoading(false))
-  }, [groupFilter])
+  }, [groupFilter, basisView, assetCombo, excludeCats])
 
   useEffect(() => {
     loadPairs()
   }, [loadPairs])
 
   const filteredGroups = kindFilter ? groups.filter((g) => g.kind === kindFilter) : groups
+
+  // 카테고리 칩 — 카운트>0 만, 내림차순. 클릭 = 제외 토글.
+  const catChips = useMemo(
+    () =>
+      Object.entries(catCounts)
+        .filter(([, n]) => n > 0)
+        .sort((a, b) => b[1] - a[1]),
+    [catCounts]
+  )
+  const toggleCat = (cat: string) =>
+    setExcludeCats((prev) => {
+      const next = new Set(prev)
+      if (next.has(cat)) next.delete(cat)
+      else next.add(cat)
+      return next
+    })
+
   const lastRunStr = meta.last_run_ms
     ? new Date(meta.last_run_ms).toLocaleTimeString('ko-KR', { hour12: false })
     : '—'
@@ -230,7 +296,33 @@ export function StatArbPage() {
   return (
     <div className="flex flex-col gap-1 p-1">
       {/* 컨트롤 패널 */}
-      <div className="panel flex flex-wrap items-center gap-3 p-3">
+      <div className="panel flex flex-col gap-2 p-3">
+       <div className="flex flex-wrap items-center gap-3">
+        <div className="flex items-center gap-2">
+          <span className="text-xs text-t3">뷰</span>
+          <Seg
+            value={basisView}
+            onChange={setBasisView}
+            options={[
+              { v: 'exclude', label: '통계차익' },
+              { v: 'only', label: '베이시스' },
+              { v: 'all', label: '전체' },
+            ]}
+          />
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="text-xs text-t3">조합</span>
+          <Seg
+            value={assetCombo}
+            onChange={setAssetCombo}
+            options={[
+              { v: 'any', label: '전체' },
+              { v: 'etf_etf', label: 'ETF-ETF' },
+              { v: 'etf_stock', label: 'ETF-주식' },
+              { v: 'stock_stock', label: '주식-주식' },
+            ]}
+          />
+        </div>
         <div className="flex items-center gap-2">
           <span className="text-xs text-t3">자산군</span>
           <select
@@ -297,6 +389,31 @@ export function StatArbPage() {
             페어로직 {showLogic ? '▴' : '▾'}
           </button>
         </div>
+       </div>
+
+       {/* 카테고리 제외 칩 — category_counts 기반. 클릭 = 제외 토글 */}
+       {catChips.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="text-xs text-t4">카테고리 제외</span>
+          {catChips.map(([cat, n]) => {
+            const active = excludeCats.has(cat)
+            return (
+              <button
+                key={cat}
+                onClick={() => toggleCat(cat)}
+                title={active ? '제외 중 — 클릭하여 포함' : '클릭하여 제외'}
+                className={`rounded-sm px-1.5 py-0.5 text-[11px] tabular-nums ${
+                  active
+                    ? 'bg-down/20 text-down line-through'
+                    : 'bg-bg-surface text-t3 hover:text-t1'
+                }`}
+              >
+                {CLASS_LABELS[cat] ?? cat} <span className="tabular-nums">{n}</span>
+              </button>
+            )
+          })}
+        </div>
+       )}
       </div>
 
       {/* PR-B: 그룹 PCA 요약 패널 — 그룹 선택 시만 표시 */}
@@ -505,10 +622,17 @@ export function StatArbPage() {
                 >
                   <td className="px-3 py-2 text-t4">{i + 1}</td>
                   <td className="px-3 py-2">
-                    <div>
+                    <div className="flex flex-wrap items-center gap-x-1 gap-y-0.5">
                       <span className="text-t1">{p.left_name}</span>
-                      <span className="mx-1 text-t3">↔</span>
+                      <ClassBadge cls={p.left_class} />
+                      <span className="mx-0.5 text-t3">↔</span>
                       <span className="text-t1">{p.right_name}</span>
+                      <ClassBadge cls={p.right_class} />
+                      {p.same_underlying && (
+                        <span className="rounded-sm bg-blue/15 px-1 text-[11px] text-blue">
+                          베이시스
+                        </span>
+                      )}
                     </div>
                     <div className="text-[10px] text-t4">
                       {p.left_key} / {p.right_key}
@@ -552,6 +676,43 @@ export function StatArbPage() {
           </div>
         )}
       </div>
+    </div>
+  )
+}
+
+/** leg 분류 배지 — 저채도·소형. class 빈 값이면 렌더 안 함. */
+function ClassBadge({ cls }: { cls?: string }) {
+  if (!cls) return null
+  return (
+    <span className={`rounded-sm bg-bg-surface px-1 text-[11px] ${CLASS_COLORS[cls] ?? 'text-t3'}`}>
+      {CLASS_LABELS[cls] ?? cls}
+    </span>
+  )
+}
+
+/** 세그먼트 토글 — 트레이딩 터미널 톤. 선택값 accent 강조. */
+function Seg<T extends string>({
+  value,
+  onChange,
+  options,
+}: {
+  value: T
+  onChange: (v: T) => void
+  options: Array<{ v: T; label: string }>
+}) {
+  return (
+    <div className="flex overflow-hidden rounded-sm bg-bg-surface">
+      {options.map((o) => (
+        <button
+          key={o.v}
+          onClick={() => onChange(o.v)}
+          className={`px-2 py-1 text-xs ${
+            value === o.v ? 'bg-accent/25 text-accent' : 'text-t3 hover:text-t1'
+          }`}
+        >
+          {o.label}
+        </button>
+      ))}
     </div>
   )
 }

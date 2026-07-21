@@ -3,6 +3,7 @@
 //! port 8300. realtime(8200)과 분리된 별도 binary.
 //! 자세한 설계는 ../stat-arb-engine.md 참조.
 
+mod classify;
 mod data;
 mod detail;
 mod discovery;
@@ -34,6 +35,7 @@ use tracing_subscriber::EnvFilter;
 use data::bars::{series_key, AssetType, SeriesCache};
 use discovery::{GroupPcaResult, MPairResult, MnSplitStrategy, PairResult};
 use groups::{Group, GroupKind};
+use universe::EtfMeta;
 
 const PORT: u16 = 8300;
 
@@ -105,6 +107,9 @@ pub struct EngineStats {
 pub struct PairsState {
     pub pairs: Vec<PairResult>,
     pub names: HashMap<String, String>,
+    /// ETF 분류 메타 — series_key(`E:{code}`) → EtfMeta. 매 사이클 갱신.
+    /// 발굴 결과 엔리치(leg 분류·베이시스형 판정)에 사용. 발굴 게이팅과 무관한 부가 메타.
+    pub etf_meta: HashMap<String, EtfMeta>,
     pub last_run_ms: i64,
     pub last_run_duration_ms: u64,
 }
@@ -213,6 +218,16 @@ struct PairsQuery {
     /// 도메인 그룹 id 필터 (예: `index:KOSPI200`, `sector:화학`, `etf:069500`).
     /// 멤버 둘 다 그룹에 속하는 페어만 반환.
     group: Option<String>,
+    /// 베이시스형(같은 기초지수 복제) 페어 처리. 미지정 시 `exclude`(기본):
+    ///   - `exclude`: same_underlying 페어 제외 (깨끗한 통계차익 리스트)
+    ///   - `only`   : same_underlying 페어만 (베이시스형 조회)
+    ///   - `all`    : 전체
+    basis: Option<String>,
+    /// 제외할 카테고리 CSV (예: `leverage_inverse` 또는 `leverage_inverse,broad_index`).
+    /// 어느 한 leg라도 해당 카테고리면 제외.
+    exclude_categories: Option<String>,
+    /// leg 자산유형 조합 필터: `etf_etf`|`etf_stock`|`stock_stock`|`any`(기본).
+    asset_combo: Option<String>,
 }
 
 fn default_limit() -> usize {
@@ -225,13 +240,42 @@ struct PairsResp {
     returned: usize,
     last_run_ms: i64,
     last_run_duration_ms: u64,
-    /// 그룹 필터링 후 매칭된 페어 수 (필터 없으면 total과 동일).
+    /// 모든 필터(group→basis→category/combo) 적용 후 매칭된 페어 수.
     filtered: usize,
+    /// 필터 적용 전(group+basis만 반영, category/combo 미반영) 모수 기준 카테고리별 카운트.
+    /// leg 양쪽 분류를 각각 카운트 — 프론트 칩 표시용.
+    category_counts: HashMap<String, usize>,
     pairs: Vec<PairResult>,
+}
+
+/// leg series_key → 자산유형 조합 판별용 kind (`etf`/`stock`/`index`/`other`).
+fn asset_kind(key: &str) -> &'static str {
+    if key.starts_with("E:") {
+        "etf"
+    } else if key.starts_with("S:") {
+        "stock"
+    } else if key.starts_with("I:") {
+        "index"
+    } else {
+        "other"
+    }
+}
+
+/// asset_combo 필터 매칭 (leg 순서 무관).
+fn asset_combo_match(combo: &str, left: &str, right: &str) -> bool {
+    let (l, r) = (asset_kind(left), asset_kind(right));
+    match combo {
+        "etf_etf" => l == "etf" && r == "etf",
+        "stock_stock" => l == "stock" && r == "stock",
+        "etf_stock" => (l == "etf" && r == "stock") || (l == "stock" && r == "etf"),
+        _ => true, // any 또는 알 수 없는 값 → 통과
+    }
 }
 
 async fn list_pairs(State(state): State<AppState>, Query(q): Query<PairsQuery>) -> Json<PairsResp> {
     let s = state.pairs.read().await;
+
+    // 1) group 필터 — 멤버 둘 다 그룹 소속.
     let group_members: Option<HashSet<String>> = if let Some(gid) = q.group.as_ref() {
         let gs = state.groups.read().await;
         gs.by_id
@@ -242,23 +286,62 @@ async fn list_pairs(State(state): State<AppState>, Query(q): Query<PairsQuery>) 
         None
     };
 
-    let filtered: Vec<PairResult> = match &group_members {
-        Some(members) => s
-            .pairs
-            .iter()
-            .filter(|p| members.contains(&p.left_key) && members.contains(&p.right_key))
-            .cloned()
-            .collect(),
-        None => s.pairs.clone(),
-    };
+    // 2) basis 필터 — 미지정 시 exclude(베이시스형 제외)가 기본.
+    let basis = q.basis.as_deref().unwrap_or("exclude");
 
-    let returned = filtered.iter().take(q.limit).cloned().collect::<Vec<_>>();
+    // group + basis 까지 반영한 모수. category_counts는 이 시점에 집계.
+    let base: Vec<&PairResult> = s
+        .pairs
+        .iter()
+        .filter(|p| match &group_members {
+            Some(members) => members.contains(&p.left_key) && members.contains(&p.right_key),
+            None => true,
+        })
+        .filter(|p| match basis {
+            "only" => p.same_underlying,
+            "all" => true,
+            _ => !p.same_underlying, // exclude(기본)
+        })
+        .collect();
+
+    // category_counts — base(group+basis) 기준, leg 양쪽 각각 카운트. category/combo 미반영.
+    let mut category_counts: HashMap<String, usize> = HashMap::new();
+    for p in &base {
+        *category_counts.entry(p.left_class.clone()).or_insert(0) += 1;
+        *category_counts.entry(p.right_class.clone()).or_insert(0) += 1;
+    }
+
+    // 3) exclude_categories + asset_combo 필터.
+    let exclude_cats: HashSet<&str> = q
+        .exclude_categories
+        .as_deref()
+        .map(|s| s.split(',').map(|c| c.trim()).filter(|c| !c.is_empty()).collect())
+        .unwrap_or_default();
+    let combo = q.asset_combo.as_deref().unwrap_or("any");
+
+    let matched: Vec<&PairResult> = base
+        .into_iter()
+        .filter(|p| {
+            if !exclude_cats.is_empty()
+                && (exclude_cats.contains(p.left_class.as_str())
+                    || exclude_cats.contains(p.right_class.as_str()))
+            {
+                return false;
+            }
+            asset_combo_match(combo, &p.left_key, &p.right_key)
+        })
+        .collect();
+
+    // 4) limit.
+    let filtered = matched.len();
+    let returned: Vec<PairResult> = matched.into_iter().take(q.limit).cloned().collect();
     Json(PairsResp {
         total: s.pairs.len(),
         returned: returned.len(),
         last_run_ms: s.last_run_ms,
         last_run_duration_ms: s.last_run_duration_ms,
-        filtered: filtered.len(),
+        filtered,
+        category_counts,
         pairs: returned,
     })
 }
@@ -766,6 +849,41 @@ enum UpdateMode {
     Incremental,
 }
 
+/// leg series_key → 분류 태그. 주식=`stock`, 지수=`index`, ETF=카테고리 태그(메타 없으면 `other`).
+/// key prefix(`S:`/`E:`/`I:`)로 자산유형 판별. 발굴 게이팅과 무관한 응답단 부가 메타.
+fn leg_class(key: &str, etf_meta: &HashMap<String, EtfMeta>) -> String {
+    if key.starts_with("E:") {
+        etf_meta
+            .get(key)
+            .map(|m| m.category.as_tag().to_string())
+            .unwrap_or_else(|| "other".to_string())
+    } else if key.starts_with("S:") {
+        "stock".to_string()
+    } else if key.starts_with("I:") {
+        "index".to_string()
+    } else {
+        "other".to_string()
+    }
+}
+
+/// 베이시스형 판정 — 양 leg 모두 ETF이고 기초지수가 같고(비어있지 않음) true.
+/// `etf_meta`는 `E:` 키만 담으므로 get 성공 자체가 "그 leg는 ETF"임을 보장.
+/// 베이시스형(복제) 페어 판정. 두 leg 모두 ETF일 때만 대상.
+/// 1) 광범위 복제 패밀리(KOSPI/KOSDAQ_BROAD) 일치 → 베이시스 (200·200TR·150·선물레버리지·코스피100·액티브 계열).
+/// 2) 동일 기초지수 완전일치(정규화) → 베이시스 (섹터 복제 등, underlying_index 채워진 경우).
+fn is_basis(left: &str, right: &str, etf_meta: &HashMap<String, EtfMeta>) -> bool {
+    let (Some(l), Some(r)) = (etf_meta.get(left), etf_meta.get(right)) else {
+        return false;
+    };
+    if let (Some(fl), Some(fr)) = (l.family, r.family) {
+        if fl == fr {
+            return true;
+        }
+    }
+    let ln = classify::norm(&l.underlying_index);
+    !ln.is_empty() && ln == classify::norm(&r.underlying_index)
+}
+
 /// universe 워밍업 + 1:1 발굴. Full(기동 1회) / Incremental(매 cron) 모드 분기.
 async fn warmup_and_discover(
     pool: &PgPool,
@@ -880,12 +998,29 @@ async fn warmup_and_discover(
         names.insert(series_key(AssetType::Index, &i.code), i.name.clone());
     }
 
+    // 3.5 ETF 분류 메타 — series_key(`E:{code}`) → EtfMeta. names와 같은 정책(전체 최신 스냅샷).
+    //     발굴 결과 엔리치(leg 분류·베이시스형 판정)에만 사용. 발굴 게이팅엔 개입 안 함.
+    let etf_meta = match universe::load_all_etf_meta(pool).await {
+        Ok(m) => m,
+        Err(e) => {
+            warn!("[meta] ETF 분류 메타 로딩 실패(엔리치 생략): {e}");
+            HashMap::new()
+        }
+    };
+
     // 4. 1:1 발굴
     let t_disc = Instant::now();
-    let result = discovery::discover_all_one_to_one(cache, &names);
+    let mut result = discovery::discover_all_one_to_one(cache, &names);
     let disc_ms = t_disc.elapsed().as_millis() as u64;
     stats.discovery_runs.fetch_add(1, Ordering::Relaxed);
     stats.pairs_total.store(result.len() as u64, Ordering::Relaxed);
+
+    // 4.5 분류 엔리치 패스 — 발굴 hot loop 밖에서 각 페어 leg에 분류 태그 + 베이시스형 플래그.
+    for p in result.iter_mut() {
+        p.left_class = leg_class(&p.left_key, &etf_meta);
+        p.right_class = leg_class(&p.right_key, &etf_meta);
+        p.same_underlying = is_basis(&p.left_key, &p.right_key, &etf_meta);
+    }
 
     // 5. 그룹별 통과 페어 수 산출 + 진단 로깅 (PR-A 검증 포인트)
     let pair_counts = compute_group_pair_counts(&result, groups).await;
@@ -896,7 +1031,16 @@ async fn warmup_and_discover(
     log_pca_diagnostics(&pca_map, groups).await;
 
     // 7. PR-C2: Sparse CCA M:N 발굴 — PCA candidate pool 기반
-    let mn_map = compute_group_mn_pairs(&pca_map, cache, &names, groups).await;
+    let mut mn_map = compute_group_mn_pairs(&pca_map, cache, &names, groups).await;
+    // M:N leg 분류 태깅(same_underlying 분리는 이번 범위 밖 — 태그만).
+    for mp in mn_map.values_mut() {
+        for leg in mp.x_legs.iter_mut() {
+            leg.class = leg_class(&leg.key, &etf_meta);
+        }
+        for leg in mp.y_legs.iter_mut() {
+            leg.class = leg_class(&leg.key, &etf_meta);
+        }
+    }
     log_mn_diagnostics(&mn_map, groups).await;
 
     {
@@ -910,6 +1054,7 @@ async fn warmup_and_discover(
         let mut s = pairs.write().await;
         s.pairs = result;
         s.names = names;
+        s.etf_meta = etf_meta;
         s.last_run_ms = chrono::Utc::now().timestamp_millis();
         s.last_run_duration_ms = disc_ms;
     }

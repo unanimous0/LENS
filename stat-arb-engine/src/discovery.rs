@@ -88,6 +88,17 @@ pub struct PairResult {
     pub z_score: f64,      // 현재 잔차의 z
     pub sample_size: usize,
     pub score: f64,
+    // --- 분류 태깅 (발굴 후 엔리치 패스에서 채움. 발굴 게이팅과 무관한 부가 메타) ---
+    /// 좌변 leg 분류. 주식=`"stock"`, 지수=`"index"`, ETF=카테고리 태그(broad_index 등).
+    #[serde(default)]
+    pub left_class: String,
+    /// 우변 leg 분류. 규칙은 left_class와 동일.
+    #[serde(default)]
+    pub right_class: String,
+    /// 베이시스형 여부 — 양 leg 모두 ETF이고 기초지수가 같고 비어있지 않으면 true.
+    /// 같은 지수 복제 페어(KODEX200↔TIGER200)는 자명 공적분이라 통계차익 리스트에서 기본 제외.
+    #[serde(default)]
+    pub same_underlying: bool,
 }
 
 /// 시리즈의 일봉 종가만 추출. 길이 < MIN_SAMPLES 면 None.
@@ -204,6 +215,10 @@ fn evaluate_pair(
         z_score: z,
         sample_size: a.len(),
         score,
+        // 분류 태깅은 발굴 후 엔리치 패스(main.rs)에서 메타 맵으로 채움 — 여기선 기본값.
+        left_class: String::new(),
+        right_class: String::new(),
+        same_underlying: false,
     })
 }
 
@@ -397,6 +412,9 @@ pub struct MLeg {
     pub name: String,
     /// L2 정규화 가중치 (CCA u 또는 v entry). 절댓값 0.05 이상만 leg로 인정.
     pub weight: f64,
+    /// leg 분류 태그 (stock/index/ETF 카테고리). 발굴 후 엔리치 패스에서 채움.
+    #[serde(default)]
+    pub class: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -712,6 +730,7 @@ pub fn discover_mn_in_group(
             key: x_keys_kept[i].clone(),
             name: names.get(&x_keys_kept[i]).cloned().unwrap_or_else(|| x_keys_kept[i].clone()),
             weight: cca.u[i],
+            class: String::new(), // 엔리치 패스(main.rs)에서 채움
         })
         .collect();
     let y_legs: Vec<MLeg> = y_sel
@@ -720,6 +739,7 @@ pub fn discover_mn_in_group(
             key: y_keys_kept[j].clone(),
             name: names.get(&y_keys_kept[j]).cloned().unwrap_or_else(|| y_keys_kept[j].clone()),
             weight: cca.v[j],
+            class: String::new(), // 엔리치 패스(main.rs)에서 채움
         })
         .collect();
 

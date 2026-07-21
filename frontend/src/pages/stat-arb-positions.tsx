@@ -36,7 +36,7 @@ export function StatArbPositionsPage() {
         if (!r.ok) throw new Error(`positions HTTP ${r.status}`)
         return r.json() as Promise<PositionListResp>
       }),
-      fetch('/api/stat-arb/pairs?limit=500').then(async (r) => {
+      fetch('/api/stat-arb/pairs?limit=500&basis=all').then(async (r) => {
         if (!r.ok) throw new Error(`pairs HTTP ${r.status}`)
         return r.json() as Promise<{ pairs: PairRow[] }>
       }),
