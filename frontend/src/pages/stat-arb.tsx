@@ -141,6 +141,7 @@ export function StatArbPage() {
   const [excludeCats, setExcludeCats] = useState<Set<string>>(new Set())
   const [catCounts, setCatCounts] = useState<Record<string, number>>({})
   const [search, setSearch] = useState<string>('')
+  const [exclude, setExclude] = useState<string>('') // 종목명 단어/코드 제외 (쉼표 여러 개)
   const [sortKey, setSortKey] = useState<SortKey>('score')
   const [sortAsc, setSortAsc] = useState<boolean>(false) // 기본 내림차순
   const [loanRates, setLoanRates] = useState<Map<string, number>>(new Map())
@@ -243,19 +244,23 @@ export function StatArbPage() {
     ? new Date(meta.last_run_ms).toLocaleTimeString('ko-KR', { hour12: false })
     : '—'
 
-  // 검색 + 정렬 적용
+  // 검색(포함) + 제외 + 정렬 적용
   const visiblePairs = useMemo(() => {
+    // 쉼표로 여러 단어/코드. 한 term이라도 leg 이름/코드에 있으면 매칭.
+    const parseTerms = (s: string) =>
+      s.split(',').map((t) => t.trim().toLowerCase()).filter(Boolean)
+    const incTerms = parseTerms(search)
+    const excTerms = parseTerms(exclude)
+    const matches = (p: Pair, t: string) =>
+      p.left_name.toLowerCase().includes(t) ||
+      p.right_name.toLowerCase().includes(t) ||
+      p.left_key.toLowerCase().includes(t) ||
+      p.right_key.toLowerCase().includes(t)
+
     let list = pairs
-    if (search.trim()) {
-      const q = search.trim().toLowerCase()
-      list = list.filter(
-        (p) =>
-          p.left_name.toLowerCase().includes(q) ||
-          p.right_name.toLowerCase().includes(q) ||
-          p.left_key.toLowerCase().includes(q) ||
-          p.right_key.toLowerCase().includes(q)
-      )
-    }
+    if (incTerms.length) list = list.filter((p) => incTerms.some((t) => matches(p, t)))
+    if (excTerms.length) list = list.filter((p) => !excTerms.some((t) => matches(p, t)))
+
     const getter: Record<SortKey, (p: Pair) => number> = {
       score: (p) => p.score,
       z: (p) => Math.abs(p.z_score), // z는 절댓값 정렬이 직관적
@@ -277,10 +282,9 @@ export function StatArbPage() {
       const vb = getter[sortKey](b)
       return sortAsc ? va - vb : vb - va
     })
-    // 검색 없으면 상위 500만 렌더(테이블 성능). 검색 시엔 매칭 전체 표시
-    // — score 낮은 페어(예: 두산에너빌리티 3천위대)도 검색으로 찾을 수 있게.
-    return search.trim() ? sorted : sorted.slice(0, 500)
-  }, [pairs, search, sortKey, sortAsc, loanRates])
+    // 검색(포함) 시엔 매칭 전체 표시 — score 낮은 페어도 찾게. 그 외엔 상위 500만(성능).
+    return incTerms.length ? sorted : sorted.slice(0, 500)
+  }, [pairs, search, exclude, sortKey, sortAsc, loanRates])
 
   const sortClick = (k: SortKey) => {
     if (sortKey === k) setSortAsc(!sortAsc)
@@ -359,9 +363,28 @@ export function StatArbPage() {
             type="text"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="종목명 / 코드"
-            className="w-[200px] rounded-sm bg-bg-surface px-2 py-1 text-xs text-t1 placeholder:text-t4 focus:outline-none"
+            placeholder="종목명 / 코드 (쉼표로 여러 개)"
+            className="w-[220px] rounded-sm bg-bg-surface px-2 py-1 text-xs text-t1 placeholder:text-t4 focus:outline-none"
           />
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="text-xs text-t3">제외</span>
+          <input
+            type="text"
+            value={exclude}
+            onChange={(e) => setExclude(e.target.value)}
+            placeholder="예: TOP10, ESG, 069500"
+            className="w-[220px] rounded-sm bg-bg-surface px-2 py-1 text-xs text-t1 placeholder:text-t4 focus:outline-none focus:ring-1 focus:ring-down/40"
+          />
+          {exclude.trim() && (
+            <button
+              onClick={() => setExclude('')}
+              className="rounded-sm bg-bg-surface px-1.5 py-1 text-[11px] text-t3 hover:text-t1"
+              title="제외 조건 초기화"
+            >
+              ✕
+            </button>
+          )}
         </div>
         <div className="ml-auto flex items-center gap-3 text-xs text-t3 tabular-nums">
           <span>
