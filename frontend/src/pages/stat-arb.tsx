@@ -130,7 +130,6 @@ const QUICK_EXCLUDES: { label: string; term: string }[] = [
   { label: '코리아TOP10', term: '코리아top10' },
   { label: 'ESG사회책임', term: 'esg사회책임' },
 ]
-const QUICK_EXC_LS_KEY = 'statarb.quickExcludes'
 
 export function StatArbPage() {
   const [pairs, setPairs] = useState<Pair[]>([])
@@ -149,15 +148,8 @@ export function StatArbPage() {
   const [catCounts, setCatCounts] = useState<Record<string, number>>({})
   const [search, setSearch] = useState<string>('')
   const [exclude, setExclude] = useState<string>('') // 종목명 단어/코드 제외 (쉼표 여러 개)
-  // 빠른 제외 프리셋 토글 상태 — localStorage에 저장해 다음 방문에도 유지.
-  const [quickExc, setQuickExc] = useState<Set<string>>(() => {
-    try {
-      const raw = localStorage.getItem(QUICK_EXC_LS_KEY)
-      return raw ? new Set<string>(JSON.parse(raw)) : new Set()
-    } catch {
-      return new Set()
-    }
-  })
+  // 빠른 제외 프리셋 토글 상태 — 기본 OFF(제외 안 함). 서버 필터로 적용.
+  const [quickExc, setQuickExc] = useState<Set<string>>(new Set())
   const [sortKey, setSortKey] = useState<SortKey>('score')
   const [sortAsc, setSortAsc] = useState<boolean>(false) // 기본 내림차순
   const [loanRates, setLoanRates] = useState<Map<string, number>>(new Map())
@@ -223,6 +215,8 @@ export function StatArbPage() {
     params.set('basis', basisView)
     params.set('asset_combo', assetCombo)
     if (excludeCats.size > 0) params.set('exclude_categories', Array.from(excludeCats).join(','))
+    // 빠른제외는 서버 필터(exclude_terms)로 — 카테고리 제외와 동일 경로(토글 시 재요청).
+    if (quickExc.size > 0) params.set('exclude_terms', Array.from(quickExc).join(','))
     fetch(`/api/stat-arb/pairs?${params}`)
       .then((r) => r.json())
       .then((d: PairsResp) => {
@@ -232,7 +226,7 @@ export function StatArbPage() {
       })
       .catch((e) => setError(`pairs: ${String(e)}`))
       .finally(() => setLoading(false))
-  }, [groupFilter, basisView, assetCombo, excludeCats])
+  }, [groupFilter, basisView, assetCombo, excludeCats, quickExc])
 
   useEffect(() => {
     loadPairs()
@@ -263,14 +257,6 @@ export function StatArbPage() {
       else next.add(term)
       return next
     })
-  // 빠른 제외 선택 변경 시 localStorage 저장 (다음 방문 유지).
-  useEffect(() => {
-    try {
-      localStorage.setItem(QUICK_EXC_LS_KEY, JSON.stringify(Array.from(quickExc)))
-    } catch {
-      /* 무시 */
-    }
-  }, [quickExc])
 
   const lastRunStr = meta.last_run_ms
     ? new Date(meta.last_run_ms).toLocaleTimeString('ko-KR', { hour12: false })
@@ -280,7 +266,6 @@ export function StatArbPage() {
   // React가 여유 있을 때 처리해 타이핑이 목록 재렌더에 막히지 않게 함(입력 렉 제거).
   const deferredSearch = useDeferredValue(search)
   const deferredExclude = useDeferredValue(exclude)
-  const deferredQuick = useDeferredValue(quickExc) // 빠른제외 토글도 목록 재렌더를 뒤로 미룸(반응 즉시)
 
   // 검색(포함) + 제외 + 정렬 적용
   const visiblePairs = useMemo(() => {
@@ -288,8 +273,8 @@ export function StatArbPage() {
     const parseTerms = (s: string) =>
       s.split(',').map((t) => t.trim().toLowerCase()).filter(Boolean)
     const incTerms = parseTerms(deferredSearch)
-    // 자유입력 제외 + 빠른 제외 프리셋 토글 합치기 (프리셋 term은 이미 소문자).
-    const excTerms = [...parseTerms(deferredExclude), ...deferredQuick]
+    // 자유입력 제외(클라이언트). 빠른제외는 서버(exclude_terms)에서 이미 제거됨.
+    const excTerms = parseTerms(deferredExclude)
     const matches = (p: Pair, t: string) =>
       p.left_name.toLowerCase().includes(t) ||
       p.right_name.toLowerCase().includes(t) ||
@@ -323,7 +308,7 @@ export function StatArbPage() {
     })
     // 검색(포함) 시엔 매칭 전체 표시 — score 낮은 페어도 찾게. 그 외엔 상위 500만(성능).
     return incTerms.length ? sorted : sorted.slice(0, 500)
-  }, [pairs, deferredSearch, deferredExclude, deferredQuick, sortKey, sortAsc, loanRates])
+  }, [pairs, deferredSearch, deferredExclude, sortKey, sortAsc, loanRates])
 
   // 행 JSX를 useMemo로 캐시 — useDeferredValue의 긴급 렌더(visiblePairs 미변경)에서
   // 500행을 재생성하지 않게 함(이중 렌더 제거). visiblePairs/loanRates 변경 시에만 1회 재생성.
@@ -497,9 +482,9 @@ export function StatArbPage() {
           <span>
             전체 {meta.total} / 필터 {meta.filtered} / 표시{' '}
             <span className="text-t1">{visiblePairs.length}</span>
-            {(deferredSearch !== search ||
-              deferredExclude !== exclude ||
-              deferredQuick !== quickExc) && <span className="ml-1 text-t4">…</span>}
+            {(deferredSearch !== search || deferredExclude !== exclude) && (
+              <span className="ml-1 text-t4">…</span>
+            )}
           </span>
           <span>갱신 {lastRunStr}</span>
           <button

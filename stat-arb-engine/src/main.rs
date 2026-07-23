@@ -228,6 +228,9 @@ struct PairsQuery {
     exclude_categories: Option<String>,
     /// leg 자산유형 조합 필터: `etf_etf`|`etf_stock`|`stock_stock`|`any`(기본).
     asset_combo: Option<String>,
+    /// 종목명/코드 제외 term CSV (예: `코리아top10,esg사회책임`). 어느 한 leg의 이름 또는
+    /// key에 term이 포함되면 제외(대소문자 무시). 프론트 '빠른제외' 버튼용 — 서버단 필터.
+    exclude_terms: Option<String>,
 }
 
 fn default_limit() -> usize {
@@ -313,13 +316,24 @@ async fn list_pairs(State(state): State<AppState>, Query(q): Query<PairsQuery>) 
         *category_counts.entry(p.right_class.clone()).or_insert(0) += 1;
     }
 
-    // 3) exclude_categories + asset_combo 필터.
+    // 3) exclude_categories + asset_combo + exclude_terms 필터.
     let exclude_cats: HashSet<&str> = q
         .exclude_categories
         .as_deref()
         .map(|s| s.split(',').map(|c| c.trim()).filter(|c| !c.is_empty()).collect())
         .unwrap_or_default();
     let combo = q.asset_combo.as_deref().unwrap_or("any");
+    // 종목명/코드 제외 term (소문자화). 어느 한 leg의 이름/key에 포함되면 제외.
+    let exclude_terms: Vec<String> = q
+        .exclude_terms
+        .as_deref()
+        .map(|s| {
+            s.split(',')
+                .map(|t| t.trim().to_lowercase())
+                .filter(|t| !t.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
 
     let matched: Vec<&PairResult> = base
         .into_iter()
@@ -329,6 +343,18 @@ async fn list_pairs(State(state): State<AppState>, Query(q): Query<PairsQuery>) 
                     || exclude_cats.contains(p.right_class.as_str()))
             {
                 return false;
+            }
+            if !exclude_terms.is_empty() {
+                let ln = p.left_name.to_lowercase();
+                let rn = p.right_name.to_lowercase();
+                let lk = p.left_key.to_lowercase();
+                let rk = p.right_key.to_lowercase();
+                if exclude_terms
+                    .iter()
+                    .any(|t| ln.contains(t) || rn.contains(t) || lk.contains(t) || rk.contains(t))
+                {
+                    return false;
+                }
             }
             asset_combo_match(combo, &p.left_key, &p.right_key)
         })
