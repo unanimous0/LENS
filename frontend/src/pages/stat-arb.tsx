@@ -705,7 +705,21 @@ export function StatArbPage() {
 
       {/* 페어 테이블 */}
       <div className="panel overflow-x-auto">
-        <table className="w-full text-xs tabular-nums">
+        <table className="w-full table-fixed text-xs tabular-nums">
+          {/* 열 너비 고정 — 필터 토글(레버리지 배지·긴 종목명 등)로 내용이 바뀌어도 열이 안 흔들리게.
+              페어 열만 가변(나머지 공간 흡수), 숫자 열은 고정폭. */}
+          <colgroup>
+            <col className="w-12" /> {/* # */}
+            <col /> {/* 페어 (가변) */}
+            <col className="w-20" /> {/* β */}
+            <col className="w-16" /> {/* corr */}
+            <col className="w-16" /> {/* R² */}
+            <col className="w-32" /> {/* ADF (recent 값 포함해 넓게) */}
+            <col className="w-20" /> {/* half-life */}
+            <col className="w-16" /> {/* z */}
+            <col className="w-28" /> {/* 대여 L/R */}
+            <col className="w-20" /> {/* score */}
+          </colgroup>
           <thead className="sticky top-0 z-10 bg-bg-primary">
             <tr className="border-b border-bg-surface text-left text-t3">
               <th className="px-3 py-2 font-normal">#</th>
