@@ -280,6 +280,7 @@ export function StatArbPage() {
   // React가 여유 있을 때 처리해 타이핑이 목록 재렌더에 막히지 않게 함(입력 렉 제거).
   const deferredSearch = useDeferredValue(search)
   const deferredExclude = useDeferredValue(exclude)
+  const deferredQuick = useDeferredValue(quickExc) // 빠른제외 토글도 목록 재렌더를 뒤로 미룸(반응 즉시)
 
   // 검색(포함) + 제외 + 정렬 적용
   const visiblePairs = useMemo(() => {
@@ -288,7 +289,7 @@ export function StatArbPage() {
       s.split(',').map((t) => t.trim().toLowerCase()).filter(Boolean)
     const incTerms = parseTerms(deferredSearch)
     // 자유입력 제외 + 빠른 제외 프리셋 토글 합치기 (프리셋 term은 이미 소문자).
-    const excTerms = [...parseTerms(deferredExclude), ...quickExc]
+    const excTerms = [...parseTerms(deferredExclude), ...deferredQuick]
     const matches = (p: Pair, t: string) =>
       p.left_name.toLowerCase().includes(t) ||
       p.right_name.toLowerCase().includes(t) ||
@@ -322,7 +323,7 @@ export function StatArbPage() {
     })
     // 검색(포함) 시엔 매칭 전체 표시 — score 낮은 페어도 찾게. 그 외엔 상위 500만(성능).
     return incTerms.length ? sorted : sorted.slice(0, 500)
-  }, [pairs, deferredSearch, deferredExclude, quickExc, sortKey, sortAsc, loanRates])
+  }, [pairs, deferredSearch, deferredExclude, deferredQuick, sortKey, sortAsc, loanRates])
 
   const sortClick = (k: SortKey) => {
     if (sortKey === k) setSortAsc(!sortAsc)
@@ -424,31 +425,13 @@ export function StatArbPage() {
             </button>
           )}
         </div>
-        <div className="flex items-center gap-1.5">
-          <span className="text-xs text-t3">빠른제외</span>
-          {QUICK_EXCLUDES.map((q) => {
-            const on = quickExc.has(q.term)
-            return (
-              <button
-                key={q.term}
-                onClick={() => toggleQuick(q.term)}
-                title={on ? `${q.label} 제외 해제` : `${q.label} 제외`}
-                className={`rounded-sm px-2 py-1 text-[11px] ${
-                  on ? 'bg-down/20 text-down line-through' : 'bg-bg-surface text-t3 hover:text-t1'
-                }`}
-              >
-                {q.label}
-              </button>
-            )
-          })}
-        </div>
         <div className="ml-auto flex items-center gap-3 text-xs text-t3 tabular-nums">
           <span>
             전체 {meta.total} / 필터 {meta.filtered} / 표시{' '}
             <span className="text-t1">{visiblePairs.length}</span>
-            {(deferredSearch !== search || deferredExclude !== exclude) && (
-              <span className="ml-1 text-t4">…</span>
-            )}
+            {(deferredSearch !== search ||
+              deferredExclude !== exclude ||
+              deferredQuick !== quickExc) && <span className="ml-1 text-t4">…</span>}
           </span>
           <span>갱신 {lastRunStr}</span>
           <button
@@ -470,29 +453,49 @@ export function StatArbPage() {
         </div>
        </div>
 
-       {/* 카테고리 제외 칩 — category_counts 기반. 클릭 = 제외 토글 */}
-       {catChips.length > 0 && (
+       {/* 제외 칩 줄 — 카테고리 제외(서버) + 빠른 제외 프리셋(클라이언트). 클릭 = 제외 토글 */}
+       <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5">
+        {catChips.length > 0 && (
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="text-xs text-t4">카테고리 제외</span>
+            {catChips.map(([cat, n]) => {
+              const active = excludeCats.has(cat)
+              return (
+                <button
+                  key={cat}
+                  onClick={() => toggleCat(cat)}
+                  title={active ? '제외 중 — 클릭하여 포함' : '클릭하여 제외'}
+                  className={`rounded-sm px-1.5 py-0.5 text-[11px] tabular-nums ${
+                    active
+                      ? 'bg-down/20 text-down line-through'
+                      : 'bg-bg-surface text-t3 hover:text-t1'
+                  }`}
+                >
+                  {CLASS_LABELS[cat] ?? cat} <span className="tabular-nums">{n}</span>
+                </button>
+              )
+            })}
+          </div>
+        )}
         <div className="flex flex-wrap items-center gap-1.5">
-          <span className="text-xs text-t4">카테고리 제외</span>
-          {catChips.map(([cat, n]) => {
-            const active = excludeCats.has(cat)
+          <span className="text-xs text-t4">빠른 제외</span>
+          {QUICK_EXCLUDES.map((q) => {
+            const on = quickExc.has(q.term)
             return (
               <button
-                key={cat}
-                onClick={() => toggleCat(cat)}
-                title={active ? '제외 중 — 클릭하여 포함' : '클릭하여 제외'}
-                className={`rounded-sm px-1.5 py-0.5 text-[11px] tabular-nums ${
-                  active
-                    ? 'bg-down/20 text-down line-through'
-                    : 'bg-bg-surface text-t3 hover:text-t1'
+                key={q.term}
+                onClick={() => toggleQuick(q.term)}
+                title={on ? `${q.label} 제외 해제` : `${q.label} 제외`}
+                className={`rounded-sm px-1.5 py-0.5 text-[11px] ${
+                  on ? 'bg-down/20 text-down line-through' : 'bg-bg-surface text-t3 hover:text-t1'
                 }`}
               >
-                {CLASS_LABELS[cat] ?? cat} <span className="tabular-nums">{n}</span>
+                {q.label}
               </button>
             )
           })}
         </div>
-       )}
+       </div>
       </div>
 
       {/* PR-B: 그룹 PCA 요약 패널 — 그룹 선택 시만 표시 */}
