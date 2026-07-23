@@ -325,6 +325,74 @@ export function StatArbPage() {
     return incTerms.length ? sorted : sorted.slice(0, 500)
   }, [pairs, deferredSearch, deferredExclude, deferredQuick, sortKey, sortAsc, loanRates])
 
+  // 행 JSX를 useMemo로 캐시 — useDeferredValue의 긴급 렌더(visiblePairs 미변경)에서
+  // 500행을 재생성하지 않게 함(이중 렌더 제거). visiblePairs/loanRates 변경 시에만 1회 재생성.
+  const tableRows = useMemo(
+    () =>
+      visiblePairs.map((p, i) => {
+        const z = p.z_score
+        const zClass =
+          Math.abs(z) >= 2.5 ? 'text-warning font-semibold' : Math.abs(z) >= 1.5 ? 'text-t1' : 'text-t3'
+        const adfCls = p.adf_tstat <= -3 ? 'text-up' : 'text-t3'
+        const r2Cls = p.r_squared >= 0.9 ? 'text-up' : p.r_squared >= 0.6 ? 'text-t1' : 'text-t3'
+        return (
+          <tr
+            key={`${p.left_key}-${p.right_key}`}
+            onClick={() =>
+              window.open(
+                `/stat-arb/pair/${encodeURIComponent(p.left_key)}/${encodeURIComponent(p.right_key)}`,
+                '_blank',
+                'noopener,noreferrer'
+              )
+            }
+            className="cursor-pointer border-b border-bg-surface/50 hover:bg-bg-surface/40"
+          >
+            <td className="px-3 py-2 text-t4">{i + 1}</td>
+            <td className="px-3 py-2">
+              <div className="flex flex-wrap items-center gap-x-1 gap-y-0.5">
+                <span className="text-t1">{p.left_name}</span>
+                <ClassBadge cls={p.left_class} />
+                <span className="mx-0.5 text-t3">↔</span>
+                <span className="text-t1">{p.right_name}</span>
+                <ClassBadge cls={p.right_class} />
+                {p.same_underlying && (
+                  <span className="rounded-sm bg-blue/15 px-1 text-[11px] text-blue">베이시스</span>
+                )}
+              </div>
+              <div className="text-[10px] text-t4">
+                {p.left_key} / {p.right_key}
+              </div>
+            </td>
+            <td className="px-3 py-2 text-right text-t1">{p.hedge_ratio.toFixed(3)}</td>
+            <td className="px-3 py-2 text-right text-t2">{p.corr.toFixed(2)}</td>
+            <td className={`px-3 py-2 text-right ${r2Cls}`}>{p.r_squared.toFixed(3)}</td>
+            <td className={`px-3 py-2 text-right ${adfCls}`}>
+              {p.adf_tstat.toFixed(2)}
+              <span
+                className={`ml-1 text-[10px] ${p.recent_adf_tstat <= -3 ? 'text-up' : 'text-t4'}`}
+                title="최근 6개월 잔차 ADF (같은 β)"
+              >
+                ({p.recent_adf_tstat.toFixed(1)})
+              </span>
+            </td>
+            <td className="px-3 py-2 text-right text-t2">{p.half_life.toFixed(1)}d</td>
+            <td className={`px-3 py-2 text-right ${zClass}`}>
+              {z >= 0 ? '+' : ''}
+              {z.toFixed(2)}
+            </td>
+            <td className="px-3 py-2 text-right">
+              <LoanRateCell
+                lRate={loanRates.get(keyToCode(p.left_key))}
+                rRate={loanRates.get(keyToCode(p.right_key))}
+              />
+            </td>
+            <td className="px-3 py-2 text-right text-t1">{p.score.toFixed(2)}</td>
+          </tr>
+        )
+      }),
+    [visiblePairs, loanRates]
+  )
+
   const sortClick = (k: SortKey) => {
     if (sortKey === k) setSortAsc(!sortAsc)
     else {
@@ -685,71 +753,7 @@ export function StatArbPage() {
               </SortableTh>
             </tr>
           </thead>
-          <tbody>
-            {visiblePairs.map((p, i) => {
-              const z = p.z_score
-              const zClass =
-                Math.abs(z) >= 2.5 ? 'text-warning font-semibold' : Math.abs(z) >= 1.5 ? 'text-t1' : 'text-t3'
-              const adfCls = p.adf_tstat <= -3 ? 'text-up' : 'text-t3'
-              const r2Cls = p.r_squared >= 0.9 ? 'text-up' : p.r_squared >= 0.6 ? 'text-t1' : 'text-t3'
-              return (
-                <tr
-                  key={`${p.left_key}-${p.right_key}`}
-                  onClick={() =>
-                    window.open(
-                      `/stat-arb/pair/${encodeURIComponent(p.left_key)}/${encodeURIComponent(p.right_key)}`,
-                      '_blank',
-                      'noopener,noreferrer'
-                    )
-                  }
-                  className="cursor-pointer border-b border-bg-surface/50 hover:bg-bg-surface/40"
-                >
-                  <td className="px-3 py-2 text-t4">{i + 1}</td>
-                  <td className="px-3 py-2">
-                    <div className="flex flex-wrap items-center gap-x-1 gap-y-0.5">
-                      <span className="text-t1">{p.left_name}</span>
-                      <ClassBadge cls={p.left_class} />
-                      <span className="mx-0.5 text-t3">↔</span>
-                      <span className="text-t1">{p.right_name}</span>
-                      <ClassBadge cls={p.right_class} />
-                      {p.same_underlying && (
-                        <span className="rounded-sm bg-blue/15 px-1 text-[11px] text-blue">
-                          베이시스
-                        </span>
-                      )}
-                    </div>
-                    <div className="text-[10px] text-t4">
-                      {p.left_key} / {p.right_key}
-                    </div>
-                  </td>
-                  <td className="px-3 py-2 text-right text-t1">{p.hedge_ratio.toFixed(3)}</td>
-                  <td className="px-3 py-2 text-right text-t2">{p.corr.toFixed(2)}</td>
-                  <td className={`px-3 py-2 text-right ${r2Cls}`}>{p.r_squared.toFixed(3)}</td>
-                  <td className={`px-3 py-2 text-right ${adfCls}`}>
-                    {p.adf_tstat.toFixed(2)}
-                    <span
-                      className={`ml-1 text-[10px] ${p.recent_adf_tstat <= -3 ? 'text-up' : 'text-t4'}`}
-                      title="최근 6개월 잔차 ADF (같은 β)"
-                    >
-                      ({p.recent_adf_tstat.toFixed(1)})
-                    </span>
-                  </td>
-                  <td className="px-3 py-2 text-right text-t2">{p.half_life.toFixed(1)}d</td>
-                  <td className={`px-3 py-2 text-right ${zClass}`}>
-                    {z >= 0 ? '+' : ''}
-                    {z.toFixed(2)}
-                  </td>
-                  <td className="px-3 py-2 text-right">
-                    <LoanRateCell
-                      lRate={loanRates.get(keyToCode(p.left_key))}
-                      rRate={loanRates.get(keyToCode(p.right_key))}
-                    />
-                  </td>
-                  <td className="px-3 py-2 text-right text-t1">{p.score.toFixed(2)}</td>
-                </tr>
-              )
-            })}
-          </tbody>
+          <tbody>{tableRows}</tbody>
         </table>
         {error && <div className="p-3 text-xs text-down">{error}</div>}
         {!error && visiblePairs.length === 0 && !loading && (
