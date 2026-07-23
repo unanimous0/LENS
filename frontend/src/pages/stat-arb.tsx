@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useDeferredValue, useEffect, useMemo, useState } from 'react'
 import { keyToCode } from '@/lib/stat-arb-keys'
 
 type Group = {
@@ -244,13 +244,18 @@ export function StatArbPage() {
     ? new Date(meta.last_run_ms).toLocaleTimeString('ko-KR', { hour12: false })
     : '—'
 
+  // 입력은 즉시 반영(controlled)하되, 무거운 필터·정렬·500행 렌더는 deferred 값으로 —
+  // React가 여유 있을 때 처리해 타이핑이 목록 재렌더에 막히지 않게 함(입력 렉 제거).
+  const deferredSearch = useDeferredValue(search)
+  const deferredExclude = useDeferredValue(exclude)
+
   // 검색(포함) + 제외 + 정렬 적용
   const visiblePairs = useMemo(() => {
     // 쉼표로 여러 단어/코드. 한 term이라도 leg 이름/코드에 있으면 매칭.
     const parseTerms = (s: string) =>
       s.split(',').map((t) => t.trim().toLowerCase()).filter(Boolean)
-    const incTerms = parseTerms(search)
-    const excTerms = parseTerms(exclude)
+    const incTerms = parseTerms(deferredSearch)
+    const excTerms = parseTerms(deferredExclude)
     const matches = (p: Pair, t: string) =>
       p.left_name.toLowerCase().includes(t) ||
       p.right_name.toLowerCase().includes(t) ||
@@ -284,7 +289,7 @@ export function StatArbPage() {
     })
     // 검색(포함) 시엔 매칭 전체 표시 — score 낮은 페어도 찾게. 그 외엔 상위 500만(성능).
     return incTerms.length ? sorted : sorted.slice(0, 500)
-  }, [pairs, search, exclude, sortKey, sortAsc, loanRates])
+  }, [pairs, deferredSearch, deferredExclude, sortKey, sortAsc, loanRates])
 
   const sortClick = (k: SortKey) => {
     if (sortKey === k) setSortAsc(!sortAsc)
@@ -390,6 +395,9 @@ export function StatArbPage() {
           <span>
             전체 {meta.total} / 필터 {meta.filtered} / 표시{' '}
             <span className="text-t1">{visiblePairs.length}</span>
+            {(deferredSearch !== search || deferredExclude !== exclude) && (
+              <span className="ml-1 text-t4">…</span>
+            )}
           </span>
           <span>갱신 {lastRunStr}</span>
           <button
