@@ -125,6 +125,13 @@ const COL_TOOLTIPS: Record<SortKey | 'pair', string> = {
   loanrate: '대여요율 (left / right). ≥15% 강조 — 고요율 매수+송출 기회',
 }
 
+// 빠른 제외 프리셋 — 시장추세 바스켓형 허브(수백 페어 도배)를 원클릭 토글. term은 소문자(매칭용).
+const QUICK_EXCLUDES: { label: string; term: string }[] = [
+  { label: '코리아TOP10', term: '코리아top10' },
+  { label: 'ESG사회책임', term: 'esg사회책임' },
+]
+const QUICK_EXC_LS_KEY = 'statarb.quickExcludes'
+
 export function StatArbPage() {
   const [pairs, setPairs] = useState<Pair[]>([])
   const [meta, setMeta] = useState<Pick<PairsResp, 'total' | 'filtered' | 'last_run_ms'>>({
@@ -142,6 +149,15 @@ export function StatArbPage() {
   const [catCounts, setCatCounts] = useState<Record<string, number>>({})
   const [search, setSearch] = useState<string>('')
   const [exclude, setExclude] = useState<string>('') // 종목명 단어/코드 제외 (쉼표 여러 개)
+  // 빠른 제외 프리셋 토글 상태 — localStorage에 저장해 다음 방문에도 유지.
+  const [quickExc, setQuickExc] = useState<Set<string>>(() => {
+    try {
+      const raw = localStorage.getItem(QUICK_EXC_LS_KEY)
+      return raw ? new Set<string>(JSON.parse(raw)) : new Set()
+    } catch {
+      return new Set()
+    }
+  })
   const [sortKey, setSortKey] = useState<SortKey>('score')
   const [sortAsc, setSortAsc] = useState<boolean>(false) // 기본 내림차순
   const [loanRates, setLoanRates] = useState<Map<string, number>>(new Map())
@@ -240,6 +256,22 @@ export function StatArbPage() {
       return next
     })
 
+  const toggleQuick = (term: string) =>
+    setQuickExc((prev) => {
+      const next = new Set(prev)
+      if (next.has(term)) next.delete(term)
+      else next.add(term)
+      return next
+    })
+  // 빠른 제외 선택 변경 시 localStorage 저장 (다음 방문 유지).
+  useEffect(() => {
+    try {
+      localStorage.setItem(QUICK_EXC_LS_KEY, JSON.stringify(Array.from(quickExc)))
+    } catch {
+      /* 무시 */
+    }
+  }, [quickExc])
+
   const lastRunStr = meta.last_run_ms
     ? new Date(meta.last_run_ms).toLocaleTimeString('ko-KR', { hour12: false })
     : '—'
@@ -255,7 +287,8 @@ export function StatArbPage() {
     const parseTerms = (s: string) =>
       s.split(',').map((t) => t.trim().toLowerCase()).filter(Boolean)
     const incTerms = parseTerms(deferredSearch)
-    const excTerms = parseTerms(deferredExclude)
+    // 자유입력 제외 + 빠른 제외 프리셋 토글 합치기 (프리셋 term은 이미 소문자).
+    const excTerms = [...parseTerms(deferredExclude), ...quickExc]
     const matches = (p: Pair, t: string) =>
       p.left_name.toLowerCase().includes(t) ||
       p.right_name.toLowerCase().includes(t) ||
@@ -289,7 +322,7 @@ export function StatArbPage() {
     })
     // 검색(포함) 시엔 매칭 전체 표시 — score 낮은 페어도 찾게. 그 외엔 상위 500만(성능).
     return incTerms.length ? sorted : sorted.slice(0, 500)
-  }, [pairs, deferredSearch, deferredExclude, sortKey, sortAsc, loanRates])
+  }, [pairs, deferredSearch, deferredExclude, quickExc, sortKey, sortAsc, loanRates])
 
   const sortClick = (k: SortKey) => {
     if (sortKey === k) setSortAsc(!sortAsc)
@@ -390,6 +423,24 @@ export function StatArbPage() {
               ✕
             </button>
           )}
+        </div>
+        <div className="flex items-center gap-1.5">
+          <span className="text-xs text-t3">빠른제외</span>
+          {QUICK_EXCLUDES.map((q) => {
+            const on = quickExc.has(q.term)
+            return (
+              <button
+                key={q.term}
+                onClick={() => toggleQuick(q.term)}
+                title={on ? `${q.label} 제외 해제` : `${q.label} 제외`}
+                className={`rounded-sm px-2 py-1 text-[11px] ${
+                  on ? 'bg-down/20 text-down line-through' : 'bg-bg-surface text-t3 hover:text-t1'
+                }`}
+              >
+                {q.label}
+              </button>
+            )
+          })}
         </div>
         <div className="ml-auto flex items-center gap-3 text-xs text-t3 tabular-nums">
           <span>
