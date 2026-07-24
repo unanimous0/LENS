@@ -63,6 +63,18 @@ pub struct PairDetail {
     /// z = (spread - spread_center) / spread_scale.
     pub spread_center: f64,
     pub spread_scale: f64,
+    /// 일봉(1d) 잔차 시계열 (adj_close, ~3년). 일봉 기준 헤드라인 차트 — 스윙 판단용.
+    /// OLS α·β는 `timeframes`의 "1d" stat과 동일 입력이라 자동 일관. 표본 부족 시 빈 벡터.
+    #[serde(default)]
+    pub spread_series_daily: Vec<SpreadPoint>,
+    /// 일봉 잔차 분포 히스토그램.
+    #[serde(default)]
+    pub histogram_daily: Vec<HistBin>,
+    /// 일봉 잔차 정규화 기준. z = (spread - daily_center) / daily_scale. 표본 부족 시 0.
+    #[serde(default)]
+    pub daily_center: f64,
+    #[serde(default)]
+    pub daily_scale: f64,
 }
 
 // ---------------------------------------------------------------------------
@@ -129,6 +141,39 @@ fn timeframe_stat_from_bars(
     })
 }
 
+/// 헤드라인 잔차 시계열 빌더 — intersect → OLS → 잔차 시계열/히스토그램/정규화 기준(center·scale).
+/// 10분 버킷·일봉 어느 입력이든 동일 패턴. 표본(교집합) < 30 이거나 fit 실패 시 None.
+fn build_headline(
+    left_bars: &[Bar],
+    right_bars: &[Bar],
+) -> Option<(Vec<SpreadPoint>, Vec<HistBin>, f64, f64)> {
+    let (x, y, ts) = intersect_by_ts(left_bars, right_bars);
+    if x.len() < 30 {
+        return None;
+    }
+    let r = stats::ols(&x, &y)?;
+    let resid = &r.residuals;
+    let mean = resid.iter().sum::<f64>() / resid.len() as f64;
+    let sigma = stats::stddev_pop(resid)?;
+    let sigma_safe = if sigma.abs() < f64::EPSILON { 1.0 } else { sigma };
+
+    let series: Vec<SpreadPoint> = ts
+        .iter()
+        .zip(resid.iter())
+        .enumerate()
+        .map(|(i, (t, e))| SpreadPoint {
+            ts: *t,
+            spread: *e,
+            z: (e - mean) / sigma_safe,
+            left: x[i],
+            right: y[i],
+        })
+        .collect();
+
+    let hist = histogram(resid, 30);
+    Some((series, hist, mean, sigma_safe))
+}
+
 fn histogram(values: &[f64], n_bins: usize) -> Vec<HistBin> {
     if values.is_empty() || n_bins == 0 {
         return Vec::new();
@@ -188,30 +233,12 @@ pub fn build_pair_detail(
     // 헤드라인 = 10분 버킷 시계열 (메인 차트 + KPI z 기준)
     let l10 = bucket_ohlc(left_raw, BUCKET_10M_MS);
     let r10 = bucket_ohlc(right_raw, BUCKET_10M_MS);
-    let (x, y, ts) = intersect_by_ts(&l10, &r10);
-    if x.len() < 30 {
-        return None;
-    }
-    let r = stats::ols(&x, &y)?;
-    let resid = &r.residuals;
-    let mean = resid.iter().sum::<f64>() / resid.len() as f64;
-    let sigma = stats::stddev_pop(resid)?;
-    let sigma_safe = if sigma.abs() < f64::EPSILON { 1.0 } else { sigma };
+    let (spread_series, hist, mean, sigma_safe) = build_headline(&l10, &r10)?;
 
-    let spread_series: Vec<SpreadPoint> = ts
-        .iter()
-        .zip(resid.iter())
-        .enumerate()
-        .map(|(i, (t, e))| SpreadPoint {
-            ts: *t,
-            spread: *e,
-            z: (e - mean) / sigma_safe,
-            left: x[i],
-            right: y[i],
-        })
-        .collect();
-
-    let hist = histogram(resid, 30);
+    // 일봉(1d) 헤드라인 — 스윙 판단 기준. left_daily/right_daily(adj_close, ~3년).
+    // OLS α·β는 아래 "1d" timeframe stat과 동일 입력이라 자동 일관. 표본 부족 시 빈 벡터/0으로 graceful.
+    let (spread_series_daily, histogram_daily, daily_center, daily_scale) =
+        build_headline(left_daily, right_daily).unwrap_or_else(|| (Vec::new(), Vec::new(), 0.0, 0.0));
 
     // 비교표 — 전부 인트라데이 버킷 (일/주/월 제거). 10분은 위 헤드라인 OLS와 동일 입력이라 일관.
     let mut timeframes: Vec<TimeframeStat> = Vec::new();
@@ -262,5 +289,9 @@ pub fn build_pair_detail(
         histogram: hist,
         spread_center: mean,
         spread_scale: sigma_safe,
+        spread_series_daily,
+        histogram_daily,
+        daily_center,
+        daily_scale,
     })
 }

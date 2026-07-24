@@ -11,7 +11,28 @@ import { CAL_PER_TRADING_DAY, toTradingDays } from '@/lib/stat-arb/half-life'
 import { useMarketStore } from '@/stores/marketStore'
 import type { PairDetail } from '@/types/stat-arb'
 
-const KPI_TF = '10m' // KPI 카드·메인 차트는 10분 인트라데이 기준 (일봉 종가 스파이크 배제; 30분→10분 2026-06-20)
+/** 기준 토글 세그먼트 — 일봉(스윙 판단) / 10분(진입 타이밍). stat-arb.tsx Seg와 동일 톤. */
+function BasisSeg({ value, onChange }: { value: '1d' | '10m'; onChange: (v: '1d' | '10m') => void }) {
+  const opts: Array<{ v: '1d' | '10m'; label: string }> = [
+    { v: '1d', label: '일봉' },
+    { v: '10m', label: '10분' },
+  ]
+  return (
+    <div className="flex overflow-hidden rounded-sm bg-bg-surface">
+      {opts.map((o) => (
+        <button
+          key={o.v}
+          onClick={() => onChange(o.v)}
+          className={`px-2.5 py-1 text-xs ${
+            value === o.v ? 'bg-accent/25 text-accent' : 'text-t3 hover:text-t1'
+          }`}
+        >
+          {o.label}
+        </button>
+      ))}
+    </div>
+  )
+}
 
 /** 평균회귀 트레이드 방향 — 차트 추세를 머리로 해석할 필요 없게 명시.
  *  spread = R − α − β·L 이라 z>0 = R 비쌈 → 숏 R / 롱 L,  z<0 = R 쌈 → 롱 R / 숏 L.
@@ -45,6 +66,8 @@ export function StatArbDetailPage() {
   const [loanRates, setLoanRates] = useState<Map<string, number>>(new Map())
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  // 판단 기준 토글 — 일봉(스윙, 기본) / 10분(진입 타이밍). 카드·차트·히스토·베이시스·계산기 전부 연동.
+  const [basis, setBasis] = useState<'1d' | '10m'>('1d')
   // 내 진입 포지션 입력 (베이시스·손익 계산기). 매수/매도 진입가·수량.
   const [posBuyEntry, setPosBuyEntry] = useState('')
   const [posBuyQty, setPosBuyQty] = useState('')
@@ -196,24 +219,30 @@ export function StatArbDetailPage() {
     )
   }
 
-  const dayStat = detail.timeframes.find((t) => t.timeframe === KPI_TF)
+  // 선택된 기준으로 헤드라인 일괄 선택 — 카드·차트·히스토·베이시스·계산기 전부 이 값에 묶임.
+  // 일봉 선택했으나 daily 시계열이 비면(구버전 응답·표본 부족) 10분으로 graceful fallback.
+  const hasDaily = (detail.spread_series_daily?.length ?? 0) >= 2
+  const useDaily = basis === '1d' && hasDaily
+  const effBasis: '1d' | '10m' = useDaily ? '1d' : '10m'
+  const basisLabel = effBasis === '1d' ? '일봉' : '10분'
+  const dayStat = detail.timeframes.find((t) => t.timeframe === effBasis)
+  const headlineSeries = useDaily ? detail.spread_series_daily! : detail.spread_series
+  const headlineHist = useDaily ? (detail.histogram_daily ?? []) : detail.histogram
 
   // 실시간 가격 → 실시간 spread/z 계산 (양쪽 가격 있을 때만)
   const leftPrice = leftTick?.price ?? 0
   const rightPrice = rightTick?.price ?? 0
   const hasLive = leftPrice > 0 && rightPrice > 0 && dayStat != null
-  // 실시간 z는 차트 z와 동일 기준이어야 함 → 백엔드가 준 10분 잔차 정규화 기준(center/scale) 우선 사용.
-  // (없으면 spread_series에서 재계산 — 구버전 응답 호환.)
-  const _fallback = spreadStats(detail.spread_series)
-  const spreadMean = detail.spread_center ?? _fallback.mean
-  const spreadStd = detail.spread_scale ?? _fallback.std
+  // 실시간 z는 차트 z와 동일 기준이어야 함 → 백엔드가 준 헤드라인 잔차 정규화 기준(center/scale) 우선 사용.
+  // (없으면 headlineSeries에서 재계산 — 구버전 응답 호환.)
+  const _fallback = spreadStats(headlineSeries)
+  const spreadMean = (useDaily ? detail.daily_center : detail.spread_center) ?? _fallback.mean
+  const spreadStd = (useDaily ? detail.daily_scale : detail.spread_scale) ?? _fallback.std
   const liveSpread = hasLive ? rightPrice - dayStat!.alpha - dayStat!.hedge_ratio * leftPrice : null
   const liveZ = hasLive && spreadStd > 0 ? (liveSpread! - spreadMean) / spreadStd : null
 
   // KPI 카드: 실시간 있으면 liveZ, 없으면 DB 마지막 점 z
-  const dbLastZ = detail.spread_series.length
-    ? detail.spread_series[detail.spread_series.length - 1].z
-    : 0
+  const dbLastZ = headlineSeries.length ? headlineSeries[headlineSeries.length - 1].z : 0
   const displayZ = liveZ ?? dbLastZ
   const zCls = Math.abs(displayZ) >= 2.5 ? 'text-warning' : Math.abs(displayZ) >= 1.5 ? 'text-t1' : 'text-t3'
   const signal = meanRevSignal(displayZ, detail.left_name, detail.right_name)
@@ -226,7 +255,7 @@ export function StatArbDetailPage() {
   const EXIT_Z = 0.3
   // 선정 근거 — 발굴 기준(3년 일봉)과 같은 1d 통계로 게이트 통과 표시.
   const selDaily = detail.timeframes.find((t) => t.timeframe === '1d')
-  const hlTradingDays = dayStat ? toTradingDays(KPI_TF, dayStat.half_life) : null
+  const hlTradingDays = dayStat ? toTradingDays(effBasis, dayStat.half_life) : null
   const typicalReversionCalDays =
     hlTradingDays != null && hlTradingDays > 0
       ? hlTradingDays * Math.log2(ENTRY_Z_REF / EXIT_Z) * CAL_PER_TRADING_DAY
@@ -236,8 +265,8 @@ export function StatArbDetailPage() {
   //  ① 이탈 = 잔차(right − α − β·left) : 균형=0 중심, z 차트와 연동. "균형에서 얼마 벗어남".
   //  ② 절대 = right − β·left (= 이탈 + α) : 평균이 α인 원값, 선물−현물 같은 절대 가격차 느낌.
   //  실제 헤지 = right 1주 : left β주 → 이 포지션 손익 = 베이시스 변화. β≈1이면 거의 단순 가격차.
-  const dbLastSpread = detail.spread_series.length
-    ? detail.spread_series[detail.spread_series.length - 1].spread
+  const dbLastSpread = headlineSeries.length
+    ? headlineSeries[headlineSeries.length - 1].spread
     : 0
   const basisDev = liveSpread ?? dbLastSpread // ① 이탈(잔차)
   const alphaWon = dayStat?.alpha ?? 0
@@ -283,6 +312,10 @@ export function StatArbDetailPage() {
           <span className="text-[10px] text-t3">
             ({detail.left_key} / {detail.right_key})
           </span>
+        </div>
+        <div className="flex items-center gap-1.5">
+          <span className="text-[10px] text-t3">기준</span>
+          <BasisSeg value={basis} onChange={setBasis} />
         </div>
       </div>
 
@@ -347,7 +380,7 @@ export function StatArbDetailPage() {
           {/* KPI 카드 4개 */}
           <div className="panel grid grid-cols-2 gap-2 p-3">
             <KpiCard
-              label={liveZ != null ? '현재 z (실시간)' : '현재 z (DB 마지막)'}
+              label={`현재 z · ${basisLabel} (${liveZ != null ? '실시간' : 'DB 마지막'})`}
               value={`${displayZ >= 0 ? '+' : ''}${displayZ.toFixed(2)}`}
               cls={zCls}
             />
@@ -357,12 +390,12 @@ export function StatArbDetailPage() {
               cls="text-t1"
             />
             <KpiCard
-              label={`ADF (${KPI_TF})`}
+              label={`ADF (${basisLabel})`}
               value={dayStat ? dayStat.adf_tstat.toFixed(2) : '—'}
               cls={dayStat && dayStat.adf_tstat <= -3 ? 'text-up' : 'text-t3'}
             />
             <KpiCard
-              label={`R² (${KPI_TF})`}
+              label={`R² (${basisLabel})`}
               value={dayStat ? dayStat.r_squared.toFixed(3) : '—'}
               cls={dayStat && dayStat.r_squared >= 0.9 ? 'text-up' : 'text-t1'}
             />
@@ -628,7 +661,7 @@ export function StatArbDetailPage() {
             </div>
             <div className="h-[260px]">
               <LegCompareChart
-                data={detail.spread_series}
+                data={headlineSeries}
                 live={leftPrice > 0 && rightPrice > 0 ? { left: leftPrice, right: rightPrice } : null}
                 register={registerLeg}
               />
@@ -647,7 +680,7 @@ export function StatArbDetailPage() {
               </span>
             </div>
             <div className="h-[260px]">
-              <SpreadDualChart data={detail.spread_series} register={registerSpread} />
+              <SpreadDualChart data={headlineSeries} register={registerSpread} />
             </div>
           </div>
           <div className="panel p-3">
@@ -669,7 +702,7 @@ export function StatArbDetailPage() {
             </div>
             <div className="h-[260px]">
               <ZScoreChart
-                data={detail.spread_series}
+                data={headlineSeries}
                 live={liveZ}
                 register={registerZ}
               />
@@ -681,7 +714,7 @@ export function StatArbDetailPage() {
             </div>
             <div className="h-[260px]">
               <ResidualHistogram
-                bins={detail.histogram}
+                bins={headlineHist}
                 center={spreadMean}
                 scale={spreadStd}
                 currentZ={displayZ}

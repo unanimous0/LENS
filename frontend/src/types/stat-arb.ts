@@ -37,6 +37,11 @@ export type PairDetail = {
   /** 헤드라인(10분) 잔차 정규화 기준. 실시간 z = (liveSpread − spread_center) / spread_scale. */
   spread_center?: number
   spread_scale?: number
+  /** 일봉(1d) 헤드라인 — 스윙 판단 기준 토글용. 구버전 응답엔 없을 수 있음. */
+  spread_series_daily?: SpreadPoint[]
+  histogram_daily?: HistBin[]
+  daily_center?: number
+  daily_scale?: number
 }
 
 // /pairs 응답의 페어 — 한 줄 요약 (메인 테이블에서 사용)
