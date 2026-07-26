@@ -9,7 +9,7 @@ import { usePageStockSubscriptions } from '@/hooks/usePageStockSubscriptions'
 import { keyToCode, keyType } from '@/lib/stat-arb-keys'
 import { CAL_PER_TRADING_DAY, toTradingDays } from '@/lib/stat-arb/half-life'
 import { useMarketStore } from '@/stores/marketStore'
-import type { KalmanStat, PairDetail } from '@/types/stat-arb'
+import type { KalmanStat, PairDetail, SpreadPoint } from '@/types/stat-arb'
 
 /** 기준 토글 세그먼트 — 일봉(스윙 판단) / 10분(진입 타이밍). stat-arb.tsx Seg와 동일 톤. */
 function BasisSeg({ value, onChange }: { value: '1d' | '10m'; onChange: (v: '1d' | '10m') => void }) {
@@ -23,6 +23,37 @@ function BasisSeg({ value, onChange }: { value: '1d' | '10m'; onChange: (v: '1d'
         <button
           key={o.v}
           onClick={() => onChange(o.v)}
+          className={`px-2.5 py-1 text-xs ${
+            value === o.v ? 'bg-accent/25 text-accent' : 'text-t3 hover:text-t1'
+          }`}
+        >
+          {o.label}
+        </button>
+      ))}
+    </div>
+  )
+}
+
+/** 1D 모드 전용 차트 뷰 토글 — 장중(일봉기준 z를 10분 시간축으로) / 장기(3년 일봉 종가 z, 날짜축).
+ *  z·스프레드·leg 3개 시계열 차트에만 영향. 카드·계산기·Kalman은 항상 일봉 기준(불변). */
+function ZViewSeg({
+  value,
+  onChange,
+}: {
+  value: 'intraday' | 'longterm'
+  onChange: (v: 'intraday' | 'longterm') => void
+}) {
+  const opts: Array<{ v: 'intraday' | 'longterm'; label: string; title: string }> = [
+    { v: 'intraday', label: '장중', title: '일봉 기준 z를 장중 실시간으로 (진입 타이밍)' },
+    { v: 'longterm', label: '장기', title: '3년 일봉 종가 z (장기 맥락)' },
+  ]
+  return (
+    <div className="flex overflow-hidden rounded-sm bg-bg-surface">
+      {opts.map((o) => (
+        <button
+          key={o.v}
+          onClick={() => onChange(o.v)}
+          title={o.title}
           className={`px-2.5 py-1 text-xs ${
             value === o.v ? 'bg-accent/25 text-accent' : 'text-t3 hover:text-t1'
           }`}
@@ -68,6 +99,8 @@ export function StatArbDetailPage() {
   const [error, setError] = useState<string | null>(null)
   // 판단 기준 토글 — 일봉(스윙, 기본) / 10분(진입 타이밍). 카드·차트·히스토·베이시스·계산기 전부 연동.
   const [basis, setBasis] = useState<'1d' | '10m'>('1d')
+  // 1D 모드 차트 뷰 — 장중(기본, 일봉기준 z를 10분 시간축으로) / 장기(3년 일봉 종가 z). 3개 차트에만 영향.
+  const [zView, setZView] = useState<'intraday' | 'longterm'>('intraday')
   // 내 진입 포지션 입력 (베이시스·손익 계산기). 매수/매도 진입가·수량.
   const [posBuyEntry, setPosBuyEntry] = useState('')
   const [posBuyQty, setPosBuyQty] = useState('')
@@ -205,6 +238,30 @@ export function StatArbDetailPage() {
     return () => subs.forEach(([c, h]) => c.unsubscribeCrosshairMove(h))
   }, [syncCharts, legReg, spreadReg, zReg])
 
+  // 장중·일봉기준 시계열 — 장중 10분 가격(spread_series)을 *일봉* 회귀(α·β)·정규화(μ·σ)에 재점수화.
+  //  → z=2 = 진짜 "일봉 2σ"(정규화는 항상 일봉)인데 10분 촘촘히 움직여 진입 타이밍 관찰용. 인트라데이 시간축.
+  //  detail/basis 변경 시에만 재계산(틱마다 X). 1D 아니거나 표본 없으면 [] → 장기로 fallback.
+  const intradayOnDaily = useMemo<SpreadPoint[]>(() => {
+    if (!detail) return []
+    const dailyOk = (detail.spread_series_daily?.length ?? 0) >= 2
+    if (basis !== '1d' || !dailyOk) return []
+    const day = detail.timeframes.find((t) => t.timeframe === '1d')
+    const src = detail.spread_series
+    if (!day || !src.length) return []
+    const fb = spreadStats(detail.spread_series_daily!)
+    const mean = detail.daily_center ?? fb.mean
+    const std = detail.daily_scale ?? fb.std
+    return src.map((p) => {
+      // left/right 없거나 비정상이면 원 10분 점 유지(안전) — 정상 케이스는 항상 재점수화.
+      if (p.left == null || p.right == null || p.left <= 0 || p.right <= 0) {
+        return { ts: p.ts, spread: p.spread, z: p.z, left: p.left, right: p.right }
+      }
+      const spreadD = p.right - day.alpha - day.hedge_ratio * p.left
+      const zD = std > 0 ? (spreadD - mean) / std : 0
+      return { ts: p.ts, spread: spreadD, z: zD, left: p.left, right: p.right }
+    })
+  }, [detail, basis])
+
   if (loading) {
     return <div className="p-4 text-sm text-t3">로딩 중…</div>
   }
@@ -240,6 +297,20 @@ export function StatArbDetailPage() {
   const spreadStd = (useDaily ? detail.daily_scale : detail.spread_scale) ?? _fallback.std
   const liveSpread = hasLive ? rightPrice - dayStat!.alpha - dayStat!.hedge_ratio * leftPrice : null
   const liveZ = hasLive && spreadStd > 0 ? (liveSpread! - spreadMean) / spreadStd : null
+
+  // 3개 시계열 차트(leg/스프레드/z) 전용 소스·축 — 카드·히스토·계산기는 headlineSeries(일봉) 그대로.
+  //  · 1D + 장중 → intradayOnDaily(일봉기준 z를 10분 축)  · 1D + 장기 → spread_series_daily(날짜축)
+  //  · 10m       → spread_series(10분 축, 기존)
+  //  장중 표본 없으면(intradayOnDaily 빈 배열) 장기로 강등. 토글은 useDaily일 때만 노출.
+  const canIntraday = useDaily && intradayOnDaily.length > 0
+  const zViewEff: 'intraday' | 'longterm' =
+    useDaily ? (zView === 'intraday' && canIntraday ? 'intraday' : 'longterm') : 'intraday'
+  const chartSeries = useDaily
+    ? zViewEff === 'intraday'
+      ? intradayOnDaily
+      : detail.spread_series_daily!
+    : detail.spread_series
+  const chartDaily = useDaily && zViewEff === 'longterm' // business-day 날짜축은 장기 뷰만
 
   // KPI 카드: 실시간 있으면 liveZ, 없으면 DB 마지막 점 z
   const dbLastZ = headlineSeries.length ? headlineSeries[headlineSeries.length - 1].z : 0
@@ -641,15 +712,30 @@ export function StatArbDetailPage() {
 
         {/* 우측 — 차트 3개 vertical stack */}
         <div className="flex flex-col gap-1 lg:col-span-3">
-          <label className="flex cursor-pointer select-none items-center gap-1.5 self-end px-1 text-[11px] text-t3">
-            <input
-              type="checkbox"
-              checked={syncCharts}
-              onChange={(e) => setSyncCharts(e.target.checked)}
-              className="accent-accent"
-            />
-            가격·z 차트 동기화 (시간축 + 십자선)
-          </label>
+          <div className="flex flex-wrap items-center justify-between gap-2 px-1">
+            {useDaily ? (
+              <div className="flex items-center gap-1.5">
+                <span className="text-[10px] text-t3">차트</span>
+                <ZViewSeg value={zViewEff} onChange={setZView} />
+                <span className="text-[10px] text-t4">
+                  {zViewEff === 'intraday'
+                    ? '일봉 기준 z를 장중 실시간으로 (진입 타이밍)'
+                    : '3년 일봉 종가 z (장기 맥락)'}
+                </span>
+              </div>
+            ) : (
+              <span />
+            )}
+            <label className="flex cursor-pointer select-none items-center gap-1.5 text-[11px] text-t3">
+              <input
+                type="checkbox"
+                checked={syncCharts}
+                onChange={(e) => setSyncCharts(e.target.checked)}
+                className="accent-accent"
+              />
+              가격·z 차트 동기화 (시간축 + 십자선)
+            </label>
+          </div>
           <div className="panel p-3">
             <div className="mb-2 flex flex-wrap items-center gap-x-3 text-xs text-t3">
               <span>두 종목 % 등락 (시작점 0 기준)</span>
@@ -664,10 +750,10 @@ export function StatArbDetailPage() {
             </div>
             <div className="h-[260px]">
               <LegCompareChart
-                data={headlineSeries}
+                data={chartSeries}
                 live={leftPrice > 0 && rightPrice > 0 ? { left: leftPrice, right: rightPrice } : null}
                 register={registerLeg}
-                daily={useDaily}
+                daily={chartDaily}
               />
             </div>
           </div>
@@ -684,7 +770,7 @@ export function StatArbDetailPage() {
               </span>
             </div>
             <div className="h-[260px]">
-              <SpreadDualChart data={headlineSeries} register={registerSpread} daily={useDaily} />
+              <SpreadDualChart data={chartSeries} register={registerSpread} daily={chartDaily} />
             </div>
           </div>
           <div className="panel p-3">
@@ -706,10 +792,10 @@ export function StatArbDetailPage() {
             </div>
             <div className="h-[260px]">
               <ZScoreChart
-                data={headlineSeries}
+                data={chartSeries}
                 live={liveZ}
                 register={registerZ}
-                daily={useDaily}
+                daily={chartDaily}
               />
             </div>
           </div>
