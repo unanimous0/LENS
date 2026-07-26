@@ -731,6 +731,10 @@ export function StatArbDetailPage() {
         livePrices={{ left: leftPrice, right: rightPrice }}
         liveZ={liveZ}
         liveSpread={liveSpread}
+        stat={dayStat}
+        lastPoint={headlineSeries[headlineSeries.length - 1]}
+        basisLabel={basisLabel}
+        hlTradingDays={hlTradingDays}
       />
     </div>
   )

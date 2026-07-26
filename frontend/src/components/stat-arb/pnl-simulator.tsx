@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 
 import { keyToCode } from '@/lib/stat-arb-keys'
-import type { PairDetail } from '@/types/stat-arb'
+import type { PairDetail, SpreadPoint, TimeframeStat } from '@/types/stat-arb'
 
 import { PositionEntryModal } from './position-entry-modal'
 
@@ -25,16 +25,27 @@ export function PnlSimulator({
   livePrices,
   liveZ,
   liveSpread,
+  stat,
+  lastPoint,
+  basisLabel,
+  hlTradingDays,
 }: {
   detail: PairDetail
   loanRates: Map<string, number>
   livePrices: { left: number; right: number }
   liveZ: number | null
   liveSpread: number | null
+  /// 부모가 고른 기준(일봉/10분)의 timeframe 통계 — β·z fallback·저장용.
+  stat: TimeframeStat | undefined
+  /// 헤드라인 시계열 마지막 점(선택 기준) — spread·기준가 fallback.
+  lastPoint: SpreadPoint | undefined
+  /// 기준 라벨('일봉'|'10분') — 표시용.
+  basisLabel: string
+  /// 선택 기준의 half-life를 거래일 단위로 변환한 값(저장 포지션용). 10분=÷봉수, 일봉=그대로.
+  hlTradingDays: number | null
 }) {
-  // 헤드라인 timeframe = 10분 인트라데이 (일봉 종가 스파이크 배제; 30분→10분 2026-06-20).
-  const stat1d = detail.timeframes.find((t) => t.timeframe === '10m')
-  const lastPoint = detail.spread_series[detail.spread_series.length - 1]
+  // 헤드라인 timeframe = 부모가 고른 기준(basis). stat1d 이름은 하위 참조 호환용 alias.
+  const stat1d = stat
 
   // 방향 판정 — liveZ가 있으면 우선
   const z = liveZ ?? stat1d?.z_score ?? 0
@@ -62,7 +73,7 @@ export function PnlSimulator({
   const [modalOpen, setModalOpen] = useState(false)
   const [savedToast, setSavedToast] = useState<string | null>(null)
 
-  // 권장 수량 기준가 — 실시간 우선, 없으면 마지막 10분봉 종가(장 마감/실시간 끊김 대비).
+  // 권장 수량 기준가 — 실시간 우선, 없으면 마지막 헤드라인(basisLabel) 봉 종가(장 마감/실시간 끊김 대비).
   const refRight = livePrices.right > 0 ? livePrices.right : lastPoint?.right ?? 0
   const refLeft = livePrices.left > 0 ? livePrices.left : lastPoint?.left ?? 0
 
@@ -158,7 +169,7 @@ export function PnlSimulator({
       {/* 자동 추정된 방향 + 핵심 수치 */}
       <div className="mb-3 rounded-sm bg-bg-surface px-3 py-2 text-xs">
         <div className="text-t3">
-          진입 방향 (z={calc.z.toFixed(2)} · {liveLabel} 기준):
+          진입 방향 (z={calc.z.toFixed(2)} · {basisLabel} · {liveLabel} 기준):
         </div>
         <div className="mt-0.5 text-t1">
           <span className="text-up">매수</span> {calc.buyName}{' '}
@@ -369,8 +380,8 @@ export function PnlSimulator({
               alpha: stat1d.alpha,
               beta: stat1d.hedge_ratio,
               // half_life는 거래일 단위로 저장 (position-detail이 '일'로 표시).
-              // stat1d(10분봉) half_life는 봉 개수 → ÷38(10분봉/거래일, 09:00~15:10).
-              half_life: stat1d.half_life / 38,
+              // 기준별 변환은 부모가 계산(hlTradingDays): 10분=÷봉수, 일봉=그대로.
+              half_life: hlTradingDays ?? stat1d.half_life,
               adf: stat1d.adf_tstat,
               r2: stat1d.r_squared,
             },
