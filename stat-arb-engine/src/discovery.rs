@@ -327,6 +327,11 @@ pub struct CandidateMember {
     pub power: f64,
     /// factor1 loading (부호 포함). PR-C2 양변 분할에 사용.
     pub factor1_loading: f64,
+    /// 보관 factor 전체의 loading (부호 포함, factor 순서 = `factors[i].factor_idx`).
+    /// `split_by_factor`가 PC2·PC3까지 후보 분할축으로 쓸 수 있게 노출. `factor1_loading`은
+    /// 이 벡터의 [0]과 동일 — 기존 필드 의미 보존을 위해 둘 다 유지.
+    #[serde(default)]
+    pub factor_loadings: Vec<f64>,
 }
 
 /// 그룹 멤버 종가 시계열에 Dense PCA 적용.
@@ -408,6 +413,7 @@ pub fn compute_group_pca(
             key: keys[i].clone(),
             power: p,
             factor1_loading: f1_loadings[i],
+            factor_loadings: (0..n_keep).map(|f| pca_r.loadings[f][i]).collect(),
         })
         .collect();
 
@@ -428,8 +434,8 @@ pub fn compute_group_pca(
 pub enum MnSplitStrategy {
     /// ETF 그룹: ETF 1개 ↔ 보유주식 다수. 자연 분할.
     EtfNatural,
-    /// 그 외 (sector/index/etf_category): PCA factor1 부호로 분할.
-    Factor1Sign,
+    /// 그 외 (sector/index/etf_category): PCA factor 부호로 분할 (factor2 → 3 → 1 순 탐색).
+    FactorSign,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -461,6 +467,15 @@ pub struct MPairResult {
     pub sample_size: usize,
     /// 발굴 점수 = -ADF × (1/hl) × |cca_correlation|.
     pub score: f64,
+    /// 양변 분할에 쓰인 PCA factor 번호 (1-based). ETF 자연분할(ETF↔보유주식)이면 0.
+    /// 발굴 게이팅과 무관한 계보 메타 — 어느 축이 M:N을 만들어냈는지 추적용.
+    #[serde(default)]
+    pub split_factor: usize,
+    /// 같은 leg 집합을 산출한 그룹 수 (`/mn-pairs` 응답에서만 채움. 1 = 고유).
+    /// groups.rs `underlying_to_index()`가 "코스피200*" 카테고리 전부에 KOSPI200 구성종목을
+    /// 주입해 candidate pool이 사실상 동일해지는 탓에 같은 페어가 여러 그룹에서 나온다.
+    #[serde(default)]
+    pub dup_group_count: usize,
 }
 
 /// candidate pool을 ETF / 주식 분할 (key prefix 기반).
@@ -477,18 +492,83 @@ fn split_etf_natural(pool: &[CandidateMember]) -> (Vec<String>, Vec<String>) {
     (etfs, stocks)
 }
 
-/// candidate pool을 factor1 부호 분할.
-fn split_by_factor1(pool: &[CandidateMember]) -> (Vec<String>, Vec<String>) {
-    let mut pos = Vec::new();
-    let mut neg = Vec::new();
-    for m in pool {
-        if m.factor1_loading > 0.0 {
-            pos.push(m.key.clone());
-        } else if m.factor1_loading < 0.0 {
-            neg.push(m.key.clone());
+/// candidate pool을 PCA factor loading 부호로 양변 분할.
+///
+/// PC1은 그룹 공통 팩터(주식 그룹이면 시장 베타)라 loading 부호가 한쪽으로 쏠린다.
+/// 실측(2026-07-26): 비-ETF 그룹 69개 중 **67개가 factor1 단일 부호** → 한 변이 항상 비어
+/// M:N 후보가 결정론적으로 0이었다(임계 완화로 풀리지 않는 구조적 탈락).
+/// PC2 이상은 PC1과 직교라 *정의상* 부호가 섞이고, 그 부호 경계가 곧 그룹 내 스프레드
+/// 축이라 시장중립 M:N 페어에 맞는 분할축이다.
+///
+/// 시도 순서 factor2 → factor3 → factor1 (PC1은 부호가 섞이는 혼합 그룹용 폴백).
+/// 반환 `(선택 factor 번호(1-based), 양수 loading side, 음수 loading side)`.
+/// 세 factor 모두 한쪽이 비거나 `|x|+|y| < min_total`이면 None.
+fn split_by_factor(
+    pool: &[CandidateMember],
+    min_total: usize,
+) -> Option<(usize, Vec<String>, Vec<String>)> {
+    // 0-based factor index. PC2 우선, PC1 마지막.
+    const TRY_ORDER: [usize; 3] = [1, 2, 0];
+    for f in TRY_ORDER {
+        let mut pos = Vec::new();
+        let mut neg = Vec::new();
+        for m in pool {
+            // factor 보관 수(PCA_N_FACTORS)보다 적게 산출된 그룹은 해당 축 건너뜀.
+            let Some(&loading) = m.factor_loadings.get(f) else { continue };
+            if loading > 0.0 {
+                pos.push(m.key.clone());
+            } else if loading < 0.0 {
+                neg.push(m.key.clone());
+            }
+        }
+        if !pos.is_empty() && !neg.is_empty() && pos.len() + neg.len() >= min_total {
+            return Some((f + 1, pos, neg));
         }
     }
-    (pos, neg)
+    None
+}
+
+/// 한 변이 표준화 단계에서 통째로 비었을 때의 사유 집계.
+/// 캐시 미스(= universe 밖 종목)와 데이터 품질(표본 부족·분산 0)을 구분해야
+/// ETF universe 확대 같은 입력 조치의 효과를 측정할 수 있다.
+#[derive(Debug, Clone, Copy, Default)]
+struct SideDropStats {
+    /// 가격 cache에 아예 없는 key (universe 밖 — ETF top-N 컷 등).
+    cache_miss: usize,
+    /// cache엔 있으나 일봉 표본이 MIN_SAMPLES(또는 target_len) 미만.
+    short_sample: usize,
+    /// 수익률 분산 0 (거래정지·고정가 등).
+    zero_var: usize,
+}
+
+impl SideDropStats {
+    /// 지배 사유 인덱스 — 0=cache miss, 1=samples, 2=var=0, 3=혼합/불명.
+    fn dominant(&self) -> usize {
+        match (self.cache_miss > 0, self.short_sample > 0, self.zero_var > 0) {
+            (true, false, false) => 0,
+            (false, true, false) => 1,
+            (false, false, true) => 2,
+            _ => 3,
+        }
+    }
+}
+
+/// 빈 변의 탈락 사유 문자열 (진단 집계 키라 `&'static str` 고정 집합).
+fn empty_side_reason(is_x: bool, d: &SideDropStats) -> &'static str {
+    const X: [&str; 4] = [
+        "standardize: x empty (cache miss)",
+        "standardize: x empty (samples<150)",
+        "standardize: x empty (var=0)",
+        "standardize: x empty (mixed)",
+    ];
+    const Y: [&str; 4] = [
+        "standardize: y empty (cache miss)",
+        "standardize: y empty (samples<150)",
+        "standardize: y empty (var=0)",
+        "standardize: y empty (mixed)",
+    ];
+    let i = d.dominant();
+    if is_x { X[i] } else { Y[i] }
 }
 
 /// 컬럼 z-score 표준화. 분산 0이면 None (해당 시리즈 제외 마커).
@@ -506,28 +586,39 @@ fn standardize(v: &[f64]) -> Option<Vec<f64>> {
     Some(v.iter().map(|x| (x - m) / sd).collect())
 }
 
-/// 멤버 key 목록 → (log returns 표준화 매트릭스, 살아남은 key 목록).
+/// 멤버 key 목록 → (log returns 표준화 매트릭스, 살아남은 key 목록, 탈락 사유 집계).
 /// 길이 통일은 호출자에서 (모든 변수가 같은 T 길이여야 sparse_cca 호출 가능).
 fn build_standardized_returns(
     keys: &[String],
     cache: &SeriesCache,
     target_len: usize,
-) -> (Vec<Vec<f64>>, Vec<String>) {
+) -> (Vec<Vec<f64>>, Vec<String>, SideDropStats) {
     let mut out_series = Vec::new();
     let mut out_keys = Vec::new();
+    let mut drops = SideDropStats::default();
     for key in keys {
-        let Some(entry) = cache.get(key) else { continue };
-        let Some(closes) = closes_daily(entry.value()) else { continue };
+        let Some(entry) = cache.get(key) else {
+            drops.cache_miss += 1;
+            continue;
+        };
+        let Some(closes) = closes_daily(entry.value()) else {
+            drops.short_sample += 1;
+            continue;
+        };
         let rets = log_returns(&closes);
         if rets.len() < target_len {
+            drops.short_sample += 1;
             continue;
         }
         let trimmed = rets[rets.len() - target_len..].to_vec();
-        let Some(z) = standardize(&trimmed) else { continue };
+        let Some(z) = standardize(&trimmed) else {
+            drops.zero_var += 1;
+            continue;
+        };
         out_series.push(z);
         out_keys.push(key.clone());
     }
-    (out_series, out_keys)
+    (out_series, out_keys, drops)
 }
 
 /// 멤버 key → log close prices. CCA로 선택된 leg에 대해 OLS 적용용.
@@ -626,7 +717,7 @@ pub fn discover_mn_in_group(
     const MAX_LEGS: usize = 5;
     const MIN_TOTAL: usize = 3;
 
-    let (x_keys, y_keys) = match strategy {
+    let (split_factor, x_keys, y_keys) = match strategy {
         MnSplitStrategy::EtfNatural => {
             // ETF는 PCA candidate_pool에서 자주 누락됨 (보유주식 평균이라 individual factor
             // 적재가 분산). 그룹 멤버에서 직접 ETF 보장. 주식 측은 candidate_pool 활용.
@@ -640,23 +731,30 @@ pub fn discover_mn_in_group(
                 .filter(|m| m.key.starts_with("S:"))
                 .map(|m| m.key.clone())
                 .collect();
-            (etfs, stocks)
+            (0, etfs, stocks)
         }
-        MnSplitStrategy::Factor1Sign => split_by_factor1(candidate_pool),
+        MnSplitStrategy::FactorSign => split_by_factor(candidate_pool, MIN_TOTAL)
+            .ok_or("split: no factor(2/3/1) gave both signs")?,
     };
     // ETF 그룹의 자연 분할은 m=1 (ETF 1개) vs n≥2 (보유주식)이 정상.
-    // factor1 분할은 양변 각 2 이상 일반적. 통합 조건: 각 변 ≥ 1 + 합 ≥ 3.
-    if x_keys.is_empty() || y_keys.is_empty() || (x_keys.len() + y_keys.len()) < 3 {
+    // factor 부호 분할은 양변 각 2 이상 일반적 (split_by_factor가 이미 보장).
+    // 통합 조건: 각 변 ≥ 1 + 합 ≥ MIN_TOTAL.
+    if x_keys.is_empty() || y_keys.is_empty() || (x_keys.len() + y_keys.len()) < MIN_TOTAL {
         return Err("split: empty side or |x|+|y|<3");
     }
 
     // 길이 통일 — 모든 멤버가 MIN_SAMPLES 이상 가졌어야 candidate pool에 들어왔으므로 안전
     let target_len = MIN_SAMPLES;
-    let (x_series, x_keys_kept) = build_standardized_returns(&x_keys, cache, target_len);
-    let (y_series, y_keys_kept) = build_standardized_returns(&y_keys, cache, target_len);
-    // ETF Natural 분할은 X 측 1개도 정상. Factor1 분할은 양변 ≥ 2 권장.
-    if x_series.is_empty() || y_series.is_empty() {
-        return Err("standardize: empty side (cache miss or var=0)");
+    let (x_series, x_keys_kept, x_drops) = build_standardized_returns(&x_keys, cache, target_len);
+    let (y_series, y_keys_kept, y_drops) = build_standardized_returns(&y_keys, cache, target_len);
+    // ETF Natural 분할은 X 측 1개도 정상. factor 분할은 양변 ≥ 2 권장.
+    // 빈 변이 생긴 사유(캐시 미스 / 표본 부족 / 분산 0)를 구분해 반환 — universe 확대 같은
+    // 입력 조치의 효과가 진단 로그에서 바로 보이게.
+    if x_series.is_empty() {
+        return Err(empty_side_reason(true, &x_drops));
+    }
+    if y_series.is_empty() {
+        return Err(empty_side_reason(false, &y_drops));
     }
     if x_series.len() + y_series.len() < 3 {
         return Err("standardize: |x|+|y|<3 after cache filter");
@@ -785,6 +883,8 @@ pub fn discover_mn_in_group(
         z_score: z,
         sample_size: t_price,
         score,
+        split_factor,
+        dup_group_count: 0, // `/mn-pairs` 응답단 dedup에서 채움 (0 = 미집계)
     })
 }
 

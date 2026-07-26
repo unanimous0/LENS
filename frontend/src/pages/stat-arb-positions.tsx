@@ -36,7 +36,9 @@ export function StatArbPositionsPage() {
         if (!r.ok) throw new Error(`positions HTTP ${r.status}`)
         return r.json() as Promise<PositionListResp>
       }),
-      fetch('/api/stat-arb/pairs?limit=500&basis=all').then(async (r) => {
+      // limit 전체 — ETF 유니버스 확대(100→304)로 페어가 3.8천→1.1만이 되면서 상위 500만
+      // 받으면 저장 포지션 페어가 모집단 밖으로 밀려 z·평가손익이 비었다. 전량 조회로 조인 보장.
+      fetch('/api/stat-arb/pairs?limit=50000&basis=all').then(async (r) => {
         if (!r.ok) throw new Error(`pairs HTTP ${r.status}`)
         return r.json() as Promise<{ pairs: PairRow[] }>
       }),

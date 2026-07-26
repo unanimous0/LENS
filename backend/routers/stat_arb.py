@@ -37,7 +37,10 @@ async def _proxy_get(path: str, params: dict[str, Any]) -> dict:
 
 @router.get("/pairs")
 async def list_pairs(
-    limit: int = Query(100, ge=0, le=10000),
+    # 상한 50000 — ETF universe 확대(top100→400, 2026-07-26)로 통과 페어가 3.8천→1.1만이 되어
+    # 기존 상한 10000이면 프론트의 '전체 로드'(목록 검색·워치리스트 조인)가 score 하위부터
+    # 소리 없이 잘렸다. 발굴 상한이 아니라 조회 상한이라 통계와 무관.
+    limit: int = Query(100, ge=0, le=50000),
     group: Optional[str] = None,
     basis: Optional[str] = None,
     exclude_categories: Optional[str] = None,

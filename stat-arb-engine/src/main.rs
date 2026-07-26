@@ -637,8 +637,35 @@ async fn list_mn_pairs(
         })
         .map(|(_, p)| p.clone())
         .collect();
-    let total = pairs.len();
     pairs.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+
+    // leg 집합(방향 무시)이 같은 페어는 대표 1개로 축약. 같은 조합이 여러 그룹에서 중복 산출되기
+    // 때문 — `underlying_to_index()`가 "코스피200*" 카테고리 24개 전부에 KOSPI200 구성종목을
+    // 주입해 candidate pool이 사실상 동일해진다(그룹 정의 문제이지 발굴 게이팅 문제가 아님).
+    // score 내림차순 정렬 후이므로 대표 = 최고 score. 축약된 그룹 수는 dup_group_count로 노출.
+    let mut seen: HashMap<String, usize> = HashMap::new();
+    let mut deduped: Vec<MPairResult> = Vec::with_capacity(pairs.len());
+    for p in pairs {
+        let mut ks: Vec<&str> = p
+            .x_legs
+            .iter()
+            .chain(p.y_legs.iter())
+            .map(|l| l.key.as_str())
+            .collect();
+        ks.sort_unstable();
+        let k = ks.join("|");
+        match seen.get(&k) {
+            Some(&i) => deduped[i].dup_group_count += 1,
+            None => {
+                seen.insert(k, deduped.len());
+                let mut rep = p;
+                rep.dup_group_count = 1;
+                deduped.push(rep);
+            }
+        }
+    }
+    let mut pairs = deduped;
+    let total = pairs.len();
     pairs.truncate(q.limit);
     let returned = pairs.len();
     Json(MnPairsResp {
@@ -886,8 +913,26 @@ async fn load_groups(
     }
 }
 
-/// ETF universe 상위 N개 (1개월 평균 거래대금 내림차순).
-const ETF_TOP_N: i32 = 100;
+/// ETF universe 상위 N개 (1개월 평균 거래대금 내림차순). env `STATARB_ETF_TOP_N`.
+///
+/// 100 → 400 (2026-07-26, 측정 후). `load_active_etfs`는 이미 "1개월 평균 거래대금 10억 이상"
+/// 하한을 걸고 top-N을 자르는데, 하한 통과 ETF가 **304개**인 반면 상위 100 커트라인은
+/// **일 192억** — 10억~192억인 204개(충분히 체결 가능한 유동성)를 통째로 버리고 있었다.
+/// 이게 M:N 발굴 탈락의 최대 원인: etf 그룹은 489개인데 캐시엔 ETF 100개뿐이라
+/// `EtfNatural` 분할의 X변(=ETF 자신)이 캐시에 없어 `standardize: x empty (cache miss)`로
+/// 즉시 탈락한 그룹이 352건(전체 시도 494 중 71%)이었다.
+/// 400은 10억 필터 통과분 전량을 담는 자연 상한 — 유동성 하한(10억)은 그대로라 체결성 안전.
+fn etf_top_n() -> i32 {
+    use std::sync::OnceLock;
+    static CELL: OnceLock<i32> = OnceLock::new();
+    *CELL.get_or_init(|| {
+        std::env::var("STATARB_ETF_TOP_N")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .filter(|&n| n > 0)
+            .unwrap_or(400)
+    })
+}
 
 /// 워밍업 vs 증분 모드 — `warmup_and_discover`에 전달.
 #[derive(Debug, Clone, Copy)]
@@ -945,7 +990,7 @@ async fn warmup_and_discover(
     let t_total = Instant::now();
 
     // 1. universe 추출 (가벼움 — 매번 재추출하여 신규 종목 반영)
-    let universe = match universe::load_full(pool, ETF_TOP_N).await {
+    let universe = match universe::load_full(pool, etf_top_n()).await {
         Ok(u) => u,
         Err(e) => {
             warn!("[universe] 로딩 실패: {e}");
@@ -1118,7 +1163,7 @@ async fn warmup_and_discover(
     log_pca_diagnostics(&pca_map, groups).await;
 
     // 7. PR-C2: Sparse CCA M:N 발굴 — PCA candidate pool 기반
-    let mut mn_map = compute_group_mn_pairs(&pca_map, cache, &names, groups).await;
+    let (mut mn_map, mn_diag) = compute_group_mn_pairs(&pca_map, cache, &names, groups).await;
     // M:N leg 분류 태깅(same_underlying 분리는 이번 범위 밖 — 태그만).
     for mp in mn_map.values_mut() {
         for leg in mp.x_legs.iter_mut() {
@@ -1128,7 +1173,7 @@ async fn warmup_and_discover(
             leg.class = leg_class(&leg.key, &etf_meta);
         }
     }
-    log_mn_diagnostics(&mn_map, groups).await;
+    log_mn_diagnostics(&mn_map, &mn_diag, groups).await;
 
     {
         let mut s = groups.write().await;
@@ -1209,16 +1254,27 @@ async fn compute_group_pcas(
     out
 }
 
+/// M:N 발굴 한 사이클의 진단 집계. 로깅은 `log_mn_diagnostics` 한 곳에서만 한다
+/// (탈락 사유가 세분화돼 발굴 결과와 같이 읽어야 의미가 있음).
+#[derive(Default)]
+struct MnDiagnostics {
+    /// PCA 산출된 그룹 중 M:N 발굴을 시도한 수.
+    attempted: usize,
+    elapsed_secs: f64,
+    /// (그룹 종류, 탈락 사유) → 그룹 수.
+    fail_by_kind_reason: HashMap<(String, &'static str), usize>,
+}
+
 /// PR-C2: PCA candidate pool 가진 그룹들에 Sparse CCA M:N 발굴.
 /// 그룹당 1 페어 (deflation 미지원). 양변 분할 전략은 그룹 kind 따라:
 ///   - etf 그룹: ETF↔보유주식 자연 분할
-///   - sector/index/etf_category: PCA factor1 부호 분할
+///   - sector/index/etf_category: PCA factor 부호 분할 (factor2 → 3 → 1 탐색)
 async fn compute_group_mn_pairs(
     pca_map: &HashMap<String, GroupPcaResult>,
     cache: &SeriesCache,
     names: &HashMap<String, String>,
     groups: &Arc<RwLock<GroupsState>>,
-) -> HashMap<String, MPairResult> {
+) -> (HashMap<String, MPairResult>, MnDiagnostics) {
     let t = Instant::now();
 
     // group_id → (kind, name, members) snapshot
@@ -1239,7 +1295,7 @@ async fn compute_group_mn_pairs(
         let Some((kind, name, members)) = group_info.get(gid) else { continue };
         let strategy = match kind {
             GroupKind::Etf => MnSplitStrategy::EtfNatural,
-            _ => MnSplitStrategy::Factor1Sign,
+            _ => MnSplitStrategy::FactorSign,
         };
         match discovery::discover_mn_in_group(
             gid,
@@ -1260,29 +1316,35 @@ async fn compute_group_mn_pairs(
             }
         }
     }
-    if !fail_by_kind_reason.is_empty() {
+    let diag = MnDiagnostics {
+        attempted,
+        elapsed_secs: t.elapsed().as_secs_f64(),
+        fail_by_kind_reason,
+    };
+    (out, diag)
+}
+
+/// PR-C2 진단 — 발굴 수·탈락 사유 분포·분할축 분포·leg 분포·score Top 5.
+async fn log_mn_diagnostics(
+    mn_map: &HashMap<String, MPairResult>,
+    diag: &MnDiagnostics,
+    groups: &Arc<RwLock<GroupsState>>,
+) {
+    info!(
+        "[PR-C2 M:N] {}/{} 그룹에서 M:N 페어 발굴 ({:.1}초)",
+        mn_map.len(),
+        diag.attempted,
+        diag.elapsed_secs
+    );
+    if !diag.fail_by_kind_reason.is_empty() {
         info!("[PR-C2 진단] fail 이유 분포 (종류별):");
-        let mut sorted: Vec<((String, &'static str), usize)> =
-            fail_by_kind_reason.into_iter().map(|(k, v)| (k, v)).collect();
-        sorted.sort_by(|a, b| b.1.cmp(&a.1));
-        for ((kind, reason), n) in sorted.iter().take(15) {
+        let mut sorted: Vec<(&(String, &'static str), &usize)> =
+            diag.fail_by_kind_reason.iter().collect();
+        sorted.sort_by(|a, b| b.1.cmp(a.1));
+        for ((kind, reason), n) in sorted.iter().take(20) {
             info!("  · {kind:14}: {n:4} × \"{reason}\"");
         }
     }
-    info!(
-        "[PR-C2 M:N] {}/{} 그룹에서 M:N 페어 발굴 ({:.1}초)",
-        out.len(),
-        attempted,
-        t.elapsed().as_secs_f64()
-    );
-    out
-}
-
-/// PR-C2 진단 — 발굴 페어 수 종류별, score Top 5, leg 분포.
-async fn log_mn_diagnostics(
-    mn_map: &HashMap<String, MPairResult>,
-    groups: &Arc<RwLock<GroupsState>>,
-) {
     if mn_map.is_empty() {
         info!("[PR-C2 진단] M:N 발굴 페어 0개");
         return;
@@ -1323,6 +1385,28 @@ async fn log_mn_diagnostics(
         .collect::<Vec<_>>()
         .join(", ");
     info!("[PR-C2 진단] leg 분포 Top5 — {dist_str}");
+
+    // 분할축 분포 — 어느 축(ETF 자연분할 / PC1~3 부호)이 페어를 만들어냈나.
+    // factor 분할 교체(PC1 단일부호 → PC2 우선) 효과를 사이클마다 확인하는 지표.
+    let mut split_dist: HashMap<usize, usize> = HashMap::new();
+    for mp in mn_map.values() {
+        *split_dist.entry(mp.split_factor).or_insert(0) += 1;
+    }
+    let mut split_keys: Vec<usize> = split_dist.keys().copied().collect();
+    split_keys.sort();
+    let split_str: String = split_keys
+        .iter()
+        .map(|f| {
+            let label = if *f == 0 {
+                "ETF자연분할".to_string()
+            } else {
+                format!("factor{f}")
+            };
+            format!("{label}={}", split_dist[f])
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    info!("[PR-C2 진단] 분할축 분포 — {split_str}");
 
     // score Top 5 페어
     let mut ranked: Vec<&MPairResult> = mn_map.values().collect();

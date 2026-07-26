@@ -116,7 +116,8 @@ export function AlertWatchlist({ api }: { api: StatArbAlertsApi }) {
     if (list.length === 0) return
     const want = new Set(list.map((a) => pairKey(a.left_key, a.right_key)))
     list.forEach((a) => attemptedRef.current.add(pairKey(a.left_key, a.right_key)))
-    void fetch('/api/stat-arb/pairs?basis=all&limit=10000')
+    // limit은 '전체' 의미 — 워치 페어가 score 하위여도 반드시 조인되게 (엔진 통과 1.1만).
+    void fetch('/api/stat-arb/pairs?basis=all&limit=50000')
       .then(async (r) => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`)
         return (await r.json()) as { pairs: PairRow[] }

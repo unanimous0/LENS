@@ -243,7 +243,8 @@ export function StatArbPage() {
     setLoading(true)
     setError(null)
     // 전체 로드 — 검색이 score 낮은 페어까지 찾도록. 렌더는 visiblePairs에서 상위 500만.
-    const params = new URLSearchParams({ limit: '10000' })
+    // limit은 '전체'를 뜻하는 여유값(엔진 통과 페어 1.1만, 프록시 상한 5만).
+    const params = new URLSearchParams({ limit: '50000' })
     if (groupFilter) params.set('group', groupFilter)
     params.set('basis', basisView)
     params.set('asset_combo', assetCombo)

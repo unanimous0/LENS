@@ -24,6 +24,11 @@ type MPair = {
   z_score: number
   sample_size: number
   score: number
+  /// 양변 분할에 쓰인 PCA factor (1-based). 0 = ETF 자연분할(ETF↔보유주식).
+  split_factor?: number
+  /// 같은 leg 조합을 낸 그룹 수 (1 = 고유). 그룹 정의상 KOSPI200 구성종목이 여러
+  /// "코스피200*" 카테고리에 주입돼 동일 페어가 중복 산출되므로 대표 1개로 축약해 표시.
+  dup_group_count?: number
 }
 
 type MnPairsResp = {
@@ -247,6 +252,22 @@ function RowFragment({
             {KIND_LABEL[kind] ?? kind}
           </span>
           <span className="text-t1">{pair.group_name}</span>
+          {(pair.dup_group_count ?? 1) > 1 && (
+            <span
+              className="ml-1 rounded-sm bg-bg-surface px-1.5 py-0.5 text-[11px] text-t4"
+              title={`같은 leg 조합이 ${pair.dup_group_count}개 그룹에서 산출됨 — 대표 1개만 표시`}
+            >
+              외 {(pair.dup_group_count ?? 1) - 1}개 그룹
+            </span>
+          )}
+          {(pair.split_factor ?? 0) > 0 && (
+            <span
+              className="ml-1 rounded-sm bg-blue/15 px-1.5 py-0.5 text-[11px] text-blue"
+              title={`PCA factor ${pair.split_factor} 부호로 양변 분할 (시장 공통 팩터 제거 축)`}
+            >
+              F{pair.split_factor}
+            </span>
+          )}
         </td>
         <td className="px-3 py-2 text-t1">
           {pair.x_legs.length}:{pair.y_legs.length}
