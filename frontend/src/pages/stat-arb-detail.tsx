@@ -2,6 +2,7 @@ import type { IChartApi, ISeriesApi, LogicalRange } from 'lightweight-charts'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 
+import { AlertButton } from '@/components/stat-arb/alert-button'
 import { LegCompareChart, ResidualHistogram, SpreadDualChart, ZScoreChart } from '@/components/stat-arb/charts'
 import { PnlSimulator } from '@/components/stat-arb/pnl-simulator'
 import { TimeframeTable } from '@/components/stat-arb/timeframe-table'
@@ -384,9 +385,18 @@ export function StatArbDetailPage() {
             ({detail.left_key} / {detail.right_key})
           </span>
         </div>
-        <div className="flex items-center gap-1.5">
-          <span className="text-[10px] text-t3">기준</span>
-          <BasisSeg value={basis} onChange={setBasis} />
+        <div className="flex items-center gap-3">
+          <AlertButton
+            leftKey={detail.left_key}
+            rightKey={detail.right_key}
+            leftName={detail.left_name}
+            rightName={detail.right_name}
+            currentZ={displayZ}
+          />
+          <div className="flex items-center gap-1.5">
+            <span className="text-[10px] text-t3">기준</span>
+            <BasisSeg value={basis} onChange={setBasis} />
+          </div>
         </div>
       </div>
 

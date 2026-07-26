@@ -1,5 +1,10 @@
 import { useCallback, useDeferredValue, useEffect, useMemo, useState } from 'react'
+
+import { AlertWatchlist } from '@/components/stat-arb/alert-watchlist'
+import { useStatArbAlerts } from '@/hooks/useStatArbAlerts'
 import { keyToCode } from '@/lib/stat-arb-keys'
+import { pairKey } from '@/lib/stat-arb/alerts'
+import { STABILITY_BADGES, STABILITY_RANK } from '@/lib/stat-arb/stability'
 
 type Group = {
   id: string
@@ -122,14 +127,7 @@ const STABILITY_PARAM: Record<StabilityView, string> = {
   stable_caution: 'stable,caution',
 }
 
-// 안정성 등급 배지 — 상세(관계 안정성 패널)와 동일 라벨·톤
-const STABILITY_BADGES: Record<string, { label: string; cls: string }> = {
-  stable: { label: '안정', cls: 'bg-accent/15 text-accent' },
-  caution: { label: '주의', cls: 'bg-warning/15 text-warning' },
-  drift: { label: '드리프트', cls: 'bg-down/15 text-down' },
-}
-// 정렬용 등급 랭크 (내림차순 = 드리프트 먼저). 미산출은 -1로 뒤로.
-const STABILITY_RANK: Record<string, number> = { drift: 2, caution: 1, stable: 0 }
+// 안정성 등급 배지·랭크는 워치리스트와 공용 (@/lib/stat-arb/stability).
 
 // 정렬 가능한 컬럼
 type SortKey = 'score' | 'z' | 'hl' | 'r2' | 'adf' | 'corr' | 'beta' | 'loanrate' | 'stability'
@@ -187,6 +185,14 @@ export function StatArbPage() {
   const [pcaErr, setPcaErr] = useState<string | null>(null)
   const [pcaOpen, setPcaOpen] = useState(false)
   const [showLogic, setShowLogic] = useState(false) // 발굴 방법론 토글
+
+  // 목표 z 도달 알림 — 워치리스트 패널과 목록 🔔 버튼이 같은 상태를 공유.
+  const alertsApi = useStatArbAlerts()
+  const { alerts, toggle: toggleAlert } = alertsApi
+  const alertKeys = useMemo(
+    () => new Set(alerts.map((a) => pairKey(a.left_key, a.right_key))),
+    [alerts]
+  )
 
   // 대여요율 1회 로딩 (변경 시 페이지 재진입으로 갱신)
   useEffect(() => {
@@ -380,18 +386,33 @@ export function StatArbPage() {
           >
             <td className="px-3 py-2 text-t4">{i + 1}</td>
             <td className="px-3 py-2">
-              <div className="flex flex-wrap items-center gap-x-1 gap-y-0.5">
-                <span className="text-t1">{p.left_name}</span>
-                <ClassBadge cls={p.left_class} />
-                <span className="mx-0.5 text-t3">↔</span>
-                <span className="text-t1">{p.right_name}</span>
-                <ClassBadge cls={p.right_class} />
-                {p.same_underlying && (
-                  <span className="rounded-sm bg-blue/15 px-1 text-[11px] text-blue">베이시스</span>
-                )}
-              </div>
-              <div className="text-[10px] text-t4">
-                {p.left_key} / {p.right_key}
+              <div className="flex items-start gap-1.5">
+                <BellButton
+                  on={alertKeys.has(pairKey(p.left_key, p.right_key))}
+                  onToggle={() =>
+                    toggleAlert({
+                      left_key: p.left_key,
+                      right_key: p.right_key,
+                      left_name: p.left_name,
+                      right_name: p.right_name,
+                    })
+                  }
+                />
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-x-1 gap-y-0.5">
+                    <span className="text-t1">{p.left_name}</span>
+                    <ClassBadge cls={p.left_class} />
+                    <span className="mx-0.5 text-t3">↔</span>
+                    <span className="text-t1">{p.right_name}</span>
+                    <ClassBadge cls={p.right_class} />
+                    {p.same_underlying && (
+                      <span className="rounded-sm bg-blue/15 px-1 text-[11px] text-blue">베이시스</span>
+                    )}
+                  </div>
+                  <div className="text-[10px] text-t4">
+                    {p.left_key} / {p.right_key}
+                  </div>
+                </div>
               </div>
             </td>
             <td className="px-3 py-2 text-right text-t1">{p.hedge_ratio.toFixed(3)}</td>
@@ -428,7 +449,8 @@ export function StatArbPage() {
           </tr>
         )
       }),
-    [visiblePairs, loanRates]
+    // alertKeys/toggleAlert는 알림 추가·삭제 때만 바뀜 (toggleAlert identity 고정).
+    [visiblePairs, loanRates, alertKeys, toggleAlert]
   )
 
   const sortClick = (k: SortKey) => {
@@ -612,6 +634,9 @@ export function StatArbPage() {
         </div>
        </div>
       </div>
+
+      {/* 목표 z 도달 알림 워치리스트 — 비어 있으면 한 줄로 접힘 */}
+      <AlertWatchlist api={alertsApi} />
 
       {/* PR-B: 그룹 PCA 요약 패널 — 그룹 선택 시만 표시 */}
       {groupFilter && (
@@ -830,6 +855,25 @@ export function StatArbPage() {
         )}
       </div>
     </div>
+  )
+}
+
+/** 목표 z 알림 토글 — 켜면 |z| ≥ 2.0 도달 시 워치리스트가 알림. 행 클릭(상세 열기)과 분리. */
+function BellButton({ on, onToggle }: { on: boolean; onToggle: () => void }) {
+  return (
+    <button
+      onClick={(e) => {
+        e.stopPropagation()
+        onToggle()
+      }}
+      title={on ? '알림 해제' : '알림 추가 (|z| ≥ 2.0 도달 시)'}
+      // 이모지는 text-* 색을 안 따르므로 off는 grayscale+투명도로 죽임 (500행에서 시각 소음 방지).
+      className={`mt-px shrink-0 text-[13px] leading-none ${
+        on ? '' : 'opacity-25 grayscale hover:opacity-70'
+      }`}
+    >
+      🔔
+    </button>
   )
 }
 

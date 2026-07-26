@@ -86,6 +86,13 @@ pub struct PairResult {
     pub half_life: f64,
     pub r_squared: f64,
     pub z_score: f64,      // 현재 잔차의 z
+    /// 잔차 평균 μ — z 계산에 쓰인 그 잔차(= alpha/hedge_ratio와 짝) 기준.
+    /// 프론트 라이브 z: `z = (right − alpha − hedge_ratio×left − resid_mean) / resid_std`.
+    #[serde(default)]
+    pub resid_mean: f64,
+    /// 잔차 모집단 σ. `z_score`와 동일 척도 (stats::resid_stats 단일 진입점).
+    #[serde(default)]
+    pub resid_std: f64,
     pub sample_size: usize,
     pub score: f64,
     // --- 분류 태깅 (발굴 후 엔리치 패스에서 채움. 발굴 게이팅과 무관한 부가 메타) ---
@@ -204,8 +211,11 @@ fn evaluate_pair(
         return None; // 최근창에서 관계 붕괴 — 발굴 제외
     }
 
-    // 5. 현재 z-score
-    let z = stats::current_z(&r.residuals)?;
+    // 5. 현재 z-score — 정규화 기준(μ, σ)도 함께 노출.
+    //    프론트가 장중 라이브 가격으로 같은 척도의 z를 재계산할 수 있어야 하므로
+    //    z와 (μ, σ)를 *같은 잔차*에서 한 번에 뽑는다 (분기 시 척도 어긋남 방지).
+    let (resid_mean, resid_std) = stats::resid_stats(&r.residuals)?;
+    let z = (r.residuals[r.residuals.len() - 1] - resid_mean) / resid_std;
 
     // score: ADF가 음수일수록 좋음, half-life 작을수록 좋음, |corr| 클수록 좋음
     let score = (-adf) * (1.0 / hl) * corr.abs();
@@ -224,6 +234,8 @@ fn evaluate_pair(
         half_life: hl,
         r_squared: r.r_squared,
         z_score: z,
+        resid_mean,
+        resid_std,
         sample_size: a.len(),
         score,
         // 분류 태깅·관계 안정성은 발굴 후 엔리치 패스(main.rs)에서 채움 — 여기선 기본값.

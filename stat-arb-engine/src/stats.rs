@@ -133,8 +133,10 @@ pub fn stddev_pop(series: &[f64]) -> Option<f64> {
     Some(var.sqrt())
 }
 
-/// 현재 z-score: `(현재 잔차 - 잔차 평균) / 잔차 표준편차`.
-pub fn current_z(residuals: &[f64]) -> Option<f64> {
+/// 잔차 정규화 기준 `(mean, σ_pop)`. z = (잔차 − mean) / σ.
+/// `current_z`와 프론트 실시간 z(라이브 가격 → 잔차 → z)가 **같은 척도**를 쓰도록 하는 단일 진입점.
+/// 표본 < 2 이거나 σ ≈ 0 이면 None.
+pub fn resid_stats(residuals: &[f64]) -> Option<(f64, f64)> {
     let n = residuals.len();
     if n < 2 {
         return None;
@@ -144,7 +146,13 @@ pub fn current_z(residuals: &[f64]) -> Option<f64> {
     if sigma < f64::EPSILON {
         return None;
     }
-    Some((residuals[n - 1] - mean) / sigma)
+    Some((mean, sigma))
+}
+
+/// 현재 z-score: `(현재 잔차 - 잔차 평균) / 잔차 표준편차`.
+pub fn current_z(residuals: &[f64]) -> Option<f64> {
+    let (mean, sigma) = resid_stats(residuals)?;
+    Some((residuals[residuals.len() - 1] - mean) / sigma)
 }
 
 // ---------------------------------------------------------------------------
@@ -621,6 +629,26 @@ mod tests {
         }
         let hl = half_life(&y).unwrap();
         assert!((hl - std::f64::consts::LN_2 / (1.0 - phi)).abs() < 0.05);
+    }
+
+    #[test]
+    fn resid_stats_matches_current_z() {
+        // 라이브 z 계약: (마지막 잔차 − μ)/σ 가 정확히 current_z 와 같아야 한다.
+        // (프론트가 이 μ·σ로 장중 가격을 재점수화 → 목록 z와 같은 척도)
+        let x: Vec<f64> = (0..60).map(|i| 10000.0 + (i as f64) * 30.0).collect();
+        let y: Vec<f64> = x
+            .iter()
+            .enumerate()
+            .map(|(i, v)| 1.7 * v + 2500.0 + ((i as f64) * 0.9).sin() * 120.0)
+            .collect();
+        let fit = ols(&x, &y).unwrap();
+        let (mean, sigma) = resid_stats(&fit.residuals).unwrap();
+        let last = fit.residuals[fit.residuals.len() - 1];
+        let z = current_z(&fit.residuals).unwrap();
+        assert!(((last - mean) / sigma - z).abs() < 1e-12);
+        // 라이브 경로 재현: 마지막 x/y 를 "실시간 가격"으로 간주해도 동일 z.
+        let live_resid = y[y.len() - 1] - fit.alpha - fit.beta * x[x.len() - 1];
+        assert!(((live_resid - mean) / sigma - z).abs() < 1e-9);
     }
 
     #[test]

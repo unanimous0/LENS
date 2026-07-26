@@ -89,6 +89,12 @@ export type PairRow = {
   z_score: number
   sample_size: number
   score: number
+  /** 잔차 정규화 기준 μ·σ — 라이브 z 재계산용. 구버전 엔진 응답엔 없음.
+   *  z_live = (right − alpha − hedge_ratio×left − resid_mean) / resid_std. */
+  resid_mean?: number
+  resid_std?: number
+  /** 관계 안정성 등급 (Kalman 시변 β). 미산출이면 빈 문자열. */
+  stability?: string
 }
 
 type i64 = number

@@ -709,3 +709,16 @@ memory: `project_statarb_intraday_detail`. **발굴(discovery)은 여전히 일�
 - **측정(corr 0.3 발굴 3501페어)**: |β| median 1.50, p95 17.6, max 467.7. 극단도 질 대등 — **|β|>5(722개) R² 0.846·ADF −4.12, |β|<0.2(336개) R² 0.859·ADF −4.09** (중앙 0.5~2와 동급).
 - **결론 — 필터 부적합**: β는 corr와 달리 **크기 자체가 품질과 무관**. 극단 β는 대부분 **자산군 가격 스케일 차이**(자산군별 |β| median: S-S 0.98·E-E 0.66·E-S 2.41·I-S 79.9·E-I 0.02 — 지수 3000pt vs 주식 5만원). 절대 밴드 0.2~5로 자르면 R² 0.85의 좋은 페어 **1058개(30%) 오제거**. 매우 극단(|β|>50)은 2.2%(주로 지수)뿐. 체결(극단 수량비)은 **PnL 시뮬레이터의 금액 기준 수량 산출이 이미 해결**(금액 입력→β비율 수량 자동).
 - **결정: β 밴드 필터 도입 안 함.** 필요 시 정보성 "수량비 큼" 표시만 검토(필터 아님, 미구현).
+
+### 18.9 목표 z 도달 알림 (워치리스트) (2026-07-26)
+- **동기**: 스윙 진입 판단은 *일봉 z*인데 실행은 장중. "장중에 |z|가 2를 넘는 순간"을 하루 종일 화면 앞에서 기다릴 수 없음 → 관심 페어에 목표 z를 걸어두고 도달 시 알림.
+- **엔진 (additive)**: `PairResult`에 `resid_mean`/`resid_std` 추가. `stats::resid_stats()`가 `current_z`와 **같은 진입점**이라 z_score와 척도가 어긋날 수 없다. 발굴 게이팅 수학 불변(필드 추가만).
+  - 라이브 z = `(right − alpha − hedge_ratio×left − resid_mean) / resid_std`.
+  - 실측 검증: TIGER200/RISE200·SK하이닉스/SK스퀘어 등 4페어에서 *마지막 일봉 종가*를 넣으면 `z_score`와 **diff 0.0** 재현. `/pairs/detail`의 `daily_center`/`daily_scale`과도 동일값.
+- **저장 (LENS SQLite)**: `backend/services/stat_arb_alerts.py` — `stat_arb_alerts` 테이블(`left_key,right_key,direction` UNIQUE → 재등록은 UPSERT로 목표 갱신). 라우트는 `routers/stat_arb.py`의 `/api/stat-arb/alerts*` (**이 경로만 프록시가 아니라 로컬 CRUD**). direction = `abs`(|z|≥t) / `above`(z≥t) / `below`(z≤−t), target_z는 항상 양수.
+- **프론트**: 목록 페이지 `AlertWatchlist` 패널 (`components/stat-arb/alert-watchlist.tsx`).
+  - 조인: 목록 pairs는 필터가 걸려 있어 워치 페어가 빠질 수 있음 → **`basis=all&limit=10000` 별도 1회 조회**로 α·β·μ·σ 확보(필터 토글엔 무반응). α·β는 3년 일봉 회귀라 장중 불변 → 주기 refetch 없음(수동 버튼).
+  - 발화: 브라우저 알림(Notification, 권한 요청 버튼) + 화면 우하단 배너 + 짧은 비프(무음 토글, localStorage). **라이브 가격이 양쪽 다 있을 때만** 발화(전일 종가 z로 장 시작 전 오발화 차단).
+  - **히스테리시스**: 한 번 울리면 disarm → |z|가 `목표 × 0.8` 안쪽으로 되돌아와야 재무장(경계 진동 연타 방지). 무장 상태는 컴포넌트 메모리(useRef).
+  - 등록 UI: 목록 행 페어 셀의 🔔 토글(기본 2.0·abs), 상세 헤더 `AlertButton` 팝오버(목표·방향 선택, 페어당 여러 건 가능).
+- **한계(명시)**: 탭이 열려 있는 동안만 감시 — 서버 푸시 아님. 비보안(HTTP) 접속이면 Notification API가 없어 배너·소리로만 알림.

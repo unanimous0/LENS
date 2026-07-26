@@ -6,11 +6,17 @@ frontend가 8300에 직접 가는 대신 backend(/api/stat-arb/...) 거치게 �
   - 향후 인증/캐싱/레이트리밋 hook 자리
 
 stat-arb-engine이 안 떠있으면 503.
+
+예외: `/alerts/*` (목표 z 도달 알림 워치리스트)는 프록시가 아니라 **LENS SQLite 로컬 CRUD**.
+엔진은 알림을 모른다 — 감시·발화는 프론트, 저장은 여기.
 """
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 import httpx
 from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel, Field
+
+from services import stat_arb_alerts
 
 router = APIRouter(prefix="/stat-arb", tags=["stat-arb"])
 
@@ -102,6 +108,80 @@ async def list_mn_pairs(
     if kind:
         params["kind"] = kind
     return await _proxy_get("/mn-pairs", params)
+
+
+# ---------------------------------------------------------------------------
+# 목표 z 도달 알림 (워치리스트) — 로컬 SQLite. 프록시 아님.
+# ---------------------------------------------------------------------------
+
+_alerts_initialized = False
+
+
+async def _ensure_alerts() -> None:
+    global _alerts_initialized
+    if not _alerts_initialized:
+        await stat_arb_alerts.ensure_schema()
+        _alerts_initialized = True
+
+
+class AlertCreate(BaseModel):
+    left_key: str = Field(..., min_length=1)
+    right_key: str = Field(..., min_length=1)
+    left_name: str | None = None
+    right_name: str | None = None
+    # 항상 양수 임계. 'below'도 양수로 넣고 부호는 direction이 결정.
+    target_z: float = Field(..., gt=0, le=10)
+    direction: Literal["abs", "above", "below"] = "abs"
+    note: str | None = None
+
+
+class AlertPatch(BaseModel):
+    target_z: float | None = Field(None, gt=0, le=10)
+    enabled: bool | None = None
+    note: str | None = None
+
+
+@router.get("/alerts")
+async def list_alerts() -> dict:
+    await _ensure_alerts()
+    items = await stat_arb_alerts.list_alerts()
+    return {"count": len(items), "items": items}
+
+
+@router.post("/alerts")
+async def create_alert(body: AlertCreate) -> dict:
+    """등록. 같은 (left,right,direction)이 이미 있으면 목표 갱신 + 재활성화 (UPSERT)."""
+    await _ensure_alerts()
+    return await stat_arb_alerts.create_alert(body.model_dump())
+
+
+@router.patch("/alerts/{alert_id}")
+async def patch_alert(alert_id: int, body: AlertPatch) -> dict:
+    await _ensure_alerts()
+    fields = body.model_dump(exclude_unset=True)
+    row = await stat_arb_alerts.update_alert(alert_id, fields)
+    if row is None:
+        raise HTTPException(404, f"alert not found: {alert_id}")
+    return row
+
+
+@router.delete("/alerts/{alert_id}")
+async def delete_alert(alert_id: int) -> dict:
+    await _ensure_alerts()
+    ok = await stat_arb_alerts.delete_alert(alert_id)
+    if not ok:
+        raise HTTPException(404, f"alert not found: {alert_id}")
+    return {"deleted": True}
+
+
+@router.post("/alerts/{alert_id}/triggered")
+async def mark_alert_triggered(alert_id: int) -> dict:
+    """프론트가 목표 z 도달로 발화한 순간 호출 — last_triggered_at 기록."""
+    await _ensure_alerts()
+    row = await stat_arb_alerts.mark_triggered(alert_id)
+    if row is None:
+        raise HTTPException(404, f"alert not found: {alert_id}")
+    return row
 
 
 @router.get("/health")
