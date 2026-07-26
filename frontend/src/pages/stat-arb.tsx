@@ -792,8 +792,11 @@ export function StatArbPage() {
       </div>
       )}
 
-      {/* 페어 테이블 */}
-      <div className="panel overflow-x-auto">
+      {/* 페어 테이블.
+          contain:layout style — 최대 500행×11열(≈7,500 DOM 노드)이라, 위쪽 패널(알림 워치리스트
+          펼침/접힘 등)로 문서 높이가 바뀔 때마다 이 테이블 전체가 재레이아웃되면 체감 렉이 생긴다.
+          레이아웃 격리로 외부 크기 변화가 내부 재계산을 강제하지 않게 한다. */}
+      <div className="panel overflow-x-auto" style={{ contain: 'layout style' }}>
         <table className="w-full table-fixed text-xs tabular-nums">
           {/* 열 너비 고정 — 필터 토글(레버리지 배지·긴 종목명 등)로 내용이 바뀌어도 열이 안 흔들리게.
               페어 열만 가변(나머지 공간 흡수), 숫자 열은 고정폭. */}
