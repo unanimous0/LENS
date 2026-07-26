@@ -148,6 +148,118 @@ pub fn current_z(residuals: &[f64]) -> Option<f64> {
 }
 
 // ---------------------------------------------------------------------------
+// Kalman 필터 — 시변 헤지비율 β_t (Chan 방식, pairs-trading 표준)
+// ---------------------------------------------------------------------------
+//
+// raw 가격 레벨에서 y_t = β_t·x_t + α_t + e_t, 상태 θ_t=[β_t, α_t]가 random walk.
+//   관측: F_t = [x_t, 1],  y_t = F_t·θ_t + e_t,  e_t ~ N(0, R)
+//   상태: θ_t = θ_{t-1} + w_t,  w_t ~ N(0, Q),  Q = δ·I
+// 재귀(각 t):
+//   predict:    θ_pred = θ_{t-1};  P_pred = P_{t-1} + Q
+//   innovation: v_t = y_t − F_t·θ_pred                (스칼라)
+//   innov var:  S_t = F_t·P_pred·F_tᵀ + R             (스칼라, >0)
+//   gain:       K_t = P_pred·F_tᵀ / S_t               (2×1)
+//   update:     θ_t = θ_pred + K_t·v_t;  P_t = (I − K_t·F_t)·P_pred
+// 초기화: θ_0 = [β_ols, α_ols] (전체표본 OLS warm start), P_0 = I, R = OLS 잔차 분산.
+// 2×2 선형대수는 명시적 스칼라 전개 (ndarray 불필요).
+
+/// Kalman 시변 헤지 결과. 각 벡터 길이 = 입력 길이 n.
+#[derive(Debug, Clone)]
+pub struct KalmanResult {
+    /// 적응 헤지비율 β_t (각 시점 업데이트 후).
+    pub beta: Vec<f64>,
+    /// 적응 절편 α_t.
+    pub alpha: Vec<f64>,
+    /// 표준화 혁신 v_t / sqrt(S_t) — 적응모델 기준 표준화 편차 ("Kalman z").
+    pub std_innov: Vec<f64>,
+}
+
+/// Kalman 시변 β 필터. x, y는 raw 가격 레벨(길이 동일). len<30 또는 수치 실패 시 None.
+///
+/// - `delta`: 상태 전이 분산 Q = δ·I. 작으면 β 정적, 크면 β 요동.
+/// - `obs_var`: 관측 노이즈 분산 R (OLS 잔차 분산). S_t>0 보장 위해 내부에서 양수 클램프.
+pub fn kalman_hedge(x: &[f64], y: &[f64], delta: f64, obs_var: f64) -> Option<KalmanResult> {
+    let n = x.len();
+    if n < 30 || y.len() != n {
+        return None;
+    }
+    // warm start: 전체표본 OLS. 실패(분산 0 등) 시 None.
+    let ols_fit = ols(x, y)?;
+    // R>0 보장 (완전 적합 시 obs_var≈0 → 분모 0 위험). 잔차 분산이 0에 가까우면 작은 양수.
+    let r_obs = if obs_var.is_finite() && obs_var > 1e-9 {
+        obs_var
+    } else {
+        1e-9
+    };
+    if !delta.is_finite() || delta < 0.0 {
+        return None;
+    }
+
+    // 상태 θ = [beta, alpha]
+    let mut b = ols_fit.beta;
+    let mut a = ols_fit.alpha;
+    // 공분산 P (2×2, 대칭). 초기 I.
+    let (mut p00, mut p01, mut p10, mut p11) = (1.0_f64, 0.0_f64, 0.0_f64, 1.0_f64);
+
+    let mut beta_out = Vec::with_capacity(n);
+    let mut alpha_out = Vec::with_capacity(n);
+    let mut std_innov_out = Vec::with_capacity(n);
+
+    for t in 0..n {
+        let xt = x[t];
+        let yt = y[t];
+        // predict: P_pred = P + Q (Q = δ·I → 대각에 δ 가산). θ_pred = θ (random walk).
+        p00 += delta;
+        p11 += delta;
+        // innovation v = y − F·θ_pred,  F = [xt, 1]
+        let y_hat = xt * b + a;
+        let v = yt - y_hat;
+        // P·Fᵀ = [p00·xt + p01, p10·xt + p11]  (2×1)
+        let pft0 = p00 * xt + p01;
+        let pft1 = p10 * xt + p11;
+        // S = F·P·Fᵀ + R = xt·pft0 + pft1 + R  (스칼라, >0)
+        let s = xt * pft0 + pft1 + r_obs;
+        if !s.is_finite() || s <= 0.0 {
+            return None;
+        }
+        // gain K = P·Fᵀ / S
+        let k0 = pft0 / s;
+        let k1 = pft1 / s;
+        // update θ = θ_pred + K·v
+        b += k0 * v;
+        a += k1 * v;
+        // P = (I − K·F)·P_pred.  K·F = [[k0·xt, k0],[k1·xt, k1]]
+        //   M = I − K·F = [[1−k0·xt, −k0],[−k1·xt, 1−k1]]
+        let m00 = 1.0 - k0 * xt;
+        let m01 = -k0;
+        let m10 = -k1 * xt;
+        let m11 = 1.0 - k1;
+        let np00 = m00 * p00 + m01 * p10;
+        let np01 = m00 * p01 + m01 * p11;
+        let np10 = m10 * p00 + m11 * p10;
+        let np11 = m10 * p01 + m11 * p11;
+        p00 = np00;
+        p01 = np01;
+        p10 = np10;
+        p11 = np11;
+
+        let std_innov = v / s.sqrt();
+        if !b.is_finite() || !a.is_finite() || !std_innov.is_finite() {
+            return None;
+        }
+        beta_out.push(b);
+        alpha_out.push(a);
+        std_innov_out.push(std_innov);
+    }
+
+    Some(KalmanResult {
+        beta: beta_out,
+        alpha: alpha_out,
+        std_innov: std_innov_out,
+    })
+}
+
+// ---------------------------------------------------------------------------
 // PCA (Dense)
 // ---------------------------------------------------------------------------
 
@@ -530,6 +642,33 @@ mod tests {
         let b: Vec<f64> = a.iter().map(|v| -v).collect();
         let r = pca(&[a, b]).unwrap();
         assert!((r.explained_variance_ratio[0] - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn kalman_stable_relationship_tracks_static_beta() {
+        // y = 2x + 3 + 작은 노이즈. β_t는 2 근처에서 안정, drift 작아야.
+        let x: Vec<f64> = (0..100).map(|i| 10000.0 + (i as f64) * 50.0).collect();
+        let y: Vec<f64> = x
+            .iter()
+            .enumerate()
+            .map(|(i, v)| 2.0 * v + 3000.0 + ((i as f64) * 0.7).sin() * 20.0)
+            .collect();
+        let fit = ols(&x, &y).unwrap();
+        let r_var = stddev_pop(&fit.residuals).unwrap().powi(2);
+        let k = kalman_hedge(&x, &y, 1e-4, r_var).unwrap();
+        assert_eq!(k.beta.len(), 100);
+        let last_beta = *k.beta.last().unwrap();
+        // 마지막 적응 β가 정적 β(≈2)와 크게 다르지 않아야 (drift < 10%)
+        assert!((last_beta - fit.beta).abs() / fit.beta.abs() < 0.10, "beta drift too large: {last_beta} vs {}", fit.beta);
+        // std_innov 유한
+        assert!(k.std_innov.iter().all(|v| v.is_finite()));
+    }
+
+    #[test]
+    fn kalman_too_short_none() {
+        let x: Vec<f64> = (0..20).map(|i| i as f64).collect();
+        let y = x.clone();
+        assert!(kalman_hedge(&x, &y, 1e-4, 1.0).is_none());
     }
 
     // 표준화 헬퍼 — Sparse CCA 입력 준비

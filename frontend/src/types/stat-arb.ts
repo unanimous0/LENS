@@ -26,6 +26,31 @@ export type HistBin = {
   count: number
 }
 
+/** Kalman β_t 스파크라인 한 점. */
+export type BetaPoint = {
+  ts: number
+  beta: number
+}
+
+/** Kalman 시변 헤지비율 요약 — 관계 안정성(β 드리프트) 감지. 일봉 기준. */
+export type KalmanStat = {
+  /** 적응 β 마지막값. */
+  beta_current: number
+  /** 전체표본 OLS β (정적). */
+  beta_static: number
+  /** |β_current − β_static| / |β_static| (0.15 = 15%). */
+  beta_drift_pct: number
+  /** 정적 z (OLS 잔차) = timeframes[1d].z_score 와 동일. */
+  z_static: number
+  /** 적응모델(Kalman) 기준 z (1-step std_innov). */
+  z_adaptive: number
+  /** |z_static − z_adaptive|. */
+  z_gap: number
+  stability: 'stable' | 'caution' | 'drift'
+  /** (ts, β) 스파크라인 — 최대 200점 균등 다운샘플. */
+  beta_series: BetaPoint[]
+}
+
 export type PairDetail = {
   left_key: string
   right_key: string
@@ -42,6 +67,8 @@ export type PairDetail = {
   histogram_daily?: HistBin[]
   daily_center?: number
   daily_scale?: number
+  /** Kalman 시변 β 관계 안정성 (일봉 기준). 표본 부족·구버전 응답 시 없음. */
+  kalman?: KalmanStat
 }
 
 // /pairs 응답의 페어 — 한 줄 요약 (메인 테이블에서 사용)

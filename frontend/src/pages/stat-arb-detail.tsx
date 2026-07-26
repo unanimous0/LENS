@@ -9,7 +9,7 @@ import { usePageStockSubscriptions } from '@/hooks/usePageStockSubscriptions'
 import { keyToCode, keyType } from '@/lib/stat-arb-keys'
 import { CAL_PER_TRADING_DAY, toTradingDays } from '@/lib/stat-arb/half-life'
 import { useMarketStore } from '@/stores/marketStore'
-import type { PairDetail } from '@/types/stat-arb'
+import type { KalmanStat, PairDetail } from '@/types/stat-arb'
 
 /** 기준 토글 세그먼트 — 일봉(스윙 판단) / 10분(진입 타이밍). stat-arb.tsx Seg와 동일 톤. */
 function BasisSeg({ value, onChange }: { value: '1d' | '10m'; onChange: (v: '1d' | '10m') => void }) {
@@ -401,6 +401,9 @@ export function StatArbDetailPage() {
             />
           </div>
 
+          {/* 관계 안정성 (Kalman 시변 β 드리프트) — 항상 일봉 기준 */}
+          {detail.kalman && <RelationStabilityPanel k={detail.kalman} />}
+
           {/* Timeframe 테이블 */}
           <div className="panel p-3">
             <div className="mb-2 text-xs text-t3">Timeframe 비교</div>
@@ -737,6 +740,133 @@ export function StatArbDetailPage() {
         hlTradingDays={hlTradingDays}
       />
     </div>
+  )
+}
+
+/** 관계 안정성 (Kalman 시변 β 드리프트) 패널 — 항상 일봉 기준.
+ *  정적 OLS β(3년 고정) vs Kalman 적응 β_t 비교로 "관계가 흔들리는지" 자동 감지. */
+function RelationStabilityPanel({ k }: { k: KalmanStat }) {
+  const driftPct = k.beta_drift_pct * 100
+  const betaShaking = k.beta_drift_pct > 0.1
+  const zStale = k.z_gap > 2.0
+
+  // 판정 배지 톤
+  const badge =
+    k.stability === 'drift'
+      ? { label: '드리프트', cls: 'bg-down/15 text-down' }
+      : k.stability === 'caution'
+      ? { label: '주의', cls: 'bg-warning/15 text-warning' }
+      : { label: '안정', cls: 'bg-accent/15 text-accent' }
+
+  // 경고 문구 — 어느 신호가 승격을 유발했는지에 맞춤
+  let msg: string
+  let msgCls: string
+  if (k.stability === 'drift') {
+    msgCls = 'text-down'
+    msg = betaShaking
+      ? `헤지비율 β가 최근 ${driftPct.toFixed(1)}% 변함 — 두 종목 관계가 구조적으로 흔들리는 중. 3년 평균 회귀 가정이 약화됐습니다. 진입 주의.`
+      : `정적 z(${k.z_static.toFixed(2)})는 크지만 적응모델은 균형 근처(${k.z_adaptive.toFixed(2)})로 봅니다 — 관계가 최근 재레벨링됨. 3년 평균 회귀 가정이 약화됐습니다. 진입 주의.`
+  } else if (k.stability === 'caution') {
+    msgCls = 'text-warning'
+    msg = betaShaking
+      ? `헤지비율 β가 최근 ${driftPct.toFixed(1)}% 변함 — 관계 기울기가 서서히 바뀌는 중. 헤지비율·포지션 사이즈 재점검 권장.`
+      : `정적 z와 적응 z 괴리(${k.z_gap.toFixed(2)}) — 3년 평균 대비 현재 편차가 다소 stale. 진입 신중.`
+  } else {
+    msgCls = 'text-t3'
+    msg = zStale
+      ? '헤지비율 β 안정. 다만 스프레드 레벨은 다소 이동 — 대체로 평균 회귀 가정 유효.'
+      : 'β·스프레드 관계가 안정적. 평균 회귀 가정 유효.'
+  }
+
+  return (
+    <div className="panel p-3 text-xs">
+      <div className="mb-2 flex items-center gap-2">
+        <span className="text-sm font-medium text-t1">관계 안정성</span>
+        <span className="text-[10px] text-t3">β 드리프트 · 일봉 기준</span>
+        <span className={`ml-auto rounded-sm px-1.5 py-0.5 text-[11px] font-semibold ${badge.cls}`}>
+          {badge.label}
+        </span>
+      </div>
+
+      <div className="space-y-1.5 tabular-nums">
+        <div className="flex items-baseline justify-between">
+          <span className="text-t3">정적 β → 현재 β</span>
+          <span className="text-t1">
+            {k.beta_static.toFixed(4)} <span className="text-t3">→</span> {k.beta_current.toFixed(4)}{' '}
+            <span
+              className={
+                betaShaking ? (k.beta_drift_pct > 0.2 ? 'text-down' : 'text-warning') : 'text-t3'
+              }
+            >
+              (드리프트 {driftPct.toFixed(1)}%)
+            </span>
+          </span>
+        </div>
+        <div className="flex items-baseline justify-between">
+          <span className="text-t3">정적 z vs 적응 z</span>
+          <span className="text-t1">
+            {k.z_static >= 0 ? '+' : ''}
+            {k.z_static.toFixed(2)} <span className="text-t3">vs</span>{' '}
+            {k.z_adaptive >= 0 ? '+' : ''}
+            {k.z_adaptive.toFixed(2)}{' '}
+            <span className={zStale ? 'text-warning' : 'text-t3'}>(괴리 {k.z_gap.toFixed(2)})</span>
+          </span>
+        </div>
+      </div>
+
+      {/* β_t 스파크라인 — 정적 β 기준선(점선) 대비 적응 β 추이 */}
+      {k.beta_series.length >= 2 && (
+        <div className="mt-2">
+          <BetaSparkline series={k.beta_series} betaStatic={k.beta_static} stability={k.stability} />
+        </div>
+      )}
+
+      <div className={`mt-2 leading-relaxed ${msgCls}`}>{msg}</div>
+      <div className="mt-1.5 leading-relaxed text-t4">
+        β = 두 종목의 헤지비율. 최근 β가 얼마나 변했나 = 관계가 흔들리는지. 적응 z = 관계 변화를 반영한
+        현재 편차 (정적 z와 크게 다르면 3년 평균 신호가 stale).
+      </div>
+    </div>
+  )
+}
+
+/** β_t 스파크라인 — 순수 SVG (차트 라이브러리 불필요). 정적 β는 점선 기준선. */
+function BetaSparkline({
+  series,
+  betaStatic,
+  stability,
+}: {
+  series: { ts: number; beta: number }[]
+  betaStatic: number
+  stability: KalmanStat['stability']
+}) {
+  const W = 100
+  const H = 28
+  const betas = series.map((p) => p.beta)
+  let lo = Math.min(...betas, betaStatic)
+  let hi = Math.max(...betas, betaStatic)
+  if (hi - lo < 1e-9) {
+    lo -= 1
+    hi += 1
+  }
+  const pad = (hi - lo) * 0.12
+  lo -= pad
+  hi += pad
+  const n = series.length
+  const x = (i: number) => (n === 1 ? 0 : (i / (n - 1)) * W)
+  const y = (b: number) => H - ((b - lo) / (hi - lo)) * H
+  const path = series.map((p, i) => `${i === 0 ? 'M' : 'L'}${x(i).toFixed(2)} ${y(p.beta).toFixed(2)}`).join(' ')
+  const yStatic = y(betaStatic)
+  const stroke =
+    stability === 'drift' ? 'var(--color-down)' : stability === 'caution' ? 'var(--color-warning)' : 'var(--color-accent)'
+
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" className="h-7 w-full">
+      {/* 정적 β 기준선 */}
+      <line x1={0} y1={yStatic} x2={W} y2={yStatic} stroke="var(--color-t4)" strokeWidth={0.5} strokeDasharray="2 2" />
+      {/* 적응 β_t */}
+      <path d={path} fill="none" stroke={stroke} strokeWidth={1} vectorEffect="non-scaling-stroke" />
+    </svg>
   )
 }
 

@@ -14,6 +14,25 @@ const BUCKET_10M_MS: i64 = 10 * 60 * 1000;
 const BUCKET_30M_MS: i64 = 30 * 60 * 1000;
 const BUCKET_1H_MS: i64 = 60 * 60 * 1000;
 
+// --- Kalman 시변 β (관계 안정성 감지) 튜닝 상수 ---------------------------------
+// δ = 상태 전이 분산 Q = δ·I. 튜닝 포인트: 너무 작으면 β 정적 OLS와 동일하게 얼어붙고,
+// 너무 크면 β가 관측 노이즈를 좇아 요동. 일봉 raw 가격 레벨(원 단위) 기준 경험값.
+const KALMAN_DELTA: f64 = 1e-4;
+// 안정성 판정 임계 (튜닝 포인트). drift_pct = |β_current−β_static|/|β_static|, z_gap = |z_static−z_adaptive|.
+//
+// β_drift 는 관계 "기울기(헤지비율)" 구조 변화의 독립 지표 → 안정성의 1차 판정축.
+// z_gap 은 정적 z(3년 고정) 대비 적응모델(Kalman)이 본 현재 편차의 괴리.
+//   실측: 적응 z(1-step std_innov)는 random-walk 절편 α가 레벨을 항상 추종해 거의 항상 ≈0
+//   (표본 전반 −0.5~+0.4). 따라서 z_gap ≈ |z_static| 로 수렴한다.
+//   정상 페어도 당일 |z_static|이 1~2까지 흔히 나오므로 임계 1/2는 건강한 페어를 오분류(과경보).
+//   → z_gap 은 사용자 경보 시나리오(정적 z≈−3.85인데 재레벨링)처럼 *극단* 괴리에서만 승격시킨다.
+const DRIFT_PCT_CAUTION: f64 = 0.10; // β 10% 이상 변동 → 주의 (구조적 슬로프 변화)
+const DRIFT_PCT_DRIFT: f64 = 0.20; // β 20% 이상 → 드리프트
+const Z_GAP_CAUTION: f64 = 2.0; // 정적/적응 z 괴리 2σ 이상 → 주의 (정적 z가 상당히 stale)
+const Z_GAP_DRIFT: f64 = 3.0; //  3σ 이상 → 드리프트 (정적 z가 심하게 과대 = 재레벨링)
+// β 스파크라인 다운샘플 상한 (프론트 전송 경량화).
+const BETA_SERIES_MAX: usize = 200;
+
 /// timeframe 1개 통계량 (1d, 1m 별로 각각).
 #[derive(Debug, Clone, Serialize)]
 pub struct TimeframeStat {
@@ -47,6 +66,38 @@ pub struct HistBin {
     pub count: usize,
 }
 
+/// Kalman β_t 스파크라인 한 점.
+#[derive(Debug, Clone, Serialize)]
+pub struct BetaPoint {
+    pub ts: i64,
+    pub beta: f64,
+}
+
+/// Kalman 시변 헤지비율 요약 — 관계 안정성(β 드리프트) 감지. 일봉 기준.
+///
+/// 정적 OLS β는 3년 전체 표본 1벌. Kalman은 매일 β_t·α_t를 적응 갱신 →
+/// 관계가 최근 재레벨링/드리프트하면 β_current가 β_static에서 벌어지고,
+/// 적응모델 기준 z(z_adaptive)가 정적 z(z_static)와 괴리한다.
+#[derive(Debug, Clone, Serialize)]
+pub struct KalmanStat {
+    /// 적응 β 마지막값.
+    pub beta_current: f64,
+    /// 전체표본 OLS β (정적).
+    pub beta_static: f64,
+    /// |β_current − β_static| / |β_static| (0.15 = 15%).
+    pub beta_drift_pct: f64,
+    /// 정적 z (OLS 잔차 current_z) = timeframes[1d].z_score 와 동일.
+    pub z_static: f64,
+    /// 적응모델 기준 z (std_innov 마지막값).
+    pub z_adaptive: f64,
+    /// |z_static − z_adaptive|.
+    pub z_gap: f64,
+    /// "stable" | "caution" | "drift".
+    pub stability: String,
+    /// (ts, β) 스파크라인 — 최대 BETA_SERIES_MAX 점으로 균등 다운샘플.
+    pub beta_series: Vec<BetaPoint>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct PairDetail {
     pub left_key: String,
@@ -75,6 +126,9 @@ pub struct PairDetail {
     pub daily_center: f64,
     #[serde(default)]
     pub daily_scale: f64,
+    /// Kalman 시변 β 요약 (관계 안정성). 일봉 표본<30 또는 필터 실패 시 None.
+    #[serde(default)]
+    pub kalman: Option<KalmanStat>,
 }
 
 // ---------------------------------------------------------------------------
@@ -213,6 +267,72 @@ fn histogram(values: &[f64], n_bins: usize) -> Vec<HistBin> {
         .collect()
 }
 
+/// 일봉 raw 가격 레벨로 Kalman 시변 β 요약 산출. 표본<30 또는 필터 실패 시 None.
+/// 발굴·정적 z와 동일하게 raw close 교집합(잔차=원 단위) 기준 — basis 토글 무관 일봉 고정.
+fn build_kalman_stat(left_daily: &[Bar], right_daily: &[Bar]) -> Option<KalmanStat> {
+    let (x, y, ts) = intersect_by_ts(left_daily, right_daily);
+    if x.len() < 30 {
+        return None;
+    }
+    let ols = stats::ols(&x, &y)?;
+    // R = OLS 잔차 분산 (모집단 σ²).
+    let obs_var = stats::stddev_pop(&ols.residuals)?.powi(2);
+    let z_static = stats::current_z(&ols.residuals)?;
+    let kf = stats::kalman_hedge(&x, &y, KALMAN_DELTA, obs_var)?;
+
+    let beta_current = *kf.beta.last()?;
+    let beta_static = ols.beta;
+    let beta_drift_pct = if beta_static.abs() > f64::EPSILON {
+        (beta_current - beta_static).abs() / beta_static.abs()
+    } else {
+        0.0
+    };
+    let z_adaptive = *kf.std_innov.last()?;
+    let z_gap = (z_static - z_adaptive).abs();
+
+    let stability = if beta_drift_pct > DRIFT_PCT_DRIFT || z_gap > Z_GAP_DRIFT {
+        "drift"
+    } else if beta_drift_pct > DRIFT_PCT_CAUTION || z_gap > Z_GAP_CAUTION {
+        "caution"
+    } else {
+        "stable"
+    }
+    .to_string();
+
+    // β 스파크라인 — 균등 다운샘플 (마지막 점 반드시 포함).
+    let beta_series = downsample_beta(&ts, &kf.beta, BETA_SERIES_MAX);
+
+    Some(KalmanStat {
+        beta_current,
+        beta_static,
+        beta_drift_pct,
+        z_static,
+        z_adaptive,
+        z_gap,
+        stability,
+        beta_series,
+    })
+}
+
+/// (ts, beta) → 최대 `max` 점으로 균등 다운샘플. 마지막 점 포함.
+fn downsample_beta(ts: &[i64], beta: &[f64], max: usize) -> Vec<BetaPoint> {
+    let n = ts.len().min(beta.len());
+    if n == 0 {
+        return Vec::new();
+    }
+    if n <= max || max < 2 {
+        return (0..n).map(|i| BetaPoint { ts: ts[i], beta: beta[i] }).collect();
+    }
+    let step = (n - 1) as f64 / (max - 1) as f64;
+    (0..max)
+        .map(|k| {
+            let i = ((k as f64) * step).round() as usize;
+            let i = i.min(n - 1);
+            BetaPoint { ts: ts[i], beta: beta[i] }
+        })
+        .collect()
+}
+
 // ---------------------------------------------------------------------------
 // 메인 빌더
 // ---------------------------------------------------------------------------
@@ -279,6 +399,9 @@ pub fn build_pair_detail(
         timeframes.push(s);
     }
 
+    // Kalman 시변 β 관계 안정성 — 일봉 raw 레벨 기준 (basis 토글 무관). 표본 부족 시 None.
+    let kalman = build_kalman_stat(left_daily, right_daily);
+
     Some(PairDetail {
         left_key,
         right_key,
@@ -293,5 +416,6 @@ pub fn build_pair_detail(
         histogram_daily,
         daily_center,
         daily_scale,
+        kalman,
     })
 }
