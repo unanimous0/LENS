@@ -73,10 +73,18 @@ fn recent_adf_crit() -> f64 {
 }
 
 /// M:N 페어 한 쪽 최대 leg 수. stat-arb-engine.md §2 결정사항.
-/// PR-C (Sparse CCA) / PR-E (Sparse PCA) 진입 시 L1 sparsity 강도와 결과 leg 수 cap에 사용.
-/// PR-A 시점엔 1:1만 다루므로 미사용 — 상수 사전 정의로 의도 명시.
-#[allow(dead_code)]
+/// Sparse CCA 결과의 leg 수 cap — `find_sparse_cca_with_target` 의 c 다이얼링 목표.
 pub const MAX_LEGS_PER_SIDE: usize = 5;
+/// M:N leg 가중치 채택 임계 — CCA 가중치 |w| 가 이 값 초과인 변수만 leg 로 인정.
+const MN_WEIGHT_THRESHOLD: f64 = 0.05;
+/// M:N 페어 양변 합 최소 leg 수 (1:1 은 1:1 발굴 트랙이 담당하므로 3 이상).
+const MN_MIN_TOTAL: usize = 3;
+/// 한 그룹에서 뽑을 최대 성분(=페어) 수. deflation 반복 상한.
+///
+/// 성분 1이 그룹의 가장 강한 canonical 축이고, 2·3은 채택된 leg 을 후보 풀에서 회수한
+/// 뒤 남은 변수들로 다시 찾은 축이다. canonical correlation 이 급감하므로 통과율이
+/// 낮은 게 정상 — 게이트(R²·ADF·half-life·leg 수)는 성분 순번과 무관하게 동일 적용한다.
+pub const MN_MAX_PER_GROUP: usize = 3;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct PairResult {
@@ -581,6 +589,10 @@ pub struct MPairResult {
     /// 발굴 게이팅과 무관한 계보 메타 — 어느 축이 M:N을 만들어냈는지 추적용.
     #[serde(default)]
     pub split_factor: usize,
+    /// 그룹 내 몇 번째 성분인지 (1-based). deflation 으로 같은 그룹에서 여러 페어가 나온다.
+    /// 1 = 가장 강한 canonical 축. 2 이상은 앞 성분의 leg 을 회수한 잔여 풀에서 나온 축.
+    #[serde(default)]
+    pub component_idx: usize,
     /// 같은 leg 집합을 산출한 그룹 수 (`/mn-pairs` 응답에서만 채움. 1 = 고유).
     /// groups.rs `underlying_to_index()`가 "코스피200*" 카테고리 전부에 KOSPI200 구성종목을
     /// 주입해 candidate pool이 사실상 동일해지는 탓에 같은 페어가 여러 그룹에서 나온다.
@@ -843,17 +855,218 @@ fn find_sparse_cca_with_target(
     None
 }
 
-/// 그룹에서 M:N 페어 1개 발굴. candidate_pool은 PR-B PCA 산출 결과.
+/// 그룹 하나의 M:N 발굴 결과. deflation 으로 성분(=페어) 여러 개가 나올 수 있다.
+#[derive(Debug, Default)]
+pub struct MnGroupOutcome {
+    /// 채택된 페어. 순서 = 성분 순번 (canonical 강도 내림차순).
+    pub pairs: Vec<MPairResult>,
+    /// 탐색이 멈춘 지점 `(성분 순번, 사유)`. `MN_MAX_PER_GROUP` 을 다 채웠으면 None.
+    /// `pairs` 가 비었으면 성분 1에서 멈춘 것 = 그룹 자체 탈락 (기존 fail 사유 taxonomy 그대로).
+    pub stop: Option<(usize, &'static str)>,
+}
+
+impl MnGroupOutcome {
+    fn failed(reason: &'static str) -> Self {
+        Self { pairs: Vec::new(), stop: Some((1, reason)) }
+    }
+}
+
+/// 한 변(side)의 발굴 입력. 세 배열은 같은 인덱스 공간을 공유한다
+/// (`keys[i]` ↔ `returns[i]` ↔ `log_prices[i]`).
+struct MnSide<'a> {
+    keys: &'a [String],
+    /// 표준화 로그수익률 (Sparse CCA 입력).
+    returns: &'a [Vec<f64>],
+    /// 같은 구간의 log 종가 (합성 스프레드 OLS 입력).
+    log_prices: &'a [Vec<f64>],
+    /// 아직 어떤 성분에도 쓰이지 않은 인덱스 = 다음 성분의 후보 풀 (deflation 상태).
+    active: Vec<usize>,
+    /// true 면 채택된 leg 을 회수하지 않는다 (아래 `anchor` 주석 참조).
+    anchor: bool,
+}
+
+impl<'a> MnSide<'a> {
+    fn new(
+        keys: &'a [String],
+        returns: &'a [Vec<f64>],
+        log_prices: &'a [Vec<f64>],
+        anchor: bool,
+    ) -> Self {
+        let active = (0..returns.len()).collect();
+        Self { keys, returns, log_prices, active, anchor }
+    }
+
+    /// 활성 인덱스만 모은 표준화 수익률 행렬 (`sparse_cca` 입력).
+    fn active_returns(&self) -> Vec<Vec<f64>> {
+        self.active.iter().map(|&i| self.returns[i].clone()).collect()
+    }
+
+    /// 이번 성분이 쓴 leg 을 후보 풀에서 회수 (deflation). anchor 변은 no-op.
+    fn consume(&mut self, used: &[usize]) {
+        if self.anchor {
+            return;
+        }
+        self.active.retain(|i| !used.contains(i));
+    }
+}
+
+/// 성분 평가에 필요한 그룹 메타 (통계와 무관한 라벨링 인자 묶음).
+struct MnContext<'a> {
+    group_id: &'a str,
+    group_name: &'a str,
+    names: &'a std::collections::HashMap<String, String>,
+    split_factor: usize,
+}
+
+/// 성분 하나 평가 — Sparse CCA → 합성 log price OLS → ADF/half-life/z 게이트.
+/// 성공 시 `(페어, x 채택 인덱스, y 채택 인덱스)` — 인덱스는 `MnSide` 원본 인덱스 공간.
+///
+/// 게이트는 성분 순번과 무관하게 동일하다. 2·3번째 성분은 잔여 풀이 약해 대부분 여기서 탈락한다.
+fn evaluate_mn_component(
+    x: &MnSide<'_>,
+    y: &MnSide<'_>,
+    ctx: &MnContext<'_>,
+    component_idx: usize,
+) -> Result<(MPairResult, Vec<usize>, Vec<usize>), &'static str> {
+    let x_ret = x.active_returns();
+    let y_ret = y.active_returns();
+
+    let cca = find_sparse_cca_with_target(
+        &x_ret,
+        &y_ret,
+        MAX_LEGS_PER_SIDE,
+        MN_MIN_TOTAL,
+        MN_WEIGHT_THRESHOLD,
+    )
+    .ok_or("sparse_cca: no c grid satisfied leg constraints")?;
+
+    // PMD-CCA는 X'X=I 가정 → cca.correlation이 [-sqrt(q), sqrt(q)] 범위 가능.
+    // 진짜 합성 시리즈 correlation은 별도 계산: corr(X·u, Y·v).
+    let t_ret = x_ret[0].len();
+    let xu: Vec<f64> = (0..t_ret)
+        .map(|k| (0..x_ret.len()).map(|i| cca.u[i] * x_ret[i][k]).sum::<f64>())
+        .collect();
+    let yv: Vec<f64> = (0..t_ret)
+        .map(|k| (0..y_ret.len()).map(|j| cca.v[j] * y_ret[j][k]).sum::<f64>())
+        .collect();
+    let true_corr = crate::stats::pearson(&xu, &yv).unwrap_or(cca.correlation);
+
+    // 선택된 leg — CCA 입력(활성 풀) 인덱스를 원본 인덱스로 환원해 (원본 idx, 가중치) 로 보관.
+    let pick = |w: &[f64], side: &MnSide<'_>| -> Vec<(usize, f64)> {
+        w.iter()
+            .enumerate()
+            .filter(|(_, w)| w.abs() > MN_WEIGHT_THRESHOLD)
+            .map(|(i, &w)| (side.active[i], w))
+            .collect()
+    };
+    let x_pick = pick(&cca.u, x);
+    let y_pick = pick(&cca.v, y);
+
+    // log close prices (level) — OLS cointegration. 한 변이라도 가격이 비면 그룹 전체 실격.
+    if x.log_prices.iter().any(|p| p.is_empty()) || y.log_prices.iter().any(|p| p.is_empty()) {
+        return Err("log_closes: aligned prices empty (data length mismatch)");
+    }
+
+    // 합성 log price — Σ w_i × log_close_i (선택된 leg만)
+    let t_price = x.log_prices[x_pick[0].0].len();
+    let mut x_combined = vec![0.0_f64; t_price];
+    let mut x_weight_sum = 0.0;
+    for &(i, w) in &x_pick {
+        for (acc, lp) in x_combined.iter_mut().zip(&x.log_prices[i]) {
+            *acc += w * lp;
+        }
+        x_weight_sum += w.abs();
+    }
+    let mut y_combined = vec![0.0_f64; t_price];
+    let mut y_weight_sum = 0.0;
+    for &(j, w) in &y_pick {
+        for (acc, lp) in y_combined.iter_mut().zip(&y.log_prices[j]) {
+            *acc += w * lp;
+        }
+        y_weight_sum += w.abs();
+    }
+    if !(x_weight_sum > 0.0) || !(y_weight_sum > 0.0) {
+        return Err("weight_sum: zero");
+    }
+
+    // OLS: y_combined = α + β × x_combined → 잔차 spread
+    let ols = crate::stats::ols(&x_combined, &y_combined).ok_or("ols: fail")?;
+    if ols.r_squared < MIN_R_SQUARED {
+        return Err("ols: r²<0.5");
+    }
+    let adf = crate::stats::adf_tstat(&ols.residuals).ok_or("adf: fail")?;
+    if adf > ADF_CRIT {
+        return Err("adf: t-stat>-3 (not stationary)");
+    }
+    let hl = crate::stats::half_life(&ols.residuals).ok_or("hl: fail")?;
+    if !hl.is_finite() {
+        return Err("hl: non-finite");
+    }
+    if hl < MIN_HALF_LIFE {
+        return Err("hl: <0.5d (too fast/noise)");
+    }
+    if hl > MAX_HALF_LIFE {
+        return Err("hl: >90d (too slow)");
+    }
+    let z = crate::stats::current_z(&ols.residuals).ok_or("z: fail")?;
+
+    // legs 변환 (가중치 정규화 후 보존)
+    let to_legs = |pick: &[(usize, f64)], side: &MnSide<'_>| -> Vec<MLeg> {
+        pick.iter()
+            .map(|&(i, w)| MLeg {
+                key: side.keys[i].clone(),
+                name: ctx.names.get(&side.keys[i]).cloned().unwrap_or_else(|| side.keys[i].clone()),
+                weight: w,
+                class: String::new(), // 엔리치 패스(main.rs)에서 채움
+            })
+            .collect()
+    };
+    let x_legs = to_legs(&x_pick, x);
+    let y_legs = to_legs(&y_pick, y);
+
+    let score = (-adf) * (1.0 / hl) * true_corr.abs();
+
+    let pair = MPairResult {
+        group_id: ctx.group_id.to_string(),
+        group_name: ctx.group_name.to_string(),
+        timeframe: "1d".into(),
+        x_legs,
+        y_legs,
+        cca_correlation: true_corr,
+        hedge_ratio: ols.beta,
+        adf_tstat: adf,
+        half_life: hl,
+        r_squared: ols.r_squared,
+        z_score: z,
+        sample_size: t_price,
+        score,
+        split_factor: ctx.split_factor,
+        component_idx,
+        dup_group_count: 0, // `/mn-pairs` 응답단 dedup에서 채움 (0 = 미집계)
+    };
+    Ok((pair, x_pick.into_iter().map(|(i, _)| i).collect(), y_pick.into_iter().map(|(j, _)| j).collect()))
+}
+
+/// 그룹에서 M:N 페어 발굴 (deflation — 최대 `MN_MAX_PER_GROUP` 성분). candidate_pool은 PR-B PCA 산출 결과.
 ///
 /// 절차:
 ///   1. strategy 따라 candidate pool 양변 분할
-///   2. log returns 표준화 매트릭스 구성, 길이 통일
-///   3. Sparse CCA — c 다이얼링으로 leg 수 목표 충족 결과 채택
-///   4. 선택된 leg의 *log close prices* multi-variate OLS → cointegration vector + 잔차
-///   5. 잔차에 ADF + half-life + z 검증
-///   6. 통과하면 MPairResult, 실패면 None
+///   2. log returns 표준화 매트릭스 + 같은 구간 log 종가 구성, 길이 통일 (성분 간 1회만)
+///   3. 성분 루프 — Sparse CCA(c 다이얼링) → 합성 log price OLS → ADF·half-life·z 게이트
+///   4. 채택되면 그 leg 을 후보 풀에서 회수(deflation)하고 다음 성분 탐색, 탈락하면 중단
 ///
-/// 한 그룹당 1 페어만 반환 (deflation 미지원, PR-C 후속에서 확장 가능).
+/// **deflation 방식 = leg 회수(greedy)**. 사영 deflation(잔차 행렬에서 성분 제거) 대신
+/// 채택 leg 을 후보에서 빼는 이유:
+///   - 성분끼리 leg 이 겹치지 않아 포지션이 한 종목에 집중되지 않는다 (운영 안전).
+///   - `/mn-pairs` 의 dedup 키가 *leg 집합*이라, 사영 deflation 이 같은 leg 집합을 가중치만
+///     바꿔 다시 뽑으면 응답단에서 통째로 축약돼 산출이 늘지 않는다.
+///   - 사영 deflation 은 2번째 성분의 합성 스프레드가 1번째의 선형결합에 가까워질 수 있는데,
+///     게이트가 원계열 log price OLS 라 그 중복을 걸러주지 못한다.
+///
+/// 단, `EtfNatural` 분할의 X변(ETF)은 **anchor** 라 회수하지 않는다. 이 변은 "선택지"가 아니라
+/// 그룹의 기준물이고(`etf:{code}` 그룹의 ETF 멤버는 정확히 1개), 회수하면 2번째 성분이
+/// 구조적으로 불가능해진다. anchor 를 유지하면 성분 2·3은 "같은 ETF ↔ 다른 보유주식 바스켓"이
+/// 되어 leg 집합이 달라지므로 dedup 과도 충돌하지 않는다.
 pub fn discover_mn_in_group(
     group_id: &str,
     group_name: &str,
@@ -862,11 +1075,33 @@ pub fn discover_mn_in_group(
     candidate_pool: &[CandidateMember],
     cache: &SeriesCache,
     names: &std::collections::HashMap<String, String>,
-) -> Result<MPairResult, &'static str> {
-    const WEIGHT_THRESHOLD: f64 = 0.05;
-    const MAX_LEGS: usize = 5;
-    const MIN_TOTAL: usize = 3;
+) -> MnGroupOutcome {
+    match prepare_and_discover_mn(
+        group_id,
+        group_name,
+        strategy,
+        group_members,
+        candidate_pool,
+        cache,
+        names,
+    ) {
+        Ok(outcome) => outcome,
+        // 분할/정렬/표준화 단계 실패 = 성분 1조차 시도 못 함 → 그룹 탈락 사유로 보고.
+        Err(reason) => MnGroupOutcome::failed(reason),
+    }
+}
 
+/// `discover_mn_in_group` 의 본체. 준비 단계 실패는 `Err`(= 성분 1 탈락), 성분 루프 결과는 `Ok`.
+#[allow(clippy::too_many_arguments)]
+fn prepare_and_discover_mn(
+    group_id: &str,
+    group_name: &str,
+    strategy: MnSplitStrategy,
+    group_members: &[String],
+    candidate_pool: &[CandidateMember],
+    cache: &SeriesCache,
+    names: &std::collections::HashMap<String, String>,
+) -> Result<MnGroupOutcome, &'static str> {
     let (split_factor, x_keys, y_keys) = match strategy {
         MnSplitStrategy::EtfNatural => {
             // ETF는 PCA candidate_pool에서 자주 누락됨 (보유주식 평균이라 individual factor
@@ -883,13 +1118,13 @@ pub fn discover_mn_in_group(
                 .collect();
             (0, etfs, stocks)
         }
-        MnSplitStrategy::FactorSign => split_by_factor(candidate_pool, MIN_TOTAL)
+        MnSplitStrategy::FactorSign => split_by_factor(candidate_pool, MN_MIN_TOTAL)
             .ok_or("split: no factor(2/3/1) gave both signs")?,
     };
     // ETF 그룹의 자연 분할은 m=1 (ETF 1개) vs n≥2 (보유주식)이 정상.
     // factor 부호 분할은 양변 각 2 이상 일반적 (split_by_factor가 이미 보장).
-    // 통합 조건: 각 변 ≥ 1 + 합 ≥ MIN_TOTAL.
-    if x_keys.is_empty() || y_keys.is_empty() || (x_keys.len() + y_keys.len()) < MIN_TOTAL {
+    // 통합 조건: 각 변 ≥ 1 + 합 ≥ MN_MIN_TOTAL.
+    if x_keys.is_empty() || y_keys.is_empty() || (x_keys.len() + y_keys.len()) < MN_MIN_TOTAL {
         return Err("split: empty side or |x|+|y|<3");
     }
 
@@ -923,136 +1158,43 @@ pub fn discover_mn_in_group(
     if y_series.is_empty() {
         return Err(empty_side_reason(false, &y_drops));
     }
-    if x_series.len() + y_series.len() < 3 {
+    if x_series.len() + y_series.len() < MN_MIN_TOTAL {
         return Err("standardize: |x|+|y|<3 after cache filter");
     }
 
-    let cca = find_sparse_cca_with_target(
-        &x_series,
-        &y_series,
-        MAX_LEGS,
-        MIN_TOTAL,
-        WEIGHT_THRESHOLD,
-    ).ok_or("sparse_cca: no c grid satisfied leg constraints")?;
-
-    // PMD-CCA는 X'X=I 가정 → cca.correlation이 [-sqrt(q), sqrt(q)] 범위 가능.
-    // 진짜 합성 시리즈 correlation은 별도 계산: corr(X·u, Y·v).
-    let t_ret = x_series[0].len();
-    let xu: Vec<f64> = (0..t_ret)
-        .map(|k| (0..x_series.len()).map(|i| cca.u[i] * x_series[i][k]).sum::<f64>())
-        .collect();
-    let yv: Vec<f64> = (0..t_ret)
-        .map(|k| (0..y_series.len()).map(|j| cca.v[j] * y_series[j][k]).sum::<f64>())
-        .collect();
-    let true_corr = crate::stats::pearson(&xu, &yv).unwrap_or(cca.correlation);
-
-    // 선택된 leg 인덱스
-    let x_sel: Vec<usize> = cca
-        .u
-        .iter()
-        .enumerate()
-        .filter(|(_, w)| w.abs() > WEIGHT_THRESHOLD)
-        .map(|(i, _)| i)
-        .collect();
-    let y_sel: Vec<usize> = cca
-        .v
-        .iter()
-        .enumerate()
-        .filter(|(_, w)| w.abs() > WEIGHT_THRESHOLD)
-        .map(|(i, _)| i)
-        .collect();
-
-    // log close prices (level) — OLS cointegration
-    let x_log_prices = log_closes_aligned(&x_keys_kept, cache, target_len + 1); // +1: returns가 차분 1번
+    // log 종가는 성분마다 같으므로 루프 밖에서 1회만 (수익률이 1차차분이라 +1 봉).
+    let x_log_prices = log_closes_aligned(&x_keys_kept, cache, target_len + 1);
     let y_log_prices = log_closes_aligned(&y_keys_kept, cache, target_len + 1);
-    if x_log_prices.iter().any(|p| p.is_empty()) || y_log_prices.iter().any(|p| p.is_empty()) {
-        return Err("log_closes: aligned prices empty (data length mismatch)");
-    }
 
-    // 합성 log price — Σ w_i × log_close_i (선택된 leg만)
-    let t_price = target_len + 1;
-    let mut x_combined = vec![0.0_f64; t_price];
-    let mut x_weight_sum = 0.0;
-    for &i in &x_sel {
-        let w = cca.u[i];
-        for k in 0..t_price {
-            x_combined[k] += w * x_log_prices[i][k];
+    let ctx = MnContext { group_id, group_name, names, split_factor };
+    let anchor_x = matches!(strategy, MnSplitStrategy::EtfNatural);
+    let mut x_side = MnSide::new(&x_keys_kept, &x_series, &x_log_prices, anchor_x);
+    let mut y_side = MnSide::new(&y_keys_kept, &y_series, &y_log_prices, false);
+
+    let mut pairs: Vec<MPairResult> = Vec::new();
+    let mut stop: Option<(usize, &'static str)> = None;
+    for component_idx in 1..=MN_MAX_PER_GROUP {
+        // 잔여 후보가 leg 수 하한을 못 채우면 더 뽑을 성분이 없다.
+        if x_side.active.is_empty()
+            || y_side.active.is_empty()
+            || x_side.active.len() + y_side.active.len() < MN_MIN_TOTAL
+        {
+            stop = Some((component_idx, "deflation: candidate pool exhausted"));
+            break;
         }
-        x_weight_sum += w.abs();
-    }
-    let mut y_combined = vec![0.0_f64; t_price];
-    let mut y_weight_sum = 0.0;
-    for &j in &y_sel {
-        let w = cca.v[j];
-        for k in 0..t_price {
-            y_combined[k] += w * y_log_prices[j][k];
+        match evaluate_mn_component(&x_side, &y_side, &ctx, component_idx) {
+            Ok((pair, x_used, y_used)) => {
+                x_side.consume(&x_used);
+                y_side.consume(&y_used);
+                pairs.push(pair);
+            }
+            Err(reason) => {
+                stop = Some((component_idx, reason));
+                break;
+            }
         }
-        y_weight_sum += w.abs();
     }
-    if !(x_weight_sum > 0.0) || !(y_weight_sum > 0.0) {
-        return Err("weight_sum: zero");
-    }
-
-    // OLS: y_combined = α + β × x_combined → 잔차 spread
-    let ols = crate::stats::ols(&x_combined, &y_combined).ok_or("ols: fail")?;
-    if ols.r_squared < MIN_R_SQUARED {
-        return Err("ols: r²<0.5");
-    }
-    let adf = crate::stats::adf_tstat(&ols.residuals).ok_or("adf: fail")?;
-    if adf > ADF_CRIT {
-        return Err("adf: t-stat>-3 (not stationary)");
-    }
-    let hl = crate::stats::half_life(&ols.residuals).ok_or("hl: fail")?;
-    if !hl.is_finite() {
-        return Err("hl: non-finite");
-    }
-    if hl < MIN_HALF_LIFE {
-        return Err("hl: <0.5d (too fast/noise)");
-    }
-    if hl > MAX_HALF_LIFE {
-        return Err("hl: >90d (too slow)");
-    }
-    let z = crate::stats::current_z(&ols.residuals).ok_or("z: fail")?;
-
-    // legs 변환 (가중치 정규화 후 보존)
-    let x_legs: Vec<MLeg> = x_sel
-        .iter()
-        .map(|&i| MLeg {
-            key: x_keys_kept[i].clone(),
-            name: names.get(&x_keys_kept[i]).cloned().unwrap_or_else(|| x_keys_kept[i].clone()),
-            weight: cca.u[i],
-            class: String::new(), // 엔리치 패스(main.rs)에서 채움
-        })
-        .collect();
-    let y_legs: Vec<MLeg> = y_sel
-        .iter()
-        .map(|&j| MLeg {
-            key: y_keys_kept[j].clone(),
-            name: names.get(&y_keys_kept[j]).cloned().unwrap_or_else(|| y_keys_kept[j].clone()),
-            weight: cca.v[j],
-            class: String::new(), // 엔리치 패스(main.rs)에서 채움
-        })
-        .collect();
-
-    let score = (-adf) * (1.0 / hl) * true_corr.abs();
-
-    Ok(MPairResult {
-        group_id: group_id.to_string(),
-        group_name: group_name.to_string(),
-        timeframe: "1d".into(),
-        x_legs,
-        y_legs,
-        cca_correlation: true_corr,
-        hedge_ratio: ols.beta,
-        adf_tstat: adf,
-        half_life: hl,
-        r_squared: ols.r_squared,
-        z_score: z,
-        sample_size: t_price,
-        score,
-        split_factor,
-        dup_group_count: 0, // `/mn-pairs` 응답단 dedup에서 채움 (0 = 미집계)
-    })
+    Ok(MnGroupOutcome { pairs, stop })
 }
 
 /// 그룹 한정 1:1 발굴 — 그룹 멤버끼리만 페어 평가.
@@ -1139,6 +1281,32 @@ mod tests {
         // EtfNatural 의 X변(ETF 1개) — min_members=1 이면 그 길이가 그대로 상한.
         assert_eq!(choose_target_len(&[199], 1), Some(199));
         assert_eq!(choose_target_len(&[149], 1), None);
+    }
+
+    #[test]
+    fn mn_side_deflation_consumes_used_legs() {
+        let keys: Vec<String> = ["a", "b", "c"].iter().map(|s| s.to_string()).collect();
+        let returns: Vec<Vec<f64>> = vec![vec![1.0, 2.0], vec![3.0, 4.0], vec![5.0, 6.0]];
+        let prices = returns.clone();
+        let mut side = MnSide::new(&keys, &returns, &prices, false);
+        assert_eq!(side.active, vec![0, 1, 2]);
+        side.consume(&[1]);
+        // 채택된 leg 만 빠지고 나머지 인덱스는 원본 공간을 유지한다 (가격/키 조회가 어긋나면 안 됨).
+        assert_eq!(side.active, vec![0, 2]);
+        assert_eq!(side.active_returns(), vec![returns[0].clone(), returns[2].clone()]);
+        side.consume(&[0, 2]);
+        assert!(side.active.is_empty());
+    }
+
+    #[test]
+    fn mn_side_anchor_never_consumed() {
+        // EtfNatural 의 X변(ETF) — 회수하면 성분 2가 구조적으로 불가능해진다.
+        let keys: Vec<String> = vec!["E:069500".to_string()];
+        let returns: Vec<Vec<f64>> = vec![vec![0.1, -0.2, 0.3]];
+        let prices = returns.clone();
+        let mut side = MnSide::new(&keys, &returns, &prices, true);
+        side.consume(&[0]);
+        assert_eq!(side.active, vec![0]);
     }
 
     #[test]

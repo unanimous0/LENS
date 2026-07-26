@@ -367,6 +367,13 @@ POST   /api/groups                     사용자 정의 그룹
     `GET /groups/{id}/mn-pair` + `GET /mn-pairs` API + backend proxy (`24efae8`)
   - PR-C2.1 ✅ fail 이유 카운트 + true correlation (`9d53977`)
   - PR-C3 ✅ 프론트 `/stat-arb/mn` 페이지 — 그룹 필터, leg 확장, score Top 정렬 (`fd4047a`)
+  - PR-C4 ✅ **deflation** — 그룹당 최대 `MN_MAX_PER_GROUP`(3) 성분. 채택된 leg 을 후보 풀에서
+    회수하고 같은 게이트로 재탐색(사영 deflation 아님 — leg 겹침 없어 포지션 집중 회피 +
+    `/mn-pairs` 의 leg 집합 dedup 과 충돌하지 않음). `EtfNatural` 의 X변(ETF)은 **anchor** 라
+    회수하지 않아 성분 2·3이 "같은 ETF ↔ 다른 보유주식 바스켓"이 된다.
+    임계 전부 불변 → 성분 1 결과는 이전과 완전 동일. 50 → 108 페어(dedup 후), M:N 단계 0.1초.
+    `mn_pairs` 저장이 `HashMap<gid, Vec<MPairResult>>` 로 바뀌고
+    `GET /groups/{id}/mn-pair` 응답이 `{group_id, total, pairs[]}` 객체가 됨.
   - **다음 단계** (트랙 A 마무리 + 트랙 B):
     - **PR-D Johansen test** — M:N 잔차 cointegration 정식 검증. 현재 OLS+ADF 단순화.
       ndarray-linalg 또는 자체 구현 (Johansen은 eigendecomposition 무거움). 가짜 양성 강하게 거르기

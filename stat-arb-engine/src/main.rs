@@ -13,7 +13,7 @@ mod phase;
 mod stats;
 mod universe;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -125,8 +125,9 @@ pub struct GroupsState {
     pub pair_counts: HashMap<String, usize>,
     /// PR-B: 그룹 id → Dense PCA 결과. 멤버 ≥ PCA_MIN_MEMBERS 만 산출.
     pub pca: HashMap<String, GroupPcaResult>,
-    /// PR-C2: 그룹 id → M:N 발굴 페어 (그룹당 최대 1개). Sparse CCA + OLS+ADF 통과만.
-    pub mn_pairs: HashMap<String, MPairResult>,
+    /// PR-C2: 그룹 id → M:N 발굴 페어. Sparse CCA + OLS+ADF 통과만.
+    /// deflation 으로 그룹당 최대 `MN_MAX_PER_GROUP` 개 (성분 순번 오름차순). 0개면 entry 없음.
+    pub mn_pairs: HashMap<String, Vec<MPairResult>>,
 }
 
 #[derive(Clone)]
@@ -580,15 +581,28 @@ async fn pair_detail(
     }
 }
 
-/// PR-C2: 그룹의 M:N 발굴 페어 (있다면). 없으면 404.
+#[derive(Serialize)]
+struct GroupMnPairsResp {
+    group_id: String,
+    /// 성분(deflation) 개수 = pairs.len().
+    total: usize,
+    pairs: Vec<MPairResult>,
+}
+
+/// PR-C2: 그룹의 M:N 발굴 페어 목록 (deflation 성분 순번 오름차순). 없으면 404.
 async fn group_mn_pair(
     State(state): State<AppState>,
     axum::extract::Path(group_id): axum::extract::Path<String>,
 ) -> Response {
     let s = state.groups.read().await;
     match s.mn_pairs.get(&group_id) {
-        Some(r) => Json(r.clone()).into_response(),
-        None => (
+        Some(v) if !v.is_empty() => Json(GroupMnPairsResp {
+            group_id,
+            total: v.len(),
+            pairs: v.clone(),
+        })
+        .into_response(),
+        _ => (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({"error": format!("M:N 페어 없음: {group_id}")})),
         )
@@ -623,6 +637,7 @@ async fn list_mn_pairs(
     Query(q): Query<MnPairsQuery>,
 ) -> Json<MnPairsResp> {
     let gs = state.groups.read().await;
+    // 그룹당 여러 성분(deflation) → 평탄화해서 한 리스트로.
     let mut pairs: Vec<MPairResult> = gs
         .mn_pairs
         .iter()
@@ -635,7 +650,7 @@ async fn list_mn_pairs(
                 .unwrap_or(false),
             None => true,
         })
-        .map(|(_, p)| p.clone())
+        .flat_map(|(_, v)| v.iter().cloned())
         .collect();
     pairs.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
 
@@ -1165,7 +1180,7 @@ async fn warmup_and_discover(
     // 7. PR-C2: Sparse CCA M:N 발굴 — PCA candidate pool 기반
     let (mut mn_map, mn_diag) = compute_group_mn_pairs(&pca_map, cache, &names, groups).await;
     // M:N leg 분류 태깅(same_underlying 분리는 이번 범위 밖 — 태그만).
-    for mp in mn_map.values_mut() {
+    for mp in mn_map.values_mut().flatten() {
         for leg in mp.x_legs.iter_mut() {
             leg.class = leg_class(&leg.key, &etf_meta);
         }
@@ -1261,12 +1276,17 @@ struct MnDiagnostics {
     /// PCA 산출된 그룹 중 M:N 발굴을 시도한 수.
     attempted: usize,
     elapsed_secs: f64,
-    /// (그룹 종류, 탈락 사유) → 그룹 수.
+    /// (그룹 종류, 탈락 사유) → 그룹 수. **성분 1 탈락(=그룹 통째 실패)만** 집계 —
+    /// 이전 사이클 로그와 그대로 비교 가능하게 유지.
     fail_by_kind_reason: HashMap<(String, &'static str), usize>,
+    /// 성분 2 이상에서 deflation 이 멈춘 사유 → 횟수. "더 못 뽑은 이유" 진단.
+    /// (성분 순번별 채택 수는 결과 map 에서 직접 세므로 여기 두지 않는다 — 단일 출처.)
+    deflation_stop_reason: HashMap<&'static str, usize>,
 }
 
 /// PR-C2: PCA candidate pool 가진 그룹들에 Sparse CCA M:N 발굴.
-/// 그룹당 1 페어 (deflation 미지원). 양변 분할 전략은 그룹 kind 따라:
+/// 그룹당 최대 `MN_MAX_PER_GROUP` 페어 (deflation = 채택 leg 후보 풀에서 회수).
+/// 양변 분할 전략은 그룹 kind 따라:
 ///   - etf 그룹: ETF↔보유주식 자연 분할
 ///   - sector/index/etf_category: PCA factor 부호 분할 (factor2 → 3 → 1 탐색)
 async fn compute_group_mn_pairs(
@@ -1274,7 +1294,7 @@ async fn compute_group_mn_pairs(
     cache: &SeriesCache,
     names: &HashMap<String, String>,
     groups: &Arc<RwLock<GroupsState>>,
-) -> (HashMap<String, MPairResult>, MnDiagnostics) {
+) -> (HashMap<String, Vec<MPairResult>>, MnDiagnostics) {
     let t = Instant::now();
 
     // group_id → (kind, name, members) snapshot
@@ -1286,10 +1306,11 @@ async fn compute_group_mn_pairs(
             .collect()
     };
 
-    let mut out: HashMap<String, MPairResult> = HashMap::new();
+    let mut out: HashMap<String, Vec<MPairResult>> = HashMap::new();
     let mut attempted = 0_usize;
     // 종류별 fail 이유 카운트 — PR-C2.1 진단 강화
     let mut fail_by_kind_reason: HashMap<(String, &'static str), usize> = HashMap::new();
+    let mut deflation_stop_reason: HashMap<&'static str, usize> = HashMap::new();
     for (gid, pca_r) in pca_map {
         attempted += 1;
         let Some((kind, name, members)) = group_info.get(gid) else { continue };
@@ -1297,7 +1318,7 @@ async fn compute_group_mn_pairs(
             GroupKind::Etf => MnSplitStrategy::EtfNatural,
             _ => MnSplitStrategy::FactorSign,
         };
-        match discovery::discover_mn_in_group(
+        let outcome = discovery::discover_mn_in_group(
             gid,
             name,
             strategy,
@@ -1305,39 +1326,59 @@ async fn compute_group_mn_pairs(
             &pca_r.candidate_pool,
             cache,
             names,
-        ) {
-            Ok(mp) => {
-                out.insert(gid.clone(), mp);
-            }
-            Err(reason) => {
-                *fail_by_kind_reason
-                    .entry((kind.as_str().to_string(), reason))
-                    .or_insert(0) += 1;
+        );
+        if outcome.pairs.is_empty() {
+            // 성분 1조차 못 뽑음 = 그룹 탈락 (이전 구조의 Err 와 같은 의미).
+            let reason = outcome.stop.map(|(_, r)| r).unwrap_or("unknown");
+            *fail_by_kind_reason
+                .entry((kind.as_str().to_string(), reason))
+                .or_insert(0) += 1;
+            continue;
+        }
+        // 성분 2 이상에서 멈춘 사유는 별도 집계 (통과율 낮은 게 정상 — fail 히스토그램 오염 방지).
+        if let Some((c, reason)) = outcome.stop {
+            if c > 1 {
+                *deflation_stop_reason.entry(reason).or_insert(0) += 1;
             }
         }
+        out.insert(gid.clone(), outcome.pairs);
     }
     let diag = MnDiagnostics {
         attempted,
         elapsed_secs: t.elapsed().as_secs_f64(),
         fail_by_kind_reason,
+        deflation_stop_reason,
     };
     (out, diag)
 }
 
-/// PR-C2 진단 — 발굴 수·탈락 사유 분포·분할축 분포·leg 분포·score Top 5.
+/// 진단 로깅용 중앙값 (표본이 작아 정렬 비용 무시 가능).
+fn median_of(pairs: &[&MPairResult], f: impl Fn(&MPairResult) -> f64) -> f64 {
+    if pairs.is_empty() {
+        return f64::NAN;
+    }
+    let mut v: Vec<f64> = pairs.iter().map(|p| f(p)).collect();
+    v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let m = v.len() / 2;
+    if v.len() % 2 == 0 { (v[m - 1] + v[m]) / 2.0 } else { v[m] }
+}
+
+/// PR-C2 진단 — 그룹/페어 수, 성분 순번별 분포·품질, 탈락 사유, 분할축, leg 분포, score Top 5.
 async fn log_mn_diagnostics(
-    mn_map: &HashMap<String, MPairResult>,
+    mn_map: &HashMap<String, Vec<MPairResult>>,
     diag: &MnDiagnostics,
     groups: &Arc<RwLock<GroupsState>>,
 ) {
+    let total_pairs: usize = mn_map.values().map(|v| v.len()).sum();
     info!(
-        "[PR-C2 M:N] {}/{} 그룹에서 M:N 페어 발굴 ({:.1}초)",
+        "[PR-C2 M:N] {}/{} 그룹에서 M:N 페어 {} 개 발굴 ({:.1}초)",
         mn_map.len(),
         diag.attempted,
+        total_pairs,
         diag.elapsed_secs
     );
     if !diag.fail_by_kind_reason.is_empty() {
-        info!("[PR-C2 진단] fail 이유 분포 (종류별):");
+        info!("[PR-C2 진단] fail 이유 분포 (종류별, 성분1 탈락=그룹 실패):");
         let mut sorted: Vec<(&(String, &'static str), &usize)> =
             diag.fail_by_kind_reason.iter().collect();
         sorted.sort_by(|a, b| b.1.cmp(a.1));
@@ -1345,33 +1386,66 @@ async fn log_mn_diagnostics(
             info!("  · {kind:14}: {n:4} × \"{reason}\"");
         }
     }
+    if !diag.deflation_stop_reason.is_empty() {
+        let mut sorted: Vec<(&&'static str, &usize)> = diag.deflation_stop_reason.iter().collect();
+        sorted.sort_by(|a, b| b.1.cmp(a.1));
+        let s: String = sorted
+            .iter()
+            .take(6)
+            .map(|(r, n)| format!("{n}×\"{r}\""))
+            .collect::<Vec<_>>()
+            .join(", ");
+        info!("[PR-C2 진단] deflation 중단 사유 (성분2+) — {s}");
+    }
     if mn_map.is_empty() {
         info!("[PR-C2 진단] M:N 발굴 페어 0개");
         return;
     }
+    let all: Vec<&MPairResult> = mn_map.values().flatten().collect();
     let gs = groups.read().await;
 
-    // 종류별 카운트
-    let mut by_kind: HashMap<String, usize> = HashMap::new();
-    for gid in mn_map.keys() {
+    // 종류별 카운트 (그룹 수 / 페어 수)
+    let mut by_kind: HashMap<String, (usize, usize)> = HashMap::new();
+    for (gid, v) in mn_map {
         let kind = gs
             .by_id
             .get(gid)
             .and_then(|i| gs.groups.get(*i))
             .map(|g| g.kind.as_str().to_string())
             .unwrap_or_else(|| "?".into());
-        *by_kind.entry(kind).or_insert(0) += 1;
+        let e = by_kind.entry(kind).or_insert((0, 0));
+        e.0 += 1;
+        e.1 += v.len();
     }
-    info!("[PR-C2 진단] M:N 발굴 총 {} 페어", mn_map.len());
+    info!("[PR-C2 진단] M:N 발굴 총 {} 페어 / {} 그룹", total_pairs, mn_map.len());
     let mut kinds: Vec<&String> = by_kind.keys().collect();
     kinds.sort();
     for k in kinds {
-        info!("  · {k:14}: {} 페어", by_kind[k]);
+        let (g, p) = by_kind[k];
+        info!("  · {k:14}: {p} 페어 ({g} 그룹)");
+    }
+
+    // 성분 순번별 분포 + 품질 — deflation 이 쓸만한 2·3번째를 내는지 판단하는 핵심 지표.
+    // (임계는 성분 무관 동일 적용이므로, 품질 급락은 MN_MAX_PER_GROUP 조정 근거가 된다.)
+    let mut by_comp: BTreeMap<usize, Vec<&MPairResult>> = BTreeMap::new();
+    for mp in &all {
+        by_comp.entry(mp.component_idx).or_default().push(mp);
+    }
+    info!("[PR-C2 진단] 성분 순번별 분포/품질:");
+    for (c, v) in &by_comp {
+        info!(
+            "  · 성분 {c}: {:3} 페어 — adf {:.2} / r² {:.3} / |corr| {:.3} / hl {:.1}d (중앙값)",
+            v.len(),
+            median_of(v, |p| p.adf_tstat),
+            median_of(v, |p| p.r_squared),
+            median_of(v, |p| p.cca_correlation.abs()),
+            median_of(v, |p| p.half_life),
+        );
     }
 
     // leg 분포
     let mut leg_dist: HashMap<(usize, usize), usize> = HashMap::new();
-    for mp in mn_map.values() {
+    for mp in &all {
         let key = (mp.x_legs.len(), mp.y_legs.len());
         *leg_dist.entry(key).or_insert(0) += 1;
     }
@@ -1389,7 +1463,7 @@ async fn log_mn_diagnostics(
     // 분할축 분포 — 어느 축(ETF 자연분할 / PC1~3 부호)이 페어를 만들어냈나.
     // factor 분할 교체(PC1 단일부호 → PC2 우선) 효과를 사이클마다 확인하는 지표.
     let mut split_dist: HashMap<usize, usize> = HashMap::new();
-    for mp in mn_map.values() {
+    for mp in &all {
         *split_dist.entry(mp.split_factor).or_insert(0) += 1;
     }
     let mut split_keys: Vec<usize> = split_dist.keys().copied().collect();
@@ -1409,13 +1483,14 @@ async fn log_mn_diagnostics(
     info!("[PR-C2 진단] 분할축 분포 — {split_str}");
 
     // score Top 5 페어
-    let mut ranked: Vec<&MPairResult> = mn_map.values().collect();
+    let mut ranked = all.clone();
     ranked.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
     info!("[PR-C2 진단] score Top 5 페어:");
     for mp in ranked.iter().take(5) {
         info!(
-            "  · {:40} ({}:{}) corr={:.3} hl={:.1}d adf={:.2} z={:+.2} score={:.3}",
+            "  · {:40} #{} ({}:{}) corr={:.3} hl={:.1}d adf={:.2} z={:+.2} score={:.3}",
             mp.group_id,
+            mp.component_idx,
             mp.x_legs.len(),
             mp.y_legs.len(),
             mp.cca_correlation,

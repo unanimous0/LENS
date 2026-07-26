@@ -97,7 +97,10 @@ async def group_pca(group_id: str) -> dict:
 
 @router.get("/groups/{group_id}/mn-pair")
 async def group_mn_pair(group_id: str) -> dict:
-    """PR-C2: 그룹의 M:N 발굴 페어 (Sparse CCA + ADF 통과). 없으면 엔진 404."""
+    """PR-C2: 그룹의 M:N 발굴 페어 목록 (Sparse CCA + ADF 통과). 없으면 엔진 404.
+
+    deflation 으로 그룹당 여러 성분이 나오므로 `{group_id, total, pairs[]}` 형태.
+    """
     return await _proxy_get(f"/groups/{group_id}/mn-pair", {})
 
 

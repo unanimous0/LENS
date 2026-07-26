@@ -29,6 +29,14 @@ type MPair = {
   /// 같은 leg 조합을 낸 그룹 수 (1 = 고유). 그룹 정의상 KOSPI200 구성종목이 여러
   /// "코스피200*" 카테고리에 주입돼 동일 페어가 중복 산출되므로 대표 1개로 축약해 표시.
   dup_group_count?: number
+  /// 그룹 내 성분 순번 (1-based). deflation 으로 한 그룹에서 여러 페어가 나오므로
+  /// group_id 만으로는 행이 유일하지 않다 → 행 key/펼침 상태는 rowKey() 사용.
+  component_idx?: number
+}
+
+/// 행 고유 key — 같은 그룹의 성분 여러 개가 공존하므로 group_id 단독은 충돌한다.
+function rowKey(p: MPair): string {
+  return `${p.group_id}#${p.component_idx ?? 1}`
 }
 
 type MnPairsResp = {
@@ -102,11 +110,11 @@ export function StatArbMnPage() {
     return d.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
   }, [meta.last_run_ms])
 
-  function toggle(gid: string) {
+  function toggle(key: string) {
     setExpanded((prev) => {
       const next = new Set(prev)
-      if (next.has(gid)) next.delete(gid)
-      else next.add(gid)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
       return next
     })
   }
@@ -210,15 +218,15 @@ export function StatArbMnPage() {
               </tr>
             )}
             {visible.map((p) => {
-              const isOpen = expanded.has(p.group_id)
+              const key = rowKey(p)
               const kind = groupKindOf(p.group_id)
               return (
                 <RowFragment
-                  key={p.group_id}
+                  key={key}
                   pair={p}
                   kind={kind}
-                  isOpen={isOpen}
-                  onToggle={() => toggle(p.group_id)}
+                  isOpen={expanded.has(key)}
+                  onToggle={() => toggle(key)}
                 />
               )
             })}
@@ -258,6 +266,14 @@ function RowFragment({
               title={`같은 leg 조합이 ${pair.dup_group_count}개 그룹에서 산출됨 — 대표 1개만 표시`}
             >
               외 {(pair.dup_group_count ?? 1) - 1}개 그룹
+            </span>
+          )}
+          {(pair.component_idx ?? 1) > 1 && (
+            <span
+              className="ml-1 rounded-sm bg-bg-surface px-1.5 py-0.5 text-[11px] text-t3"
+              title={`같은 그룹의 ${pair.component_idx}번째 성분 — 앞 성분이 쓴 종목을 후보에서 뺀 뒤 다시 찾은 축`}
+            >
+              #{pair.component_idx}
             </span>
           )}
           {(pair.split_factor ?? 0) > 0 && (
@@ -307,8 +323,8 @@ function RowFragment({
               <LegList title="Y (숏 방향)" legs={pair.y_legs} />
             </div>
             <div className="mt-2 text-[11px] text-t4">
-              group_id: <span className="text-t3">{pair.group_id}</span> · 샘플{' '}
-              {pair.sample_size}일 · timeframe {pair.timeframe}
+              group_id: <span className="text-t3">{pair.group_id}</span> · 성분{' '}
+              {pair.component_idx ?? 1} · 샘플 {pair.sample_size}일 · timeframe {pair.timeframe}
             </div>
           </td>
         </tr>
