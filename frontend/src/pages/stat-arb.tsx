@@ -531,7 +531,7 @@ export function StatArbPage() {
           </div>
         )}
         <div className="flex flex-wrap items-center gap-1.5">
-          <span className="text-xs text-t4">빠른 제외</span>
+          <span className="text-xs text-t4">키워드 제외</span>
           {QUICK_EXCLUDES.map((q) => {
             const on = quickExc.has(q.term)
             return (
