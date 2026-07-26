@@ -553,32 +553,6 @@ export function StatArbPage() {
             </button>
           )}
         </div>
-        <div className="ml-auto flex items-center gap-3 text-xs text-t3 tabular-nums">
-          <span>
-            전체 {meta.total} / 필터 {meta.filtered} / 표시{' '}
-            <span className="text-t1">{visiblePairs.length}</span>
-            {(deferredSearch !== search || deferredExclude !== exclude) && (
-              <span className="ml-1 text-t4">…</span>
-            )}
-          </span>
-          <span>갱신 {lastRunStr}</span>
-          <button
-            onClick={loadPairs}
-            disabled={loading}
-            className="rounded-sm bg-accent/20 px-3 py-1 text-accent hover:bg-accent/30 disabled:opacity-50"
-          >
-            {loading ? '...' : '새로고침'}
-          </button>
-          <button
-            onClick={() => setShowLogic((v) => !v)}
-            className={`rounded-sm px-3 py-1 ${
-              showLogic ? 'bg-blue/25 text-blue' : 'bg-bg-surface text-t1'
-            }`}
-            title="이 페어들이 어떻게 골라지는지 발굴 로직 설명"
-          >
-            페어로직 {showLogic ? '▴' : '▾'}
-          </button>
-        </div>
        </div>
 
        {/* 필터 칩 줄 — 안정성(서버) + 카테고리 제외(서버) + 키워드 제외 프리셋(서버) */}
@@ -632,6 +606,34 @@ export function StatArbPage() {
             )
           })}
         </div>
+       </div>
+
+       {/* 카운트·갱신·액션 줄 — 좌측 정렬(위 필터 줄들과 시작점 통일) */}
+       <div className="flex flex-wrap items-center gap-3 text-xs text-t3 tabular-nums">
+        <span>
+          전체 {meta.total} / 필터 {meta.filtered} / 표시{' '}
+          <span className="text-t1">{visiblePairs.length}</span>
+          {(deferredSearch !== search || deferredExclude !== exclude) && (
+            <span className="ml-1 text-t4">…</span>
+          )}
+        </span>
+        <span>갱신 {lastRunStr}</span>
+        <button
+          onClick={loadPairs}
+          disabled={loading}
+          className="rounded-sm bg-accent/20 px-3 py-1 text-accent hover:bg-accent/30 disabled:opacity-50"
+        >
+          {loading ? '...' : '새로고침'}
+        </button>
+        <button
+          onClick={() => setShowLogic((v) => !v)}
+          className={`rounded-sm px-3 py-1 ${
+            showLogic ? 'bg-blue/25 text-blue' : 'bg-bg-surface text-t1'
+          }`}
+          title="이 페어들이 어떻게 골라지는지 발굴 로직 설명"
+        >
+          페어로직 {showLogic ? '▴' : '▾'}
+        </button>
        </div>
       </div>
 
