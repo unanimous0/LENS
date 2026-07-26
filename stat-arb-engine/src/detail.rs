@@ -15,6 +15,8 @@ const BUCKET_30M_MS: i64 = 30 * 60 * 1000;
 const BUCKET_1H_MS: i64 = 60 * 60 * 1000;
 
 // --- Kalman 시변 β (관계 안정성 감지) 튜닝 상수 ---------------------------------
+// 이 상수·판정 규칙은 상세 패널(KalmanStat)과 목록 플래그(PairResult.stability)가
+// 공유한다 — 단일 진입점은 `compute_stability()`. 임계를 바꾸면 양쪽이 동시에 바뀐다.
 // δ = 상태 전이 분산 Q = δ·I. 튜닝 포인트: 너무 작으면 β 정적 OLS와 동일하게 얼어붙고,
 // 너무 크면 β가 관측 노이즈를 좇아 요동. 일봉 raw 가격 레벨(원 단위) 기준 경험값.
 const KALMAN_DELTA: f64 = 1e-4;
@@ -267,9 +269,44 @@ fn histogram(values: &[f64], n_bins: usize) -> Vec<HistBin> {
         .collect()
 }
 
-/// 일봉 raw 가격 레벨로 Kalman 시변 β 요약 산출. 표본<30 또는 필터 실패 시 None.
+/// 관계 안정성 지표 — Kalman 시변 β 기반. 상세 패널(KalmanStat)과 목록 플래그가
+/// **같은 산식·같은 임계**를 쓰도록 하는 공용 계산 결과.
+#[derive(Debug, Clone)]
+pub struct StabilityMetrics {
+    pub beta_current: f64,
+    pub beta_static: f64,
+    pub beta_drift_pct: f64,
+    pub z_static: f64,
+    pub z_adaptive: f64,
+    pub z_gap: f64,
+    /// "stable" | "caution" | "drift".
+    pub stability: &'static str,
+    /// β_t 스파크라인 — `with_series=false`(목록 경로)면 빈 벡터.
+    pub beta_series: Vec<BetaPoint>,
+}
+
+/// (β 드리프트, z 괴리) → 안정성 등급. OR 규칙: 둘 중 하나라도 임계 초과하면 승격.
+/// 판정 규칙은 여기 한 곳뿐 — 상세/목록 분기 없음.
+fn classify_stability(beta_drift_pct: f64, z_gap: f64) -> &'static str {
+    if beta_drift_pct > DRIFT_PCT_DRIFT || z_gap > Z_GAP_DRIFT {
+        "drift"
+    } else if beta_drift_pct > DRIFT_PCT_CAUTION || z_gap > Z_GAP_CAUTION {
+        "caution"
+    } else {
+        "stable"
+    }
+}
+
+/// 일봉 raw 가격 레벨로 Kalman 시변 β 지표 산출. 표본<30 또는 필터 실패 시 None.
 /// 발굴·정적 z와 동일하게 raw close 교집합(잔차=원 단위) 기준 — basis 토글 무관 일봉 고정.
-fn build_kalman_stat(left_daily: &[Bar], right_daily: &[Bar]) -> Option<KalmanStat> {
+///
+/// `with_series`=true 면 β_t 스파크라인까지 채운다(상세 패널). 목록 엔리치는 false —
+/// 3천여 페어에 대해 다운샘플 벡터를 만들지 않는다.
+pub fn compute_stability(
+    left_daily: &[Bar],
+    right_daily: &[Bar],
+    with_series: bool,
+) -> Option<StabilityMetrics> {
     let (x, y, ts) = intersect_by_ts(left_daily, right_daily);
     if x.len() < 30 {
         return None;
@@ -290,27 +327,37 @@ fn build_kalman_stat(left_daily: &[Bar], right_daily: &[Bar]) -> Option<KalmanSt
     let z_adaptive = *kf.std_innov.last()?;
     let z_gap = (z_static - z_adaptive).abs();
 
-    let stability = if beta_drift_pct > DRIFT_PCT_DRIFT || z_gap > Z_GAP_DRIFT {
-        "drift"
-    } else if beta_drift_pct > DRIFT_PCT_CAUTION || z_gap > Z_GAP_CAUTION {
-        "caution"
-    } else {
-        "stable"
-    }
-    .to_string();
-
     // β 스파크라인 — 균등 다운샘플 (마지막 점 반드시 포함).
-    let beta_series = downsample_beta(&ts, &kf.beta, BETA_SERIES_MAX);
+    let beta_series = if with_series {
+        downsample_beta(&ts, &kf.beta, BETA_SERIES_MAX)
+    } else {
+        Vec::new()
+    };
 
-    Some(KalmanStat {
+    Some(StabilityMetrics {
         beta_current,
         beta_static,
         beta_drift_pct,
         z_static,
         z_adaptive,
         z_gap,
-        stability,
+        stability: classify_stability(beta_drift_pct, z_gap),
         beta_series,
+    })
+}
+
+/// 상세 응답용 래핑 — 계산은 `compute_stability` 1벌.
+fn build_kalman_stat(left_daily: &[Bar], right_daily: &[Bar]) -> Option<KalmanStat> {
+    let m = compute_stability(left_daily, right_daily, true)?;
+    Some(KalmanStat {
+        beta_current: m.beta_current,
+        beta_static: m.beta_static,
+        beta_drift_pct: m.beta_drift_pct,
+        z_static: m.z_static,
+        z_adaptive: m.z_adaptive,
+        z_gap: m.z_gap,
+        stability: m.stability.to_string(),
+        beta_series: m.beta_series,
     })
 }
 

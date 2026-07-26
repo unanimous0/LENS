@@ -231,6 +231,10 @@ struct PairsQuery {
     /// 종목명/코드 제외 term CSV (예: `코리아top10,esg사회책임`). 어느 한 leg의 이름 또는
     /// key에 term이 포함되면 제외(대소문자 무시). 프론트 '빠른제외' 버튼용 — 서버단 필터.
     exclude_terms: Option<String>,
+    /// 관계 안정성(Kalman β 드리프트) 필터 CSV — `stable` / `stable,caution` / `drift` 등.
+    /// 지정 시 해당 등급만 반환. 안정성 미산출(빈 문자열) 페어는 지정 시 항상 제외되고,
+    /// 미지정 시엔 포함된다.
+    stability: Option<String>,
 }
 
 fn default_limit() -> usize {
@@ -248,6 +252,9 @@ struct PairsResp {
     /// 필터 적용 전(group+basis만 반영, category/combo 미반영) 모수 기준 카테고리별 카운트.
     /// leg 양쪽 분류를 각각 카운트 — 프론트 칩 표시용.
     category_counts: HashMap<String, usize>,
+    /// 같은 모수(group+basis) 기준 안정성 등급별 페어 수. 미산출은 키 `""`.
+    /// 프론트 안정성 세그먼트 배지용.
+    stability_counts: HashMap<String, usize>,
     pairs: Vec<PairResult>,
 }
 
@@ -310,13 +317,16 @@ async fn list_pairs(State(state): State<AppState>, Query(q): Query<PairsQuery>) 
         .collect();
 
     // category_counts — base(group+basis) 기준, leg 양쪽 각각 카운트. category/combo 미반영.
+    // stability_counts — 같은 모수 기준이되 페어당 1회(등급은 페어 속성).
     let mut category_counts: HashMap<String, usize> = HashMap::new();
+    let mut stability_counts: HashMap<String, usize> = HashMap::new();
     for p in &base {
         *category_counts.entry(p.left_class.clone()).or_insert(0) += 1;
         *category_counts.entry(p.right_class.clone()).or_insert(0) += 1;
+        *stability_counts.entry(p.stability.clone()).or_insert(0) += 1;
     }
 
-    // 3) exclude_categories + asset_combo + exclude_terms 필터.
+    // 3) exclude_categories + asset_combo + exclude_terms + stability 필터.
     let exclude_cats: HashSet<&str> = q
         .exclude_categories
         .as_deref()
@@ -334,10 +344,20 @@ async fn list_pairs(State(state): State<AppState>, Query(q): Query<PairsQuery>) 
                 .collect()
         })
         .unwrap_or_default();
+    // 안정성 등급 허용 집합. 비어있으면(미지정) 필터 미적용.
+    let stability_set: HashSet<&str> = q
+        .stability
+        .as_deref()
+        .map(|s| s.split(',').map(|t| t.trim()).filter(|t| !t.is_empty()).collect())
+        .unwrap_or_default();
 
     let matched: Vec<&PairResult> = base
         .into_iter()
         .filter(|p| {
+            // 안정성 미산출(빈 문자열)은 등급 지정 시 매칭 안 됨 — set에 빈 term이 없으므로 자동.
+            if !stability_set.is_empty() && !stability_set.contains(p.stability.as_str()) {
+                return false;
+            }
             if !exclude_cats.is_empty()
                 && (exclude_cats.contains(p.left_class.as_str())
                     || exclude_cats.contains(p.right_class.as_str()))
@@ -370,6 +390,7 @@ async fn list_pairs(State(state): State<AppState>, Query(q): Query<PairsQuery>) 
         last_run_duration_ms: s.last_run_duration_ms,
         filtered,
         category_counts,
+        stability_counts,
         pairs: returned,
     })
 }
@@ -1043,12 +1064,50 @@ async fn warmup_and_discover(
     stats.discovery_runs.fetch_add(1, Ordering::Relaxed);
     stats.pairs_total.store(result.len() as u64, Ordering::Relaxed);
 
-    // 4.5 분류 엔리치 패스 — 발굴 hot loop 밖에서 각 페어 leg에 분류 태그 + 베이시스형 플래그.
+    // 4.5 엔리치 패스 — 발굴 hot loop 밖에서 leg 분류 태그 + 베이시스형 플래그 + 관계 안정성.
+    //     발굴 게이팅과 무관한 부가 메타 (응답단 필터/표시용).
+    //
+    //     안정성(Kalman 시변 β)은 페어마다 두 leg 일봉이 필요하다. DashMap을 페어마다
+    //     재조회하면 shard 락을 6천 번 잡으므로, 등장하는 leg의 일봉만 1회 스냅샷해두고 쓴다.
+    let t_enrich = Instant::now();
+    let daily_snapshot: HashMap<String, Vec<data::bars::Bar>> = {
+        let mut keys: HashSet<&str> = HashSet::with_capacity(cache.len());
+        for p in result.iter() {
+            keys.insert(p.left_key.as_str());
+            keys.insert(p.right_key.as_str());
+        }
+        keys.into_iter()
+            .filter_map(|k| {
+                let bars = cache.get(k)?.bars_1d.clone();
+                Some((k.to_string(), bars))
+            })
+            .collect()
+    };
+    let mut stability_ok = 0usize;
     for p in result.iter_mut() {
         p.left_class = leg_class(&p.left_key, &etf_meta);
         p.right_class = leg_class(&p.right_key, &etf_meta);
         p.same_underlying = is_basis(&p.left_key, &p.right_key, &etf_meta);
+        let (Some(l), Some(r)) = (
+            daily_snapshot.get(&p.left_key),
+            daily_snapshot.get(&p.right_key),
+        ) else {
+            continue;
+        };
+        if let Some(m) = detail::compute_stability(l, r, false) {
+            p.stability = m.stability.to_string();
+            p.beta_drift_pct = m.beta_drift_pct;
+            p.z_gap = m.z_gap;
+            stability_ok += 1;
+        }
     }
+    drop(daily_snapshot); // 일봉 사본(수십MB) 즉시 반환 — 아래 PCA/CCA가 메모리 무거움
+    info!(
+        "[enrich] stability {}/{} 페어 {:.0}ms",
+        stability_ok,
+        result.len(),
+        t_enrich.elapsed().as_secs_f64() * 1000.0
+    );
 
     // 5. 그룹별 통과 페어 수 산출 + 진단 로깅 (PR-A 검증 포인트)
     let pair_counts = compute_group_pair_counts(&result, groups).await;

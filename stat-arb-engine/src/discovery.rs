@@ -99,6 +99,17 @@ pub struct PairResult {
     /// 같은 지수 복제 페어(KODEX200↔TIGER200)는 자명 공적분이라 통계차익 리스트에서 기본 제외.
     #[serde(default)]
     pub same_underlying: bool,
+    // --- 관계 안정성 (Kalman 시변 β). 엔리치 패스에서 detail::compute_stability로 채움 ---
+    /// `"stable"`|`"caution"`|`"drift"`. 표본<30 등 계산 실패 시 빈 문자열.
+    /// 판정은 상세 패널(KalmanStat)과 동일 함수 — 목록/상세가 다른 값을 낼 수 없음.
+    #[serde(default)]
+    pub stability: String,
+    /// |β_current − β_static| / |β_static| (0.15 = 15%). 계산 실패 시 0.
+    #[serde(default)]
+    pub beta_drift_pct: f64,
+    /// |z_static − z_adaptive|. 계산 실패 시 0.
+    #[serde(default)]
+    pub z_gap: f64,
 }
 
 /// 시리즈의 일봉 종가만 추출. 길이 < MIN_SAMPLES 면 None.
@@ -215,10 +226,13 @@ fn evaluate_pair(
         z_score: z,
         sample_size: a.len(),
         score,
-        // 분류 태깅은 발굴 후 엔리치 패스(main.rs)에서 메타 맵으로 채움 — 여기선 기본값.
+        // 분류 태깅·관계 안정성은 발굴 후 엔리치 패스(main.rs)에서 채움 — 여기선 기본값.
         left_class: String::new(),
         right_class: String::new(),
         same_underlying: false,
+        stability: String::new(),
+        beta_drift_pct: 0.0,
+        z_gap: 0.0,
     })
 }
 

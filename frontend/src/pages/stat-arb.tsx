@@ -51,6 +51,10 @@ type Pair = {
   left_class?: string
   right_class?: string
   same_underlying?: boolean
+  // 관계 안정성 (Kalman 시변 β) — 상세 패널과 동일 판정. 미산출이면 빈 문자열.
+  stability?: string
+  beta_drift_pct?: number
+  z_gap?: number
 }
 
 type PairsResp = {
@@ -61,6 +65,8 @@ type PairsResp = {
   pairs: Pair[]
   // group+basis 반영·category/combo 미반영 모수 기준 카테고리별 카운트 (칩 배지용)
   category_counts?: Record<string, number>
+  // 같은 모수 기준 안정성 등급별 페어 수 (미산출은 키 '')
+  stability_counts?: Record<string, number>
 }
 
 type GroupsResp = {
@@ -108,9 +114,25 @@ const CLASS_COLORS: Record<string, string> = {
 
 type BasisView = 'exclude' | 'only' | 'all'
 type AssetCombo = 'any' | 'etf_etf' | 'etf_stock' | 'stock_stock'
+// 관계 안정성 필터 — 서버 stability param 값으로 변환해 전달 (전체=미전달)
+type StabilityView = 'all' | 'stable' | 'stable_caution'
+const STABILITY_PARAM: Record<StabilityView, string> = {
+  all: '',
+  stable: 'stable',
+  stable_caution: 'stable,caution',
+}
+
+// 안정성 등급 배지 — 상세(관계 안정성 패널)와 동일 라벨·톤
+const STABILITY_BADGES: Record<string, { label: string; cls: string }> = {
+  stable: { label: '안정', cls: 'bg-accent/15 text-accent' },
+  caution: { label: '주의', cls: 'bg-warning/15 text-warning' },
+  drift: { label: '드리프트', cls: 'bg-down/15 text-down' },
+}
+// 정렬용 등급 랭크 (내림차순 = 드리프트 먼저). 미산출은 -1로 뒤로.
+const STABILITY_RANK: Record<string, number> = { drift: 2, caution: 1, stable: 0 }
 
 // 정렬 가능한 컬럼
-type SortKey = 'score' | 'z' | 'hl' | 'r2' | 'adf' | 'corr' | 'beta' | 'loanrate'
+type SortKey = 'score' | 'z' | 'hl' | 'r2' | 'adf' | 'corr' | 'beta' | 'loanrate' | 'stability'
 
 // 컬럼별 hover 설명
 const COL_TOOLTIPS: Record<SortKey | 'pair', string> = {
@@ -121,6 +143,8 @@ const COL_TOOLTIPS: Record<SortKey | 'pair', string> = {
   adf: 'ADF t-stat — 1년 잔차 stationarity (<-3 통과). 괄호 = 최근 6개월 잔차 ADF(같은 β) — 최근에도 평균회귀 유지하나(>-2면 발굴 제외)',
   hl: 'Mean-reversion half-life (그 timeframe 단위, 1d 기준 일)',
   z: '현재 잔차 z-score — |z|≥2 진입 시그널',
+  stability:
+    '관계 안정성 (Kalman 시변 β, 일봉) — 정적 OLS β 대비 적응 β 드리프트 ≥10% 또는 정적/적응 z 괴리 ≥2σ면 주의, ≥20%·≥3σ면 드리프트. 상세의 "관계 안정성" 패널과 동일 판정',
   score: '발굴 점수 = -ADF × (1/hl) × |corr|',
   loanrate: '대여요율 (left / right). ≥15% 강조 — 고요율 매수+송출 기회',
 }
@@ -146,6 +170,9 @@ export function StatArbPage() {
   const [assetCombo, setAssetCombo] = useState<AssetCombo>('any')
   const [excludeCats, setExcludeCats] = useState<Set<string>>(new Set())
   const [catCounts, setCatCounts] = useState<Record<string, number>>({})
+  // 관계 안정성 필터 — 서버 필터(카테고리 제외와 동일 경로). 기본은 전체(필터 없음).
+  const [stabilityView, setStabilityView] = useState<StabilityView>('all')
+  const [stabCounts, setStabCounts] = useState<Record<string, number>>({})
   const [search, setSearch] = useState<string>('')
   const [exclude, setExclude] = useState<string>('') // 종목명 단어/코드 제외 (쉼표 여러 개)
   // 빠른 제외 프리셋 토글 상태 — 기본 OFF(제외 안 함). 서버 필터로 적용.
@@ -217,16 +244,19 @@ export function StatArbPage() {
     if (excludeCats.size > 0) params.set('exclude_categories', Array.from(excludeCats).join(','))
     // 빠른제외는 서버 필터(exclude_terms)로 — 카테고리 제외와 동일 경로(토글 시 재요청).
     if (quickExc.size > 0) params.set('exclude_terms', Array.from(quickExc).join(','))
+    const stabParam = STABILITY_PARAM[stabilityView]
+    if (stabParam) params.set('stability', stabParam)
     fetch(`/api/stat-arb/pairs?${params}`)
       .then((r) => r.json())
       .then((d: PairsResp) => {
         setPairs(d.pairs)
         setMeta({ total: d.total, filtered: d.filtered, last_run_ms: d.last_run_ms })
         setCatCounts(d.category_counts ?? {})
+        setStabCounts(d.stability_counts ?? {})
       })
       .catch((e) => setError(`pairs: ${String(e)}`))
       .finally(() => setLoading(false))
-  }, [groupFilter, basisView, assetCombo, excludeCats, quickExc])
+  }, [groupFilter, basisView, assetCombo, excludeCats, quickExc, stabilityView])
 
   useEffect(() => {
     loadPairs()
@@ -249,6 +279,20 @@ export function StatArbPage() {
       else next.add(cat)
       return next
     })
+
+  // 안정성 세그먼트 옵션 — 카운트는 group+basis 모수 기준(카테고리/조합/키워드 제외 미반영,
+  // category_counts와 동일 정책). 안정성 필터 자체엔 영향받지 않아 토글해도 숫자가 안 흔들림.
+  const stabOptions = useMemo(() => {
+    const stable = stabCounts.stable ?? 0
+    const caution = stabCounts.caution ?? 0
+    const total = Object.values(stabCounts).reduce((a, b) => a + b, 0)
+    const n = (v: number) => (total > 0 ? ` ${v}` : '')
+    return [
+      { v: 'all' as StabilityView, label: `전체${n(total)}` },
+      { v: 'stable' as StabilityView, label: `안정만${n(stable)}` },
+      { v: 'stable_caution' as StabilityView, label: `안정+주의${n(stable + caution)}` },
+    ]
+  }, [stabCounts])
 
   const toggleQuick = (term: string) =>
     setQuickExc((prev) => {
@@ -293,6 +337,8 @@ export function StatArbPage() {
       adf: (p) => p.adf_tstat,
       corr: (p) => Math.abs(p.corr),
       beta: (p) => p.hedge_ratio,
+      // 내림차순(기본) = 드리프트 먼저. 미산출은 -1로 항상 끝쪽.
+      stability: (p) => (p.stability ? STABILITY_RANK[p.stability] ?? -1 : -1),
       loanrate: (p) => {
         // 페어의 max(L요율, R요율) — 한쪽만 있으면 그것만, 둘 다 없으면 -1
         const l = loanRates.get(keyToCode(p.left_key))
@@ -364,6 +410,13 @@ export function StatArbPage() {
             <td className={`px-3 py-2 text-right ${zClass}`}>
               {z >= 0 ? '+' : ''}
               {z.toFixed(2)}
+            </td>
+            <td className="px-3 py-2 text-right">
+              <StabilityBadge
+                stability={p.stability}
+                driftPct={p.beta_drift_pct}
+                zGap={p.z_gap}
+              />
             </td>
             <td className="px-3 py-2 text-right">
               <LoanRateCell
@@ -506,8 +559,17 @@ export function StatArbPage() {
         </div>
        </div>
 
-       {/* 제외 칩 줄 — 카테고리 제외(서버) + 빠른 제외 프리셋(클라이언트). 클릭 = 제외 토글 */}
+       {/* 필터 칩 줄 — 안정성(서버) + 카테고리 제외(서버) + 키워드 제외 프리셋(서버) */}
        <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5">
+        <div className="flex items-center gap-1.5">
+          <span
+            className="cursor-help text-xs text-t4 underline decoration-t4 decoration-dotted underline-offset-2"
+            title={COL_TOOLTIPS.stability}
+          >
+            안정성
+          </span>
+          <Seg value={stabilityView} onChange={setStabilityView} options={stabOptions} />
+        </div>
         {catChips.length > 0 && (
           <div className="flex flex-wrap items-center gap-1.5">
             <span className="text-xs text-t4">카테고리 제외</span>
@@ -717,6 +779,7 @@ export function StatArbPage() {
             <col className="w-32" /> {/* ADF (recent 값 포함해 넓게) */}
             <col className="w-20" /> {/* half-life */}
             <col className="w-16" /> {/* z */}
+            <col className="w-24" /> {/* 안정성 */}
             <col className="w-28" /> {/* 대여 L/R */}
             <col className="w-20" /> {/* score */}
           </colgroup>
@@ -743,6 +806,9 @@ export function StatArbPage() {
               </SortableTh>
               <SortableTh active={sortKey === 'z'} asc={sortAsc} onClick={() => sortClick('z')} title={COL_TOOLTIPS.z}>
                 z
+              </SortableTh>
+              <SortableTh active={sortKey === 'stability'} asc={sortAsc} onClick={() => sortClick('stability')} title={COL_TOOLTIPS.stability}>
+                안정성
               </SortableTh>
               <SortableTh active={sortKey === 'loanrate'} asc={sortAsc} onClick={() => sortClick('loanrate')} title={COL_TOOLTIPS.loanrate}>
                 대여 L/R
@@ -773,6 +839,28 @@ function ClassBadge({ cls }: { cls?: string }) {
   return (
     <span className={`rounded-sm bg-bg-surface px-1 text-[11px] ${CLASS_COLORS[cls] ?? 'text-t3'}`}>
       {CLASS_LABELS[cls] ?? cls}
+    </span>
+  )
+}
+
+/** 관계 안정성 배지 — 상세 "관계 안정성" 패널과 동일 판정·라벨. 미산출(표본 부족)은 '—'. */
+function StabilityBadge({
+  stability,
+  driftPct,
+  zGap,
+}: {
+  stability?: string
+  driftPct?: number
+  zGap?: number
+}) {
+  const badge = stability ? STABILITY_BADGES[stability] : undefined
+  if (!badge) return <span className="text-t4">—</span>
+  return (
+    <span
+      className={`inline-block rounded-sm px-1.5 py-0.5 text-[11px] ${badge.cls}`}
+      title={`β드리프트 ${((driftPct ?? 0) * 100).toFixed(1)}% · z괴리 ${(zGap ?? 0).toFixed(2)}`}
+    >
+      {badge.label}
     </span>
   )
 }
