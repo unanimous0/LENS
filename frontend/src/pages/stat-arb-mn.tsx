@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 
 import { keyToCode } from '@/lib/stat-arb-keys'
+import { groupKindOf, KIND_LABEL } from '@/lib/stat-arb/group-kind'
 import { cn } from '@/lib/utils'
 
 // PR-C2 Sparse CCA M:N 발굴 결과 화면
@@ -44,19 +45,6 @@ type MnPairsResp = {
   returned: number
   last_run_ms: number
   pairs: MPair[]
-}
-
-const KIND_LABEL: Record<string, string> = {
-  index: '지수',
-  sector: '섹터',
-  etf: 'ETF',
-  etf_category: 'ETF 카테고리',
-}
-
-function groupKindOf(group_id: string): string {
-  const colon = group_id.indexOf(':')
-  if (colon < 0) return '?'
-  return group_id.slice(0, colon)
 }
 
 export function StatArbMnPage() {
@@ -148,6 +136,7 @@ export function StatArbMnPage() {
           />
         </div>
         <div className="ml-auto flex items-center gap-3 text-xs text-t3 tabular-nums">
+          <span className="text-t4">▶ = leg 펼치기 · 행 클릭 = 상세 새 탭</span>
           <span>
             전체 {meta.total} / 표시 <span className="text-t1">{visible.length}</span>
           </span>
@@ -248,13 +237,25 @@ function RowFragment({
   isOpen: boolean
   onToggle: () => void
 }) {
+  // 상세는 새 탭 (1:1 페어 목록과 동일). group_id에 콜론이 있어 encodeURIComponent 필수.
+  const detailUrl = `/stat-arb/mn/${encodeURIComponent(pair.group_id)}/${pair.component_idx ?? 1}`
+
   return (
     <>
       <tr
         className="cursor-pointer border-b border-bg-surface/40 hover:bg-bg-surface/40"
-        onClick={onToggle}
+        onClick={() => window.open(detailUrl, '_blank', 'noopener,noreferrer')}
       >
-        <td className="px-2 py-2 text-t3">{isOpen ? '▼' : '▶'}</td>
+        <td
+          className="px-2 py-2 text-t3 hover:text-t1"
+          onClick={(e) => {
+            e.stopPropagation()
+            onToggle()
+          }}
+          title={isOpen ? 'leg 접기' : 'leg 펼치기'}
+        >
+          {isOpen ? '▼' : '▶'}
+        </td>
         <td className="px-3 py-2">
           <span className="mr-1 rounded-sm bg-bg-surface px-1.5 py-0.5 text-[10px] text-t3">
             {KIND_LABEL[kind] ?? kind}
@@ -322,9 +323,20 @@ function RowFragment({
               <LegList title="X (롱 방향)" legs={pair.x_legs} />
               <LegList title="Y (숏 방향)" legs={pair.y_legs} />
             </div>
-            <div className="mt-2 text-[11px] text-t4">
-              group_id: <span className="text-t3">{pair.group_id}</span> · 성분{' '}
-              {pair.component_idx ?? 1} · 샘플 {pair.sample_size}일 · timeframe {pair.timeframe}
+            <div className="mt-2 flex flex-wrap items-center gap-x-2 text-[11px] text-t4">
+              <span>
+                group_id: <span className="text-t3">{pair.group_id}</span> · 성분{' '}
+                {pair.component_idx ?? 1} · 샘플 {pair.sample_size}일 · timeframe {pair.timeframe}
+              </span>
+              <a
+                href={detailUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                onClick={(e) => e.stopPropagation()}
+                className="text-accent hover:underline"
+              >
+                상세 열기 →
+              </a>
             </div>
           </td>
         </tr>

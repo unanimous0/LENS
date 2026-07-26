@@ -71,6 +71,62 @@ export type PairDetail = {
   kalman?: KalmanStat
 }
 
+// ---------------------------------------------------------------------------
+// M:N (Sparse CCA) — /mn-pairs/detail 응답. **일봉 전용**.
+// ---------------------------------------------------------------------------
+
+/** 합성 바스켓의 leg 1개. weight = CCA 가중치(로그가격 계수)이지 주수가 아니다. */
+export type MnLeg = {
+  key: string
+  name: string
+  weight: number
+  /** leg 분류 태그 (stock/index/ETF 카테고리). 구버전 응답엔 없을 수 있음. */
+  class?: string
+}
+
+/** M:N 페어 상세.
+ *
+ *  1:1(`PairDetail`)과 달리 공간이 **합성 로그가격**이다:
+ *    X(t) = Σ wᵢ·ln Pᵢ(t),  Y(t) = Σ vⱼ·ln Pⱼ(t),  잔차 = Y − α − β·X.
+ *  → spread_series의 left/right는 원 단위 가격이 아니라 합성 X/Y (로그). spread도 로그 스케일
+ *    (×100 ≈ 균형 대비 % 편차). timeframe은 항상 '1d'. */
+export type MnPairDetail = {
+  group_id: string
+  group_name: string
+  /** 그룹 내 성분 순번 (1-based, deflation). */
+  component_idx: number
+  /** 양변 분할에 쓰인 PCA factor (1-based). 0 = ETF 자연분할(ETF↔보유주식). */
+  split_factor: number
+  /** 항상 '1d'. */
+  timeframe: string
+  x_legs: MnLeg[]
+  y_legs: MnLeg[]
+  alpha: number
+  hedge_ratio: number
+  r_squared: number
+  adf_tstat: number
+  /** 반감기 (거래일). */
+  half_life: number
+  z_score: number
+  /** 합성 시리즈 로그수익률 Pearson corr (상세 재계산값). */
+  corr: number
+  /** 발굴 시점 CCA canonical correlation. */
+  cca_correlation: number
+  sample_size: number
+  /** 공통 거래일 중 가격 결측(close ≤ 0)으로 제외된 봉 수. */
+  skipped_bars: number
+  /** z_live = (Y_live − α − β·X_live − resid_mean) / resid_std. */
+  resid_mean: number
+  resid_std: number
+  spread_series: SpreadPoint[]
+  histogram: HistBin[]
+  /** 잔차 정규화 기준 (M:N은 일봉 1벌뿐이라 resid_mean/resid_std와 동일). */
+  spread_center: number
+  spread_scale: number
+  /** 표본<30·필터 실패 시 없음. */
+  kalman?: KalmanStat | null
+}
+
 // /pairs 응답의 페어 — 한 줄 요약 (메인 테이블에서 사용)
 export type PairRow = {
   left_key: string

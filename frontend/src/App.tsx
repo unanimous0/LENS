@@ -17,6 +17,7 @@ import { StatArbPage } from './pages/stat-arb'
 import { StatArbMnPage } from './pages/stat-arb-mn'
 import { StatArbSScorePage } from './pages/stat-arb-sscore'
 import { StatArbDetailPage } from './pages/stat-arb-detail'
+import { StatArbMnDetailPage } from './pages/stat-arb-mn-detail'
 import { StatArbLayout } from './pages/stat-arb-layout'
 import { LoanRatesPage } from './pages/loan-rates'
 import { StatArbPositionsPage } from './pages/stat-arb-positions'
@@ -77,6 +78,8 @@ function AppLayout() {
               <Route path="loan-rates" element={<LoanRatesPage />} />
             </Route>
             <Route path="/stat-arb/pair/:left/:right" element={<StatArbDetailPage />} />
+            {/* M:N 페어 상세 — :group은 'etf:278540'처럼 콜론 포함(링크는 encodeURIComponent). */}
+            <Route path="/stat-arb/mn/:group/:component" element={<StatArbMnDetailPage />} />
             <Route path="/stat-arb/positions/:id" element={<StatArbPositionDetailPage />} />
             <Route path="/lp-matrix" element={<LpMatrixPage />} />
             <Route path="/dividends" element={<Suspense fallback={<div className="p-4 text-sm text-t3">로드 중…</div>}><DividendsPage /></Suspense>} />

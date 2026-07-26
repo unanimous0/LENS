@@ -9,6 +9,7 @@ mod detail;
 mod discovery;
 mod groups;
 mod holidays;
+mod mn_detail;
 mod phase;
 mod sscore;
 mod stats;
@@ -696,6 +697,82 @@ async fn list_mn_pairs(
     })
 }
 
+#[derive(Deserialize)]
+struct MnDetailQuery {
+    /// 그룹 id (예: `etf:278540`, `sector:화학`). `/mn-pairs` 응답의 `group_id` 그대로.
+    group: String,
+    /// deflation 성분 순번 (1-based). 미지정 시 1.
+    #[serde(default = "default_component")]
+    component: usize,
+    /// Kalman 상대 δ 오버라이드 — **튜닝 전용**. 미지정 시 `MN_KALMAN_DELTA_REL`.
+    /// 응답의 통계·시계열은 영향 없고 `kalman` 블록만 바뀐다.
+    delta_rel: Option<f64>,
+}
+
+fn default_component() -> usize {
+    1
+}
+
+/// M:N 페어 상세 — **일봉 전용**. 합성 로그가격 스프레드 시계열/히스토그램/Kalman 안정성.
+///
+/// 발굴 결과(`mn_pairs`)는 leg·가중치만 들고 있고 시계열은 없다 → 캐시 일봉으로 온디맨드 재계산.
+/// leg 3~10개 × 726봉이라 수 ms. 인트라데이는 leg 수만큼 순차 t8412가 필요해 범위 밖.
+async fn mn_pair_detail(
+    State(state): State<AppState>,
+    Query(q): Query<MnDetailQuery>,
+) -> Response {
+    let started = Instant::now();
+    // 페어는 복사 후 groups lock 즉시 해제 (캐시 조회·계산 동안 잡지 않게).
+    let pair = {
+        let gs = state.groups.read().await;
+        gs.mn_pairs
+            .get(&q.group)
+            .and_then(|v| v.iter().find(|p| p.component_idx == q.component))
+            .cloned()
+    };
+    let Some(pair) = pair else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({
+                "error": format!("M:N 페어 없음: {} 성분 {}", q.group, q.component)
+            })),
+        )
+            .into_response();
+    };
+
+    // leg 일봉 복사 — DashMap shard lock을 계산 동안 잡지 않는다.
+    let mut daily: HashMap<String, Vec<data::bars::Bar>> = HashMap::new();
+    for leg in pair.x_legs.iter().chain(pair.y_legs.iter()) {
+        if let Some(v) = state.cache.get(&leg.key) {
+            daily.insert(leg.key.clone(), v.bars_1d.clone());
+        }
+    }
+
+    let delta_rel = q
+        .delta_rel
+        .filter(|d| d.is_finite() && *d > 0.0)
+        .unwrap_or(mn_detail::MN_KALMAN_DELTA_REL);
+    match mn_detail::build_mn_pair_detail(&pair, &daily, delta_rel) {
+        Ok(d) => {
+            info!(
+                "mn-detail {} #{} legs {}:{} 표본 {} — {}ms",
+                q.group,
+                q.component,
+                pair.x_legs.len(),
+                pair.y_legs.len(),
+                d.sample_size,
+                started.elapsed().as_millis()
+            );
+            Json(d).into_response()
+        }
+        Err(e) => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(serde_json::json!({ "error": e })),
+        )
+            .into_response(),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // 팩터중립 s-score (Avellaneda-Lee) — 별도 트랙
 // ---------------------------------------------------------------------------
@@ -921,6 +998,7 @@ async fn main() {
         .route("/groups/{id}/pca", get(group_pca))
         .route("/groups/{id}/mn-pair", get(group_mn_pair))
         .route("/mn-pairs", get(list_mn_pairs))
+        .route("/mn-pairs/detail", get(mn_pair_detail))
         .route("/s-scores", get(list_sscores))
         .layer(cors)
         .with_state(app_state);

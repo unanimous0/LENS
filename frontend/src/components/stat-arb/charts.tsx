@@ -131,6 +131,8 @@ export function SpreadChart({
   live,
   register,
   daily = false,
+  precision = 0,
+  unit,
 }: {
   data: SpreadPoint[]
   /** 포지션 상세에서 진입 시점·값 마킹용. 페어 상세에서는 미전달 */
@@ -141,6 +143,11 @@ export function SpreadChart({
   register?: (chart: IChartApi | null, series?: ISeriesApi<'Line'> | null) => void
   /** 일봉 기준이면 날짜축(BusinessDay)으로 렌더. 기본 false(=인트라데이 시각축, 기존 동작). */
   daily?: boolean
+  /** y축 소수 자릿수. 기본 0 = 원 단위 1:1 스프레드(기존 동작). M:N 합성 로그공간처럼 스케일이
+   *  작으면 지정하지 않으면 축이 전부 0으로 뭉갠다. */
+  precision?: number
+  /** y축 값 뒤에 붙일 단위(예: '%p'). 미지정이면 기존 price 포맷 그대로. */
+  unit?: string
 }) {
   const containerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
@@ -158,10 +165,13 @@ export function SpreadChart({
       height: containerRef.current.clientHeight,
     })
     chartRef.current = chart
+    const minMove = Math.pow(10, -precision)
     const series: ISeriesApi<'Line'> = chart.addLineSeries({
       color: C.accent,
       lineWidth: 2,
-      priceFormat: { type: 'price', precision: 0, minMove: 1 },
+      priceFormat: unit
+        ? { type: 'custom', formatter: (v: number) => `${v.toFixed(precision)}${unit}`, minMove }
+        : { type: 'price', precision, minMove },
     })
     series.setData(
       data.map((p) => ({ time: tsToTime(p.ts, daily), value: p.spread }))
@@ -215,7 +225,7 @@ export function SpreadChart({
       seriesRef.current = null
       curLineRef.current = null
     }
-  }, [data, entry, register, daily])
+  }, [data, entry, register, daily, precision, unit])
 
   // 라이브 점 append/갱신 — 전체 리빌드 없이 마지막 점만.
   // ts는 effect 안에서 now()로 생성 (render 중 Date.now() 호출 금지 — react-hooks/purity).

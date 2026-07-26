@@ -139,6 +139,19 @@ async def list_mn_pairs(
     return await _proxy_get("/mn-pairs", params)
 
 
+@router.get("/mn-pairs/detail")
+async def mn_pair_detail(
+    group: str,
+    component: int = Query(1, ge=1),
+) -> dict:
+    """PR-C2: M:N 페어 상세 — **일봉 전용** (합성 로그가격 스프레드).
+
+    group = `/mn-pairs` 응답의 group_id 그대로 (`etf:278540`, `sector:화학` 등).
+    component = deflation 성분 순번(1-based). 해당 성분이 없으면 엔진이 404.
+    """
+    return await _proxy_get("/mn-pairs/detail", {"group": group, "component": component})
+
+
 # ---------------------------------------------------------------------------
 # 목표 z 도달 알림 (워치리스트) — 로컬 SQLite. 프록시 아님.
 # ---------------------------------------------------------------------------

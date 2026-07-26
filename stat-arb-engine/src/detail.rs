@@ -199,7 +199,10 @@ fn timeframe_stat_from_bars(
 
 /// 헤드라인 잔차 시계열 빌더 — intersect → OLS → 잔차 시계열/히스토그램/정규화 기준(center·scale).
 /// 10분 버킷·일봉 어느 입력이든 동일 패턴. 표본(교집합) < 30 이거나 fit 실패 시 None.
-fn build_headline(
+///
+/// M:N 상세(`mn_detail`)도 **합성 leg 을 Bar 로 포장해** 이 함수를 그대로 쓴다 —
+/// 차트·히스토그램·정규화 기준 산식을 1:1 과 1벌로 유지하기 위함.
+pub(crate) fn build_headline(
     left_bars: &[Bar],
     right_bars: &[Bar],
 ) -> Option<(Vec<SpreadPoint>, Vec<HistBin>, f64, f64)> {
@@ -297,27 +300,53 @@ fn classify_stability(beta_drift_pct: f64, z_gap: f64) -> &'static str {
     }
 }
 
-/// 일봉 raw 가격 레벨로 Kalman 시변 β 지표 산출. 표본<30 또는 필터 실패 시 None.
-/// 발굴·정적 z와 동일하게 raw close 교집합(잔차=원 단위) 기준 — basis 토글 무관 일봉 고정.
+/// Kalman 상태전이 분산 Q = δ·I 의 δ 지정 방식.
 ///
-/// `with_series`=true 면 β_t 스파크라인까지 채운다(상세 패널). 목록 엔리치는 false —
-/// 3천여 페어에 대해 다운샘플 벡터를 만들지 않는다.
-pub fn compute_stability(
-    left_daily: &[Bar],
-    right_daily: &[Bar],
+/// δ 는 **입력 스케일에 종속**이다 (β 한 스텝 이동폭 ≈ √δ, α 도 마찬가지).
+/// 1:1 은 원 단위 raw 가격(x~5만, 잔차~수백원), M:N 은 합성 로그가격(x~10, 잔차~0.0x)이라
+/// 같은 절대 δ 를 쓰면 두 경로의 적응 속도가 수천만 배 어긋난다.
+#[derive(Debug, Clone, Copy)]
+pub enum KalmanDelta {
+    /// 절대 δ — 일봉 raw 가격 레벨(원 단위) 기준 경험값. **1:1 경로 전용**(목록·상세 판정 불변 계약).
+    Absolute(f64),
+    /// 스케일 상대 δ — x·y 를 각각 표준화한 공간에서의 δ.
+    ///
+    /// 표준화하면 x'~N(0,1), y'~N(0,1), R' = (1−R²) 가 되어 δ 가 x·y 스케일 양쪽에 불변이 된다
+    /// (Q/R 비만 맞추는 방식은 x 스케일에 여전히 종속 — 게인이 x²·P/(x²·P+R) 이라서).
+    /// 필터는 표준화 공간에서 돌리고 β_t 만 σ_y/σ_x 로 되돌려 원 스케일 β 로 보고한다.
+    Relative(f64),
+}
+
+/// 관계 안정성 지표 본체 — align 된 (x, y, ts) 위에서 정적 OLS vs Kalman 적응 β 비교.
+/// 판정 임계·산식은 δ 방식과 무관하게 1벌.
+fn stability_metrics(
+    x: &[f64],
+    y: &[f64],
+    ts: &[i64],
+    delta: KalmanDelta,
     with_series: bool,
 ) -> Option<StabilityMetrics> {
-    let (x, y, ts) = intersect_by_ts(left_daily, right_daily);
     if x.len() < 30 {
         return None;
     }
-    let ols = stats::ols(&x, &y)?;
+    let ols = stats::ols(x, y)?;
     // R = OLS 잔차 분산 (모집단 σ²).
     let obs_var = stats::stddev_pop(&ols.residuals)?.powi(2);
     let z_static = stats::current_z(&ols.residuals)?;
-    let kf = stats::kalman_hedge(&x, &y, KALMAN_DELTA, obs_var)?;
+    // β_t 를 원 스케일로 되돌리는 배율 (표준화 공간에서 돌렸을 때만 ≠ 1).
+    let (kf, beta_scale) = match delta {
+        KalmanDelta::Absolute(d) => (stats::kalman_hedge(x, y, d, obs_var)?, 1.0),
+        KalmanDelta::Relative(d) => {
+            let (mx, sx) = mean_sd(x)?;
+            let (my, sy) = mean_sd(y)?;
+            let xs: Vec<f64> = x.iter().map(|v| (v - mx) / sx).collect();
+            let ys: Vec<f64> = y.iter().map(|v| (v - my) / sy).collect();
+            // 표준화 잔차 분산 = obs_var / σ_y². y' = β'x' + α' 의 β' = β·σ_x/σ_y.
+            (stats::kalman_hedge(&xs, &ys, d, obs_var / (sy * sy))?, sy / sx)
+        }
+    };
 
-    let beta_current = *kf.beta.last()?;
+    let beta_current = *kf.beta.last()? * beta_scale;
     let beta_static = ols.beta;
     let beta_drift_pct = if beta_static.abs() > f64::EPSILON {
         (beta_current - beta_static).abs() / beta_static.abs()
@@ -327,12 +356,17 @@ pub fn compute_stability(
     let z_adaptive = *kf.std_innov.last()?;
     let z_gap = (z_static - z_adaptive).abs();
 
-    // β 스파크라인 — 균등 다운샘플 (마지막 점 반드시 포함).
-    let beta_series = if with_series {
-        downsample_beta(&ts, &kf.beta, BETA_SERIES_MAX)
+    // β 스파크라인 — 균등 다운샘플 (마지막 점 반드시 포함) 후 원 스케일 환원.
+    let mut beta_series = if with_series {
+        downsample_beta(ts, &kf.beta, BETA_SERIES_MAX)
     } else {
         Vec::new()
     };
+    if beta_scale != 1.0 {
+        for p in &mut beta_series {
+            p.beta *= beta_scale;
+        }
+    }
 
     Some(StabilityMetrics {
         beta_current,
@@ -346,9 +380,39 @@ pub fn compute_stability(
     })
 }
 
-/// 상세 응답용 래핑 — 계산은 `compute_stability` 1벌.
-fn build_kalman_stat(left_daily: &[Bar], right_daily: &[Bar]) -> Option<KalmanStat> {
-    let m = compute_stability(left_daily, right_daily, true)?;
+/// 평균·모표준편차. σ≈0(상수 시리즈)이면 None.
+fn mean_sd(v: &[f64]) -> Option<(f64, f64)> {
+    let mean = v.iter().sum::<f64>() / v.len() as f64;
+    let sd = stats::stddev_pop(v)?;
+    if sd < f64::EPSILON {
+        return None;
+    }
+    Some((mean, sd))
+}
+
+/// 일봉 raw 가격 레벨로 Kalman 시변 β 지표 산출. 표본<30 또는 필터 실패 시 None.
+/// 발굴·정적 z와 동일하게 raw close 교집합(잔차=원 단위) 기준 — basis 토글 무관 일봉 고정.
+///
+/// `with_series`=true 면 β_t 스파크라인까지 채운다(상세 패널). 목록 엔리치는 false —
+/// 3천여 페어에 대해 다운샘플 벡터를 만들지 않는다.
+pub fn compute_stability(
+    left_daily: &[Bar],
+    right_daily: &[Bar],
+    with_series: bool,
+) -> Option<StabilityMetrics> {
+    let (x, y, ts) = intersect_by_ts(left_daily, right_daily);
+    stability_metrics(&x, &y, &ts, KalmanDelta::Absolute(KALMAN_DELTA), with_series)
+}
+
+/// 상세 응답용 래핑 — 계산은 `stability_metrics` 1벌. δ 방식만 호출자가 고른다
+/// (1:1 = 절대 δ 고정, M:N 합성 로그가격 = 상대 δ).
+pub(crate) fn build_kalman_stat_with(
+    left_daily: &[Bar],
+    right_daily: &[Bar],
+    delta: KalmanDelta,
+) -> Option<KalmanStat> {
+    let (x, y, ts) = intersect_by_ts(left_daily, right_daily);
+    let m = stability_metrics(&x, &y, &ts, delta, true)?;
     Some(KalmanStat {
         beta_current: m.beta_current,
         beta_static: m.beta_static,
@@ -359,6 +423,11 @@ fn build_kalman_stat(left_daily: &[Bar], right_daily: &[Bar]) -> Option<KalmanSt
         stability: m.stability.to_string(),
         beta_series: m.beta_series,
     })
+}
+
+/// 1:1 상세 응답용 — 절대 δ 고정(기존 판정값 불변 계약).
+fn build_kalman_stat(left_daily: &[Bar], right_daily: &[Bar]) -> Option<KalmanStat> {
+    build_kalman_stat_with(left_daily, right_daily, KalmanDelta::Absolute(KALMAN_DELTA))
 }
 
 /// (ts, beta) → 최대 `max` 점으로 균등 다운샘플. 마지막 점 포함.
