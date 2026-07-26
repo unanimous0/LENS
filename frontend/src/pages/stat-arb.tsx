@@ -4,6 +4,7 @@ import { AlertWatchlist } from '@/components/stat-arb/alert-watchlist'
 import { useStatArbAlerts } from '@/hooks/useStatArbAlerts'
 import { keyToCode } from '@/lib/stat-arb-keys'
 import { pairKey } from '@/lib/stat-arb/alerts'
+import { CLASS_COLORS, CLASS_LABELS } from '@/lib/stat-arb/asset-class'
 import { STABILITY_BADGES, STABILITY_RANK } from '@/lib/stat-arb/stability'
 
 type Group = {
@@ -86,36 +87,7 @@ const KIND_LABELS: Record<string, string> = {
   etf_category: 'ETF 카테고리',
 }
 
-// leg 분류 태그 → 한글 라벨 (엔진 left_class/right_class 값)
-const CLASS_LABELS: Record<string, string> = {
-  broad_index: '광범위지수',
-  leverage_inverse: '레버리지·인버스',
-  sector: '섹터',
-  theme: '테마',
-  bond_rates: '채권·금리',
-  factor: '팩터',
-  overseas: '해외',
-  commodity: '원자재',
-  active: '액티브',
-  other: '기타',
-  stock: '주식',
-  index: '지수',
-}
-
-// 배지 색 — 저채도, 과하지 않게. 미지정은 text-t3.
-const CLASS_COLORS: Record<string, string> = {
-  broad_index: 'text-blue',
-  leverage_inverse: 'text-warning',
-  sector: 'text-t2',
-  theme: 'text-t2',
-  bond_rates: 'text-t2',
-  factor: 'text-t2',
-  overseas: 'text-t2',
-  commodity: 'text-t2',
-  active: 'text-t2',
-  stock: 'text-t3',
-  index: 'text-t3',
-}
+// leg 분류 태그 라벨·색은 s-score 목록과 공용 (@/lib/stat-arb/asset-class).
 
 type BasisView = 'exclude' | 'only' | 'all'
 type AssetCombo = 'any' | 'etf_etf' | 'etf_stock' | 'stock_stock'

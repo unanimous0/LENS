@@ -104,6 +104,29 @@ async def group_mn_pair(group_id: str) -> dict:
     return await _proxy_get(f"/groups/{group_id}/mn-pair", {})
 
 
+@router.get("/s-scores")
+async def list_sscores(
+    # 상한 5000 — 유니버스(주식+ETF ~600) 전량 조회에도 여유. 조회 상한이라 통계와 무관.
+    limit: int = Query(100, ge=0, le=5000),
+    min_abs_s: float = Query(0.0, ge=0.0, le=10.0),
+    max_half_life: Optional[float] = Query(None, gt=0.0, le=365.0),
+    asset: Optional[Literal["stock", "etf", "any"]] = None,
+) -> dict:
+    """팩터중립 s-score (Avellaneda-Lee) 목록. |s| 내림차순.
+
+    1:1 / M:N 발굴과 독립된 별도 트랙 — 종목 수익률에서 공통 팩터(PCA eigenportfolio)를
+    제거한 고유 잔차의 평균회귀를 본다.
+    min_abs_s: |s-score| 하한(진입 후보만 보려면 2.0). max_half_life: 일 단위 상한.
+    asset: stock|etf|any(기본).
+    """
+    params: dict[str, Any] = {"limit": limit, "min_abs_s": min_abs_s}
+    if max_half_life is not None:
+        params["max_half_life"] = max_half_life
+    if asset:
+        params["asset"] = asset
+    return await _proxy_get("/s-scores", params)
+
+
 @router.get("/mn-pairs")
 async def list_mn_pairs(
     limit: int = 50,

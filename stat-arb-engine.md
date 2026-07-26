@@ -729,3 +729,49 @@ memory: `project_statarb_intraday_detail`. **발굴(discovery)은 여전히 일�
   - **히스테리시스**: 한 번 울리면 disarm → |z|가 `목표 × 0.8` 안쪽으로 되돌아와야 재무장(경계 진동 연타 방지). 무장 상태는 컴포넌트 메모리(useRef).
   - 등록 UI: 목록 행 페어 셀의 🔔 토글(기본 2.0·abs), 상세 헤더 `AlertButton` 팝오버(목표·방향 선택, 페어당 여러 건 가능).
 - **한계(명시)**: 탭이 열려 있는 동안만 감시 — 서버 푸시 아님. 비보안(HTTP) 접속이면 Notification API가 없어 배너·소리로만 알림.
+
+---
+
+## 19. 팩터중립 s-score 트랙 (Avellaneda-Lee, 2026-07-27)
+
+**1:1 / M:N 발굴과 완전히 독립된 별도 트랙.** 기존 발굴 코드(`evaluate_pair` / `discover_all_one_to_one` / `discover_mn_in_group` / `choose_target_len` / `compute_group_pca` / `PairResult` / `MPairResult`)는 한 줄도 건드리지 않았다 — 새 모듈 `sscore.rs` + 새 엔드포인트 `/s-scores` + 새 페이지 `/stat-arb/s-score`.
+
+### 19.1 왜 필요한가
+1:1 발굴은 자산유형 무관 전조합이라 **시장 대용 바스켓 ETF가 허브**가 된다(실측: `TIGER 코리아TOP10` 169 leg-slot, `RISE ESG사회책임투자` 149, 상위 12 leg가 전체의 27%). UI 키워드 제외는 증상 대응이지 구조적 해법이 아니다. 정석은 "A vs B"가 아니라 **"A vs A의 팩터 노출"** — 공통 팩터(시장·섹터)를 회귀로 제거한 **고유 잔차**의 평균회귀를 본다. 헤지는 페어 상대가 아니라 지수선물/팩터 ETF (ETF LP 본업과 일치).
+
+### 19.2 알고리즘 (`stat-arb-engine/src/sscore.rs`)
+1. **유니버스** — 캐시의 주식(`S:`)+ETF(`E:`) 일봉 로그수익률. 표본 정렬은 1:1의 `choose_target_len` 과 **같은 사상**(짧은 소수 드롭)이되 창 길이가 상수라 탐색 없이 `corr_window+1` 봉 미달을 드롭. 거래일 달력 tail 비교로 오정렬 멤버 제거(1:1의 `tail_ts_matches` 와 동일 취지).
+2. **팩터 추출** — 최근 `corr_window`(252d) 수익률 **상관행렬 PCA**(`stats::pca` 재사용, 읽기 전용) → 상위 `n_factors`(15) 고유벡터. 고유벡터 부호는 성분 합이 양수가 되도록 고정(재기동 간 β 부호 뒤집힘 방지).
+3. **eigenportfolio 수익률** — `Q_i = v_i/σ_i` 를 `Σ|Q| = 1`(총노출 1)로 정규화 → `F_k(t) = Σ_i Q_i R_i(t)`. 정규화는 AL 원문의 스케일 자유도이며, β 가 "그 포트폴리오 대비 헤지비율"이 되고 정규방정식 열 스케일이 균질해져 수치 안정성도 좋다.
+4. **잔차 회귀** — 최근 `reg_window`(60d)에서 `R_i = β_i0 + Σ_k β_ik F_k + ε_i` **다중 OLS**. 설계행렬이 전 종목 공통이라 `X'X` Cholesky 분해는 **사이클당 1회**(600종목 × 15팩터가 156ms에 끝나는 이유). 준특이 가드: Cholesky 대각 min/max < 1e-6(≈ cond 1e12) 이면 거부 — `Cholesky::new` 는 완전 특이만 잡고 절편과 공선인 상수열도 1e-8 pivot 으로 통과시킨다(실측).
+5. **OU 적합** — 누적잔차 `X(t)=Σ ε(s)` 에 AR(1) `X(t)=a+b·X(t-1)+ζ`. `0<b<1` 아니면 제외. **단위 규약**: AR 한 스텝 = 1영업일 → `κ_daily=−ln b`, `half_life=ln2/κ_daily`[일], 노출용 `kappa=κ_daily×252`[1/년, AL 표기].
+6. **s-score** — `s=(X_last−m)/σ_eq`, `m=a/(1−b)`, `σ_eq=σ_ζ/√(1−b²)`.
+   - ⚠️ **X_last ≈ 0 은 버그가 아니다**: 절편 있는 OLS 잔차 합은 정확히 0 → 실질 `s = −m/σ_eq`("평형 m 대비 지금(=0) 어디인가"). AL 정의 그대로. 공식은 일반형으로 두어 절편 없는 변형에도 성립.
+7. **게이트** — half-life `0.5 ~ 30일`(30 = reg_window/2 = AL "회귀시간이 회귀창 절반보다 빨라야"의 취지), 팩터 R² ≤ 0.99(잔차가 수치 노이즈 = 팩터 선형결합으로 재현되는 시리즈 배제), 표본·수치 유효성.
+   - 상수는 전부 env 튜닝: `STATARB_SSCORE_CORR_WINDOW / _N_FACTORS / _REG_WINDOW / _MIN_HL / _MAX_HL / _MAX_R2`.
+
+### 19.3 산출 / API
+- 엔진 `GET /s-scores?limit&min_abs_s&max_half_life&asset(stock|etf|any)` → `{total, filtered, returned, last_run_ms, duration_ms, factors{n_factors, explained_variance_ratio[], factor_vol[], corr_window, reg_window, universe_size}, items[]}`. **정렬은 계산 시점에 |s| 내림차순 고정**, 요청은 필터/limit 만.
+- 계산은 recompute cron 사이클에 1회 (`AppState.sscores: Arc<RwLock<SScoreState>>`). 요청마다 재계산하지 않는다.
+- `top_factors` 는 `{factor_idx, beta, contrib}`. **정렬 기준은 |β| 가 아니라 `contrib = β×σ_F`** — 상위 PC 는 long-short 분산 포트폴리오라 σ_F 가 작아 β 만 커진다(|β| 정렬 시 항상 저변동 팩터가 뽑히는 착시).
+- ⚠️ **β_1 은 CAPM 시장베타가 아니다**: F1 은 `v/σ` 가중 분산 포트폴리오라 개별 종목보다 변동성이 낮고(σ_F1 ≈ 1.1%/일 vs 개별주 2~4%), 게다가 15팩터 다변량 계수 → 개별주 β_1 중앙값 2.66 이 정상. 감시 포인트는 값이 1이냐가 아니라 **σ_F1 이 지수 변동성 수준이고 부호가 안정적이냐**.
+- 프록시 `backend/routers/stat_arb.py` `/api/stat-arb/s-scores` (기존 패턴 동일).
+
+### 19.4 실측 (2026-07-27 초기 사이클, 3년 일봉 캐시 673 시리즈)
+- 후보 654(주식+ETF) → 짧은표본 79 드롭 → PCA 575 시리즈 → **게이트 통과 573** (r² 게이트 2, 그 외 탈락 0).
+- 성능 **155ms**(PCA 156ms 포함... PCA가 사실상 전부). 1:1 발굴 2.2초 / 전체 사이클 24.6초 대비 **+0.6%** — 부담 없음.
+- 팩터 설명력 top5 = 40.7 / 7.4 / 3.6 / 2.4 / 2.2%, 15팩터 누적 **68.1%**. σ_F1 1.11%/일.
+- `|s|` p50 0.73 · p90 1.45 · p99 1.90 · max 2.53. |s|≥1.25(AL 진입 임계) **103종목(18%)**, ≥2 는 4종목. half-life p50 5.7일(p10 2.2 / p90 13.6). R² p50 0.796(p10 0.572 / p90 0.972).
+- **sanity (이 트랙의 핵심 검증)** — 분류별 R² 중앙값: `broad_index 0.983` / `factor 0.975` / `leverage_inverse 0.969` / `theme 0.933` / `sector 0.923` vs **`stock 0.729`**. R² 상위 10은 전부 지수복제형(TIGER200 0.990, KODEX200 0.988 …)이고 잔차변동성 0.46~0.50%/일(유니버스 중앙값 1.65%의 **1/3**). 1:1 허브였던 `TIGER 코리아TOP10`(R² 0.892, s −0.65)·`RISE ESG사회책임투자`(0.910, −0.84)는 |s| 상위 어디에도 없다 — **허브 편향이 원리적으로 사라짐**.
+  - 단서: s 는 자기 σ_eq 로 정규화하므로 지수복제 ETF도 |s| 자체는 0.6~0.9 로 0 은 아니다. "경제적으로 작다"는 **잔차변동성**(0.46% vs 1.65%)에서 읽어야 한다.
+- 1:1 / M:N 산출 **불변 확인** — 같은 날 데이터로 HEAD 코드(대조군)와 신규 코드 각각 기동: 둘 다 **11,022 페어 / M:N 108**. (직전 기록 11,033 과의 차이는 3년 cutoff 날짜 롤오버 + 일배치 데이터 갱신 때문이며 s-score 트랙과 무관 — 대조군으로 분리 확인함.)
+
+### 19.5 프론트 (`frontend/src/pages/stat-arb-sscore.tsx`)
+- 서브탭 `s-score` (`/stat-arb/s-score`). 컨트롤: |s| 최소(0/1.25/2 프리셋 — 1.25 = AL 진입 임계) · half-life 상한 · 자산군 · 검색. 서버 필터가 바뀌면 재요청(AbortController), 검색·정렬은 클라이언트.
+- 테이블: 종목·분류배지 / s-score(|s|≥2 강조, 양수 down·음수 up) / half-life / κ / R² / 잔차변동성 / 주요 팩터(기여도 %p, 호버 시 β) / 표본. 접이식 "읽는 법" 패널에 3단계 설명 + 1:1·M:N 과의 차이.
+- leg 분류 라벨·색은 1:1 목록과 공용 (`lib/stat-arb/asset-class.ts` 로 추출).
+
+### 19.6 남은 것 (미구현)
+- 진입/청산 임계(±1.25 / ±0.5)로 **포트폴리오 백테스트** — 현재는 스크리너까지.
+- 팩터 노출 합산 → **지수선물 헤지 수량 산출**(여러 종목 바스켓의 F1 순노출). 지금은 종목별 β 만 노출.
+- 인트라데이 s-score(현재 일봉 전용). 회귀창 60일 고정이라 장중 갱신은 사이클 단위.

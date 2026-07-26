@@ -3,7 +3,7 @@ import { NavLink, Outlet } from 'react-router-dom'
 import { cn } from '@/lib/utils'
 
 /**
- * 통계차익 sub-tab 레이아웃. 페어 발굴 / 대여요율 2개 탭.
+ * 통계차익 sub-tab 레이아웃. 1:1 / M:N / s-score 발굴 + 포지션 + 대여요율.
  * 페어 상세 페이지(`/stat-arb/pair/:left/:right`)는 layout 밖이라 탭 숨김.
  */
 export function StatArbLayout() {
@@ -14,6 +14,7 @@ export function StatArbLayout() {
           1:1 발굴
         </SubTab>
         <SubTab to="/stat-arb/mn">M:N 발굴</SubTab>
+        <SubTab to="/stat-arb/s-score">s-score</SubTab>
         <SubTab to="/stat-arb/positions">포지션</SubTab>
         <SubTab to="/stat-arb/loan-rates">대여요율</SubTab>
       </div>

@@ -15,6 +15,7 @@ import { EtfDashboardPage } from './pages/etf-dashboard'
 import { EtfArbitragePage } from './pages/etf-arbitrage'
 import { StatArbPage } from './pages/stat-arb'
 import { StatArbMnPage } from './pages/stat-arb-mn'
+import { StatArbSScorePage } from './pages/stat-arb-sscore'
 import { StatArbDetailPage } from './pages/stat-arb-detail'
 import { StatArbLayout } from './pages/stat-arb-layout'
 import { LoanRatesPage } from './pages/loan-rates'
@@ -71,6 +72,7 @@ function AppLayout() {
             <Route path="/stat-arb" element={<StatArbLayout />}>
               <Route index element={<StatArbPage />} />
               <Route path="mn" element={<StatArbMnPage />} />
+              <Route path="s-score" element={<StatArbSScorePage />} />
               <Route path="positions" element={<StatArbPositionsPage />} />
               <Route path="loan-rates" element={<LoanRatesPage />} />
             </Route>

@@ -10,6 +10,7 @@ mod discovery;
 mod groups;
 mod holidays;
 mod phase;
+mod sscore;
 mod stats;
 mod universe;
 
@@ -35,6 +36,7 @@ use tracing_subscriber::EnvFilter;
 use data::bars::{series_key, AssetType, SeriesCache};
 use discovery::{GroupPcaResult, MPairResult, MnSplitStrategy, PairResult};
 use groups::{Group, GroupKind};
+use sscore::{SScoreResult, SScoreState};
 use universe::EtfMeta;
 
 const PORT: u16 = 8300;
@@ -136,6 +138,9 @@ struct AppState {
     cache: SeriesCache,
     pairs: Arc<RwLock<PairsState>>,
     groups: Arc<RwLock<GroupsState>>,
+    /// 팩터중립 s-score (Avellaneda-Lee). 1:1/M:N 과 무관한 별도 트랙 —
+    /// 같은 recompute 사이클에서 1회 계산해 여기 보관하고, `/s-scores` 는 필터·정렬만 한다.
+    sscores: Arc<RwLock<SScoreState>>,
     stats: Arc<EngineStats>,
     /// realtime(8200) 호출용 — detail 당일분 stitch(t8412 경유). connection pool 재사용.
     http: reqwest::Client,
@@ -691,6 +696,79 @@ async fn list_mn_pairs(
     })
 }
 
+// ---------------------------------------------------------------------------
+// 팩터중립 s-score (Avellaneda-Lee) — 별도 트랙
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+struct SScoresQuery {
+    /// 반환할 최대 종목 수. 디폴트 100.
+    #[serde(default = "default_limit")]
+    limit: usize,
+    /// |s-score| 하한. 기본 0 = 전체. (진입 후보만 보려면 2.0)
+    #[serde(default)]
+    min_abs_s: f64,
+    /// half-life 상한(일). 미지정 시 엔진 게이트(`STATARB_SSCORE_MAX_HL`) 그대로.
+    max_half_life: Option<f64>,
+    /// 자산군 필터 — `stock` | `etf` | `any`(기본).
+    asset: Option<String>,
+}
+
+#[derive(Serialize)]
+struct SScoresResp {
+    /// 게이트 통과 전체 종목 수 (쿼리 필터 적용 전).
+    total: usize,
+    /// 쿼리 필터 적용 후 매칭 수.
+    filtered: usize,
+    returned: usize,
+    last_run_ms: i64,
+    /// 마지막 사이클 계산 소요(ms) — 사이클 부담 모니터링용.
+    duration_ms: u64,
+    factors: sscore::SScoreFactorInfo,
+    items: Vec<SScoreResult>,
+}
+
+/// s-score 목록. 정렬은 계산 시점에 |s| 내림차순으로 고정돼 있어 여기선 필터/limit 만 한다.
+async fn list_sscores(
+    State(state): State<AppState>,
+    Query(q): Query<SScoresQuery>,
+) -> Json<SScoresResp> {
+    let s = state.sscores.read().await;
+    let asset = q.asset.as_deref().unwrap_or("any");
+    let min_abs = if q.min_abs_s.is_finite() { q.min_abs_s.abs() } else { 0.0 };
+    let max_hl = q.max_half_life.filter(|v| v.is_finite() && *v > 0.0);
+
+    let matched: Vec<&SScoreResult> = s
+        .items
+        .iter()
+        .filter(|it| {
+            if it.s_score.abs() < min_abs {
+                return false;
+            }
+            if max_hl.is_some_and(|h| it.half_life > h) {
+                return false;
+            }
+            match asset {
+                "stock" => it.key.starts_with("S:"),
+                "etf" => it.key.starts_with("E:"),
+                _ => true, // any 또는 알 수 없는 값 → 통과
+            }
+        })
+        .collect();
+
+    let filtered = matched.len();
+    let items: Vec<SScoreResult> = matched.into_iter().take(q.limit).cloned().collect();
+    Json(SScoresResp {
+        total: s.items.len(),
+        filtered,
+        returned: items.len(),
+        last_run_ms: s.last_run_ms,
+        duration_ms: s.duration_ms,
+        factors: s.factors.clone(),
+        items,
+    })
+}
+
 /// PR-B: 그룹 한정 Dense PCA 결과 반환.
 /// 멤버 ≥ PCA_MIN_MEMBERS 그룹만 PCA 산출 — 외 그룹 요청 시 404.
 async fn group_pca(
@@ -792,12 +870,14 @@ async fn main() {
     let cache = data::bars::new_cache();
     let pairs = Arc::new(RwLock::new(PairsState::default()));
     let groups_state = Arc::new(RwLock::new(GroupsState::default()));
+    let sscores = Arc::new(RwLock::new(SScoreState::default()));
 
     // 백그라운드: 그룹 자동 생성 + 초기 발굴 + 10분 cron 재발굴 루프.
     if let Some(pool) = pg.clone() {
         let cache_clone = cache.clone();
         let pairs_clone = pairs.clone();
         let groups_clone = groups_state.clone();
+        let sscores_clone = sscores.clone();
         let stats_clone = engine_stats.clone();
         let cancel_clone = cancel.clone();
         tokio::spawn(async move {
@@ -806,6 +886,7 @@ async fn main() {
                 cache_clone,
                 pairs_clone,
                 groups_clone,
+                sscores_clone,
                 stats_clone,
                 cancel_clone,
             )
@@ -820,6 +901,7 @@ async fn main() {
         cache,
         pairs,
         groups: groups_state,
+        sscores,
         stats: engine_stats.clone(),
         http: reqwest::Client::new(),
         realtime_base,
@@ -839,6 +921,7 @@ async fn main() {
         .route("/groups/{id}/pca", get(group_pca))
         .route("/groups/{id}/mn-pair", get(group_mn_pair))
         .route("/mn-pairs", get(list_mn_pairs))
+        .route("/s-scores", get(list_sscores))
         .layer(cors)
         .with_state(app_state);
 
@@ -862,6 +945,7 @@ async fn spawn_recompute_loop(
     cache: SeriesCache,
     pairs: Arc<RwLock<PairsState>>,
     groups: Arc<RwLock<GroupsState>>,
+    sscores: Arc<RwLock<SScoreState>>,
     stats: Arc<EngineStats>,
     cancel: CancellationToken,
 ) {
@@ -873,7 +957,7 @@ async fn spawn_recompute_loop(
 
     // 초기 1회 — full warmup. Sleep phase 여도 첫 데이터는 채워둠 (장 외 시간 시작 시 빈 화면 방지).
     load_groups(&pool, &groups, &stats).await;
-    warmup_and_discover(&pool, &cache, &pairs, &groups, &stats, UpdateMode::Full).await;
+    warmup_and_discover(&pool, &cache, &pairs, &groups, &sscores, &stats, UpdateMode::Full).await;
 
     // 메인 루프 — 증분
     loop {
@@ -890,7 +974,16 @@ async fn spawn_recompute_loop(
             return;
         }
 
-        warmup_and_discover(&pool, &cache, &pairs, &groups, &stats, UpdateMode::Incremental).await;
+        warmup_and_discover(
+            &pool,
+            &cache,
+            &pairs,
+            &groups,
+            &sscores,
+            &stats,
+            UpdateMode::Incremental,
+        )
+        .await;
         stats.recompute_cycles.fetch_add(1, Ordering::Relaxed);
     }
 }
@@ -999,6 +1092,7 @@ async fn warmup_and_discover(
     cache: &SeriesCache,
     pairs: &Arc<RwLock<PairsState>>,
     groups: &Arc<RwLock<GroupsState>>,
+    sscores: &Arc<RwLock<SScoreState>>,
     stats: &Arc<EngineStats>,
     mode: UpdateMode,
 ) {
@@ -1189,6 +1283,20 @@ async fn warmup_and_discover(
         }
     }
     log_mn_diagnostics(&mn_map, &mn_diag, groups).await;
+
+    // 8. 팩터중립 s-score (Avellaneda-Lee) — **1:1/M:N 과 독립된 별도 트랙**.
+    //    같은 캐시를 읽기만 하고 위 발굴 결과에 일절 개입하지 않는다.
+    //    이름·분류 태그는 여기 엔리치 패스에서 채운다 (sscore 모듈은 ETF 메타를 모른다).
+    let mut sscore_state = sscore::compute(cache);
+    for it in sscore_state.items.iter_mut() {
+        it.name = names.get(&it.key).cloned().unwrap_or_else(|| it.key.clone());
+        it.asset_class = leg_class(&it.key, &etf_meta);
+    }
+    log_sscore_diagnostics(&sscore_state);
+    {
+        let mut s = sscores.write().await;
+        *s = sscore_state;
+    }
 
     {
         let mut s = groups.write().await;
@@ -1499,6 +1607,110 @@ async fn log_mn_diagnostics(
             mp.z_score,
             mp.score
         );
+    }
+}
+
+/// 정렬된 표본의 분위수 (nearest-rank). 진단 로깅 전용.
+fn quantile_sorted(v: &[f64], q: f64) -> f64 {
+    if v.is_empty() {
+        return f64::NAN;
+    }
+    let idx = (((v.len() - 1) as f64) * q).round() as usize;
+    v[idx.min(v.len() - 1)]
+}
+
+/// s-score 트랙 진단 — 탈락 사유, |s|·half-life·R² 분포, 팩터 설명력, 분류별 R².
+///
+/// 분류별 R² 는 이 트랙의 **핵심 sanity 지표**다. 시장 대용 바스켓(광범위지수 ETF 등)은
+/// 팩터로 거의 설명돼야 하므로 R² 가 높고 |s|(고유 알파)는 작아야 정상 —
+/// 1:1 발굴에서 이들이 허브가 되던 편향이 구조적으로 제거됐다는 증거.
+fn log_sscore_diagnostics(state: &SScoreState) {
+    let d = &state.diag;
+    info!(
+        "[s-score] 후보 {} (짧은표본 {} · 달력불일치 {} · 분산0 {}) → 통과 {} (회귀실패 {} · OU실패 {} · hl게이트 {} · r²게이트 {}) — {:.1}초",
+        d.cache_series,
+        d.short_sample,
+        d.calendar_mismatch,
+        d.zero_var,
+        state.items.len(),
+        d.regression_fail,
+        d.ou_fail,
+        d.half_life_gate,
+        d.r_squared_gate,
+        state.duration_ms as f64 / 1000.0,
+    );
+    if state.items.is_empty() {
+        return;
+    }
+    let f = &state.factors;
+    let evr_top: String = f
+        .explained_variance_ratio
+        .iter()
+        .take(5)
+        .map(|v| format!("{:.1}%", v * 100.0))
+        .collect::<Vec<_>>()
+        .join(" / ");
+    info!(
+        "[s-score] 팩터 {}개 (창 {}d, 회귀 {}d, 시리즈 {}) — 설명력 top5 {} · 누적 {:.1}%",
+        f.n_factors,
+        f.corr_window,
+        f.reg_window,
+        f.universe_size,
+        evr_top,
+        f.explained_variance_ratio.iter().sum::<f64>() * 100.0
+    );
+    // σ_F1 이 지수 일간 변동성 수준(0.5~1.5%)이면 eigenportfolio 구성 정상.
+    // β_1 중앙값은 1이 아니라 >1 이 정상 (SScoreDiag::market_beta_median 주석 참조).
+    info!(
+        "[s-score] F1 sanity — σ_F1 {:.2}%/일 · β_1 중앙값 {:.2}",
+        d.factor1_vol * 100.0,
+        d.market_beta_median
+    );
+
+    let sorted = |mut v: Vec<f64>| {
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        v
+    };
+    let abs_s = sorted(state.items.iter().map(|i| i.s_score.abs()).collect());
+    let hl = sorted(state.items.iter().map(|i| i.half_life).collect());
+    let r2 = sorted(state.items.iter().map(|i| i.r_squared).collect());
+    let n_signal = state.items.iter().filter(|i| i.s_score.abs() >= 2.0).count();
+    info!(
+        "[s-score] |s| median {:.2} / p90 {:.2} / max {:.2} · |s|≥2 {}종목 ({:.1}%)",
+        quantile_sorted(&abs_s, 0.5),
+        quantile_sorted(&abs_s, 0.9),
+        abs_s.last().copied().unwrap_or(f64::NAN),
+        n_signal,
+        n_signal as f64 / state.items.len() as f64 * 100.0
+    );
+    info!(
+        "[s-score] half-life median {:.1}d (p10 {:.1} / p90 {:.1}) · R² median {:.3} (p10 {:.3} / p90 {:.3})",
+        quantile_sorted(&hl, 0.5),
+        quantile_sorted(&hl, 0.1),
+        quantile_sorted(&hl, 0.9),
+        quantile_sorted(&r2, 0.5),
+        quantile_sorted(&r2, 0.1),
+        quantile_sorted(&r2, 0.9),
+    );
+
+    // 분류별 R²·|s| 중앙값 (sanity).
+    let mut by_class: HashMap<&str, (Vec<f64>, Vec<f64>)> = HashMap::new();
+    for it in &state.items {
+        let e = by_class.entry(it.asset_class.as_str()).or_default();
+        e.0.push(it.r_squared);
+        e.1.push(it.s_score.abs());
+    }
+    let mut classes: Vec<(&str, usize, f64, f64)> = by_class
+        .into_iter()
+        .map(|(k, (r, s))| {
+            let n = r.len();
+            (k, n, quantile_sorted(&sorted(r), 0.5), quantile_sorted(&sorted(s), 0.5))
+        })
+        .collect();
+    classes.sort_by(|a, b| b.1.cmp(&a.1));
+    info!("[s-score] 분류별 R²/|s| 중앙값 (팩터 설명력 sanity):");
+    for (cls, n, r2m, sm) in classes.iter().take(8) {
+        info!("  · {cls:16}: {n:4}종목 — R² {r2m:.3} / |s| {sm:.2}");
     }
 }
 
