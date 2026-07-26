@@ -667,6 +667,7 @@ export function StatArbDetailPage() {
                 data={headlineSeries}
                 live={leftPrice > 0 && rightPrice > 0 ? { left: leftPrice, right: rightPrice } : null}
                 register={registerLeg}
+                daily={useDaily}
               />
             </div>
           </div>
@@ -683,7 +684,7 @@ export function StatArbDetailPage() {
               </span>
             </div>
             <div className="h-[260px]">
-              <SpreadDualChart data={headlineSeries} register={registerSpread} />
+              <SpreadDualChart data={headlineSeries} register={registerSpread} daily={useDaily} />
             </div>
           </div>
           <div className="panel p-3">
@@ -708,6 +709,7 @@ export function StatArbDetailPage() {
                 data={headlineSeries}
                 live={liveZ}
                 register={registerZ}
+                daily={useDaily}
               />
             </div>
           </div>

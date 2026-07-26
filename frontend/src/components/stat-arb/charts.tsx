@@ -3,9 +3,12 @@ import {
   createChart,
   ColorType,
   LineStyle,
+  type BusinessDay,
   type IChartApi,
   type IPriceLine,
   type ISeriesApi,
+  type Time,
+  type UTCTimestamp,
 } from 'lightweight-charts'
 
 import type { HistBin, SpreadPoint } from '@/types/stat-arb'
@@ -71,6 +74,36 @@ const seriesLocalization = {
   },
 }
 
+// 시간축 값 생성 — 일봉/인트라데이 분기.
+//  · daily=false: 기존 UNIX 초(UTCTimestamp). 인트라데이 시간축(seriesTimeScale) 그대로.
+//  · daily=true : KST 날짜만 뽑은 BusinessDay {year,month,day}. lightweight-charts가 이 모드에서
+//                 비거래일(주말·공휴일)을 자동 압축하고 시각(15:30)을 떼어 날짜만 그림.
+//    (kstParts.mo는 이미 +1 처리된 1~12 실제 월 → BusinessDay.month와 일치.)
+function tsToTime(tsMs: number, daily: boolean): Time {
+  if (!daily) return Math.floor(tsMs / 1000) as UTCTimestamp
+  const p = kstParts(tsMs / 1000)
+  return { year: p.y, month: p.mo, day: p.da } as BusinessDay
+}
+
+// 일봉 전용 timeScale — 날짜만(시각 없음). 일봉 ~750점이라 minBarSpacing 여유롭게.
+const dailyTimeScale = {
+  borderColor: C.bgSurface,
+  timeVisible: false,
+  secondsVisible: false,
+  minBarSpacing: 3,
+  // business-day 모드에선 tickMarkFormatter가 BusinessDay 객체를 받음 → typeof로 가드.
+  tickMarkFormatter: (time: Time) => {
+    if (typeof time === 'object') return `${String(time.year).slice(2)}-${pad(time.month)}-${pad(time.day)}`
+    return ''
+  },
+}
+const dailyLocalization = {
+  timeFormatter: (time: Time) => {
+    if (typeof time === 'object') return `${time.year}-${pad(time.month)}-${pad(time.day)}`
+    return ''
+  },
+}
+
 // ---------------------------------------------------------------------------
 // 공통 — 컨테이너 resize observer
 // ---------------------------------------------------------------------------
@@ -97,6 +130,7 @@ export function SpreadChart({
   entry,
   live,
   register,
+  daily = false,
 }: {
   data: SpreadPoint[]
   /** 포지션 상세에서 진입 시점·값 마킹용. 페어 상세에서는 미전달 */
@@ -105,6 +139,8 @@ export function SpreadChart({
   live?: number | null
   /** 차트 인스턴스를 부모에 등록 (시간축 동기화용). stable한 setState setter를 넘길 것. */
   register?: (chart: IChartApi | null, series?: ISeriesApi<'Line'> | null) => void
+  /** 일봉 기준이면 날짜축(BusinessDay)으로 렌더. 기본 false(=인트라데이 시각축, 기존 동작). */
+  daily?: boolean
 }) {
   const containerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
@@ -116,8 +152,8 @@ export function SpreadChart({
     if (!containerRef.current) return
     const chart = createChart(containerRef.current, {
       ...baseChartOpts,
-      timeScale: seriesTimeScale,
-      localization: seriesLocalization,
+      timeScale: daily ? dailyTimeScale : seriesTimeScale,
+      localization: daily ? dailyLocalization : seriesLocalization,
       width: containerRef.current.clientWidth,
       height: containerRef.current.clientHeight,
     })
@@ -128,7 +164,7 @@ export function SpreadChart({
       priceFormat: { type: 'price', precision: 0, minMove: 1 },
     })
     series.setData(
-      data.map((p) => ({ time: Math.floor(p.ts / 1000), value: p.spread }))
+      data.map((p) => ({ time: tsToTime(p.ts, daily), value: p.spread }))
     )
     seriesRef.current = series
     register?.(chart, series)
@@ -164,7 +200,7 @@ export function SpreadChart({
       })
       series.setMarkers([
         {
-          time: Math.floor(entry.ts / 1000) as never,
+          time: tsToTime(entry.ts, daily),
           position: 'inBar',
           color: C.t1,
           shape: 'circle',
@@ -179,19 +215,27 @@ export function SpreadChart({
       seriesRef.current = null
       curLineRef.current = null
     }
-  }, [data, entry, register])
+  }, [data, entry, register, daily])
 
-  // 라이브 점 append/갱신 — 전체 리빌드 없이 마지막 점만. 10분 버킷으로 묶어 틱 폭주 방지.
+  // 라이브 점 append/갱신 — 전체 리빌드 없이 마지막 점만.
   // ts는 effect 안에서 now()로 생성 (render 중 Date.now() 호출 금지 — react-hooks/purity).
   useEffect(() => {
     const s = seriesRef.current
     if (!s || live == null) return
+    if (daily) {
+      // 일봉 모드: 10분 버킷 대신 "오늘" 날짜(BusinessDay) 점으로 갱신. 오늘 ≥ 마지막 일봉(어제)이라
+      // update가 항상 안전(뒤로 append 또는 오늘봉 갱신). 날짜 단위라 틱 폭주도 없음.
+      s.update({ time: tsToTime(Date.now(), true), value: live })
+      curLineRef.current?.applyOptions({ price: live })
+      return
+    }
+    // 인트라데이: 10분 버킷으로 묶어 틱 폭주 방지.
     const bucket = Math.floor(Date.now() / 1000 / 600) * 600
     if (bucket < lastTsRef.current) return
     s.update({ time: bucket as never, value: live })
     lastTsRef.current = bucket
     curLineRef.current?.applyOptions({ price: live })
-  }, [live])
+  }, [live, daily])
 
   useResize(containerRef, chartRef)
 
@@ -206,6 +250,7 @@ export function ZScoreChart({
   entry,
   live,
   register,
+  daily = false,
 }: {
   data: SpreadPoint[]
   entry?: { ts: number; z: number } | null
@@ -213,6 +258,8 @@ export function ZScoreChart({
   live?: number | null
   /** 차트 인스턴스를 부모에 등록 (시간축 동기화용). */
   register?: (chart: IChartApi | null, series?: ISeriesApi<'Line'> | null) => void
+  /** 일봉 기준이면 날짜축(BusinessDay)으로 렌더. 기본 false(=인트라데이 시각축, 기존 동작). */
+  daily?: boolean
 }) {
   const containerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
@@ -224,8 +271,8 @@ export function ZScoreChart({
     if (!containerRef.current) return
     const chart = createChart(containerRef.current, {
       ...baseChartOpts,
-      timeScale: seriesTimeScale,
-      localization: seriesLocalization,
+      timeScale: daily ? dailyTimeScale : seriesTimeScale,
+      localization: daily ? dailyLocalization : seriesLocalization,
       width: containerRef.current.clientWidth,
       height: containerRef.current.clientHeight,
     })
@@ -236,7 +283,7 @@ export function ZScoreChart({
       lineWidth: 2,
       priceFormat: { type: 'price', precision: 2, minMove: 0.01 },
     })
-    series.setData(data.map((p) => ({ time: Math.floor(p.ts / 1000), value: p.z })))
+    series.setData(data.map((p) => ({ time: tsToTime(p.ts, daily), value: p.z })))
     seriesRef.current = series
     register?.(chart, series)
     lastTsRef.current = data.length ? Math.floor(data[data.length - 1].ts / 1000) : 0
@@ -296,7 +343,7 @@ export function ZScoreChart({
       })
       series.setMarkers([
         {
-          time: Math.floor(entry.ts / 1000) as never,
+          time: tsToTime(entry.ts, daily),
           position: 'inBar',
           color: C.t1,
           shape: 'circle',
@@ -311,12 +358,18 @@ export function ZScoreChart({
       seriesRef.current = null
       curLineRef.current = null
     }
-  }, [data, entry, register])
+  }, [data, entry, register, daily])
 
   // 라이브 z append/갱신 (ts는 effect 안에서 now()로 — render 중 Date.now() 금지).
   useEffect(() => {
     const s = seriesRef.current
     if (!s || live == null) return
+    if (daily) {
+      // 일봉 모드: "오늘" 날짜(BusinessDay) 점으로 갱신 (10분 버킷 무의미). 오늘 ≥ 마지막 일봉이라 안전.
+      s.update({ time: tsToTime(Date.now(), true), value: live })
+      curLineRef.current?.applyOptions({ price: live, color: Math.abs(live) >= 2 ? C.down : C.t1 })
+      return
+    }
     const bucket = Math.floor(Date.now() / 1000 / 600) * 600
     if (bucket < lastTsRef.current) return
     s.update({ time: bucket as never, value: live })
@@ -325,7 +378,7 @@ export function ZScoreChart({
       price: live,
       color: Math.abs(live) >= 2 ? C.down : C.t1,
     })
-  }, [live])
+  }, [live, daily])
 
   useResize(containerRef, chartRef)
 
@@ -340,11 +393,14 @@ export function LegCompareChart({
   data,
   live,
   register,
+  daily = false,
 }: {
   data: SpreadPoint[]
   /** 실시간 현재가 (두 leg). 시작점 기준 % 로 환산해 끝에 이어 그림. */
   live?: { left: number; right: number } | null
   register?: (chart: IChartApi | null, series?: ISeriesApi<'Line'> | null) => void
+  /** 일봉 기준이면 날짜축(BusinessDay)으로 렌더. 기본 false(=인트라데이 시각축, 기존 동작). */
+  daily?: boolean
 }) {
   const containerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
@@ -358,8 +414,8 @@ export function LegCompareChart({
     const pts = data.filter((p) => p.left != null && p.right != null && p.left > 0 && p.right > 0)
     const chart = createChart(containerRef.current, {
       ...baseChartOpts,
-      timeScale: seriesTimeScale,
-      localization: seriesLocalization,
+      timeScale: daily ? dailyTimeScale : seriesTimeScale,
+      localization: daily ? dailyLocalization : seriesLocalization,
       width: containerRef.current.clientWidth,
       height: containerRef.current.clientHeight,
     })
@@ -375,8 +431,8 @@ export function LegCompareChart({
     }
     const lSeries = chart.addLineSeries({ color: C.accent, lineWidth: 2, priceFormat: fmt })
     const rSeries = chart.addLineSeries({ color: C.blue, lineWidth: 2, priceFormat: fmt })
-    lSeries.setData(pts.map((p) => ({ time: Math.floor(p.ts / 1000), value: pct(p.left!, baseL) })))
-    rSeries.setData(pts.map((p) => ({ time: Math.floor(p.ts / 1000), value: pct(p.right!, baseR) })))
+    lSeries.setData(pts.map((p) => ({ time: tsToTime(p.ts, daily), value: pct(p.left!, baseL) })))
+    rSeries.setData(pts.map((p) => ({ time: tsToTime(p.ts, daily), value: pct(p.right!, baseR) })))
     lSeriesRef.current = lSeries
     rSeriesRef.current = rSeries
     // crosshair 동기화용 primary series = right(파랑). 시간축 공유라 logical index로 맞춤.
@@ -397,20 +453,27 @@ export function LegCompareChart({
       lSeriesRef.current = null
       rSeriesRef.current = null
     }
-  }, [data, register])
+  }, [data, register, daily])
 
   // 라이브 — 두 leg 현재가를 시작점 기준 %로 끝에 이어 그림.
   useEffect(() => {
     const ls = lSeriesRef.current
     const rs = rSeriesRef.current
     if (!ls || !rs || !live) return
+    const { l: baseL, r: baseR } = baseRef.current
+    if (daily) {
+      // 일봉 모드: "오늘" 날짜(BusinessDay) 점으로 갱신. 오늘 ≥ 마지막 일봉이라 안전.
+      const t = tsToTime(Date.now(), true)
+      if (baseL > 0 && live.left > 0) ls.update({ time: t, value: (live.left / baseL - 1) * 100 })
+      if (baseR > 0 && live.right > 0) rs.update({ time: t, value: (live.right / baseR - 1) * 100 })
+      return
+    }
     const bucket = Math.floor(Date.now() / 1000 / 600) * 600
     if (bucket < lastTsRef.current) return
-    const { l: baseL, r: baseR } = baseRef.current
     if (baseL > 0 && live.left > 0) ls.update({ time: bucket as never, value: (live.left / baseL - 1) * 100 })
     if (baseR > 0 && live.right > 0) rs.update({ time: bucket as never, value: (live.right / baseR - 1) * 100 })
     lastTsRef.current = bucket
-  }, [live])
+  }, [live, daily])
 
   useResize(containerRef, chartRef)
 
@@ -426,9 +489,12 @@ export function LegCompareChart({
 export function SpreadDualChart({
   data,
   register,
+  daily = false,
 }: {
   data: SpreadPoint[]
   register?: (chart: IChartApi | null, series?: ISeriesApi<'Line'> | null) => void
+  /** 일봉 기준이면 날짜축(BusinessDay)으로 렌더. 기본 false(=인트라데이 시각축, 기존 동작). */
+  daily?: boolean
 }) {
   const containerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
@@ -438,8 +504,8 @@ export function SpreadDualChart({
     const pts = data.filter((p) => p.left != null && p.right != null && p.left > 0 && p.right > 0)
     const chart = createChart(containerRef.current, {
       ...baseChartOpts,
-      timeScale: seriesTimeScale,
-      localization: seriesLocalization,
+      timeScale: daily ? dailyTimeScale : seriesTimeScale,
+      localization: daily ? dailyLocalization : seriesLocalization,
       width: containerRef.current.clientWidth,
       height: containerRef.current.clientHeight,
     })
@@ -460,10 +526,10 @@ export function SpreadDualChart({
       priceFormat: fmt,
     })
     aSeries.setData(
-      pts.map((p) => ({ time: Math.floor(p.ts / 1000), value: pct(p.right!, baseR) - pct(p.left!, baseL) }))
+      pts.map((p) => ({ time: tsToTime(p.ts, daily), value: pct(p.right!, baseR) - pct(p.left!, baseL) }))
     )
     bSeries.setData(
-      pts.map((p) => ({ time: Math.floor(p.ts / 1000), value: p.right! !== 0 ? (p.spread / p.right!) * 100 : 0 }))
+      pts.map((p) => ({ time: tsToTime(p.ts, daily), value: p.right! !== 0 ? (p.spread / p.right!) * 100 : 0 }))
     )
     // crosshair 동기화 primary = A(수익률 차이).
     register?.(chart, aSeries)
@@ -480,7 +546,7 @@ export function SpreadDualChart({
       register?.(null)
       chart.remove()
     }
-  }, [data, register])
+  }, [data, register, daily])
 
   useResize(containerRef, chartRef)
 
