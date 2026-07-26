@@ -11,7 +11,7 @@
 
 use serde::Serialize;
 
-use crate::data::bars::{AssetSeries, SeriesCache, Timeframe};
+use crate::data::bars::{AssetSeries, Bar, SeriesCache, Timeframe};
 use crate::stats;
 
 // 필터 임계값. 일봉 기준. 기본 3년치(2026-06-30, 영업일 ~730 — `warmup_days_daily()`).
@@ -52,6 +52,14 @@ const MIN_R_SQUARED: f64 = 0.5;
 // 표본이 1년창(~252)보다 작아 검정력↓ → 임계는 ADF_CRIT(-3.0)보다 완화(-2.5). 최근 가장
 // 약해진 ~20%만 컷(측정 2026-06-26). 더 빡세면 검정력 부족으로 진짜 페어도 버림. env로 튜닝.
 const RECENT_WINDOW_DAYS: usize = 126; // ~6개월 영업일
+// 그룹 시리즈 정렬 시 *보존 목표* 멤버 비율 (`choose_target_len`).
+// 길이가 제각각인 그룹을 "가장 짧은 멤버"에 맞추면 표본이 붕괴한다 — 실측(2026-07-26)
+// index:KOSPI200 은 캐시에 727봉이 있는데도 길이 200 미만 4개·400 미만 10개 때문에
+// min_len 정렬로 T=162 까지 잘렸고, T(162) < N(200) 이라 상관행렬이 rank-deficient
+// (PCA 자체가 부실). 같은 그룹을 상위 90% 보존 기준으로 잡으면 T=726 (멤버 192) 로 회복된다.
+// 0.9 = "짧은 소수는 버리고 표본 깊이를 산다" — 신규상장 종목이 그룹의 통계를 지배하지
+// 못하게 하는 컷. 임계(MIN_SAMPLES 등)와 무관한 *정렬 정책* 상수.
+const RETAIN_RATIO: f64 = 0.9;
 // 최근창 ADF 임계 — env로 튜닝(기본 -2.0). 표본 작아 검정력 약하므로 운영 중 조정 여지.
 fn recent_adf_crit() -> f64 {
     use std::sync::OnceLock;
@@ -134,6 +142,78 @@ fn closes_daily(series: &AssetSeries) -> Option<Vec<f64>> {
 fn align_tail(a: &[f64], b: &[f64]) -> (Vec<f64>, Vec<f64>) {
     let n = a.len().min(b.len());
     (a[a.len() - n..].to_vec(), b[b.len() - n..].to_vec())
+}
+
+/// 길이가 제각각인 시리즈 집합에서 (표본 깊이 × 멤버 보존) 균형점을 고른다.
+/// 짧은 소수 때문에 전체가 붕괴하지 않도록, 하위 일부를 버리고 나머지의 공통 길이를 쓴다.
+///
+/// 정책: 길이 내림차순으로 상위 `RETAIN_RATIO` 비율(단 `min_members` 이상)을 보존하는
+/// 최대 길이. 그 길이가 `MIN_SAMPLES` 미만이면 보존 수를 하나씩 줄여(= 더 긴 공통 길이)
+/// 재시도하고, `min_members` 까지 줄여도 못 채우면 None.
+///
+/// 반환값은 항상 `>= MIN_SAMPLES` 이고, 그 길이 이상인 멤버가 `min_members` 개 이상 존재한다.
+fn choose_target_len(lens: &[usize], min_members: usize) -> Option<usize> {
+    let n = lens.len();
+    if min_members == 0 || n < min_members {
+        return None;
+    }
+    let mut desc = lens.to_vec();
+    desc.sort_unstable_by(|a, b| b.cmp(a));
+    // 보존 목표 멤버 수 — 상위 RETAIN_RATIO 비율. min_members 하한, n 상한.
+    let target_keep = ((n as f64 * RETAIN_RATIO).ceil() as usize).clamp(min_members, n);
+    // desc[k-1] 은 k 가 줄수록 커지므로, 목표에서부터 내려오며 첫 통과 지점이
+    // "MIN_SAMPLES 를 만족하는 최대 보존 수".
+    (min_members..=target_keep)
+        .rev()
+        .map(|keep| desc[keep - 1])
+        .find(|&len| len >= MIN_SAMPLES)
+}
+
+/// 개수 기준 right-align 후 거래일 달력이 실제로 일치하는지 확인 (뒤 `ref_tail.len()` 개 ts 비교).
+///
+/// 개수 정렬은 "모든 시리즈가 같은 영업일 달력을 공유한다"를 가정한다. 실측(2026-07-26,
+/// PG `ohlcv_daily` 3년창): **현 universe 596 시리즈는 전부 가장 긴 시리즈 달력의 정확한
+/// suffix** (신규상장으로 짧을 뿐 중간 구멍 없음) — 오정렬 0건. 지수 19종도 동일 달력.
+/// 다만 DB 전체(3,755 종목)로 넓히면 82개가 어긋난다(거래정지 등으로 중간이 빈 시리즈 29개,
+/// 상폐·정지로 끝이 과거인 시리즈 54개). 지금 안전한 건 universe 필터(is_active 구성종목 ·
+/// 최근 30일 거래대금 10억↑ ETF)가 그것들을 걸러내기 때문이지 구조적 보장이 아니다.
+/// → N-way ts 교집합(detail.rs `intersect_by_ts` 의 확장)까지 가지 않고, 정렬 결과의 ts
+/// 동일성만 O(N·T) 로 검사해 어긋난 멤버를 드롭한다. 달력이 같은 평시엔 완전 무비용 no-op.
+fn tail_ts_matches(ts: &[i64], ref_tail: &[i64]) -> bool {
+    ts.len() >= ref_tail.len() && ts[ts.len() - ref_tail.len()..] == *ref_tail
+}
+
+/// `tail_ts_matches` 의 bar 슬라이스 버전 — ts만 뽑는 중간 Vec 할당 없이 비교.
+fn bars_tail_matches(bars: &[Bar], ref_tail: &[i64]) -> bool {
+    bars.len() >= ref_tail.len()
+        && bars[bars.len() - ref_tail.len()..]
+            .iter()
+            .zip(ref_tail)
+            .all(|(b, t)| b.ts == *t)
+}
+
+/// 기준 거래일 달력 tail — 후보 중 가장 긴(동률이면 가장 최근에 끝나는) 시리즈의 마지막 `need` 개 ts.
+/// 가장 긴 시리즈가 곧 달력의 상위집합이라 기준으로 삼는다.
+fn reference_ts_tail<'a>(
+    keys: impl IntoIterator<Item = &'a String>,
+    cache: &SeriesCache,
+    need: usize,
+) -> Option<Vec<i64>> {
+    let mut best: Option<(usize, i64, Vec<i64>)> = None;
+    for key in keys {
+        let Some(entry) = cache.get(key) else { continue };
+        let bars = entry.value().bars(Timeframe::Day1);
+        if bars.len() < need {
+            continue;
+        }
+        let rank = (bars.len(), bars[bars.len() - 1].ts);
+        if best.as_ref().is_some_and(|(l, t, _)| (*l, *t) >= rank) {
+            continue;
+        }
+        let tail = bars[bars.len() - need..].iter().map(|b| b.ts).collect();
+        best = Some((rank.0, rank.1, tail));
+    }
+    best.map(|(_, _, tail)| tail)
 }
 
 /// 가격 → 로그수익률 (사전 필터용).
@@ -346,30 +426,60 @@ pub fn compute_group_pca(
     pool_size: usize,
     top_loadings_per_factor: usize,
 ) -> Option<GroupPcaResult> {
-    // 1. 멤버 일봉 종가 → 로그수익률
+    // 1. 멤버 일봉 종가 → 로그수익률 (+ 정렬 검증용 거래일 ts)
     let mut keys: Vec<String> = Vec::new();
     let mut series: Vec<Vec<f64>> = Vec::new();
+    let mut ts_list: Vec<Vec<i64>> = Vec::new();
     for key in members {
         let Some(entry) = cache.get(key) else { continue };
-        let Some(closes) = closes_daily(entry.value()) else { continue };
-        let rets = log_returns(&closes);
+        let bars = entry.value().bars(Timeframe::Day1);
+        if bars.len() < MIN_SAMPLES {
+            continue;
+        }
+        let closes: Vec<f64> = bars.iter().map(|b| b.close).collect();
+        series.push(log_returns(&closes));
+        ts_list.push(bars.iter().map(|b| b.ts).collect());
         keys.push(key.clone());
-        series.push(rets);
     }
     if keys.len() < 3 {
         // PCA 의미 있으려면 변수 ≥ 3
         return None;
     }
 
-    // 2. 시리즈 길이 통일 — 최소 길이로 right-align (가장 최근 데이터 보존)
-    let min_len = series.iter().map(|s| s.len()).min()?;
-    if min_len < MIN_SAMPLES {
+    // 2. 시리즈 길이 통일 — 적응적 target_len 으로 right-align (가장 최근 데이터 보존).
+    //    전 멤버 min_len 정렬은 신규상장 몇 개가 그룹 전체 표본을 붕괴시켜 T<N (상관행렬
+    //    rank-deficient) 을 만들었다. 이제 *짧은 소수를 드롭*하고 나머지의 공통 길이를 쓴다.
+    let lens: Vec<usize> = series.iter().map(|s| s.len()).collect();
+    let target_len = choose_target_len(&lens, 3)?;
+    // 수익률 target_len 개 = 종가 target_len+1 개 구간 (1차차분).
+    let need = target_len + 1;
+    let ref_tail = reference_ts_tail(keys.iter(), cache, need)?;
+
+    let mut kept_keys: Vec<String> = Vec::with_capacity(keys.len());
+    let mut kept_series: Vec<Vec<f64>> = Vec::with_capacity(series.len());
+    let mut calendar_drops = 0_usize;
+    for (i, mut s) in series.into_iter().enumerate() {
+        if s.len() < target_len {
+            continue; // 짧은 멤버는 드롭 (전체를 자르지 않는다)
+        }
+        if !tail_ts_matches(&ts_list[i], &ref_tail) {
+            calendar_drops += 1;
+            continue;
+        }
+        s.drain(0..s.len() - target_len);
+        kept_series.push(s);
+        kept_keys.push(std::mem::take(&mut keys[i]));
+    }
+    if calendar_drops > 0 {
+        tracing::debug!(
+            "[PCA] 거래일 달력 불일치로 {calendar_drops} 멤버 드롭 (남은 {}, T={target_len})",
+            kept_keys.len()
+        );
+    }
+    if kept_keys.len() < 3 {
         return None;
     }
-    for s in series.iter_mut() {
-        let start = s.len() - min_len;
-        s.drain(0..start);
-    }
+    let (keys, series) = (kept_keys, kept_series);
 
     // 3. PCA
     let pca_r = crate::stats::pca(&series)?;
@@ -539,36 +649,69 @@ struct SideDropStats {
     short_sample: usize,
     /// 수익률 분산 0 (거래정지·고정가 등).
     zero_var: usize,
+    /// 우측 정렬 후 거래일 ts가 기준 달력과 불일치 (중간 구멍·과거에서 끝난 시리즈).
+    calendar_mismatch: usize,
 }
 
 impl SideDropStats {
-    /// 지배 사유 인덱스 — 0=cache miss, 1=samples, 2=var=0, 3=혼합/불명.
+    /// 지배 사유 인덱스 — 0=cache miss, 1=samples, 2=var=0, 3=달력 불일치, 4=혼합/불명.
     fn dominant(&self) -> usize {
-        match (self.cache_miss > 0, self.short_sample > 0, self.zero_var > 0) {
-            (true, false, false) => 0,
-            (false, true, false) => 1,
-            (false, false, true) => 2,
-            _ => 3,
+        match (
+            self.cache_miss > 0,
+            self.short_sample > 0,
+            self.zero_var > 0,
+            self.calendar_mismatch > 0,
+        ) {
+            (true, false, false, false) => 0,
+            (false, true, false, false) => 1,
+            (false, false, true, false) => 2,
+            (false, false, false, true) => 3,
+            _ => 4,
         }
     }
 }
 
 /// 빈 변의 탈락 사유 문자열 (진단 집계 키라 `&'static str` 고정 집합).
+/// 길이 통일(align) 단계와 표준화(standardize) 단계가 같은 사유 집합을 공유한다 —
+/// 두 단계 모두 "이 변에 쓸 시리즈가 하나도 안 남았다"의 원인을 물어보기 때문.
 fn empty_side_reason(is_x: bool, d: &SideDropStats) -> &'static str {
-    const X: [&str; 4] = [
-        "standardize: x empty (cache miss)",
-        "standardize: x empty (samples<150)",
-        "standardize: x empty (var=0)",
-        "standardize: x empty (mixed)",
+    const X: [&str; 5] = [
+        "x side empty (cache miss)",
+        "x side empty (samples<target_len)",
+        "x side empty (var=0)",
+        "x side empty (calendar mismatch)",
+        "x side empty (mixed)",
     ];
-    const Y: [&str; 4] = [
-        "standardize: y empty (cache miss)",
-        "standardize: y empty (samples<150)",
-        "standardize: y empty (var=0)",
-        "standardize: y empty (mixed)",
+    const Y: [&str; 5] = [
+        "y side empty (cache miss)",
+        "y side empty (samples<target_len)",
+        "y side empty (var=0)",
+        "y side empty (calendar mismatch)",
+        "y side empty (mixed)",
     ];
     let i = d.dominant();
     if is_x { X[i] } else { Y[i] }
+}
+
+/// 한 변의 *로그수익률* 길이 목록 (= 종가 개수 − 1) + 후보에서 빠진 사유 집계.
+/// `choose_target_len` 입력용. 캐시 미스와 표본 부족을 구분해 담아, target_len 산출조차
+/// 못 한 변의 탈락 사유를 `empty_side_reason` 과 같은 taxonomy 로 보고할 수 있게 한다.
+fn side_return_lens(keys: &[String], cache: &SeriesCache) -> (Vec<usize>, SideDropStats) {
+    let mut lens = Vec::with_capacity(keys.len());
+    let mut drops = SideDropStats::default();
+    for key in keys {
+        let Some(entry) = cache.get(key) else {
+            drops.cache_miss += 1;
+            continue;
+        };
+        let n = entry.value().bars(Timeframe::Day1).len();
+        if n < MIN_SAMPLES {
+            drops.short_sample += 1;
+            continue;
+        }
+        lens.push(n - 1);
+    }
+    (lens, drops)
 }
 
 /// 컬럼 z-score 표준화. 분산 0이면 None (해당 시리즈 제외 마커).
@@ -588,29 +731,36 @@ fn standardize(v: &[f64]) -> Option<Vec<f64>> {
 
 /// 멤버 key 목록 → (log returns 표준화 매트릭스, 살아남은 key 목록, 탈락 사유 집계).
 /// 길이 통일은 호출자에서 (모든 변수가 같은 T 길이여야 sparse_cca 호출 가능).
+/// `ref_tail` 은 기준 거래일 달력의 마지막 `target_len + 1` 개 ts — 우측 정렬한 구간의
+/// 거래일이 실제로 일치하는지 검사해 어긋난 멤버를 드롭한다 (`tail_ts_matches` 주석 참조).
 fn build_standardized_returns(
     keys: &[String],
     cache: &SeriesCache,
     target_len: usize,
+    ref_tail: &[i64],
 ) -> (Vec<Vec<f64>>, Vec<String>, SideDropStats) {
     let mut out_series = Vec::new();
     let mut out_keys = Vec::new();
     let mut drops = SideDropStats::default();
+    // 수익률 target_len 개 = 종가 target_len+1 개. target_len >= MIN_SAMPLES 는 choose_target_len 보장.
+    let need = target_len + 1;
     for key in keys {
         let Some(entry) = cache.get(key) else {
             drops.cache_miss += 1;
             continue;
         };
-        let Some(closes) = closes_daily(entry.value()) else {
-            drops.short_sample += 1;
-            continue;
-        };
-        let rets = log_returns(&closes);
-        if rets.len() < target_len {
+        let bars = entry.value().bars(Timeframe::Day1);
+        if bars.len() < need {
             drops.short_sample += 1;
             continue;
         }
-        let trimmed = rets[rets.len() - target_len..].to_vec();
+        if !bars_tail_matches(bars, ref_tail) {
+            drops.calendar_mismatch += 1;
+            continue;
+        }
+        let trimmed: Vec<f64> = log_returns(
+            &bars[bars.len() - need..].iter().map(|b| b.close).collect::<Vec<f64>>(),
+        );
         let Some(z) = standardize(&trimmed) else {
             drops.zero_var += 1;
             continue;
@@ -743,10 +893,27 @@ pub fn discover_mn_in_group(
         return Err("split: empty side or |x|+|y|<3");
     }
 
-    // 길이 통일 — 모든 멤버가 MIN_SAMPLES 이상 가졌어야 candidate pool에 들어왔으므로 안전
-    let target_len = MIN_SAMPLES;
-    let (x_series, x_keys_kept, x_drops) = build_standardized_returns(&x_keys, cache, target_len);
-    let (y_series, y_keys_kept, y_drops) = build_standardized_returns(&y_keys, cache, target_len);
+    // 길이 통일 — 하드코딩 MIN_SAMPLES(151 표본) 대신 적응적 target_len.
+    // **x·y 는 반드시 같은 target_len** 을 쓴다: 양변이 다른 구간을 보면 합성 스프레드가
+    // 서로 다른 시간축의 회귀가 돼 무의미해진다.
+    // 변별로 먼저 구한 뒤 짧은 쪽으로 통일하는 이유 — `EtfNatural` 분할의 X변은 ETF 1개이고
+    // 그게 페어의 필수 멤버다. 양변 합집합에 RETAIN_RATIO 컷을 걸면 신규상장 ETF가 하위
+    // 10%로 잘려 그룹이 통째로 사라진다(주식 200봉+ETF 신규 = ETF만 드롭). 변 단위면
+    // 그 ETF 길이가 그대로 상한이 돼 "짧지만 유효한" 페어가 살아남는다.
+    let (x_lens, x_len_drops) = side_return_lens(&x_keys, cache);
+    let (y_lens, y_len_drops) = side_return_lens(&y_keys, cache);
+    let x_target =
+        choose_target_len(&x_lens, 1).ok_or_else(|| empty_side_reason(true, &x_len_drops))?;
+    let y_target =
+        choose_target_len(&y_lens, 1).ok_or_else(|| empty_side_reason(false, &y_len_drops))?;
+    let target_len = x_target.min(y_target);
+    // 기준 거래일 달력은 양변 통틀어 1개 (같은 시간축 강제).
+    let ref_tail = reference_ts_tail(x_keys.iter().chain(y_keys.iter()), cache, target_len + 1)
+        .ok_or("align: 기준 거래일 달력 없음")?;
+    let (x_series, x_keys_kept, x_drops) =
+        build_standardized_returns(&x_keys, cache, target_len, &ref_tail);
+    let (y_series, y_keys_kept, y_drops) =
+        build_standardized_returns(&y_keys, cache, target_len, &ref_tail);
     // ETF Natural 분할은 X 측 1개도 정상. factor 분할은 양변 ≥ 2 권장.
     // 빈 변이 생긴 사유(캐시 미스 / 표본 부족 / 분산 0)를 구분해 반환 — universe 확대 같은
     // 입력 조치의 효과가 진단 로그에서 바로 보이게.
@@ -927,4 +1094,63 @@ pub fn discover_within_group(
     }
     out.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
     out
+}
+
+// ---------------------------------------------------------------------------
+// Tests — 표본 정렬 정책 (통계 임계는 불변이라 대상 아님)
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn target_len_drops_short_minority() {
+        // 실측 재현: KOSPI200 200멤버 중 192개가 726, 나머지 8개가 짧다.
+        let mut lens = vec![726_usize; 192];
+        lens.extend([681, 651, 584, 537, 481, 358, 286, 162]);
+        // min_len 정렬이면 162 (T<N 붕괴), 90% 보존이면 726.
+        assert_eq!(choose_target_len(&lens, 3), Some(726));
+    }
+
+    #[test]
+    fn target_len_keeps_ratio_when_all_equal() {
+        let lens = vec![400_usize; 10];
+        assert_eq!(choose_target_len(&lens, 3), Some(400));
+    }
+
+    #[test]
+    fn target_len_backs_off_until_min_samples() {
+        // 상위 90%(=9번째) 길이는 100으로 MIN_SAMPLES 미달 → 보존 수를 줄여 200 채택.
+        let mut lens = vec![200_usize; 5];
+        lens.extend([100; 5]);
+        assert_eq!(choose_target_len(&lens, 3), Some(200));
+    }
+
+    #[test]
+    fn target_len_none_when_nothing_reaches_min_samples() {
+        let lens = vec![100_usize, 90, 80, 70];
+        assert_eq!(choose_target_len(&lens, 3), None);
+        // 멤버 수 자체가 min_members 미만이어도 None.
+        assert_eq!(choose_target_len(&[900, 900], 3), None);
+    }
+
+    #[test]
+    fn target_len_single_mandatory_member() {
+        // EtfNatural 의 X변(ETF 1개) — min_members=1 이면 그 길이가 그대로 상한.
+        assert_eq!(choose_target_len(&[199], 1), Some(199));
+        assert_eq!(choose_target_len(&[149], 1), None);
+    }
+
+    #[test]
+    fn tail_ts_matches_detects_hole() {
+        let cal: Vec<i64> = (0..10).collect();
+        assert!(tail_ts_matches(&cal, &cal[5..]));
+        // 신규상장(달력 suffix) 은 정상.
+        assert!(tail_ts_matches(&cal[7..], &cal[7..]));
+        // 중간에 구멍(거래정지) 이 있으면 개수 정렬이 날짜를 어긋나게 한다 → 불일치 검출.
+        let gappy: Vec<i64> = cal.iter().copied().filter(|t| *t != 7).collect();
+        assert!(!tail_ts_matches(&gappy, &cal[5..]));
+        // 과거에서 끝난 시리즈(상폐·정지) 도 불일치.
+        assert!(!tail_ts_matches(&cal[..8], &cal[5..]));
+    }
 }
