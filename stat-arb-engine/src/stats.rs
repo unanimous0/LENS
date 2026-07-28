@@ -286,7 +286,7 @@ pub struct PcaResult {
 }
 
 /// Dense PCA — 입력은 [변수1 시계열, 변수2 시계열, ...]. 각 시계열 길이 T 동일.
-/// 짧은 시리즈는 호출자가 align_tail로 맞춰서 전달.
+/// 길이 통일은 호출자 책임 (discovery.rs `choose_target_len` + 거래일 달력 tail 일치 검사).
 /// 1) 각 컬럼을 z-score 표준화 (변동성 편향 회피)
 /// 2) 공분산 = 표준화 후 X'X / (T-1) = 상관행렬
 /// 3) SymmetricEigen → 내림차순 정렬 → eigenvalues + eigenvectors

@@ -203,6 +203,9 @@ pub struct SScoreDiag {
     pub calendar_mismatch: usize,
     /// 수익률 분산 0(거래정지·고정가)으로 탈락.
     pub zero_var: usize,
+    /// 비양수 종가가 섞여 탈락 (캐시 불변식 위반 — 정상 운영에선 0 이어야 한다).
+    /// `data::bars` 로더가 결측 봉을 버리므로 여기가 0 이 아니면 로더 회귀를 의심할 것.
+    pub nonpositive: usize,
     /// 다중 회귀 실패(수치).
     pub regression_fail: usize,
     /// OU 적합 실패 (b ≤ 0 또는 b ≥ 1 = 평균회귀 없음 포함).
@@ -424,19 +427,18 @@ pub fn fit_ou(x: &[f64]) -> Option<OuFit> {
 // 유니버스 수집
 // ---------------------------------------------------------------------------
 
-/// 가격 → 로그수익률.
+/// 가격 → 로그수익률. **비양수 가격이 하나라도 있으면 None** (= 그 종목 제외).
 /// (discovery.rs `log_returns` 와 동일 구현 — s-score 트랙을 기존 발굴에서 완전히 분리해
 /// 두기 위해 의도적으로 복제한다. 로직 수정 시 양쪽 다 봐야 함.)
-fn log_returns(prices: &[f64]) -> Vec<f64> {
+fn log_returns(prices: &[f64]) -> Option<Vec<f64>> {
     let mut out = Vec::with_capacity(prices.len().saturating_sub(1));
     for i in 1..prices.len() {
-        if prices[i - 1] > 0.0 && prices[i] > 0.0 {
-            out.push((prices[i] / prices[i - 1]).ln());
-        } else {
-            out.push(0.0);
+        if !(prices[i - 1] > 0.0) || !(prices[i] > 0.0) {
+            return None;
         }
+        out.push((prices[i] / prices[i - 1]).ln());
     }
-    out
+    Some(out)
 }
 
 /// 표본 표준편차 (분모 n−1) — `stats::pca` 내부 표준화와 같은 정의를 쓴다.
@@ -552,7 +554,11 @@ pub fn compute(cache: &SeriesCache) -> SScoreState {
             diag.calendar_mismatch += 1;
             continue;
         }
-        let r = log_returns(&c.closes);
+        // 비양수 종가(캐시 불변식 위반)는 조용히 0% 수익률로 치환하지 않고 종목을 제외한다.
+        let Some(r) = log_returns(&c.closes) else {
+            diag.nonpositive += 1;
+            continue;
+        };
         let Some(sd) = stddev_sample(&r) else {
             diag.zero_var += 1;
             continue;

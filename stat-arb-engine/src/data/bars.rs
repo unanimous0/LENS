@@ -13,6 +13,25 @@
 //!
 //! Stock/Etf는 같은 테이블에서 가져옴 — 호출자가 AssetType을 외부에서 부여.
 //! ETF 마스터(`etf_master_daily`) 에 해당 코드가 있으면 Etf, 아니면 Stock.
+//!
+//! ## 불변식 — 캐시에 들어가는 봉의 종가는 항상 > 0
+//!
+//! 2026-07-28 데이터 오염 수정. Finance_Data `ohlcv_daily.adj_close` 는
+//! **2023-07 ~ 2024-04-22 구간이 전 종목 NULL** 이고 그 뒤에도 산발 결측이 남는다
+//! (3년창 254만 행 중 59만 = 23.3% NULL). 예전 매핑이 `adj_close::INTEGER` →
+//! `c.unwrap_or(0)` 이라 **NULL 을 종가 0.0 으로 캐시에 적재**했고, 3년창 726봉 중
+//! 178봉(24.5%)이 전 종목 동시에 0 이 되면서 레벨 OLS 에 "0 → 실제가격" 계단이 생겼다.
+//! 두 계열이 공유하는 이 계단은 R² 를 인위적으로 부풀리고 ADF·half-life·z 를 왜곡한다.
+//!
+//! raw `close_price` 폴백은 **불가**: 2024-04-23 이후 `corporate_actions` 가 1만 건이 넘어
+//! 수정치(adj)와 원가(raw)를 한 계열에 섞으면 경계에서 분할 계단이 생긴다
+//! (CLAUDE.md — "주식 일봉은 adj_close 필수. raw 는 분할 spike 로 OLS/ADF 무력화").
+//! → **결측 봉은 버린다.** 3년(1095일) 워밍업이라도 실제 표본은 2024-04-23 이후 ~548봉.
+//!
+//! 산발 결측을 버리면 시계열 중간에 **거래일 구멍**이 생긴다(현 universe 652 종목 중 44개).
+//! 따라서 소비자는 개수 기준 우측 정렬이 아니라 **ts 기준 정렬**을 써야 한다
+//! (`discovery::intersect_daily` · `detail::intersect_by_ts` · `mn_detail::intersect_ts_nway`
+//! · 달력 tail 일치 검사 `bars_tail_matches`).
 
 use chrono::{NaiveDate, TimeZone};
 use dashmap::DashMap;
@@ -127,9 +146,21 @@ fn day_close_ts(date: NaiveDate) -> i64 {
         .unwrap_or(0)
 }
 
+/// NULL·파싱 실패는 0.0 으로 떨어진다. **그 0.0 이 캐시로 새지 않게** 모든 로더는
+/// 마지막에 `has_valid_close` 로 걸러낸다 (모듈 doc 불변식).
 fn bd_to_f64(v: Option<BigDecimal>) -> f64 {
     v.and_then(|b| f64::from_str(&b.to_string()).ok())
         .unwrap_or(0.0)
+}
+
+/// 캐시 적재 최종 관문 — 종가 ≤ 0(또는 비유한)인 봉은 어느 자산군에서도 유효한 가격이 아니다.
+///
+/// SQL 단계에서 이미 결측을 걸러도 여기서 한 번 더 보는 이유: 결측 표현이 테이블마다 다르고
+/// (NULL / 0.0000 — 예: `index_ohlcv_daily` 3,096행, `futures_ohlcv_daily` NEXT 4,481행),
+/// `adj_close::INTEGER` 반올림·decode 실패 같은 경로도 0 을 만들 수 있기 때문.
+/// **로더의 사후조건**: 반환된 모든 Bar 는 `close > 0`.
+fn has_valid_close(b: &Bar) -> bool {
+    b.close > 0.0 && b.close.is_finite()
 }
 
 /// 일봉 cutoff 날짜를 Rust에서 계산. PG에 *상수 date*로 bind 해야
@@ -147,6 +178,9 @@ fn cutoff_ts(days: i32) -> chrono::DateTime<chrono::Utc> {
 /// 주식/ETF 일봉. `days`일 전부터 오늘까지 ASC. (단일 종목)
 /// close는 adj_close 사용 — 액면분할 spike 회피 (OLS/ADF/half-life 정확도). open/high/low는
 /// raw 유지 (통계 계산에 안 씀, 차트 표시용 — close만 분할 보정으로 충분).
+///
+/// `adj_close IS NULL` 행은 **SQL 단계에서 제외**한다 — 사유·파급은 모듈 doc 불변식 참조.
+/// (예전 `unwrap_or(0)` 매핑이 이 NULL 을 종가 0 으로 캐시에 넣어 통계 전체를 오염시켰다.)
 pub async fn load_stock_daily(
     pool: &PgPool,
     code: &str,
@@ -154,9 +188,9 @@ pub async fn load_stock_daily(
 ) -> Result<Vec<Bar>, sqlx::Error> {
     let sql = "SELECT time, open_price, high_price, low_price, adj_close::INTEGER AS close_price, COALESCE(volume, 0)
                FROM ohlcv_daily
-               WHERE stock_code = $1 AND time >= $2
+               WHERE stock_code = $1 AND time >= $2 AND adj_close IS NOT NULL
                ORDER BY time ASC";
-    let rows: Vec<(NaiveDate, Option<i32>, Option<i32>, Option<i32>, Option<i32>, i64)> =
+    let rows: Vec<(NaiveDate, Option<i32>, Option<i32>, Option<i32>, i32, i64)> =
         sqlx::query_as(sql)
             .bind(code)
             .bind(cutoff_date(days))
@@ -164,15 +198,33 @@ pub async fn load_stock_daily(
             .await?;
     Ok(rows
         .into_iter()
-        .map(|(t, o, h, l, c, v)| Bar {
-            ts: day_close_ts(t),
-            open: o.unwrap_or(0) as f64,
-            high: h.unwrap_or(0) as f64,
-            low: l.unwrap_or(0) as f64,
-            close: c.unwrap_or(0) as f64,
-            volume: v,
-        })
+        .map(|(t, o, h, l, c, v)| stock_bar(t, o, h, l, c, v))
+        .filter(has_valid_close)
         .collect())
+}
+
+/// 주식/ETF 일봉 행 → Bar. 단일/batch 로더 공용 (매핑이 갈라져 한쪽만 고쳐지는 사고 방지).
+///
+/// open/high/low 는 raw 이고 결측이 관측된 적 없지만(3년창 0행), 혹시 NULL 이어도
+/// **0 원짜리 봉을 만들지 않는다** — 유효한 종가로 채운다. 0 가격은 차트에서도 무의미하고,
+/// `aggregate`/`bucket_ohlc` 의 high/low 집계를 통해 다른 경로로 샐 수 있다.
+fn stock_bar(
+    t: NaiveDate,
+    o: Option<i32>,
+    h: Option<i32>,
+    l: Option<i32>,
+    c: i32,
+    v: i64,
+) -> Bar {
+    let close = c as f64;
+    Bar {
+        ts: day_close_ts(t),
+        open: o.filter(|x| *x > 0).map(|x| x as f64).unwrap_or(close),
+        high: h.filter(|x| *x > 0).map(|x| x as f64).unwrap_or(close),
+        low: l.filter(|x| *x > 0).map(|x| x as f64).unwrap_or(close),
+        close,
+        volume: v,
+    }
 }
 
 /// 주식/ETF 분봉. `interval_sec` = 30 또는 60. `days`일 전부터 오늘까지 ASC. (단일 종목)
@@ -211,6 +263,7 @@ pub async fn load_stock_intraday(
             close: bd_to_f64(Some(c)),
             volume: v,
         })
+        .filter(has_valid_close)
         .collect())
 }
 
@@ -218,6 +271,9 @@ pub async fn load_stock_intraday(
 /// 주식선물/지수선물 공용 — 호출자가 AssetType을 부여.
 /// 본 테이블 키는 `(underlying_code, contract_class, time)`이라 contract_class 필요.
 /// 일단 front month 한 가지만 보려면 `contract_class = 'F'` 기본.
+///
+/// **선물은 분할이 없어 raw 그대로가 정상** — 수정주가 개념 자체가 없다. 다만 결측 표현이
+/// `close = 0.0000` 이라(3년창 4,481행, 전부 `contract_class='NEXT'`) 0/NULL 가드는 건다.
 pub async fn load_futures_daily(
     pool: &PgPool,
     underlying_code: &str,
@@ -251,6 +307,7 @@ pub async fn load_futures_daily(
             close: bd_to_f64(c),
             volume: v,
         })
+        .filter(has_valid_close)
         .collect())
 }
 
@@ -289,6 +346,7 @@ pub async fn load_futures_intraday(
             close: bd_to_f64(Some(c)),
             volume: v,
         })
+        .filter(has_valid_close)
         .collect())
 }
 
@@ -324,6 +382,7 @@ pub async fn load_index_daily(
             close: bd_to_f64(Some(c)),
             volume: v,
         })
+        .filter(has_valid_close)
         .collect())
 }
 
@@ -361,6 +420,7 @@ pub async fn load_index_intraday(
             close: bd_to_f64(Some(c)),
             volume: v,
         })
+        .filter(has_valid_close)
         .collect())
 }
 
@@ -434,9 +494,11 @@ pub async fn load_stock_daily_batch(
         return Ok(HashMap::new());
     }
     // close는 adj_close (분할 보정). open/high/low는 raw — 통계 계산에 안 씀.
+    // `adj_close IS NOT NULL` — 워밍업의 주 경로다. 이 필터가 빠지면 23% 결측이 종가 0 으로
+    // 캐시에 들어간다 (모듈 doc 불변식). 인덱스 `(stock_code, time)` 스캔 후 필터라 계획 불변.
     let sql = "SELECT stock_code, time, open_price, high_price, low_price, adj_close::INTEGER AS close_price, COALESCE(volume, 0)
                FROM ohlcv_daily
-               WHERE stock_code = ANY($1) AND time >= $2
+               WHERE stock_code = ANY($1) AND time >= $2 AND adj_close IS NOT NULL
                ORDER BY stock_code, time ASC";
     let rows: Vec<(
         String,
@@ -444,7 +506,7 @@ pub async fn load_stock_daily_batch(
         Option<i32>,
         Option<i32>,
         Option<i32>,
-        Option<i32>,
+        i32,
         i64,
     )> = sqlx::query_as(sql)
         .bind(codes)
@@ -453,14 +515,11 @@ pub async fn load_stock_daily_batch(
         .await?;
     let mut out: HashMap<String, Vec<Bar>> = HashMap::with_capacity(codes.len());
     for (code, t, o, h, l, c, v) in rows {
-        out.entry(code).or_default().push(Bar {
-            ts: day_close_ts(t),
-            open: o.unwrap_or(0) as f64,
-            high: h.unwrap_or(0) as f64,
-            low: l.unwrap_or(0) as f64,
-            close: c.unwrap_or(0) as f64,
-            volume: v,
-        });
+        let bar = stock_bar(t, o, h, l, c, v);
+        if !has_valid_close(&bar) {
+            continue;
+        }
+        out.entry(code).or_default().push(bar);
     }
     Ok(out)
 }
@@ -496,14 +555,18 @@ pub async fn load_stock_intraday_batch(
         .await?;
     let mut out: HashMap<String, Vec<Bar>> = HashMap::with_capacity(codes.len());
     for (code, t, o, h, l, c, v) in rows {
-        out.entry(code).or_default().push(Bar {
+        let bar = Bar {
             ts: t.timestamp_millis(),
             open: bd_to_f64(Some(o)),
             high: bd_to_f64(Some(h)),
             low: bd_to_f64(Some(l)),
             close: bd_to_f64(Some(c)),
             volume: v,
-        });
+        };
+        if !has_valid_close(&bar) {
+            continue;
+        }
+        out.entry(code).or_default().push(bar);
     }
     Ok(out)
 }
@@ -536,14 +599,18 @@ pub async fn load_index_daily_batch(
         .await?;
     let mut out: HashMap<String, Vec<Bar>> = HashMap::with_capacity(codes.len());
     for (code, t, o, h, l, c, v) in rows {
-        out.entry(code).or_default().push(Bar {
+        let bar = Bar {
             ts: day_close_ts(t),
             open: bd_to_f64(o),
             high: bd_to_f64(h),
             low: bd_to_f64(l),
             close: bd_to_f64(Some(c)),
             volume: v,
-        });
+        };
+        if !has_valid_close(&bar) {
+            continue;
+        }
+        out.entry(code).or_default().push(bar);
     }
     Ok(out)
 }
@@ -578,14 +645,18 @@ pub async fn load_index_intraday_batch(
         .await?;
     let mut out: HashMap<String, Vec<Bar>> = HashMap::with_capacity(codes.len());
     for (code, t, o, h, l, c, v) in rows {
-        out.entry(code).or_default().push(Bar {
+        let bar = Bar {
             ts: t.timestamp_millis(),
             open: bd_to_f64(o),
             high: bd_to_f64(h),
             low: bd_to_f64(l),
             close: bd_to_f64(Some(c)),
             volume: v,
-        });
+        };
+        if !has_valid_close(&bar) {
+            continue;
+        }
+        out.entry(code).or_default().push(bar);
     }
     Ok(out)
 }
@@ -726,6 +797,11 @@ fn extend_after_last(existing: &mut Vec<Bar>, new: &[Bar]) -> usize {
 ///
 /// 매 cron 사이클마다 호출. PG 쿼리는 *작은 cutoff*만 — partition pruning 강력.
 /// 새 universe 종목 (캐시 없음) 은 *이번 cron에선 skip*. full reload (재기동) 시 채워짐.
+///
+/// **결측일은 그 세션 동안 구멍으로 남는다**: 로더가 `adj_close` NULL 봉을 버리고
+/// `extend_after_last` 는 마지막 ts *이후*만 붙이므로, 나중에 Finance_Data 가 그 날짜를
+/// 채워도 재기동 전까지는 반영되지 않는다. 예전처럼 종가 0 을 채워 넣는 것보다 안전하고
+/// (소비자가 ts 교집합으로 정렬), 재기동 시 정상 복구된다.
 ///
 /// 반환: (추가된 bar 총합, 갱신된 series 수).
 pub async fn incremental_update_stocks(

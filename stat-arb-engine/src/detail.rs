@@ -139,6 +139,10 @@ pub struct PairDetail {
 
 /// 두 bar 시리즈를 *timestamp 교집합*으로 align.
 /// 단순화: 양쪽 다 ASC 정렬 가정. timestamp 일치하는 점만 추출.
+///
+/// **양쪽 종가가 모두 양수인 시점만** 채택한다 — 비양수 가격은 레벨 OLS 의 지렛대 점이자
+/// 로그수익률의 정의역 밖이다. 로더(`data::bars`)가 결측 봉을 버리므로 정상 운영에선
+/// 발동하지 않고, 캐시 불변식의 방어선으로만 존재한다.
 fn intersect_by_ts(a: &[Bar], b: &[Bar]) -> (Vec<f64>, Vec<f64>, Vec<i64>) {
     let mut a_close = Vec::new();
     let mut b_close = Vec::new();
@@ -147,9 +151,11 @@ fn intersect_by_ts(a: &[Bar], b: &[Bar]) -> (Vec<f64>, Vec<f64>, Vec<i64>) {
     while i < a.len() && j < b.len() {
         let (ai, bj) = (&a[i], &b[j]);
         if ai.ts == bj.ts {
-            a_close.push(ai.close);
-            b_close.push(bj.close);
-            ts.push(ai.ts);
+            if ai.close > 0.0 && bj.close > 0.0 {
+                a_close.push(ai.close);
+                b_close.push(bj.close);
+                ts.push(ai.ts);
+            }
             i += 1;
             j += 1;
         } else if ai.ts < bj.ts {
@@ -172,12 +178,10 @@ fn timeframe_stat_from_bars(
     if x.len() < 30 {
         return None;
     }
-    let x_ret: Vec<f64> = (1..x.len())
-        .map(|i| if x[i - 1] > 0.0 && x[i] > 0.0 { (x[i] / x[i - 1]).ln() } else { 0.0 })
-        .collect();
-    let y_ret: Vec<f64> = (1..y.len())
-        .map(|i| if y[i - 1] > 0.0 && y[i] > 0.0 { (y[i] / y[i - 1]).ln() } else { 0.0 })
-        .collect();
+    // `intersect_by_ts` 가 양수 종가만 통과시키므로 여기 ln 은 항상 정의된다
+    // (예전의 `else { 0.0 }` 치환 = 결측일을 "수익률 0%" 관측으로 위조하던 경로. 제거됨).
+    let x_ret: Vec<f64> = (1..x.len()).map(|i| (x[i] / x[i - 1]).ln()).collect();
+    let y_ret: Vec<f64> = (1..y.len()).map(|i| (y[i] / y[i - 1]).ln()).collect();
     let corr = stats::pearson(&x_ret, &y_ret).unwrap_or(0.0);
 
     let r = stats::ols(&x, &y)?;
