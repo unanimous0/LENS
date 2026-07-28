@@ -33,6 +33,14 @@ type MPair = {
   /// 그룹 내 성분 순번 (1-based). deflation 으로 한 그룹에서 여러 페어가 나오므로
   /// group_id 만으로는 행이 유일하지 않다 → 행 key/펼침 상태는 rowKey() 사용.
   component_idx?: number
+  /// PR-D Johansen — trace·95% 기준 추정 공적분 rank. 미판정/구버전 응답이면 없음.
+  /// **발굴 게이팅에 쓰이지 않는 부가 지표**(현 ADF 게이트가 얼마나 관대한지 재는 용도).
+  johansen_rank?: number | null
+  /// r=0 trace 통계량과 그 95% 임계값. `trace0 > crit95` 이면 rank ≥ 1.
+  johansen_trace0?: number
+  johansen_crit95?: number | null
+  /// 최대 고유값 λ₁.
+  johansen_eigen1?: number
 }
 
 /// 행 고유 key — 같은 그룹의 성분 여러 개가 공존하므로 group_id 단독은 충돌한다.
@@ -184,6 +192,12 @@ export function StatArbMnPage() {
               >
                 adf
               </th>
+              <th
+                className="px-3 py-2 font-normal"
+                title="Johansen 공적분 검정 (leg 로그가격 레벨 시스템, trace·95%). 방향 구분 없이 '여러 종목이 장기적으로 함께 묶여 있는가'를 검정 — r≥1이면 최소 1개의 안정적 결합이 존재. 발굴 게이팅에는 쓰이지 않는 부가 지표."
+              >
+                Joh.
+              </th>
               <th className="px-3 py-2 font-normal" title="Mean-reversion half-life (일)">
                 hl
               </th>
@@ -201,7 +215,7 @@ export function StatArbMnPage() {
           <tbody>
             {visible.length === 0 && !loading && (
               <tr>
-                <td colSpan={10} className="px-3 py-6 text-center text-t4">
+                <td colSpan={11} className="px-3 py-6 text-center text-t4">
                   발굴된 M:N 페어 없음
                 </td>
               </tr>
@@ -299,6 +313,9 @@ function RowFragment({
         <td className={cn('px-3 py-2', pair.adf_tstat <= -4 ? 'text-accent' : 'text-t2')}>
           {pair.adf_tstat.toFixed(2)}
         </td>
+        <td className="px-3 py-2">
+          <JohansenBadge pair={pair} />
+        </td>
         <td className="px-3 py-2 text-t2">{pair.half_life.toFixed(1)}d</td>
         <td
           className={cn(
@@ -318,7 +335,7 @@ function RowFragment({
       {isOpen && (
         <tr className="border-b border-bg-surface/40 bg-bg-base/40">
           <td></td>
-          <td colSpan={9} className="px-3 py-3">
+          <td colSpan={10} className="px-3 py-3">
             <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
               <LegList title="X (롱 방향)" legs={pair.x_legs} />
               <LegList title="Y (숏 방향)" legs={pair.y_legs} />
@@ -342,6 +359,43 @@ function RowFragment({
         </tr>
       )}
     </>
+  )
+}
+
+/** Johansen rank 배지 — r≥1(공적분 있음) accent, r0 회색, 미판정 '—'.
+ *  hover 로 trace 통계량 vs 95% 임계값·λ₁ 노출. */
+function JohansenBadge({ pair }: { pair: MPair }) {
+  const rank = pair.johansen_rank
+  if (rank == null) {
+    return (
+      <span
+        className="text-t4"
+        title="Johansen 미판정 — 표본 부족·거래일 달력 불일치·수치 실패, 또는 leg 수가 임계값 표(n−r ≤ 12) 범위 밖."
+      >
+        —
+      </span>
+    )
+  }
+  const trace = pair.johansen_trace0
+  const crit = pair.johansen_crit95
+  const detail = [
+    trace != null ? `trace(r=0) ${trace.toFixed(1)}` : null,
+    crit != null ? `95% 임계 ${crit.toFixed(1)}` : null,
+    pair.johansen_eigen1 != null ? `λ₁ ${pair.johansen_eigen1.toFixed(4)}` : null,
+  ]
+    .filter(Boolean)
+    .join(' · ')
+  const verdict =
+    rank >= 1
+      ? `공적분 관계 ${rank}개 추정 — 방향 구분 없이 최소 1개의 안정적 결합 존재`
+      : '공적분 관계 없음 (귀무가설 기각 실패) — 합성 스프레드 ADF만 통과한 페어'
+  return (
+    <span
+      className={rank >= 1 ? 'font-medium text-accent' : 'text-t4'}
+      title={`${verdict}\n${detail}`}
+    >
+      r{rank}
+    </span>
   )
 }
 

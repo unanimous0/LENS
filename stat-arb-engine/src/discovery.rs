@@ -135,21 +135,71 @@ pub struct PairResult {
     pub z_gap: f64,
 }
 
-/// 시리즈의 일봉 종가만 추출. 길이 < MIN_SAMPLES 면 None.
+/// 시리즈의 일봉 종가만 추출. 길이 < MIN_SAMPLES 거나 **비양수 종가가 하나라도 있으면 None**.
+///
+/// 비양수 종가는 로그·레벨 회귀 어디서도 유효한 입력이 아니다. 로더(`data::bars`)가 이미
+/// 결측 봉을 버려 여기까지 오지 않는 게 정상이고, 이 검사는 **캐시 불변식의 마지막 방어선**이다
+/// (예전엔 `ln(0)→0` 같은 조용한 치환으로 넘어가 통계를 조용히 오염시켰다 — 그게 사고의 본질).
 fn closes_daily(series: &AssetSeries) -> Option<Vec<f64>> {
     let bars = series.bars(Timeframe::Day1);
     if bars.len() < MIN_SAMPLES {
         return None;
     }
+    if bars.iter().any(|b| !(b.close > 0.0)) {
+        return None;
+    }
     Some(bars.iter().map(|b| b.close).collect())
 }
 
-/// 두 시리즈 길이 맞춰서 마지막 n개만 — 두 시리즈가 정렬돼 있다고 가정 (ASC by time).
-/// 단순화: 둘의 최소 길이만큼 *오른쪽 정렬* (가장 최근 데이터).
-/// 실제로는 timestamp 기준 join이 정확. PR3는 동일 시장 동일 영업일 가정으로 단순 정렬.
-fn align_tail(a: &[f64], b: &[f64]) -> (Vec<f64>, Vec<f64>) {
-    let n = a.len().min(b.len());
-    (a[a.len() - n..].to_vec(), b[b.len() - n..].to_vec())
+/// 시리즈의 일봉 (거래일 ts, 종가). 게이트는 `closes_daily` 와 동일 — 1:1 발굴 입력용.
+/// ts 를 같이 들고 다녀야 `intersect_daily` 로 날짜 기준 정렬이 가능하다.
+fn closes_ts_daily(series: &AssetSeries) -> Option<(Vec<i64>, Vec<f64>)> {
+    let bars = series.bars(Timeframe::Day1);
+    if bars.len() < MIN_SAMPLES {
+        return None;
+    }
+    if bars.iter().any(|b| !(b.close > 0.0)) {
+        return None;
+    }
+    Some((
+        bars.iter().map(|b| b.ts).collect(),
+        bars.iter().map(|b| b.close).collect(),
+    ))
+}
+
+/// 두 일봉 시리즈를 **거래일 ts 교집합**으로 정렬 (둘 다 ASC 가정, merge join O(n+m)).
+///
+/// 개수 기준 우측 정렬(구 `align_tail`)을 버린 이유 — 로더가 `adj_close` 결측 봉을 버리면서
+/// (2026-07-28 오염 수정) 시계열 중간에 **거래일 구멍**이 생길 수 있다. 실측 기준 현 universe
+/// 652 종목 중 44개. 개수 정렬은 그 구멍 수만큼 두 계열의 날짜를 어긋나게 붙여, 서로 다른 날의
+/// 가격을 회귀에 넣는다 — 조용히 틀리는 종류의 오류라 반드시 ts 로 맞춰야 한다.
+/// 구멍 없는 페어(대다수)에서는 결과가 우측 정렬과 완전히 동일하다.
+///
+/// 상세(`detail::intersect_by_ts`)·M:N(`mn_detail::intersect_ts_nway`)과 같은 규칙이라
+/// 목록과 상세의 표본 구간도 일치한다.
+fn intersect_daily(
+    a_ts: &[i64],
+    a_closes: &[f64],
+    b_ts: &[i64],
+    b_closes: &[f64],
+) -> (Vec<f64>, Vec<f64>) {
+    let cap = a_ts.len().min(b_ts.len());
+    let mut a_out = Vec::with_capacity(cap);
+    let mut b_out = Vec::with_capacity(cap);
+    let (mut i, mut j) = (0usize, 0usize);
+    while i < a_ts.len() && j < b_ts.len() {
+        match a_ts[i].cmp(&b_ts[j]) {
+            std::cmp::Ordering::Equal => {
+                a_out.push(a_closes[i]);
+                b_out.push(b_closes[j]);
+                i += 1;
+                j += 1;
+            }
+            std::cmp::Ordering::Less => i += 1,
+            std::cmp::Ordering::Greater => j += 1,
+        }
+    }
+    (a_out, b_out)
 }
 
 /// 길이가 제각각인 시리즈 집합에서 (표본 깊이 × 멤버 보존) 균형점을 고른다.
@@ -224,36 +274,38 @@ fn reference_ts_tail<'a>(
     best.map(|(_, _, tail)| tail)
 }
 
-/// 가격 → 로그수익률 (사전 필터용).
-fn log_returns(prices: &[f64]) -> Vec<f64> {
+/// 가격 → 로그수익률 (사전 필터용). **비양수 가격이 하나라도 있으면 None** — 그 시리즈를
+/// 통째로 제외한다. 예전엔 `else { 0.0 }` 로 조용히 치환해 "결측일 수익률 0%"라는 가짜
+/// 관측을 만들었고, 두 계열이 같은 날 동시에 0 이면 상관·회귀가 인위적으로 강해졌다.
+fn log_returns(prices: &[f64]) -> Option<Vec<f64>> {
     let mut out = Vec::with_capacity(prices.len().saturating_sub(1));
     for i in 1..prices.len() {
-        if prices[i - 1] > 0.0 && prices[i] > 0.0 {
-            out.push((prices[i] / prices[i - 1]).ln());
-        } else {
-            out.push(0.0);
+        if !(prices[i - 1] > 0.0) || !(prices[i] > 0.0) {
+            return None;
         }
+        out.push((prices[i] / prices[i - 1]).ln());
     }
-    out
+    Some(out)
 }
 
 /// 하나의 페어 (a, b) 평가. 통계량 통과하면 PairResult.
+/// 입력은 각 시리즈의 (거래일 ts, 종가) — 정렬은 개수가 아니라 **날짜 교집합** 기준.
 fn evaluate_pair(
     a_key: &str,
     a_name: &str,
-    a_closes: &[f64],
+    a_series: &(Vec<i64>, Vec<f64>),
     b_key: &str,
     b_name: &str,
-    b_closes: &[f64],
+    b_series: &(Vec<i64>, Vec<f64>),
 ) -> Option<PairResult> {
-    let (a, b) = align_tail(a_closes, b_closes);
+    let (a, b) = intersect_daily(&a_series.0, &a_series.1, &b_series.0, &b_series.1);
     if a.len() < MIN_SAMPLES {
         return None;
     }
 
     // 1. 사전 필터: 로그수익률 correlation
-    let a_ret = log_returns(&a);
-    let b_ret = log_returns(&b);
+    let a_ret = log_returns(&a)?;
+    let b_ret = log_returns(&b)?;
     let corr = stats::pearson(&a_ret, &b_ret)?;
     if corr.abs() < min_corr() {
         return None;
@@ -343,11 +395,12 @@ pub fn discover_all_one_to_one(
     cache: &SeriesCache,
     names: &std::collections::HashMap<String, String>,
 ) -> Vec<PairResult> {
-    // 1단계: 캐시에서 일봉 closes 추출.
-    let mut series_data: Vec<(String, Vec<f64>)> = Vec::new();
+    // 1단계: 캐시에서 일봉 (거래일 ts, closes) 추출. ts 를 같이 들고 가야 페어 정렬을
+    //        날짜 기준으로 할 수 있다 (`intersect_daily`).
+    let mut series_data: Vec<(String, (Vec<i64>, Vec<f64>))> = Vec::new();
     for entry in cache.iter() {
-        if let Some(closes) = closes_daily(entry.value()) {
-            series_data.push((entry.key().clone(), closes));
+        if let Some(s) = closes_ts_daily(entry.value()) {
+            series_data.push((entry.key().clone(), s));
         }
     }
     // 키로 정렬 — DashMap 순회 순서가 비결정적이라 정렬 안 하면 페어 좌/우(=z 부호)가
@@ -359,11 +412,11 @@ pub fn discover_all_one_to_one(
     let mut out: Vec<PairResult> = Vec::new();
     for i in 0..n_series {
         for j in (i + 1)..n_series {
-            let (a_key, a_closes) = &series_data[i];
-            let (b_key, b_closes) = &series_data[j];
+            let (a_key, a_series) = &series_data[i];
+            let (b_key, b_series) = &series_data[j];
             let a_name = names.get(a_key).cloned().unwrap_or_else(|| a_key.clone());
             let b_name = names.get(b_key).cloned().unwrap_or_else(|| b_key.clone());
-            if let Some(pair) = evaluate_pair(a_key, &a_name, a_closes, b_key, &b_name, b_closes) {
+            if let Some(pair) = evaluate_pair(a_key, &a_name, a_series, b_key, &b_name, b_series) {
                 out.push(pair);
             }
         }
@@ -445,7 +498,9 @@ pub fn compute_group_pca(
             continue;
         }
         let closes: Vec<f64> = bars.iter().map(|b| b.close).collect();
-        series.push(log_returns(&closes));
+        // 비양수 종가가 섞인 시리즈는 PCA 입력에서 제외 (log_returns 가 None 반환).
+        let Some(rets) = log_returns(&closes) else { continue };
+        series.push(rets);
         ts_list.push(bars.iter().map(|b| b.ts).collect());
         keys.push(key.clone());
     }
@@ -598,6 +653,21 @@ pub struct MPairResult {
     /// 주입해 candidate pool이 사실상 동일해지는 탓에 같은 페어가 여러 그룹에서 나온다.
     #[serde(default)]
     pub dup_group_count: usize,
+    // --- Johansen 공적분 검정 (PR-D). 발굴 후 엔리치 패스에서 채움 ---
+    // **게이팅과 무관한 순수 측정치**다. CCA 가중치 합성 스프레드에 단방향 ADF 를 거는 현
+    // 게이트가 얼마나 관대한지 재기 위한 부가 지표이고, 승격 여부는 분포를 본 뒤 결정한다.
+    /// trace 통계량 95% 기준 추정 공적분 rank. 미계산(정렬 실패 등)·표 범위 밖이면 None.
+    #[serde(default)]
+    pub johansen_rank: Option<usize>,
+    /// r=0 trace 통계량 (= "공적분 관계 없음" 귀무가설 검정량). 미계산 시 0.
+    #[serde(default)]
+    pub johansen_trace0: f64,
+    /// r=0 의 95% 임계값. `johansen_trace0 > johansen_crit95` 면 rank ≥ 1.
+    #[serde(default)]
+    pub johansen_crit95: Option<f64>,
+    /// 최대 고유값 λ₁. 미계산 시 0.
+    #[serde(default)]
+    pub johansen_eigen1: f64,
 }
 
 /// candidate pool을 ETF / 주식 분할 (key prefix 기반).
@@ -663,22 +733,26 @@ struct SideDropStats {
     zero_var: usize,
     /// 우측 정렬 후 거래일 ts가 기준 달력과 불일치 (중간 구멍·과거에서 끝난 시리즈).
     calendar_mismatch: usize,
+    /// 비양수 종가가 섞인 시리즈 (캐시 불변식 위반 — 정상 운영에선 0 이어야 한다).
+    nonpositive: usize,
 }
 
 impl SideDropStats {
-    /// 지배 사유 인덱스 — 0=cache miss, 1=samples, 2=var=0, 3=달력 불일치, 4=혼합/불명.
+    /// 지배 사유 인덱스 — 0=cache miss, 1=samples, 2=var=0, 3=달력 불일치, 4=비양수 가격, 5=혼합/불명.
     fn dominant(&self) -> usize {
         match (
             self.cache_miss > 0,
             self.short_sample > 0,
             self.zero_var > 0,
             self.calendar_mismatch > 0,
+            self.nonpositive > 0,
         ) {
-            (true, false, false, false) => 0,
-            (false, true, false, false) => 1,
-            (false, false, true, false) => 2,
-            (false, false, false, true) => 3,
-            _ => 4,
+            (true, false, false, false, false) => 0,
+            (false, true, false, false, false) => 1,
+            (false, false, true, false, false) => 2,
+            (false, false, false, true, false) => 3,
+            (false, false, false, false, true) => 4,
+            _ => 5,
         }
     }
 }
@@ -687,18 +761,20 @@ impl SideDropStats {
 /// 길이 통일(align) 단계와 표준화(standardize) 단계가 같은 사유 집합을 공유한다 —
 /// 두 단계 모두 "이 변에 쓸 시리즈가 하나도 안 남았다"의 원인을 물어보기 때문.
 fn empty_side_reason(is_x: bool, d: &SideDropStats) -> &'static str {
-    const X: [&str; 5] = [
+    const X: [&str; 6] = [
         "x side empty (cache miss)",
         "x side empty (samples<target_len)",
         "x side empty (var=0)",
         "x side empty (calendar mismatch)",
+        "x side empty (nonpositive price)",
         "x side empty (mixed)",
     ];
-    const Y: [&str; 5] = [
+    const Y: [&str; 6] = [
         "y side empty (cache miss)",
         "y side empty (samples<target_len)",
         "y side empty (var=0)",
         "y side empty (calendar mismatch)",
+        "y side empty (nonpositive price)",
         "y side empty (mixed)",
     ];
     let i = d.dominant();
@@ -770,9 +846,12 @@ fn build_standardized_returns(
             drops.calendar_mismatch += 1;
             continue;
         }
-        let trimmed: Vec<f64> = log_returns(
+        let Some(trimmed) = log_returns(
             &bars[bars.len() - need..].iter().map(|b| b.close).collect::<Vec<f64>>(),
-        );
+        ) else {
+            drops.nonpositive += 1;
+            continue;
+        };
         let Some(z) = standardize(&trimmed) else {
             drops.zero_var += 1;
             continue;
@@ -784,6 +863,11 @@ fn build_standardized_returns(
 }
 
 /// 멤버 key → log close prices. CCA로 선택된 leg에 대해 OLS 적용용.
+///
+/// 빈 Vec = "이 leg 은 못 쓴다" 마커이고, 호출자(`evaluate_mn_component`)가 그룹 전체를 실격시킨다.
+/// **`ln(0)→0` 치환 없음**: `closes_daily` 가 비양수 종가를 가진 시리즈를 이미 None 으로
+/// 걸러내므로 여기 도달한 가격은 전부 양수다. (예전엔 결측을 로그레벨 0 으로 밀어 넣어
+/// 레벨 9 → 0 의 가짜 계단을 만들었고, 그게 M:N R² 를 부풀린 원인이었다.)
 fn log_closes_aligned(
     keys: &[String],
     cache: &SeriesCache,
@@ -805,7 +889,7 @@ fn log_closes_aligned(
         }
         let trimmed: Vec<f64> = closes[closes.len() - target_len..]
             .iter()
-            .map(|p| if *p > 0.0 { p.ln() } else { 0.0 })
+            .map(|p| p.ln())
             .collect();
         out.push(trimmed);
     }
@@ -1043,6 +1127,11 @@ fn evaluate_mn_component(
         split_factor: ctx.split_factor,
         component_idx,
         dup_group_count: 0, // `/mn-pairs` 응답단 dedup에서 채움 (0 = 미집계)
+        // Johansen 은 발굴 후 엔리치 패스(main.rs)에서 채움 — 여기선 미계산 기본값.
+        johansen_rank: None,
+        johansen_trace0: 0.0,
+        johansen_crit95: None,
+        johansen_eigen1: 0.0,
     };
     Ok((pair, x_pick.into_iter().map(|(i, _)| i).collect(), y_pick.into_iter().map(|(j, _)| j).collect()))
 }
@@ -1197,6 +1286,85 @@ fn prepare_and_discover_mn(
     Ok(MnGroupOutcome { pairs, stop })
 }
 
+// ---------------------------------------------------------------------------
+// PR-D: Johansen 공적분 검정 (M:N 부가 지표)
+// ---------------------------------------------------------------------------
+
+/// Johansen VECM 시차 p — env `STATARB_JOHANSEN_LAGS` (기본 1 = `ΔY_{t-i}` 항 없이 상수만).
+/// 일봉 로그가격의 ΔY 자기상관이 약해 p=1 이 기본. 측정 단계라 튜닝 여지를 열어둔다.
+pub fn johansen_lags() -> usize {
+    use std::sync::OnceLock;
+    static CELL: OnceLock<usize> = OnceLock::new();
+    *CELL.get_or_init(|| {
+        std::env::var("STATARB_JOHANSEN_LAGS")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .filter(|v| *v >= 1)
+            .unwrap_or(1)
+    })
+}
+
+/// M:N 페어 leg 전체의 **로그가격 레벨**에 Johansen 검정. 발굴 게이팅과 무관한 부가 지표.
+///
+/// 정렬 정책은 발굴과 같은 도구(우측 정렬 + 거래일 달력 tail 일치 검사)를 쓰되 두 곳이 다르다:
+///   - **leg 은 하나도 버릴 수 없다** (페어의 정의 자체) → `choose_target_len` 의 "짧은 소수
+///     드롭" 대신 전 leg 공통 최소 길이를 쓰고, 달력이 어긋난 leg 이 있으면 통째로 포기한다.
+///   - `ln` 이 정의되려면 전 leg 이 양수여야 한다 → **모든 leg 이 양수인 최장 연속 구간**만
+///     쓴다 (`johansen::longest_positive_run`). 로더가 결측 봉을 버리는 지금(2026-07-28
+///     오염 수정 이후)은 이 절단이 발동하지 않는 게 정상이고, 캐시 불변식의 방어선으로 남긴다.
+///
+/// 반환 `(검정 결과, 창이 최신에서 떨어진 봉 수)` — 두 번째 값이 0 이 아니면 결측 구간 때문에
+/// **최신이 아닌 과거 구간**으로 검정했다는 뜻이라 진단에서 그 비율을 본다.
+/// 실패 사유는 고정 집합(`&'static str`)이라 진단 히스토그램 키로 그대로 쓴다.
+pub fn johansen_for_mn_pair(
+    pair: &MPairResult,
+    cache: &SeriesCache,
+    lags: usize,
+) -> Result<(crate::johansen::JohansenResult, usize), &'static str> {
+    let keys: Vec<&String> = pair
+        .x_legs
+        .iter()
+        .chain(pair.y_legs.iter())
+        .map(|l| &l.key)
+        .collect();
+    if keys.len() < 2 {
+        return Err("align: leg<2");
+    }
+    // 전 leg 공통 길이 = 가장 짧은 leg (leg 을 버릴 수 없으므로 min).
+    let mut need = usize::MAX;
+    for k in &keys {
+        let entry = cache.get(k.as_str()).ok_or("align: cache miss")?;
+        need = need.min(entry.value().bars(Timeframe::Day1).len());
+    }
+    if need < MIN_SAMPLES {
+        return Err("align: 최단 leg 표본<150");
+    }
+    let ref_tail =
+        reference_ts_tail(keys.iter().copied(), cache, need).ok_or("align: 기준 달력 없음")?;
+
+    let mut closes: Vec<Vec<f64>> = Vec::with_capacity(keys.len());
+    for k in &keys {
+        let entry = cache.get(k.as_str()).ok_or("align: cache miss")?;
+        let bars = entry.value().bars(Timeframe::Day1);
+        if !bars_tail_matches(bars, &ref_tail) {
+            return Err("align: 거래일 달력 불일치");
+        }
+        closes.push(bars[bars.len() - need..].iter().map(|b| b.close).collect());
+    }
+
+    // 전 leg 이 양수인 최장 연속 구간 (결측 구간 건너뛰기 방지).
+    let (start, end) =
+        crate::johansen::longest_positive_run(&closes).ok_or("align: 전 구간 결측")?;
+    if end - start < MIN_SAMPLES {
+        return Err("align: 결측 절단 후 표본<150");
+    }
+    let series: Vec<Vec<f64>> = closes
+        .iter()
+        .map(|c| c[start..end].iter().map(|p| p.ln()).collect())
+        .collect();
+    crate::johansen::johansen_checked(&series, lags).map(|r| (r, need - end))
+}
+
 /// 그룹 한정 1:1 발굴 — 그룹 멤버끼리만 페어 평가.
 /// PR-A 본 cron은 시장 전체 결과를 필터링해 그룹별 pair_count 산출 (저렴).
 /// 이 함수는 PR-B (Dense PCA) 진입 시 그룹별 series 매트릭스 구성의 *발판*.
@@ -1207,11 +1375,11 @@ pub fn discover_within_group(
     cache: &SeriesCache,
     names: &std::collections::HashMap<String, String>,
 ) -> Vec<PairResult> {
-    let mut series_data: Vec<(String, Vec<f64>)> = Vec::with_capacity(members.len());
+    let mut series_data: Vec<(String, (Vec<i64>, Vec<f64>))> = Vec::with_capacity(members.len());
     for key in members {
         if let Some(entry) = cache.get(key) {
-            if let Some(closes) = closes_daily(entry.value()) {
-                series_data.push((key.clone(), closes));
+            if let Some(s) = closes_ts_daily(entry.value()) {
+                series_data.push((key.clone(), s));
             }
         }
     }
@@ -1225,11 +1393,11 @@ pub fn discover_within_group(
     let mut out: Vec<PairResult> = Vec::new();
     for i in 0..n {
         for j in (i + 1)..n {
-            let (a_key, a_closes) = &series_data[i];
-            let (b_key, b_closes) = &series_data[j];
+            let (a_key, a_series) = &series_data[i];
+            let (b_key, b_series) = &series_data[j];
             let a_name = names.get(a_key).cloned().unwrap_or_else(|| a_key.clone());
             let b_name = names.get(b_key).cloned().unwrap_or_else(|| b_key.clone());
-            if let Some(pair) = evaluate_pair(a_key, &a_name, a_closes, b_key, &b_name, b_closes) {
+            if let Some(pair) = evaluate_pair(a_key, &a_name, a_series, b_key, &b_name, b_series) {
                 out.push(pair);
             }
         }
@@ -1307,6 +1475,43 @@ mod tests {
         let mut side = MnSide::new(&keys, &returns, &prices, true);
         side.consume(&[0]);
         assert_eq!(side.active, vec![0]);
+    }
+
+    #[test]
+    fn intersect_daily_matches_tail_align_when_no_holes() {
+        // 구멍 없는 흔한 경우 — 짧은 쪽이 긴 쪽 달력의 suffix. 결과는 우측 정렬과 동일해야 한다.
+        let a_ts: Vec<i64> = (0..10).collect();
+        let a_c: Vec<f64> = (0..10).map(|i| 100.0 + i as f64).collect();
+        let b_ts: Vec<i64> = (4..10).collect();
+        let b_c: Vec<f64> = (4..10).map(|i| 200.0 + i as f64).collect();
+        let (x, y) = intersect_daily(&a_ts, &a_c, &b_ts, &b_c);
+        assert_eq!(x, vec![104.0, 105.0, 106.0, 107.0, 108.0, 109.0]);
+        assert_eq!(y, b_c);
+    }
+
+    #[test]
+    fn intersect_daily_skips_holes_instead_of_shifting_dates() {
+        // b 에 거래일 구멍(ts=2, 5). 개수 정렬이면 a 의 마지막 6개(2..7)와 b 의 6개(0,1,3,4,6,7)가
+        // 날짜가 어긋난 채 붙는다 — ts 정렬은 공통 4일만 남긴다.
+        let a_ts: Vec<i64> = (0..8).collect();
+        let a_c: Vec<f64> = (0..8).map(|i| 100.0 + i as f64).collect();
+        let b_ts: Vec<i64> = vec![0, 1, 3, 4, 6, 7];
+        let b_c: Vec<f64> = b_ts.iter().map(|i| 200.0 + *i as f64).collect();
+        let (x, y) = intersect_daily(&a_ts, &a_c, &b_ts, &b_c);
+        assert_eq!(x, vec![100.0, 101.0, 103.0, 104.0, 106.0, 107.0]);
+        assert_eq!(y, vec![200.0, 201.0, 203.0, 204.0, 206.0, 207.0]);
+        // 교집합 없음 / 빈 입력.
+        assert_eq!(intersect_daily(&[1, 2], &[1.0, 2.0], &[3, 4], &[3.0, 4.0]).0.len(), 0);
+        assert_eq!(intersect_daily(&[], &[], &b_ts, &b_c).0.len(), 0);
+    }
+
+    #[test]
+    fn log_returns_rejects_nonpositive_prices() {
+        // 결측(0)이 섞이면 "그날 수익률 0%" 로 치환하지 않고 시리즈 자체를 버린다.
+        assert!(log_returns(&[100.0, 0.0, 120.0]).is_none());
+        assert!(log_returns(&[100.0, -1.0]).is_none());
+        let r = log_returns(&[100.0, 110.0]).expect("양수 시리즈");
+        assert!((r[0] - (110f64 / 100.0).ln()).abs() < 1e-12);
     }
 
     #[test]

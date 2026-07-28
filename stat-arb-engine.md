@@ -374,9 +374,12 @@ POST   /api/groups                     사용자 정의 그룹
     임계 전부 불변 → 성분 1 결과는 이전과 완전 동일. 50 → 108 페어(dedup 후), M:N 단계 0.1초.
     `mn_pairs` 저장이 `HashMap<gid, Vec<MPairResult>>` 로 바뀌고
     `GET /groups/{id}/mn-pair` 응답이 `{group_id, total, pairs[]}` 객체가 됨.
+  - PR-D ✅ **Johansen 공적분 검정** — `johansen.rs` 자체 구현(nalgebra Cholesky+SymmetricEigen).
+    **부가 지표로만 계산하고 발굴 게이트는 그대로 뒀다** — 승격 여부는 분포 실측 후 결정.
+    상세 §20.
   - **다음 단계** (트랙 A 마무리 + 트랙 B):
-    - **PR-D Johansen test** — M:N 잔차 cointegration 정식 검증. 현재 OLS+ADF 단순화.
-      ndarray-linalg 또는 자체 구현 (Johansen은 eigendecomposition 무거움). 가짜 양성 강하게 거르기
+    - **PR-D 후속** — 위 측정 결과로 (a) 게이트 승격 (b) CCA 가중치 → 공적분 벡터 교체
+      (c) 지표 유지 중 택1. §20.5 판단 근거 참조
     - **PR-E Sparse PCA cluster (트랙 B)** — sparsity 강제 PCA로 서브클러스터 추출.
       그 cluster를 ETF/주식 1개와 페어. 1:N 형태 자연. 트랙 A (CCA)와 결과 다를 수 있음
     - **PR-F 두 트랙 통합 스크리너** — `[CCA]` `[sPCA]` `[1:1]` 출처 뱃지, dedup, 통합 score
@@ -775,3 +778,91 @@ memory: `project_statarb_intraday_detail`. **발굴(discovery)은 여전히 일�
 - 진입/청산 임계(±1.25 / ±0.5)로 **포트폴리오 백테스트** — 현재는 스크리너까지.
 - 팩터 노출 합산 → **지수선물 헤지 수량 산출**(여러 종목 바스켓의 F1 순노출). 지금은 종목별 β 만 노출.
 - 인트라데이 s-score(현재 일봉 전용). 회귀창 60일 고정이라 장중 갱신은 사이클 단위.
+
+## 20. PR-D Johansen 공적분 검정 (M:N 부가 지표, 2026-07-28)
+
+**측정 전용 — 발굴 게이트는 한 줄도 안 바꿨다.** 1:1 11,071 / M:N 130 / s-score 570 산출이
+대조군(HEAD)과 완전 동일함을 같은 날 데이터로 확인했다(§20.4).
+
+### 20.1 왜 필요한가
+1:1 은 **양방향 ADF**(§16.3)로 "무엇이 y인가"를 이미 해소했지만, M:N(`discover_mn_in_group`)은
+Sparse CCA 가중치로 만든 **합성 스프레드 하나에 단방향 ADF**만 건다. 게다가 CCA 가중치는
+*상관 최대화*이지 *공적분 벡터*가 아니다. Johansen 은 n개 계열을 대칭적으로 검정하고 공적분
+벡터를 직접 준다 — leg 3개 이상이 붙는 M:N 이 이 검정의 본래 무대다.
+
+### 20.2 알고리즘 (`stat-arb-engine/src/johansen.rs`)
+VECM `ΔY_t = ΠY_{t-1} + Σ_{i<p} Γ_i ΔY_{t-i} + μ + ε_t`, `Π = αβ'`, rank(Π) = r.
+상수항은 **비제약(unrestricted constant, Johansen case 3)** — 회귀자로 넣고 양변에서 소거.
+1. `Z0=ΔY_t`, `Z1=Y_{t-1}`, `Z2=[1, ΔY_{t-1}…]` (행 t = p..T-1, 유효표본 T−p)
+2. `R0`,`R1` = Z0·Z1 을 Z2 에 회귀한 잔차 → `S00,S01,S11`
+3. `|λS11 − S10 S00⁻¹ S01| = 0` 을 **대칭화**해서 푼다: `S11=LL'`(Cholesky) →
+   `M = L⁻¹ S10 S00⁻¹ S01 L⁻ᵀ` 는 대칭 → `SymmetricEigen`(`stats::pca` 와 같은 pure-Rust 경로,
+   LAPACK 불필요) → 공적분 벡터 `β = L⁻ᵀv`
+4. `LR_trace(r) = −T Σ_{i>r} ln(1−λ_i)`, `LR_max(r) = −T ln(1−λ_{r+1})`
+5. r=0 부터 순차 검정 — 처음 기각 실패한 r 이 추정 rank
+- `coint_vector` 정규화 = **L2 = 1 + 첫 비영 성분 양수**. 고유벡터 부호는 원래 임의라 재기동
+  간 뒤집히면 안 되고, CCA 가중치(역시 L2=1)와 방향 비교가 바로 되게 맞췄다.
+- 시차 p 기본 1 (`STATARB_JOHANSEN_LAGS`). 수치 가드: 유효표본 ≥ max(30, 10×변수),
+  Cholesky 대각비 ≥ 1e-7(cond 1e14), λ ∈ [0,1).
+
+**임계값 표** — MacKinnon-Haug-Michelis(1999) 비제약 상수 케이스, `n−r = 1..12`, 90/95/99%.
+수치 출처는 statsmodels `tsa/coint_tables.py` 의 `ss_tjcp1`(trace)·`ss_ejcp1`(max-eig)
+= `c_sjt/c_sja(n, p=0)`. Osterwald-Lenum(1992)도 **같은 케이스의 구판**이지만 검증 가능한
+사본이 없어 채택하지 않았다(임계값 추측 하드코딩은 조용한 오판정을 낳음). `n−r > 12` 는 미판정.
+
+**검증** — `coint_johansen(y, det_order=0, k_ar_diff=lags−1)` 과 **lags ≥ 2 에서 소수 10자리
+일치**(단위테스트가 golden 으로 대조). lags = 1 만 갈리는데, statsmodels 가 레벨 항으로
+`Y_{t-1}` 이 아니라 `Y_t` 를 쓰기 때문이다(`vecm.py`: `lx = endog[:T−k][1:]`). k ≥ 1 이면 그
+한 칸이 `ΔY_{t-1}` 회귀자에 흡수돼 같아지지만 k = 0 이면 Z2 가 상수뿐이라 흡수되지 않는다.
+본 구현은 교과서 VECM 정의를 따른다. 별도로 numpy(lstsq+eigh) 독립 구현과도 대조.
+
+### 20.3 M:N 배선 + adj_close 결측 처리 (★ 중요)
+- `MPairResult` **additive 필드**: `johansen_rank`(trace 95%) / `johansen_trace0` /
+  `johansen_crit95` / `johansen_eigen1`. 발굴 직후 엔리치 패스(`main.rs`)에서 채운다.
+- `MnPairDetail.johansen` 에는 `JohansenResult` 전체(고유값·r별 trace·임계값·공적분 벡터).
+- 입력은 leg 별 **로그가격 레벨**. 정렬은 발굴과 같은 도구(우측 정렬 + 거래일 달력 tail 검사)를
+  쓰되 **leg 을 하나도 버릴 수 없어** `choose_target_len` 대신 전 leg 공통 최소 길이를 쓴다.
+- ⚠️ **결측 구간은 "최장 연속 구간"으로 잘라낸다** (`johansen::longest_positive_run`).
+  Johansen 은 `ΔY_t` 를 쓰므로 결측 시점을 개별로 빼면 차분이 구멍을 건너뛰어 가짜 점프가 된다.
+  실측(2026-07-28): `ohlcv_daily.adj_close` 는 2024-04-23 이전 전체 NULL(로더가 0)에 더해
+  **2026-06-02~09 주간이 통째로 NULL 인 ETF 가 다수**다. "마지막 결측 이후" tail 절단이면
+  130 페어 중 **86 개가 33봉만 남아 전멸**했고, 최장 연속 구간으로 바꾸니 **130/130 산출**됐다
+  (대신 86 페어는 최신이 아닌 창 — 최대 38봉 전에서 끝남. 진단 로그가 그 수를 보고한다).
+- ❗ **같은 결측이 기존 M:N 발굴 통계도 오염시킨다** — `log_closes_aligned` 는 `ln(0)→0` 으로
+  밀어 넣어 레벨이 9 → 0 으로 떨어지는 가짜 계단을 만든다. 그 위의 OLS R²·ADF·half-life 는
+  실데이터가 아니다. 이번 PR 범위 밖(산출 불변 유지)이라 손대지 않았으나 **별도 수정 필요**.
+
+### 20.4 실측 (2026-07-28 사이클, 3년 일봉 613 시리즈 / M:N 130 페어)
+- **산출 130/130, 미판정 0, 소요 6ms** (전체 사이클 23.6초의 0.03%).
+- rank 분포(trace 95%): `r0=89, r1=29, r2=8, r3=3, r4=1` → **rank ≥ 1 41/130 (31.5%)**
+- rank 분포(trace 99%): `r0=113, r1=15, r2=1, r3=1` → **rank ≥ 1 17/130 (13.1%)**
+- trace(r=0) median 33.0 / p90 50.8 / min 13.2 / max 558.8
+- leg 수별 rank ≥ 1(95%): n=3 29/84(35%) · n=4 11/44(25%) · n=5 1/2
+- **핵심**: M:N 페어는 전부 합성 스프레드 ADF(t<−3)를 통과한 것들인데 **68.5%가 Johansen
+  95%에서 rank 0**. 현 M:N 게이트가 대칭 공적분 기준으로는 상당히 관대하다.
+- **더 중요한 관측** — rank ≥ 1 집단과 rank 0 집단의 발굴 통계가 사실상 같다:
+  adf −8.72 vs −8.60 · R² 0.958 vs 0.960 · half-life 3.6 vs 3.7일 · |corr| 0.750 vs 0.784 ·
+  score 1.70 vs 1.75. 즉 **Johansen 은 기존 score 와 직교하는 정보**다(현 랭킹으로는 대리 불가).
+  score Top10 중 8개가 rank 0.
+- ⚠️ **풀랭크(r=n) 4건은 과대기각 신호**로 읽어야 한다. `etf_category:코스피지수`(코스피200
+  복제 ETF 4종, trace0 558.8)처럼 거의 동일한 계열이거나, λ 가 0.03 수준인데 T≈500 이라
+  `n−r=1` 임계값(χ²(1)=3.84)을 쉽게 넘는 경우다. 로그가격 전부가 정상(stationary)이라는 결론은
+  경제적으로 말이 안 되므로, 의미 있는 신호는 **"rank ≥ 1"이지 rank 의 크기가 아니다**.
+
+### 20.5 게이트 승격 판단 근거 (미결 — 다음 단계에서 결정)
+- 찬성: 대칭 검정이고, 현 score 와 직교하며, 68.5% 를 걸러 M:N 위양성을 크게 줄인다.
+- 반대: (a) 창 절반 이상(86/130)이 adj_close 결측 때문에 최신이 아닌 구간을 썼다 —
+  **데이터 품질 문제를 먼저 고치지 않고 게이트로 승격하면 데이터 사정으로 페어가 사라진다**.
+  (b) M:N 산출이 130 → 41 로 줄어 실사용 후보가 얇아진다. (c) 풀랭크 과대기각이 보여주듯
+  `n−r=1` 검정은 T가 크면 쉽게 기각한다 — 게이트로 쓰면 rank 자체보다 rank≥1 여부만 신뢰 가능.
+- 권고 순서: **① adj_close 결측 정합(로더에서 raw close 폴백 등) → ② 그 위에서 재측정 →
+  ③ 게이트 승격 여부 결정**. 공적분 벡터로 CCA 가중치를 교체하는 건 별개 트랙(방향 일치도
+  cos 은 페어마다 0.6~1.0 로 편차가 크다 — 상세 패널에서 페어별로 확인 가능).
+
+### 20.6 프론트
+- M:N 목록(`stat-arb-mn.tsx`): `Joh.` 컬럼 — `r0`(t4) / `r≥1`(accent) / `—`(미판정) 배지,
+  호버에 trace(r=0)·95% 임계값·λ₁.
+- M:N 상세(`components/stat-arb/johansen-panel.tsx`): 쉬운 설명 2줄 + r별 순차 검정표
+  (trace / 95% / 99% / λ / 기각 여부) + **공적분 벡터 vs CCA 함의 벡터** leg별 비교.
+  CCA 함의 벡터는 잔차 `Σvⱼ·lnPⱼ − β·Σwᵢ·lnPᵢ` 에서 온 `[−β·wᵢ, vⱼ]` 를 같은 규약으로
+  정규화한 것이고, 방향 일치도 = 두 단위벡터 내적.

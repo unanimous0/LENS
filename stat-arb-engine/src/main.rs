@@ -9,6 +9,7 @@ mod detail;
 mod discovery;
 mod groups;
 mod holidays;
+mod johansen;
 mod mn_detail;
 mod phase;
 mod sscore;
@@ -56,8 +57,14 @@ const PCA_TOP_LOADINGS: usize = 10;
 /// 일봉 워밍업 길이 (캘린더일). 기본 3년(1095), env `STATARB_WARMUP_DAYS_DAILY`로 조정.
 /// 1년→3년 전환(2026-06-30, 측정 후): 페어 2028→1382(−32%)이나 ADF median −3.96→−5.01,
 /// R² 0.768→0.852로 질 급상승 — "1년만 우연히 좋던" 과적합 페어 제거(다중윈도우 robustness).
-/// 길수록 장기 cointegration 확신↑(표본 244→727)이고, 오래된·깨진 관계는 최근창 게이트
+/// 길수록 장기 cointegration 확신↑이고, 오래된·깨진 관계는 최근창 게이트
 /// (discovery.rs `recent_adf`)가 거름. 발굴 비용 부담 없음(20→22초).
+///
+/// **주의 — 실제 표본은 1095일 어치가 아니다.** Finance_Data `ohlcv_daily.adj_close` 가
+/// 2024-04-22 이전 전 구간 NULL 이고 로더가 그 봉을 버리므로(data/bars.rs 모듈 doc),
+/// 3년을 요청해도 들어오는 건 2024-04-23 이후 **~548봉**이다. 위 727 표본 측정치는
+/// 결측을 종가 0 으로 채우던 시절 수치라 그대로 비교하면 안 된다. 상수는 그대로 둔다 —
+/// adj_close 가 과거로 채워지는 날 자동으로 표본이 늘어야 하기 때문.
 fn warmup_days_daily() -> i32 {
     use std::sync::OnceLock;
     static CELL: OnceLock<i32> = OnceLock::new();
@@ -1254,6 +1261,12 @@ async fn warmup_and_discover(
         }
     }
 
+    // 2.5 캐시 불변식 감시 — "종가 > 0" (data/bars.rs 모듈 doc).
+    //     `adj_close` NULL 을 종가 0 으로 적재하던 오염(2026-07-28 수정)의 재발 감지용.
+    //     로더가 결측을 버리므로 평시 0 이고, 0 이 아니면 로더 회귀다. 일봉만 스캔 —
+    //     통계 입력의 전부이고 분봉까지 훑으면 사이클마다 800만 봉이라 비용이 아깝다.
+    log_cache_invariant(cache);
+
     // 3. 종목명 룩업 — 모든 자산군 통합 (series_key 형식)
     let mut names: HashMap<String, String> = HashMap::with_capacity(cache.len());
     for s in &universe.stocks_kospi200 {
@@ -1351,7 +1364,12 @@ async fn warmup_and_discover(
 
     // 7. PR-C2: Sparse CCA M:N 발굴 — PCA candidate pool 기반
     let (mut mn_map, mn_diag) = compute_group_mn_pairs(&pca_map, cache, &names, groups).await;
-    // M:N leg 분류 태깅(same_underlying 분리는 이번 범위 밖 — 태그만).
+    // M:N 엔리치 — leg 분류 태깅(same_underlying 분리는 이번 범위 밖 — 태그만)
+    // + PR-D Johansen 공적분 검정. **둘 다 발굴 게이팅과 무관한 부가 메타**다.
+    // Johansen 은 leg ≤ 10 · 일봉 ~726봉이라 페어당 수십 μs — 별도 패스로 나눌 이유 없음.
+    let t_joh = Instant::now();
+    let joh_lags = discovery::johansen_lags();
+    let mut joh = JohansenDiag::default();
     for mp in mn_map.values_mut().flatten() {
         for leg in mp.x_legs.iter_mut() {
             leg.class = leg_class(&leg.key, &etf_meta);
@@ -1359,8 +1377,27 @@ async fn warmup_and_discover(
         for leg in mp.y_legs.iter_mut() {
             leg.class = leg_class(&leg.key, &etf_meta);
         }
+        joh.attempted += 1;
+        let (j, stale_bars) = match discovery::johansen_for_mn_pair(mp, cache, joh_lags) {
+            Ok(v) => v,
+            Err(reason) => {
+                *joh.fail_reason.entry(reason).or_insert(0) += 1;
+                continue;
+            }
+        };
+        if stale_bars > 0 {
+            joh.stale_window += 1;
+            joh.max_stale_bars = joh.max_stale_bars.max(stale_bars);
+        }
+        mp.johansen_rank = j.rank_95;
+        mp.johansen_trace0 = j.trace0();
+        mp.johansen_crit95 = j.crit0_95();
+        mp.johansen_eigen1 = j.eigen1();
+        joh.record(&j);
     }
+    joh.elapsed_ms = t_joh.elapsed().as_secs_f64() * 1000.0;
     log_mn_diagnostics(&mn_map, &mn_diag, groups).await;
+    log_johansen_diagnostics(&joh, joh_lags);
 
     // 8. 팩터중립 s-score (Avellaneda-Lee) — **1:1/M:N 과 독립된 별도 트랙**.
     //    같은 캐시를 읽기만 하고 위 발굴 결과에 일절 개입하지 않는다.
@@ -1395,6 +1432,40 @@ async fn warmup_and_discover(
     info!(
         "[전체] 완료 {:.1}초 (warmup + discovery)",
         t_total.elapsed().as_secs_f64()
+    );
+}
+
+/// 캐시 일봉의 "종가 > 0" 불변식 점검 + 표본 깊이 요약.
+///
+/// `data::bars` 로더가 `adj_close` 결측 봉을 버리므로 `bad` 는 항상 0 이어야 한다.
+/// 0 이 아니면 통계 입력이 다시 오염된 것 — 발굴 결과 전체를 신뢰할 수 없다는 신호다.
+fn log_cache_invariant(cache: &SeriesCache) {
+    let (mut bad, mut bad_series, mut lens) = (0usize, 0usize, Vec::with_capacity(cache.len()));
+    for e in cache.iter() {
+        let n = e.bars_1d.iter().filter(|b| !(b.close > 0.0)).count();
+        if n > 0 {
+            bad += n;
+            bad_series += 1;
+        }
+        if !e.bars_1d.is_empty() {
+            lens.push(e.bars_1d.len());
+        }
+    }
+    lens.sort_unstable();
+    let median = lens.get(lens.len() / 2).copied().unwrap_or(0);
+    if bad > 0 {
+        warn!(
+            "[cache] 불변식 위반 — 일봉 close<=0 {bad}봉 / {bad_series}시리즈. \
+             로더(data/bars.rs)가 결측을 다시 흘리고 있다. 통계 신뢰 불가."
+        );
+    }
+    info!(
+        "[cache] 일봉 {}시리즈 · close<=0 {}봉 · 길이 median {} (min {} / max {})",
+        lens.len(),
+        bad,
+        median,
+        lens.first().copied().unwrap_or(0),
+        lens.last().copied().unwrap_or(0),
     );
 }
 
@@ -1688,6 +1759,142 @@ async fn log_mn_diagnostics(
     }
 }
 
+// ---------------------------------------------------------------------------
+// PR-D Johansen 진단 — 게이트 승격 판단용 실측 집계
+// ---------------------------------------------------------------------------
+
+/// M:N 엔리치에서 모은 Johansen 분포. **이 숫자가 "현 ADF 게이트가 얼마나 관대한가"의 답이다**
+/// — M:N 페어는 전부 단방향 ADF(t<-3)를 이미 통과한 것들이라, 여기서 rank 0 비율이 높으면
+/// 합성 스프레드 ADF 가 대칭 공적분 검정보다 훨씬 무르다는 뜻.
+#[derive(Default)]
+struct JohansenDiag {
+    /// 검정을 시도한 페어 수 (= M:N 발굴 페어 수, dedup 전).
+    attempted: usize,
+    /// 실제로 산출된 수 (정렬/수치 실패 제외).
+    computed: usize,
+    /// rank_95 → 페어 수.
+    rank95: BTreeMap<usize, usize>,
+    /// rank_99 → 페어 수.
+    rank99: BTreeMap<usize, usize>,
+    /// 임계값 표 범위 밖(n−r > 12)이라 rank 미판정.
+    undecided: usize,
+    /// r=0 trace 통계량 (분포 산출용).
+    trace0: Vec<f64>,
+    /// leg 수 n → (rank≥1 통과 수, 전체). 변수 수가 늘수록 검정력이 떨어지는지 확인용.
+    by_nvars: BTreeMap<usize, (usize, usize)>,
+    /// 산출 실패 사유 → 횟수. 정렬 단계(`align:`)와 수치 단계(`johansen:`)를 접두어로 구분.
+    fail_reason: HashMap<&'static str, usize>,
+    /// 결측 구간 때문에 **최신이 아닌 과거 구간**으로 검정한 페어 수.
+    stale_window: usize,
+    /// 그 중 최신에서 가장 멀리 떨어진 봉 수.
+    max_stale_bars: usize,
+    elapsed_ms: f64,
+}
+
+impl JohansenDiag {
+    fn record(&mut self, j: &johansen::JohansenResult) {
+        self.computed += 1;
+        self.trace0.push(j.trace0());
+        match j.rank_95 {
+            Some(r) => {
+                *self.rank95.entry(r).or_insert(0) += 1;
+                let e = self.by_nvars.entry(j.n_vars).or_insert((0, 0));
+                e.1 += 1;
+                if r >= 1 {
+                    e.0 += 1;
+                }
+            }
+            None => self.undecided += 1,
+        }
+        if let Some(r) = j.rank_99 {
+            *self.rank99.entry(r).or_insert(0) += 1;
+        }
+    }
+}
+
+/// rank 분포를 `"r0=12, r1=80, r2=16"` 꼴 문자열로.
+fn rank_dist_str(dist: &BTreeMap<usize, usize>) -> String {
+    if dist.is_empty() {
+        return "—".into();
+    }
+    dist.iter()
+        .map(|(r, n)| format!("r{r}={n}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// `rank ≥ 1` 페어 수와 비율.
+fn rank_pass(dist: &BTreeMap<usize, usize>) -> (usize, usize) {
+    let total: usize = dist.values().sum();
+    let pass: usize = dist.iter().filter(|(r, _)| **r >= 1).map(|(_, n)| *n).sum();
+    (pass, total)
+}
+
+fn log_johansen_diagnostics(d: &JohansenDiag, lags: usize) {
+    if d.attempted == 0 {
+        return;
+    }
+    let pct = |a: usize, b: usize| if b == 0 { 0.0 } else { a as f64 / b as f64 * 100.0 };
+    info!(
+        "[PR-D Johansen] 검정 {}/{} 페어 (lags={lags}, 미판정 {}) — {:.0}ms",
+        d.computed, d.attempted, d.undecided, d.elapsed_ms
+    );
+    let (p95, t95) = rank_pass(&d.rank95);
+    let (p99, t99) = rank_pass(&d.rank99);
+    info!(
+        "  · rank 분포 95%: {} → rank≥1 {}/{} ({:.1}%)",
+        rank_dist_str(&d.rank95),
+        p95,
+        t95,
+        pct(p95, t95)
+    );
+    info!(
+        "  · rank 분포 99%: {} → rank≥1 {}/{} ({:.1}%)",
+        rank_dist_str(&d.rank99),
+        p99,
+        t99,
+        pct(p99, t99)
+    );
+    if !d.fail_reason.is_empty() {
+        let mut sorted: Vec<(&&'static str, &usize)> = d.fail_reason.iter().collect();
+        sorted.sort_by(|a, b| b.1.cmp(a.1));
+        let s: String = sorted
+            .iter()
+            .map(|(r, n)| format!("{n}×\"{r}\""))
+            .collect::<Vec<_>>()
+            .join(", ");
+        info!("  · 산출 실패 사유 — {s}");
+    }
+    if d.stale_window > 0 {
+        // adj_close 결측 구간(예: 2026-06-02~09 ETF 다수)을 피해 과거 창을 쓴 경우.
+        info!(
+            "  · 결측으로 과거 창 사용 {}/{} 페어 (최대 {}봉 전에서 종료)",
+            d.stale_window, d.computed, d.max_stale_bars
+        );
+    }
+    if d.computed == 0 {
+        return;
+    }
+    let mut tr = d.trace0.clone();
+    tr.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    info!(
+        "  · trace(r=0) median {:.1} / p90 {:.1} / min {:.1} / max {:.1}",
+        quantile_sorted(&tr, 0.5),
+        quantile_sorted(&tr, 0.9),
+        tr.first().copied().unwrap_or(f64::NAN),
+        tr.last().copied().unwrap_or(f64::NAN),
+    );
+    if !d.by_nvars.is_empty() {
+        let s: String = d
+            .by_nvars
+            .iter()
+            .map(|(n, (pass, tot))| format!("n={n}: {pass}/{tot}({:.0}%)", pct(*pass, *tot)))
+            .collect::<Vec<_>>()
+            .join(" · ");
+        info!("  · leg 수별 rank≥1 (95%) — {s}");
+    }
+}
+
 /// 정렬된 표본의 분위수 (nearest-rank). 진단 로깅 전용.
 fn quantile_sorted(v: &[f64], q: f64) -> f64 {
     if v.is_empty() {
@@ -1705,11 +1912,12 @@ fn quantile_sorted(v: &[f64], q: f64) -> f64 {
 fn log_sscore_diagnostics(state: &SScoreState) {
     let d = &state.diag;
     info!(
-        "[s-score] 후보 {} (짧은표본 {} · 달력불일치 {} · 분산0 {}) → 통과 {} (회귀실패 {} · OU실패 {} · hl게이트 {} · r²게이트 {}) — {:.1}초",
+        "[s-score] 후보 {} (짧은표본 {} · 달력불일치 {} · 분산0 {} · 비양수가격 {}) → 통과 {} (회귀실패 {} · OU실패 {} · hl게이트 {} · r²게이트 {}) — {:.1}초",
         d.cache_series,
         d.short_sample,
         d.calendar_mismatch,
         d.zero_var,
+        d.nonpositive,
         state.items.len(),
         d.regression_fail,
         d.ou_fail,

@@ -70,9 +70,9 @@ pub struct MnPairDetail {
     pub sample_size: usize,
     /// 공통 거래일 중 **가격 결측(close ≤ 0)으로 제외**된 봉 수.
     ///
-    /// Finance_Data `ohlcv_daily.adj_close` 는 2024-04-23 이전이 NULL → 로더가 0 으로 채운다.
-    /// 발굴(`discovery.rs`)은 `ln(0)→0` 으로 그냥 쓰지만(= 가짜 클러스터), 상세는 그 봉을
-    /// 버리고 계산한다. 그래서 목록 행과 상세의 R²·ADF 가 다를 수 있다 — 상세 쪽이 실데이터 기준.
+    /// 2026-07-28 오염 수정 이후로는 **항상 0 이어야 한다** — 로더(`data::bars`)가
+    /// `adj_close` 결측 봉을 아예 버려서 캐시에 비양수 종가가 존재하지 않기 때문이다.
+    /// 0 이 아니면 로더 회귀(캐시 불변식 위반)를 의심할 것. 필드는 그 감시 창구로 남긴다.
     pub skipped_bars: usize,
 
     // --- 라이브 z 계약 (1:1 `PairResult` 와 동일 이름·의미) ---
@@ -92,6 +92,11 @@ pub struct MnPairDetail {
 
     /// Kalman 시변 β 요약 (관계 안정성). 표본<30·필터 실패 시 None.
     pub kalman: Option<KalmanStat>,
+
+    /// PR-D Johansen 공적분 검정 — leg 로그가격 **레벨** 시스템 전체에 대한 대칭 검정.
+    /// 벡터 인덱스 순서는 `x_legs` → `y_legs` 연결 순이다 (`coint_vector` 해석의 기준).
+    /// 표본 부족·수치 실패 시 None. **발굴 게이팅과 무관한 부가 지표**.
+    pub johansen: Option<crate::johansen::JohansenResult>,
 }
 
 // ---------------------------------------------------------------------------
@@ -185,6 +190,22 @@ fn synth_bar(ts: i64, v: f64) -> Bar {
     Bar { ts, open: v, high: v, low: v, close: v, volume: 0 }
 }
 
+/// leg 별 **로그가격 레벨** 행렬 — Johansen 입력. `closes` 는 `intersect_ts_nway` 산출이므로
+/// leg 순서가 `x_legs` → `y_legs` 연결 순 그대로다 (`coint_vector` 인덱스 해석의 기준).
+///
+/// `build_composites` 와 달리 결측(close ≤ 0) 시점을 **개별로 빼지 않고** 전 leg 이 양수인
+/// **최장 연속 구간**만 남긴다 (`johansen::longest_positive_run`). Johansen 은 `ΔY_t` 를 쓰므로
+/// 중간을 뽑아내면 차분이 구멍을 건너뛰어 가짜 점프가 생기기 때문 — 목록 배지와 같은 규칙.
+fn leg_log_levels(closes: &[Vec<f64>]) -> Vec<Vec<f64>> {
+    let Some((start, end)) = crate::johansen::longest_positive_run(closes) else {
+        return Vec::new();
+    };
+    closes
+        .iter()
+        .map(|c| c[start..end].iter().map(|p| p.ln()).collect())
+        .collect()
+}
+
 // ---------------------------------------------------------------------------
 // 메인 빌더
 // ---------------------------------------------------------------------------
@@ -235,6 +256,14 @@ pub fn build_mn_pair_detail(
     // 관계 안정성 — 합성 로그가격은 스케일이 1:1(원 단위)과 전혀 달라 상대 δ 사용.
     let kalman = build_kalman_stat_with(&x_bars, &y_bars, KalmanDelta::Relative(delta_rel));
 
+    // PR-D Johansen — 합성 스프레드가 아니라 **leg 원계열 시스템**을 대칭 검정한다.
+    // (목록 행의 값은 발굴 시 정렬 정책으로 계산되므로 표본 구간이 달라 미세하게 다를 수 있다.
+    //  `skipped_bars` 와 같은 사유 — 상세 쪽이 ts 교집합 기준 실데이터다.)
+    let johansen = crate::johansen::johansen(
+        &leg_log_levels(&closes),
+        crate::discovery::johansen_lags(),
+    );
+
     Ok(MnPairDetail {
         group_id: pair.group_id.clone(),
         group_name: pair.group_name.clone(),
@@ -260,6 +289,7 @@ pub fn build_mn_pair_detail(
         spread_center,
         spread_scale,
         kalman,
+        johansen,
     })
 }
 

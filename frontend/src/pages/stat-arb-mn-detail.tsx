@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 
 import { ResidualHistogram, SpreadChart, ZScoreChart } from '@/components/stat-arb/charts'
+import { JohansenPanel } from '@/components/stat-arb/johansen-panel'
 import { RelationStabilityPanel } from '@/components/stat-arb/relation-stability-panel'
 import { usePageStockSubscriptions } from '@/hooks/usePageStockSubscriptions'
 import { keyToCode, keyType } from '@/lib/stat-arb-keys'
@@ -289,6 +290,16 @@ export function StatArbMnDetailPage() {
 
           {/* 관계 안정성 (Kalman) — 없으면 숨김 */}
           {detail.kalman && <RelationStabilityPanel k={detail.kalman} />}
+
+          {/* Johansen 공적분 검정 (PR-D) — 표본 부족·수치 실패 시 숨김 */}
+          {detail.johansen && (
+            <JohansenPanel
+              j={detail.johansen}
+              xLegs={xLegs}
+              yLegs={yLegs}
+              hedgeRatio={detail.hedge_ratio}
+            />
+          )}
 
           {/* 통계 요약 */}
           <div className="panel p-3 text-xs">

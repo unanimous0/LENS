@@ -84,6 +84,31 @@ export type MnLeg = {
   class?: string
 }
 
+/** Johansen 공적분 검정 결과 (PR-D) — leg 로그가격 **레벨** 시스템 전체의 대칭 검정.
+ *
+ *  배열은 전부 길이 n(=leg 수)이고 인덱스 = 검정 단계 r (0-based).
+ *  `coint_vector` 인덱스 순서는 `x_legs` → `y_legs` 연결 순, 정규화는 L2=1 + 첫 비영 성분 양수.
+ *  임계값은 MacKinnon-Haug-Michelis(1999) 비제약 상수 케이스. n−r > 12는 표 밖 → null(미판정). */
+export type Johansen = {
+  n_vars: number
+  /** 유효 표본 T (= 입력 길이 − lags). */
+  n_obs: number
+  lags: number
+  /** 일반화 고유값 λ 내림차순. */
+  eigenvalues: number[]
+  /** r별 trace 통계량 −T·Σ_{i>r} ln(1−λᵢ). */
+  trace_stats: number[]
+  trace_crit_95: (number | null)[]
+  trace_crit_99: (number | null)[]
+  max_eig_stats: number[]
+  max_eig_crit_95: (number | null)[]
+  /** trace·95% 기준 추정 공적분 rank. 표 범위 밖이면 null. */
+  rank_95: number | null
+  rank_99: number | null
+  /** 최대 고유값에 대응하는 공적분 벡터 (leg 순서 = x_legs → y_legs). */
+  coint_vector: number[]
+}
+
 /** M:N 페어 상세.
  *
  *  1:1(`PairDetail`)과 달리 공간이 **합성 로그가격**이다:
@@ -125,6 +150,8 @@ export type MnPairDetail = {
   spread_scale: number
   /** 표본<30·필터 실패 시 없음. */
   kalman?: KalmanStat | null
+  /** Johansen 공적분 검정. 표본 부족·수치 실패·구버전 응답 시 없음. */
+  johansen?: Johansen | null
 }
 
 // /pairs 응답의 페어 — 한 줄 요약 (메인 테이블에서 사용)
