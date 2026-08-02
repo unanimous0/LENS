@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 
+import { Seg } from '@/components/stat-arb/seg'
 import { keyToCode } from '@/lib/stat-arb-keys'
 import { groupKindOf, KIND_LABEL } from '@/lib/stat-arb/group-kind'
 import { cn } from '@/lib/utils'
@@ -52,8 +53,17 @@ type MnPairsResp = {
   total: number
   returned: number
   last_run_ms: number
+  /// Johansen 판정별 페어 수 (`rank1`/`rank0`/`undetermined`) — johansen 필터 적용 전 모수.
+  johansen_counts?: Record<string, number>
   pairs: MPair[]
 }
+
+// Johansen 필터 — 서버 param 값 그대로(전체는 미전달). 발굴 게이트가 아니라 보기 필터.
+type JohansenView = 'all' | 'rank1' | 'rank0'
+
+const JOHANSEN_HELP =
+  'Johansen 대칭 공적분 검정 95% 기준 — 여러 종목이 방향 구분 없이 장기적으로 묶여 있는지. ' +
+  '발굴 게이트가 아니라 보기 필터라 페어 통계·산출 자체는 바뀌지 않는다.'
 
 export function StatArbMnPage() {
   const [pairs, setPairs] = useState<MPair[]>([])
@@ -62,6 +72,9 @@ export function StatArbMnPage() {
     last_run_ms: 0,
   })
   const [kindFilter, setKindFilter] = useState<string>('')
+  // Johansen 필터 — 서버 필터(기존 kind와 같은 경로). 기본은 전체(필터 없음).
+  const [johansenView, setJohansenView] = useState<JohansenView>('all')
+  const [johCounts, setJohCounts] = useState<Record<string, number>>({})
   const [search, setSearch] = useState<string>('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -72,17 +85,45 @@ export function StatArbMnPage() {
     setError(null)
     const params = new URLSearchParams({ limit: '500' })
     if (kindFilter) params.set('kind', kindFilter)
+    if (johansenView !== 'all') params.set('johansen', johansenView)
     fetch(`/api/stat-arb/mn-pairs?${params}`)
       .then((r) => r.json())
       .then((d: MnPairsResp) => {
         setPairs(d.pairs)
         setMeta({ total: d.total, last_run_ms: d.last_run_ms })
+        setJohCounts(d.johansen_counts ?? {})
       })
       .catch((e) => setError(String(e)))
       .finally(() => setLoading(false))
   }
 
-  useEffect(load, [kindFilter])
+  useEffect(load, [kindFilter, johansenView])
+
+  // 세그먼트 배지 카운트 — johansen 필터 전 모수(kind 필터는 반영)라 선택을 바꿔도 안 흔들린다.
+  const johOptions = useMemo(() => {
+    const rank1 = johCounts.rank1 ?? 0
+    const rank0 = johCounts.rank0 ?? 0
+    const undetermined = johCounts.undetermined ?? 0
+    const all = rank1 + rank0 + undetermined
+    const n = (v: number) => (all > 0 ? ` ${v}` : '')
+    return [
+      {
+        v: 'all' as JohansenView,
+        label: `전체${n(all)}`,
+        title: undetermined > 0 ? `미판정 ${undetermined}개 포함 (표본·leg 수 제약)` : undefined,
+      },
+      {
+        v: 'rank1' as JohansenView,
+        label: `공적분${n(rank1)}`,
+        title: 'rank ≥ 1 — 최소 1개의 안정적 장기 결합이 검출된 페어',
+      },
+      {
+        v: 'rank0' as JohansenView,
+        label: `미검출${n(rank0)}`,
+        title: 'rank 0 — 합성 스프레드 ADF는 통과했지만 대칭 검정에서는 결합 미검출',
+      },
+    ]
+  }, [johCounts])
 
   const visible = useMemo(() => {
     if (!search.trim()) return pairs
@@ -134,6 +175,15 @@ export function StatArbMnPage() {
           </select>
         </div>
         <div className="flex items-center gap-2">
+          <span
+            className="cursor-help text-xs text-t3 underline decoration-t4 decoration-dotted underline-offset-2"
+            title={JOHANSEN_HELP}
+          >
+            공적분
+          </span>
+          <Seg value={johansenView} onChange={setJohansenView} options={johOptions} />
+        </div>
+        <div className="flex items-center gap-2">
           <span className="text-xs text-t3">검색</span>
           <input
             type="text"
@@ -145,8 +195,8 @@ export function StatArbMnPage() {
         </div>
         <div className="ml-auto flex items-center gap-3 text-xs text-t3 tabular-nums">
           <span className="text-t4">▶ = leg 펼치기 · 행 클릭 = 상세 새 탭</span>
-          <span>
-            전체 {meta.total} / 표시 <span className="text-t1">{visible.length}</span>
+          <span title="필터 후 = 서버 필터(그룹 종류·공적분) 적용 결과 · 표시 = 검색어까지 적용">
+            필터 후 {meta.total} / 표시 <span className="text-t1">{visible.length}</span>
           </span>
           <span>갱신 {lastRunStr}</span>
           <button

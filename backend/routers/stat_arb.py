@@ -131,11 +131,18 @@ async def list_sscores(
 async def list_mn_pairs(
     limit: int = 50,
     kind: Optional[str] = None,
+    johansen: Optional[str] = None,
 ) -> dict:
-    """PR-C2: 전체 M:N 페어 score 내림차순. kind=etf/sector/index/etf_category."""
+    """PR-C2: 전체 M:N 페어 score 내림차순. kind=etf/sector/index/etf_category.
+
+    johansen: Johansen 공적분 판정 필터 rank1(rank≥1)|rank0|all(기본). 발굴 게이트가 아니라
+    응답단 필터라 산출·통계는 불변. 응답의 johansen_counts 로 판정별 모수를 함께 준다.
+    """
     params: dict[str, Any] = {"limit": limit}
     if kind:
         params["kind"] = kind
+    if johansen:
+        params["johansen"] = johansen
     return await _proxy_get("/mn-pairs", params)
 
 

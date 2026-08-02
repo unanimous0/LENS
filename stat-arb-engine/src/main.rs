@@ -630,17 +630,35 @@ struct MnPairsQuery {
     limit: usize,
     /// 그룹 종류 필터 (etf/sector/etc.). 미지정 시 전체.
     kind: Option<String>,
+    /// Johansen 공적분 판정 필터 — `rank1`(rank ≥ 1만) / `rank0`(rank 0만) /
+    /// `all`·미지정(전체). **발굴 게이트가 아니라 응답단 필터**(§20.5) — 산출·통계 불변.
+    /// 미판정(`johansen_rank` 없음)은 rank1/rank0 지정 시 어느 쪽에도 매칭되지 않는다
+    /// (1:1 `stability` 미산출과 같은 정책). 알 수 없는 값은 필터 미적용.
+    johansen: Option<String>,
 }
 
 fn default_mn_limit() -> usize {
     50
 }
 
+/// Johansen 판정 버킷 — `rank1`(공적분 있음) / `rank0`(없음) / `undetermined`(미판정).
+fn johansen_bucket(rank: Option<usize>) -> &'static str {
+    match rank {
+        Some(r) if r >= 1 => "rank1",
+        Some(_) => "rank0",
+        None => "undetermined",
+    }
+}
+
 #[derive(Serialize)]
 struct MnPairsResp {
+    /// kind·johansen 필터까지 적용한 뒤의 페어 수 (limit 절단 전).
     total: usize,
     returned: usize,
     last_run_ms: i64,
+    /// dedup 후·johansen 필터 전 모수 기준 판정별 페어 수 (`rank1`/`rank0`/`undetermined`).
+    /// 프론트 세그먼트 배지용 — 셋의 합 = johansen 미지정 시의 `total`.
+    johansen_counts: HashMap<String, usize>,
     pairs: Vec<MPairResult>,
 }
 
@@ -693,6 +711,22 @@ async fn list_mn_pairs(
         }
     }
     let mut pairs = deduped;
+
+    // Johansen 판정별 카운트 — dedup 후·johansen 필터 전 모수 기준(프론트 세그먼트 배지용).
+    let mut johansen_counts: HashMap<String, usize> = HashMap::new();
+    for p in &pairs {
+        *johansen_counts
+            .entry(johansen_bucket(p.johansen_rank).to_string())
+            .or_insert(0) += 1;
+    }
+    // 응답단 필터 — 발굴 게이트가 아니다(§20.5). 미판정은 어느 쪽에도 걸리지 않는다.
+    match q.johansen.as_deref().map(str::trim) {
+        Some(want @ ("rank1" | "rank0")) => {
+            pairs.retain(|p| johansen_bucket(p.johansen_rank) == want)
+        }
+        _ => {} // all / 미지정 / 알 수 없는 값 → 전체 (asset_combo 와 같은 관대 정책)
+    }
+
     let total = pairs.len();
     pairs.truncate(q.limit);
     let returned = pairs.len();
@@ -700,6 +734,7 @@ async fn list_mn_pairs(
         total,
         returned,
         last_run_ms: gs.last_run_ms,
+        johansen_counts,
         pairs,
     })
 }

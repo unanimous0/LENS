@@ -1,6 +1,7 @@
 import { useCallback, useDeferredValue, useEffect, useMemo, useState } from 'react'
 
 import { AlertWatchlist } from '@/components/stat-arb/alert-watchlist'
+import { Seg } from '@/components/stat-arb/seg'
 import { useStatArbAlerts } from '@/hooks/useStatArbAlerts'
 import { keyToCode } from '@/lib/stat-arb-keys'
 import { pairKey } from '@/lib/stat-arb/alerts'
@@ -884,33 +885,6 @@ function StabilityBadge({
     >
       {badge.label}
     </span>
-  )
-}
-
-/** 세그먼트 토글 — 트레이딩 터미널 톤. 선택값 accent 강조. */
-function Seg<T extends string>({
-  value,
-  onChange,
-  options,
-}: {
-  value: T
-  onChange: (v: T) => void
-  options: Array<{ v: T; label: string }>
-}) {
-  return (
-    <div className="flex overflow-hidden rounded-sm bg-bg-surface">
-      {options.map((o) => (
-        <button
-          key={o.v}
-          onClick={() => onChange(o.v)}
-          className={`px-2 py-1 text-xs ${
-            value === o.v ? 'bg-accent/25 text-accent' : 'text-t3 hover:text-t1'
-          }`}
-        >
-          {o.label}
-        </button>
-      ))}
-    </div>
   )
 }
 
