@@ -63,7 +63,8 @@ LENS의 현재 주력 방향은 단순 차익 모니터링이 아니라 **자체
 
 - 첫 build 검증 완료 (2026-05-21 라이브, memory `project_lp_first_build_handoff` / `project_zx_live_verified`).
 - **v2 완결 (2026-07-08)** — 비교표에서 운영 사이클(호가→선물헤지→손익분해→넷팅바스켓 정리) 워크플로로 전환 완료. Phase 1~5 전체 구현: 북 원장 / 지수선물 FC9 wire + FV_futures 호가 보드 12종 / 헤지 티켓·베이시스 라우터 / 베이시스 북 4층 분해·P&L 5분해·markout·한도 / 넷팅 바스켓 빌더·z-score·출구 3개 비교. 정본 `lp-system-design.md §13`(구현 기록 §13.8~§13.11), 사용법 `docs/lp-matrix-guide.md`, 진행 memory `project_lp_v2_progress` / 전제 `project_lp_oms_constraints`. 후속 트랙: watchdog stall 미감지, front-month 일일 re-resolve, 지수 베이시스 당일 기록, γ 튜닝.
-- M:N 통계차익 별도 트랙: PR-A~C3 (35 페어) 완료, 다음 PR-D Johansen / PR-E Sparse PCA / PR-F 통합 (memory `project_mn_screener_progress`).
+- 통계차익 별도 트랙 (2026-08-03 현재 1:1 **4,422** / M:N **57** / s-score **527**, 표본 727봉): 발굴·분석·화면은 사실상 완성 — ETF 분류+베이시스형 분리, 필터축 6종, Kalman 관계 안정성, 목표 z 알림, M:N 병목 해소·deflation·상세, s-score 팩터중립 트랙, PR-D Johansen(게이트 아닌 필터). **남은 건 실행(execution) 축** — 알림 서버 감시+외부 발송(현재 브라우저 탭 열려있을 때만 동작), 주문 연동. 정본 `stat-arb-engine.md` (§22 운영 화면, §21 데이터 정합 이력), memory `project_statarb_roadmap`.
+- ⚠️ **`adj_close` 오염 사건 (2026-07-28~08-02)** — 로더가 NULL을 종가 0으로 적재해 3년창의 24.5%가 0이었고, 그 위에서 산출된 모든 통계(R²·ADF·z·Kalman)가 왜곡돼 있었다. 수정 + Finance_Data 백필로 정합(표본 727봉 회복). **FD가 값을 재정렬하면 엔진 전체 캐시 재적재(재기동) 필요** — 증분 갱신은 과거 봉을 다시 쓰지 않는다. 상세·재발 방지 규칙은 `stat-arb-engine.md §21`.
 
 ## 종목코드 처리
 

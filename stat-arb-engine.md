@@ -267,37 +267,65 @@ position_snapshots (
 
 ## 8. API 엔드포인트
 
+> 2026-08-03 실제 라우트 기준으로 재작성. 이전 판에는 구현되지 않은 계획 엔드포인트
+> (`/pairs/validate`, `/scatter`, `POST /groups`, `/api/saved-pairs`)가 적혀 있었다.
+
 ### stat-arb-engine (port 8300)
 ```
-GET  /pairs?group=<id>&timeframe=auto&source=&min_score=
-GET  /pairs/:hash/detail               z 시계열 + 히스토그램 + 3 timeframe 통계
-POST /pairs/validate                   수동 조립 페어 즉시 검증
-POST /positions/:id/snapshot           포지션 현재 통계량 계산 (backend가 호출)
-GET  /scatter?status=active            활성 포지션 산점도 데이터
-GET  /groups                           도메인 그룹 리스트
-POST /groups                           사용자 정의 그룹 생성
-GET  /health
-GET  /debug/stats
+GET /health
+GET /debug/stats
+
+GET /pairs                       1:1 페어 리스트 (score 내림차순)
+    limit=100
+    group=<group_id>             멤버 둘 다 그룹 소속인 페어만
+    basis=exclude|only|all       베이시스형(같은 기초지수 복제) 처리. 미지정=exclude
+    exclude_categories=<CSV>     leg 분류 태그 제외 (broad_index, leverage_inverse, …)
+    asset_combo=any|etf_etf|etf_stock|stock_stock
+    exclude_terms=<CSV>          종목명/코드 부분일치 제외 (대소문자 무시)
+    stability=<CSV>              stable|caution|drift (Kalman 판정)
+    → { total, returned, filtered, category_counts, stability_counts, pairs[] }
+       ※ 지수 시계열(I:) leg 페어는 매매 불가라 모든 뷰에서 제외
+
+GET /pairs/detail?left=&right=   1:1 상세 — 10분·일봉 헤드라인 2벌 + timeframes 6종
+                                 + 히스토그램 + Kalman(KalmanStat)
+
+GET /groups?kind=&with_members=  도메인 그룹 (index/sector/etf/etf_category)
+GET /groups/{id}/pca             Dense PCA (멤버 ≥ PCA_MIN_MEMBERS)
+GET /groups/{id}/mn-pair         그 그룹의 M:N 성분 전체 → { group_id, total, pairs[] }
+
+GET /mn-pairs                    M:N 리스트 (leg 집합 기준 dedup 후)
+    limit, kind
+    johansen=rank1|rank0|all     Johansen 95% 판정 필터
+    → { total, returned, johansen_counts, pairs[] }
+
+GET /mn-pairs/detail?group=&component=1
+                                 M:N 상세 — **일봉 전용**. 합성 X/Y 잔차 시계열 +
+                                 히스토그램 + Kalman(Relative δ) + Johansen 전체
+
+GET /s-scores                    팩터중립 s-score (|s| 내림차순)
+    limit, min_abs_s, max_half_life, asset=stock|etf|any
+    → { total, returned, factors{n_factors, explained_variance_ratio[], …}, items[] }
 ```
 
 ### backend FastAPI (port 8100)
+`/api/stat-arb/*` 는 위 엔진 라우트의 **순수 프록시**(쿼리 파라미터 그대로 전달).
+단 **알림만 LENS 로컬 SQLite**(`backend/data/lens.db`)이고 프록시가 아니다.
 ```
-GET    /api/loan-rates                 종목별 대여요율 리스트
-PUT    /api/loan-rates/:code           수동 입력
-POST   /api/loan-rates/csv-import      CSV 일괄 업로드
+GET    /api/stat-arb/pairs | /pairs/detail | /groups | /groups/{id}/pca
+       /groups/{id}/mn-pair | /mn-pairs | /mn-pairs/detail | /s-scores
+       /health | /debug/stats                     ← 전부 8300 프록시
 
-GET    /api/positions                  리스트 (status 필터)
-POST   /api/positions                  등록
-GET    /api/positions/:id              상세 (현재 통계량 stat-arb-engine 위임)
-POST   /api/positions/:id/close        청산 기록
-GET    /api/positions/:id/timeline     스냅샷 시계열
-DELETE /api/positions/:id
+GET    /api/stat-arb/alerts                       목표 z 알림 리스트
+POST   /api/stat-arb/alerts                       생성/갱신 (left,right,direction UPSERT)
+PATCH  /api/stat-arb/alerts/{id}                  target_z / enabled / note
+DELETE /api/stat-arb/alerts/{id}
+POST   /api/stat-arb/alerts/{id}/triggered        발화 기록 (last_triggered_at)
 
-GET    /api/saved-pairs                즐겨찾기 리스트
-POST   /api/saved-pairs                등록
+GET    /api/loan-rates                            종목별 대여요율 (PnL·대여수익 계산)
+PUT    /api/loan-rates/:code
+POST   /api/loan-rates/csv-import
 
-GET    /api/groups                     stat-arb-engine 위임
-POST   /api/groups                     사용자 정의 그룹
+GET    /api/positions ... (positions 라우터, 별도)
 ```
 
 ## 9. 화면 구조
@@ -1003,3 +1031,150 @@ VECM `ΔY_t = ΠY_{t-1} + Σ_{i<p} Γ_i ΔY_{t-i} + μ + ε_t`, `Π = αβ'`, ra
 4. **표본 길이·시작일을 로그로 남기고 본다.** `[warmup] … series/bars` 와 `sample_size` 는
    같은 화면에서 대조할 것. 표본이 갑자기 늘거나 줄면 FD 측 스키마·백필 이벤트를 확인한다.
 5. 재측정은 **장 마감 후**(당일 일봉 확정)에 한다 — 장중 발굴은 run 마다 흔들린다(§18.1).
+
+---
+
+## 22. 발굴 결과 정제 + 운영 화면 (2026-07-26 ~ 08-02)
+
+발굴 자체(§18)가 아니라 **"나온 결과를 어떻게 쓸 수 있게 만드느냐"** 트랙. 게이팅 수학은
+이 절 전체에서 **불변**이고, 전부 부가 메타 + 응답단 필터 + 화면이다.
+
+### 22.1 ETF 분류 레이어 + 베이시스형 분리 (`classify.rs`)
+
+**문제**: 1:1 발굴이 자산유형 무관 전조합이라, 같은 지수를 복제하는 ETF끼리
+(KODEX200↔TIGER200) 자명하게 공적분돼 상위를 도배했다. 실측 당시 코스피200 계열만
+37종 → 조합 666쌍이 전부 R²≈0.999로 게이트를 통과.
+
+**DB에 유형 컬럼이 없다**(`etf_master_daily`에 asset_class/category 없음, `tracking_multiple`은
+레버리지·인버스에도 "일반(1)"이라 무용). 분류 후크는 `underlying_index`·`kr_name`·`replication`
+셋뿐 → 문자열 파싱으로 10종 태깅: `broad_index / leverage_inverse / sector / theme /
+bond_rates / factor / overseas / commodity / active / other`. (regex 의존성 없이 정규화+contains.)
+
+**베이시스형(`same_underlying`)** = 양 leg 모두 ETF이고 **같은 광범위 노출을 복제**하는 페어.
+통계차익 리스트에서 기본 제외(`basis=exclude`)하고 **별도 뷰로 유지**(`basis=only`) — 삭제가
+아니다. 이들은 평균회귀 알파가 아니라 **베이시스 트레이딩 대상**이기 때문(로드맵 1순위).
+
+판정 2단계 (`main.rs is_basis`):
+1. `benchmark_family()` 일치 — `200 · 200TR · 150 · 150TR · 코스피100 · 코스피/코스닥 종합 ·
+   선물레버리지 · 200액티브` 계열을 `KOSPI_BROAD`/`KOSDAQ_BROAD`로 묶는다.
+2. 또는 `underlying_index` 정규화 완전일치 (섹터 복제 등).
+
+⚠️ **함정**: `underlying_index`가 **액티브·TR·커버드콜엔 빈 문자열**이다(인포맥스 소스가 값을
+안 줌. 같은 200액티브라도 KODEX는 공백, 1Q는 "코스피 200"). 그래서 문자열 일치만으로는
+200TR·200액티브가 통계차익에 샌다 → **종목명으로 기준지수를 유추**하는 게
+`benchmark_family()`의 존재 이유다. 커버드콜/채권혼합/동일가중/중소형/롱숏/섹터/테마는
+별상품이라 제외(액티브라도 별상품이면 제외).
+
+**지수 시계열 leg 제외**: `코스피`·`코스피 200 금융` 같은 raw 지수(`I:`)가 leg인 페어는
+**매매 불가**라 베이시스도 아니고 통계차익도 아니다 → `list_pairs`에서 모든 뷰 제외.
+
+### 22.2 필터 축
+
+전부 **서버 필터**(응답단). 클라이언트 필터는 자유입력 검색/제외 2개뿐.
+
+| 필터 | 파라미터 | 성격 |
+|---|---|---|
+| 뷰 | `basis=exclude\|only\|all` | 통계차익 / 베이시스 / 전체 |
+| 카테고리 제외 | `exclude_categories` CSV | 어느 한 leg라도 해당하면 제외 |
+| 자산군 조합 | `asset_combo` | etf_etf / etf_stock / stock_stock |
+| 키워드 제외 | `exclude_terms` CSV | 종목명·코드 부분일치. 시장대용 허브(코리아TOP10·ESG) 원클릭 |
+| 관계 안정성 | `stability` CSV | stable / caution / drift |
+| (M:N) 공적분 | `johansen=rank1\|rank0` | §20 |
+
+**클라이언트단은 렌더 비용이 지배한다** — 500행 × 11열 ≈ 7,500 DOM 노드라, 토글 하나에
+전체 재레이아웃이 걸린다. 그래서 버튼형 필터는 전부 서버로 보냈고(카테고리 칩과 동일 경로),
+자유입력만 `useDeferredValue`로 처리한다. 테이블 패널엔 `contain: layout style`(레이아웃 격리),
+열 너비는 `table-fixed` + `<colgroup>`으로 고정(내용이 바뀌어도 열이 안 흔들리게).
+
+### 22.3 관계 안정성 — Kalman 시변 β (`detail.rs`)
+
+정적 OLS β로 발굴한 페어가 **최근 드리프트/재레벨링 중인지** 자동 감지. 사용자가 눈으로
+판단하던 "이 관계 아직 살아있나"를 판정으로 대체.
+
+- 모델: `y_t = β_t·x_t + α_t + e_t`, 상태 θ=[β,α] random walk. 초기 θ₀=OLS, R=OLS 잔차 분산.
+- 산출 `KalmanStat`: `beta_static → beta_current`(드리프트 %), `z_static vs z_adaptive`(괴리),
+  `stability`, `beta_series`(스파크라인).
+- **판정**(공용 `classify_stability`, 목록·상세 동일 함수라 다른 값이 나올 수 없음):
+  β 드리프트 >20% **또는** z 괴리 >3.0 → drift / >10% 또는 >2.0 → caution / else stable.
+- **해석 규칙**: *정적·적응 z가 같이 크면 stable(진짜 회귀 기회), 정적만 크고 적응≈0이면
+  drift(재레벨링)*. 후자는 TR ETF의 배당 드리프트처럼 스프레드 레벨 자체가 이동한 경우다.
+- 목록엔 배지 컬럼 + 세그먼트 필터, 상세엔 패널(설명 토글 + 지표 호버 툴팁 + β_t 스파크라인).
+- 전 페어 산출 비용 **92ms / 3.8천 페어**(등장 leg 일봉을 1회 스냅샷 후 계산).
+
+**δ는 입력 스케일 종속** → `KalmanDelta{Absolute|Relative}`로 분기. 1:1은 원 단위(x~5만)
+`Absolute(1e-4)`, M:N은 합성 로그가격(x~10) `Relative`(x·y 표준화 공간에서 필터링해 양쪽
+스케일에 불변). Q/R 비만 맞추는 방식은 게인이 `x²P/(x²P+R)`이라 x 스케일에 여전히 종속이다.
+**1:1의 Absolute는 판정 계약이므로 변경 금지**(바꾸면 사용자가 보던 배지가 전부 흔들림).
+
+### 22.4 목표 z 도달 알림 (워치리스트)
+
+"장중에 z가 ±2 넘는 순간 진입"하고 싶은데 하루 종일 화면을 볼 수 없다 → 관심 페어에
+목표를 걸어두면 알림.
+
+- **라이브 z** = `(right − α − β·left − resid_mean) / resid_std`. 이를 위해 `PairResult`에
+  `resid_mean`/`resid_std` 노출(`stats::resid_stats` 단일 진입점 — `current_z`와 계산 1벌이라
+  **목록 z와 완전히 같은 척도**. 재구성 diff 0.00e+00 실측).
+- 저장: LENS SQLite `stat_arb_alerts` (`(left,right,direction)` 유니크 UPSERT).
+- 발화: 브라우저 알림 + 배너 + 비프. **히스테리시스** — 한 번 울리면 `|z| < target×0.8`로
+  돌아와야 재무장(경계 진동 시 연타 방지). **양쪽 실시간 체결이 있을 때만** 감시(장외 오발화 차단).
+- ⚠️ **한계: 브라우저 탭이 열려 있는 동안만 동작**한다. 서버 감시 + 외부 발송(텔레그램)은 미구현
+  — 원래 동기를 절반만 푸는 상태이고, 로드맵 1순위 후보다.
+
+### 22.5 상세 화면 기준 토글
+
+사용자는 스윙(며칠~수개월)이라 **판단 기준은 일봉**, 실행 타이밍만 장중. 타임프레임은
+취향이 아니라 **보유기간=반감기에 맞추는 문제**다.
+
+- **일봉 ↔ 10분 토글(기본 일봉)**: 카드 z/ADF/R² · 차트 · 히스토그램 · 베이시스(원) ·
+  포지션 계산기 · 손익 시뮬레이터가 **전부 한 basis로 일관 전환**. 엔진이 일봉 헤드라인
+  (`spread_series_daily`·`daily_center/scale`·`histogram_daily`)을 추가 제공.
+- **1D 안에서 '장중 | 장기' 하위 토글(기본 장중)**:
+  - *장중* = 10분 가격(엔진이 09:01~15:19만 사용 — 시가·마감 단일가 제외)을 **일봉 α·β·μ·σ로
+    재점수화**한 z. **z=2가 진짜 일봉 2σ**인데 장중 촘촘히 움직여 진입 순간을 포착할 수 있다.
+    마지막 실시간 점 = KPI 카드의 라이브 z와 일치.
+  - *장기* = 3년 일봉 종가 z(날짜축).
+- **일봉 차트는 business-day 축**: 일봉 bar가 매일 15:30 timestamp라 그대로 그리면 x축에
+  15:30이 붙고 주말이 갭으로 벌어진다 → `{year,month,day}` BusinessDay로 넘겨 날짜만·비거래일
+  자동 압축.
+
+⚠️ 자주 헷갈리는 지점: 같은 페어의 **일봉 z와 10분 z가 크게 갈릴 수 있다**(예 −3.85 vs −1.63).
+이는 **단기창이 새 레벨로 재중심화**한 것이지 일봉 관계가 깨진 게 아니다. 관계 자체가
+흔들렸는지는 §22.3 Kalman 패널이 판정한다.
+
+### 22.6 M:N 확장 (§10 PR-C4)
+
+병목이 **통계 임계가 아니라 입력 미도달**이었다(494 시도 중 85%가 게이트 전 탈락).
+
+| 조치 | 결과 |
+|---|---|
+| `ETF_TOP_N` 100 → `STATARB_ETF_TOP_N`(기본 400, 10억 하한이 binding이라 실적재 304) | `standardize: empty side` 352 → 242 |
+| `split_by_factor1` → `split_by_factor`(PC2 우선) | split 탈락 **67 → 0** |
+| `choose_target_len`(상위 90% 보존) | PCA rank-deficient **91/495 → 0**, M:N 표본 151 → 727 |
+| deflation(그룹당 성분 3개, leg 회수 + anchor 예외) | 페어 수 2배 |
+| leg 집합 기준 dedup | 중복 25행 → 대표 1행 |
+
+**왜 PC1이 아니라 PC2인가**: 상관이 전부 양인 주식 그룹의 PC1은 Perron-Frobenius로 **단일
+부호**라 부호 분할 시 한쪽이 항상 빈다(결정론적 0%, 임계 완화로 안 풀림). PC2는 PC1과
+직교라 **부호가 반드시 섞이고**, 그게 곧 시장 공통을 뺀 스프레드 축이다.
+
+**왜 사영 deflation이 아니라 leg 회수인가**: `/mn-pairs` dedup 키가 leg 집합이라 가중치만
+다른 재선택은 통째로 축약돼 산출이 안 늘고, 게이트가 원계열 OLS라 2번째 성분이 1번째의
+선형결합이어도 못 거른다. leg 회수는 성분 간 종목이 겹치지 않아 포지션 집중도 없다. 단
+etf 그룹의 X변은 **그룹 기준물**이라 anchor로 고정(회수하면 효과 0) → *같은 ETF ↔ 서로
+겹치지 않는 바스켓 N종*이 나온다 = 헤지 바스켓 선택지.
+
+**중복의 근원**: `groups.rs underlying_to_index()`가 KOSPI200 구성종목을 "코스피200*"
+카테고리 25개 전부에 주입해 candidate pool이 사실상 동일해진다. 게이팅 문제가 아니라
+그룹 정의 문제라 응답단에서 축약한다(`dup_group_count`).
+
+### 22.7 M:N 상세 페이지 — 일봉 전용인 이유
+
+`pair_detail`(1:1)은 leg당 30초봉 60일치를 온디맨드 로드하고 당일분을 **t8412로 순차**
+stitch한다(TPS 1). M:N은 leg가 3~10개라 **레이턴시가 leg 수에 선형 증가** → 인트라데이는
+실용 불가. 사용자 판단 기준도 일봉이라 **일봉 전용**으로 확정했다(응답 15ms 내).
+
+`mn_detail.rs`는 N-way ts 교집합으로 합성 `X=Σw·lnP`, `Y=Σv·lnP`를 만들어 **`Bar`로 포장**해
+`detail.rs`의 `build_headline`/`compute_stability`를 그대로 재사용한다 — 산식을 1벌로 유지.
+
+⚠️ `MLeg.weight`는 **CCA 가중치이지 주수가 아니다.** 거래 가능한 바스켓으로 바꾸려면
+가격으로 나누고 호가단위·수량 반올림이 필요한데 그 변환은 아직 없다(명목비중 ∝ `v : β·w`).
