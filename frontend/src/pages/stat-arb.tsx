@@ -1,4 +1,4 @@
-import { useCallback, useDeferredValue, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import { AlertWatchlist } from '@/components/stat-arb/alert-watchlist'
 import { Seg } from '@/components/stat-arb/seg'
@@ -121,10 +121,28 @@ const COL_TOOLTIPS: Record<SortKey | 'pair', string> = {
 }
 
 // 빠른 제외 프리셋 — 시장추세 바스켓형 허브(수백 페어 도배)를 원클릭 토글. term은 소문자(매칭용).
+/** 자유입력 필터 디바운스(ms). useDeferredValue는 *우선순위*만 낮출 뿐 매 타자마다 렌더가
+ *  돌아서, 페어 수천 개 × 행 렌더가 붙으면 입력이 멈춘다. 타이핑이 그친 뒤 1회만 돌린다. */
+const FILTER_DEBOUNCE_MS = 350
+/** 테이블에 실제로 그리는 최대 행 수. 검색 시에도 반드시 적용 — 예전엔 검색 중엔 매칭
+ *  전체를 무제한 렌더해서(4천 행+) 흔한 글자를 치면 화면이 멈췄다. */
+const MAX_RENDER_ROWS = 500
+
 const QUICK_EXCLUDES: { label: string; term: string }[] = [
   { label: '코리아TOP10', term: '코리아top10' },
   { label: 'ESG사회책임', term: 'esg사회책임' },
+  { label: '코리아밸류업', term: '코리아밸류업' },
 ]
+
+/** 값이 멈춘 뒤 `ms` 지나서야 반영. setState가 타이머 콜백 안이라 effect 본문 동기 setState가 아님. */
+function useDebounced<T>(value: T, ms: number): T {
+  const [debounced, setDebounced] = useState(value)
+  useEffect(() => {
+    const id = window.setTimeout(() => setDebounced(value), ms)
+    return () => window.clearTimeout(id)
+  }, [value, ms])
+  return debounced
+}
 
 export function StatArbPage() {
   const [pairs, setPairs] = useState<Pair[]>([])
@@ -286,13 +304,14 @@ export function StatArbPage() {
     ? new Date(meta.last_run_ms).toLocaleTimeString('ko-KR', { hour12: false })
     : '—'
 
-  // 입력은 즉시 반영(controlled)하되, 무거운 필터·정렬·500행 렌더는 deferred 값으로 —
-  // React가 여유 있을 때 처리해 타이핑이 목록 재렌더에 막히지 않게 함(입력 렉 제거).
-  const deferredSearch = useDeferredValue(search)
-  const deferredExclude = useDeferredValue(exclude)
+  // 입력은 즉시 반영(controlled)하되, 무거운 필터·정렬·행 렌더는 **디바운스된** 값으로.
+  // useDeferredValue만으로는 부족했다 — 우선순위만 낮출 뿐 매 타자마다 렌더가 돌아서,
+  // 페어 수천 개 상태에서 입력이 버벅이거나 멈췄다. 타이핑이 그친 뒤 1회만 돌린다.
+  const deferredSearch = useDebounced(search, FILTER_DEBOUNCE_MS)
+  const deferredExclude = useDebounced(exclude, FILTER_DEBOUNCE_MS)
 
   // 검색(포함) + 제외 + 정렬 적용
-  const visiblePairs = useMemo(() => {
+  const visibleResult = useMemo(() => {
     // 쉼표로 여러 단어/코드. 한 term이라도 leg 이름/코드에 있으면 매칭.
     const parseTerms = (s: string) =>
       s.split(',').map((t) => t.trim().toLowerCase()).filter(Boolean)
@@ -332,11 +351,14 @@ export function StatArbPage() {
       const vb = getter[sortKey](b)
       return sortAsc ? va - vb : vb - va
     })
-    // 검색(포함) 시엔 매칭 전체 표시 — score 낮은 페어도 찾게. 그 외엔 상위 500만(성능).
-    return incTerms.length ? sorted : sorted.slice(0, 500)
+    // 검색 중에도 반드시 상한을 건다. 예전엔 검색이면 매칭 전체를 렌더해서(4천 행+)
+    // 흔한 글자를 치는 순간 화면이 멈췄다. 잘린 개수는 상단 카운트에 표기한다.
+    return { rows: sorted.slice(0, MAX_RENDER_ROWS), matched: sorted.length }
   }, [pairs, deferredSearch, deferredExclude, sortKey, sortAsc, loanRates])
+  const visiblePairs = visibleResult.rows
+  const matchedCount = visibleResult.matched
 
-  // 행 JSX를 useMemo로 캐시 — useDeferredValue의 긴급 렌더(visiblePairs 미변경)에서
+  // 행 JSX를 useMemo로 캐시 — 필터 외 상태 변경(visiblePairs 미변경) 렌더에서
   // 500행을 재생성하지 않게 함(이중 렌더 제거). visiblePairs/loanRates 변경 시에만 1회 재생성.
   const tableRows = useMemo(
     () =>
@@ -587,6 +609,9 @@ export function StatArbPage() {
         <span>
           전체 {meta.total} / 필터 {meta.filtered} / 표시{' '}
           <span className="text-t1">{visiblePairs.length}</span>
+          {matchedCount > visiblePairs.length && (
+            <span className="text-t4"> (매칭 {matchedCount} 중 상위 {MAX_RENDER_ROWS})</span>
+          )}
           {(deferredSearch !== search || deferredExclude !== exclude) && (
             <span className="ml-1 text-t4">…</span>
           )}
