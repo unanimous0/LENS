@@ -330,16 +330,6 @@ async fn list_pairs(State(state): State<AppState>, Query(q): Query<PairsQuery>) 
         })
         .collect();
 
-    // category_counts — base(group+basis) 기준, leg 양쪽 각각 카운트. category/combo 미반영.
-    // stability_counts — 같은 모수 기준이되 페어당 1회(등급은 페어 속성).
-    let mut category_counts: HashMap<String, usize> = HashMap::new();
-    let mut stability_counts: HashMap<String, usize> = HashMap::new();
-    for p in &base {
-        *category_counts.entry(p.left_class.clone()).or_insert(0) += 1;
-        *category_counts.entry(p.right_class.clone()).or_insert(0) += 1;
-        *stability_counts.entry(p.stability.clone()).or_insert(0) += 1;
-    }
-
     // 3) exclude_categories + asset_combo + exclude_terms + stability 필터.
     let exclude_cats: HashSet<&str> = q
         .exclude_categories
@@ -365,33 +355,49 @@ async fn list_pairs(State(state): State<AppState>, Query(q): Query<PairsQuery>) 
         .map(|s| s.split(',').map(|t| t.trim()).filter(|t| !t.is_empty()).collect())
         .unwrap_or_default();
 
+    // 필터를 개별 술어로 분리 — facet 카운트를 "자기 자신만 뺀 나머지 필터" 기준으로 세기 위함.
+    // 안정성 미산출(빈 문자열)은 등급 지정 시 매칭 안 됨 — set에 빈 term이 없으므로 자동.
+    let pass_stability = |p: &PairResult| {
+        stability_set.is_empty() || stability_set.contains(p.stability.as_str())
+    };
+    let pass_category = |p: &PairResult| {
+        exclude_cats.is_empty()
+            || !(exclude_cats.contains(p.left_class.as_str())
+                || exclude_cats.contains(p.right_class.as_str()))
+    };
+    let pass_terms = |p: &PairResult| {
+        if exclude_terms.is_empty() {
+            return true;
+        }
+        let ln = p.left_name.to_lowercase();
+        let rn = p.right_name.to_lowercase();
+        let lk = p.left_key.to_lowercase();
+        let rk = p.right_key.to_lowercase();
+        !exclude_terms
+            .iter()
+            .any(|t| ln.contains(t) || rn.contains(t) || lk.contains(t) || rk.contains(t))
+    };
+    let pass_combo = |p: &PairResult| asset_combo_match(combo, &p.left_key, &p.right_key);
+
+    // facet 카운트 — 각 축은 **자기 자신을 제외한** 나머지 필터를 반영한다(faceted search 표준).
+    // 예전엔 group+basis 모수로 고정이라, 키워드 제외를 걸어도 "안정만 3,039"가 그대로였는데
+    // 실제 결과는 3,018개였다 → 사용자가 "제외가 안 먹는다"고 읽게 됐다.
+    // 자기 축까지 반영하면 그 축을 누르는 순간 다른 선택지가 0이 되어 되돌아갈 수 없으므로 제외.
+    let mut category_counts: HashMap<String, usize> = HashMap::new();
+    let mut stability_counts: HashMap<String, usize> = HashMap::new();
+    for p in &base {
+        if pass_stability(p) && pass_terms(p) && pass_combo(p) {
+            *category_counts.entry(p.left_class.clone()).or_insert(0) += 1;
+            *category_counts.entry(p.right_class.clone()).or_insert(0) += 1;
+        }
+        if pass_category(p) && pass_terms(p) && pass_combo(p) {
+            *stability_counts.entry(p.stability.clone()).or_insert(0) += 1;
+        }
+    }
+
     let matched: Vec<&PairResult> = base
         .into_iter()
-        .filter(|p| {
-            // 안정성 미산출(빈 문자열)은 등급 지정 시 매칭 안 됨 — set에 빈 term이 없으므로 자동.
-            if !stability_set.is_empty() && !stability_set.contains(p.stability.as_str()) {
-                return false;
-            }
-            if !exclude_cats.is_empty()
-                && (exclude_cats.contains(p.left_class.as_str())
-                    || exclude_cats.contains(p.right_class.as_str()))
-            {
-                return false;
-            }
-            if !exclude_terms.is_empty() {
-                let ln = p.left_name.to_lowercase();
-                let rn = p.right_name.to_lowercase();
-                let lk = p.left_key.to_lowercase();
-                let rk = p.right_key.to_lowercase();
-                if exclude_terms
-                    .iter()
-                    .any(|t| ln.contains(t) || rn.contains(t) || lk.contains(t) || rk.contains(t))
-                {
-                    return false;
-                }
-            }
-            asset_combo_match(combo, &p.left_key, &p.right_key)
-        })
+        .filter(|p| pass_stability(p) && pass_category(p) && pass_terms(p) && pass_combo(p))
         .collect();
 
     // 4) limit.
