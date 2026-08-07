@@ -249,6 +249,18 @@ struct PairsQuery {
     /// 지정 시 해당 등급만 반환. 안정성 미산출(빈 문자열) 페어는 지정 시 항상 제외되고,
     /// 미지정 시엔 포함된다.
     stability: Option<String>,
+    /// 특정 페어만 핀포인트 조회 — `left|right` 쌍을 콤마로 구분.
+    /// 예: `E:069500|S:005930,E:102110|E:148020` (키 자체에 `:`가 있어 구분자는 `|`/`,`,
+    /// 프론트 `pairKey()` 포맷 그대로).
+    ///
+    /// 지정 시 **다른 모든 필터(group/basis/category/combo/terms/stability)를 무시**하고
+    /// 발굴 결과 전체(=`basis=all` 모수)에서 찾는다 — 알림 워치리스트는 화면 필터와 무관하게
+    /// 자기 페어의 α·β·μ·σ를 조인해야 하기 때문. 전체를 받아 클라이언트에서 거르던
+    /// 2.6MB 왕복을 없애려고 추가(2026-08-07).
+    ///
+    /// 방향은 **정방향만** 매칭한다. 알림은 발굴 결과 행에서 생성되어 left/right가 고정이고,
+    /// 프론트도 `left|right` 키로 조인하므로 역방향을 돌려줘도 쓰이지 않는다.
+    pair_keys: Option<String>,
 }
 
 fn default_limit() -> usize {
@@ -298,6 +310,36 @@ fn asset_combo_match(combo: &str, left: &str, right: &str) -> bool {
 
 async fn list_pairs(State(state): State<AppState>, Query(q): Query<PairsQuery>) -> Json<PairsResp> {
     let s = state.pairs.read().await;
+
+    // 0) pair_keys 지정 시 — 키 직접 조회 경로. 다른 필터·facet 카운트를 모두 건너뛴다.
+    if let Some(spec) = q.pair_keys.as_deref() {
+        let want: HashSet<(&str, &str)> = spec
+            .split(',')
+            .filter_map(|item| {
+                let (l, r) = item.split_once('|')?;
+                let (l, r) = (l.trim(), r.trim());
+                (!l.is_empty() && !r.is_empty()).then_some((l, r))
+            })
+            .collect();
+        let matched: Vec<&PairResult> = s
+            .pairs
+            .iter()
+            .filter(|p| want.contains(&(p.left_key.as_str(), p.right_key.as_str())))
+            .collect();
+        let filtered = matched.len();
+        let returned: Vec<PairResult> = matched.into_iter().take(q.limit).cloned().collect();
+        return Json(PairsResp {
+            total: s.pairs.len(),
+            returned: returned.len(),
+            last_run_ms: s.last_run_ms,
+            last_run_duration_ms: s.last_run_duration_ms,
+            filtered,
+            // 칩·세그먼트 배지용 facet — 핀포인트 조회에선 의미가 없어 비운다.
+            category_counts: HashMap::new(),
+            stability_counts: HashMap::new(),
+            pairs: returned,
+        });
+    }
 
     // 1) group 필터 — 멤버 둘 다 그룹 소속.
     let group_members: Option<HashSet<String>> = if let Some(gid) = q.group.as_ref() {

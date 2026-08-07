@@ -47,6 +47,7 @@ async def list_pairs(
     asset_combo: Optional[str] = None,
     exclude_terms: Optional[str] = None,
     stability: Optional[str] = None,
+    pair_keys: Optional[str] = None,
 ) -> dict:
     """통계차익 1:1 페어 리스트.
 
@@ -56,6 +57,8 @@ async def list_pairs(
     asset_combo: etf_etf|etf_stock|stock_stock|any.
     exclude_terms: 종목명/코드 제외 term CSV(어느 한 leg 이름·코드에 포함되면 제외).
     stability: 관계 안정성(Kalman β 드리프트) 등급 CSV(stable|caution|drift). 지정 시 해당 등급만.
+    pair_keys: `left|right` 쌍 CSV(예: `E:069500|S:005930,E:102110|E:148020`). 지정 시 엔진이
+      다른 필터를 무시하고 그 페어만 반환 — 알림 워치리스트의 α·β·μ·σ 조인용(전체 로드 회피).
     """
     params: dict[str, Any] = {"limit": limit}
     if group:
@@ -70,6 +73,8 @@ async def list_pairs(
         params["exclude_terms"] = exclude_terms
     if stability:
         params["stability"] = stability
+    if pair_keys:
+        params["pair_keys"] = pair_keys
     return await _proxy_get("/pairs", params)
 
 

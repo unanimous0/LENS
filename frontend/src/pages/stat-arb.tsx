@@ -128,11 +128,50 @@ const FILTER_DEBOUNCE_MS = 350
  *  전체를 무제한 렌더해서(4천 행+) 흔한 글자를 치면 화면이 멈췄다. */
 const MAX_RENDER_ROWS = 500
 
+/** 칩(카테고리 제외·키워드 제외) 토글 디바운스(ms). 사용자가 여러 개를 연달아 누르는데
+ *  토글마다 목록을 재요청하면 매번 수백 KB~MB를 새로 받고 500행을 재구축한다. 하이라이트는
+ *  원본 state로 즉시 반영하고, **서버 요청만** 손이 멈춘 뒤 1회로 뭉친다. */
+const CHIP_DEBOUNCE_MS = 300
+
 const QUICK_EXCLUDES: { label: string; term: string }[] = [
   { label: '코리아TOP10', term: '코리아top10' },
   { label: 'ESG사회책임', term: 'esg사회책임' },
   { label: '코리아밸류업', term: '코리아밸류업' },
 ]
+
+/** 진입 시 기본 제외 카테고리 = 주식·테마를 뺀 전부.
+ *  운영상 주식·테마만 보는 게 기본이고 나머지는 필요할 때 칩으로 해제한다 (사용자 요청 2026-08-07).
+ *  덤으로 초기 페이로드가 2.4MB → 0.97MB (페어 4,422 → 1,524)로 줄어든다.
+ *  ※ localStorage에 저장하지 않는다 — 제외 상태가 눌러앉으면 "왜 계속 빠져 있냐"가 된다(과거 피드백).
+ *    매 진입 시 항상 이 기본값에서 시작. */
+const DEFAULT_EXCLUDE_CATS = [
+  'broad_index',
+  'leverage_inverse',
+  'sector',
+  'bond_rates',
+  'factor',
+  'overseas',
+  'commodity',
+  'active',
+  'other',
+]
+
+/** 카테고리 칩 고정 표시 순서. 카운트 내림차순이면 자주 쓰는 주식·테마가 떨어져 있어서,
+ *  둘을 붙여 달라는 요청(2026-08-07). 여기 없는 태그는 뒤에 카운트 내림차순으로 붙는다. */
+const CAT_CHIP_ORDER = [
+  'stock',
+  'theme',
+  'broad_index',
+  'sector',
+  'factor',
+  'leverage_inverse',
+  'overseas',
+  'bond_rates',
+  'commodity',
+  'active',
+  'other',
+]
+const CAT_CHIP_RANK = new Map(CAT_CHIP_ORDER.map((c, i) => [c, i]))
 
 /** 값이 멈춘 뒤 `ms` 지나서야 반영. setState가 타이머 콜백 안이라 effect 본문 동기 setState가 아님. */
 function useDebounced<T>(value: T, ms: number): T {
@@ -157,7 +196,7 @@ export function StatArbPage() {
   // ETF 분류·베이시스 필터 (엔진 신규 API)
   const [basisView, setBasisView] = useState<BasisView>('exclude') // 통계차익(베이시스 제외)이 기본
   const [assetCombo, setAssetCombo] = useState<AssetCombo>('any')
-  const [excludeCats, setExcludeCats] = useState<Set<string>>(new Set())
+  const [excludeCats, setExcludeCats] = useState<Set<string>>(() => new Set(DEFAULT_EXCLUDE_CATS))
   const [catCounts, setCatCounts] = useState<Record<string, number>>({})
   // 관계 안정성 필터 — 서버 필터(카테고리 제외와 동일 경로). 기본은 전체(필터 없음).
   const [stabilityView, setStabilityView] = useState<StabilityView>('all')
@@ -229,6 +268,14 @@ export function StatArbPage() {
       .catch((e) => { setPca(null); setPcaErr(String(e)) })
   }, [groupFilter])
 
+  // 칩 필터는 **서버 파라미터 문자열로 변환한 뒤** 디바운스한다. Set을 그대로 디바운스하면
+  // 켰다 껐다 해서 내용이 원상복귀해도 identity가 달라 재요청이 한 번 더 나간다.
+  // 정렬된 CSV로 만들면 값이 같을 때 useState가 bail out → 불필요한 fetch 자체가 사라진다.
+  const excludeCatsParam = useMemo(() => Array.from(excludeCats).sort().join(','), [excludeCats])
+  const quickExcParam = useMemo(() => Array.from(quickExc).sort().join(','), [quickExc])
+  const debExcludeCats = useDebounced(excludeCatsParam, CHIP_DEBOUNCE_MS)
+  const debQuickExc = useDebounced(quickExcParam, CHIP_DEBOUNCE_MS)
+
   // 페어 로딩
   const loadPairs = useCallback(() => {
     setLoading(true)
@@ -239,9 +286,9 @@ export function StatArbPage() {
     if (groupFilter) params.set('group', groupFilter)
     params.set('basis', basisView)
     params.set('asset_combo', assetCombo)
-    if (excludeCats.size > 0) params.set('exclude_categories', Array.from(excludeCats).join(','))
-    // 빠른제외는 서버 필터(exclude_terms)로 — 카테고리 제외와 동일 경로(토글 시 재요청).
-    if (quickExc.size > 0) params.set('exclude_terms', Array.from(quickExc).join(','))
+    if (debExcludeCats) params.set('exclude_categories', debExcludeCats)
+    // 키워드 제외도 서버 필터(exclude_terms) — 카테고리 제외와 동일 경로(디바운스 후 재요청).
+    if (debQuickExc) params.set('exclude_terms', debQuickExc)
     const stabParam = STABILITY_PARAM[stabilityView]
     if (stabParam) params.set('stability', stabParam)
     fetch(`/api/stat-arb/pairs?${params}`)
@@ -254,7 +301,7 @@ export function StatArbPage() {
       })
       .catch((e) => setError(`pairs: ${String(e)}`))
       .finally(() => setLoading(false))
-  }, [groupFilter, basisView, assetCombo, excludeCats, quickExc, stabilityView])
+  }, [groupFilter, basisView, assetCombo, debExcludeCats, debQuickExc, stabilityView])
 
   useEffect(() => {
     loadPairs()
@@ -262,12 +309,17 @@ export function StatArbPage() {
 
   const filteredGroups = kindFilter ? groups.filter((g) => g.kind === kindFilter) : groups
 
-  // 카테고리 칩 — 카운트>0 만, 내림차순. 클릭 = 제외 토글.
+  // 카테고리 칩 — 카운트>0 만, CAT_CHIP_ORDER 고정 순서(미등록 태그는 뒤·카운트 내림차순).
+  // 클릭 = 제외 토글. 카운트는 facet(자기 축 제외) 기준이라 제외 중인 칩도 숫자가 남는다.
   const catChips = useMemo(
     () =>
       Object.entries(catCounts)
         .filter(([, n]) => n > 0)
-        .sort((a, b) => b[1] - a[1]),
+        .sort((a, b) => {
+          const ra = CAT_CHIP_RANK.get(a[0]) ?? Number.MAX_SAFE_INTEGER
+          const rb = CAT_CHIP_RANK.get(b[0]) ?? Number.MAX_SAFE_INTEGER
+          return ra !== rb ? ra - rb : b[1] - a[1]
+        }),
     [catCounts]
   )
   const toggleCat = (cat: string) =>
@@ -612,9 +664,11 @@ export function StatArbPage() {
           {matchedCount > visiblePairs.length && (
             <span className="text-t4"> (매칭 {matchedCount} 중 상위 {MAX_RENDER_ROWS})</span>
           )}
-          {(deferredSearch !== search || deferredExclude !== exclude) && (
-            <span className="ml-1 text-t4">…</span>
-          )}
+          {/* 디바운스 대기 중 표시 — 자유입력(검색·제외) + 칩(카테고리·키워드) 공통 */}
+          {(deferredSearch !== search ||
+            deferredExclude !== exclude ||
+            debExcludeCats !== excludeCatsParam ||
+            debQuickExc !== quickExcParam) && <span className="ml-1 text-t4">…</span>}
         </span>
         <span>갱신 {lastRunStr}</span>
         <button

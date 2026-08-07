@@ -100,7 +100,9 @@ export function AlertWatchlist({ api }: { api: StatArbAlertsApi }) {
 
   // --- 조인용 페어 통계 (α·β·μ·σ) --------------------------------------------
   // 목록 테이블의 pairs는 필터(basis=exclude 등)가 걸려 있어 워치 페어가 빠질 수 있음 →
-  // 알림용은 basis=all로 *별도* 1회 조회. 필터 토글에 재요청되지 않는다.
+  // 알림용은 `pair_keys`로 *알림 페어만* 별도 1회 조회. 필터 토글에 재요청되지 않는다.
+  // (예전엔 basis=all&limit=50000으로 전체를 받아 클라이언트에서 걸렀다 — 알림 1건에도
+  //  매 진입마다 2.6MB. 페이지 렉의 주범이었다. 2026-08-07)
   // 주기 refetch는 없다 — α·β·μ·σ는 3년 *일봉* 회귀라 장중엔 값이 바뀌지 않는다(엔진 cron이
   // 돌아도 입력 일봉이 동일). 장 마감 후 갱신분은 '통계 새로고침' 버튼 / 페이지 재진입으로.
   const [statMap, setStatMap] = useState<Map<string, PairRow>>(new Map())
@@ -116,14 +118,19 @@ export function AlertWatchlist({ api }: { api: StatArbAlertsApi }) {
     if (list.length === 0) return
     const want = new Set(list.map((a) => pairKey(a.left_key, a.right_key)))
     list.forEach((a) => attemptedRef.current.add(pairKey(a.left_key, a.right_key)))
-    // limit은 '전체' 의미 — 워치 페어가 score 하위여도 반드시 조인되게 (엔진 통과 1.1만).
-    void fetch('/api/stat-arb/pairs?basis=all&limit=50000')
+    // pair_keys = `left|right` 쌍 CSV. 엔진이 필터(basis 등) 무시하고 이 페어만 돌려주므로
+    // 워치 페어가 score 하위여도, 화면 필터에서 빠져 있어도 반드시 조인된다.
+    const params = new URLSearchParams({
+      pair_keys: Array.from(want).join(','),
+      limit: String(want.size),
+    })
+    void fetch(`/api/stat-arb/pairs?${params}`)
       .then(async (r) => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`)
         return (await r.json()) as { pairs: PairRow[] }
       })
       .then((d) => {
-        // 알림 대상만 보관 — 3천여 페어 전체를 메모리에 들고 있지 않는다.
+        // 응답은 이미 알림 페어뿐이지만, 키로 다시 걸러 Map을 만든다(방어 + 키 정규화).
         const m = new Map<string, PairRow>()
         for (const p of d.pairs) {
           const k = pairKey(p.left_key, p.right_key)
