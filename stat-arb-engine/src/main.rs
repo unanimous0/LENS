@@ -125,10 +125,14 @@ pub struct PairsState {
 }
 
 /// 자동 생성된 도메인 그룹 + id → Group 룩업.
+///
+/// `groups`/`by_id` 는 기동 시 `load_groups` 가 1회 채우고 이후 불변이라 `Arc` 로 공유한다 —
+/// 재계산 사이클이 CPU 구간(`run_cycle_cpu`)으로 넘길 때 멤버 문자열(561 그룹 × 최대 200 멤버)을
+/// 매번 복제하지 않기 위함. 사이클마다 갱신되는 건 아래 3개(pair_counts/pca/mn_pairs) 뿐이다.
 #[derive(Default)]
 pub struct GroupsState {
-    pub groups: Vec<Group>,
-    pub by_id: HashMap<String, usize>, // id → groups index
+    pub groups: Arc<Vec<Group>>,
+    pub by_id: Arc<HashMap<String, usize>>, // id → groups index
     pub last_run_ms: i64,
     /// 그룹 id → 그 그룹 멤버 한정 1:1 통과 페어 수.
     /// 시장 전체 발굴 결과를 멤버 세트로 필터링해서 산출. PR-A 진단용.
@@ -138,6 +142,27 @@ pub struct GroupsState {
     /// PR-C2: 그룹 id → M:N 발굴 페어. Sparse CCA + OLS+ADF 통과만.
     /// deflation 으로 그룹당 최대 `MN_MAX_PER_GROUP` 개 (성분 순번 오름차순). 0개면 entry 없음.
     pub mn_pairs: HashMap<String, Vec<MPairResult>>,
+}
+
+/// 재계산 사이클의 CPU 구간이 들고 가는 그룹 뷰 — `Arc` 복제 2번이 전부(봉·멤버 복제 없음).
+///
+/// CPU 구간은 블로킹 풀에서 도는 동기 코드라 `groups.read().await` 를 할 수 없다.
+/// 사이클 시작 시 한 번 스냅샷해서 넘긴다 — 어차피 원본은 기동 후 불변이라 결과도 동일하다.
+#[derive(Clone)]
+struct GroupsSnapshot {
+    groups: Arc<Vec<Group>>,
+    by_id: Arc<HashMap<String, usize>>,
+}
+
+impl GroupsSnapshot {
+    /// id → Group 룩업. 없으면 None.
+    fn get(&self, id: &str) -> Option<&Group> {
+        self.by_id.get(id).and_then(|i| self.groups.get(*i))
+    }
+    /// 그룹 표시명. 없으면 `?` — 진단 로깅 전용.
+    fn name_of(&self, id: &str) -> &str {
+        self.get(id).map(|g| g.name.as_str()).unwrap_or("?")
+    }
 }
 
 #[derive(Clone)]
@@ -1175,8 +1200,8 @@ async fn load_groups(
             let now_ms = chrono::Utc::now().timestamp_millis();
             {
                 let mut s = groups.write().await;
-                s.groups = all;
-                s.by_id = by_id;
+                s.groups = Arc::new(all);
+                s.by_id = Arc::new(by_id);
                 s.last_run_ms = now_ms;
             }
             info!(
@@ -1348,6 +1373,8 @@ async fn warmup_and_discover(
     //     `adj_close` NULL 을 종가 0 으로 적재하던 오염(2026-07-28 수정)의 재발 감지용.
     //     로더가 결측을 버리므로 평시 0 이고, 0 이 아니면 로더 회귀다. 일봉만 스캔 —
     //     통계 입력의 전부이고 분봉까지 훑으면 사이클마다 800만 봉이라 비용이 아깝다.
+    //     (일봉 66만 봉 스캔 = 1ms 미만이라 블로킹 풀로 안 옮긴다 — 방금 끝난 warmup 의
+    //      검증 단계라 로그도 warmup 바로 뒤에 붙어야 읽힌다.)
     log_cache_invariant(cache);
 
     // 3. 종목명 룩업 — 모든 자산군 통합 (series_key 형식)
@@ -1385,12 +1412,90 @@ async fn warmup_and_discover(
         }
     };
 
+    // 4~8. CPU 바운드 전 구간(1:1 발굴 → 엔리치 → PCA → M:N → Johansen → s-score)을
+    //      블로킹 풀로 넘긴다. 자세한 이유는 `run_cycle_cpu` 문서 주석 참조.
+    let groups_snapshot = {
+        let gs = groups.read().await;
+        GroupsSnapshot {
+            groups: gs.groups.clone(),
+            by_id: gs.by_id.clone(),
+        }
+    };
+    let cache_owned = cache.clone(); // Arc<DashMap> — 봉 데이터 복제 아님
+    let out = match tokio::task::spawn_blocking(move || {
+        run_cycle_cpu(&cache_owned, names, etf_meta, &groups_snapshot)
+    })
+    .await
+    {
+        Ok(out) => out,
+        Err(e) => {
+            // 패닉/취소. 이번 사이클 결과만 버리고 다음 cron 을 기다린다 —
+            // 직전 사이클 결과가 그대로 서빙되므로 화면은 살아있다.
+            warn!("[recompute] CPU 태스크 실패 ({e}) — 이번 사이클 갱신 skip");
+            return;
+        }
+    };
+
+    stats.discovery_runs.fetch_add(1, Ordering::Relaxed);
+    stats.pairs_total.store(out.pairs.len() as u64, Ordering::Relaxed);
+
+    {
+        let mut s = sscores.write().await;
+        *s = out.sscores;
+    }
+
+    {
+        let mut s = groups.write().await;
+        s.pair_counts = out.pair_counts;
+        s.pca = out.pca;
+        s.mn_pairs = out.mn_pairs;
+    }
+
+    {
+        let mut s = pairs.write().await;
+        s.pairs = out.pairs;
+        s.names = out.names;
+        s.etf_meta = out.etf_meta;
+        s.last_run_ms = chrono::Utc::now().timestamp_millis();
+        s.last_run_duration_ms = out.disc_ms;
+    }
+
+    info!(
+        "[전체] 완료 {:.1}초 (warmup + discovery)",
+        t_total.elapsed().as_secs_f64()
+    );
+}
+
+/// 한 사이클의 CPU 산출물. `spawn_blocking` 에서 통째로 돌려받아 async 쪽에서 락에 대입한다.
+/// move-in 한 `names`/`etf_meta` 도 같이 돌려받는다 — 복제 대신 소유권 왕복.
+struct CycleOutput {
+    pairs: Vec<PairResult>,
+    names: HashMap<String, String>,
+    etf_meta: HashMap<String, EtfMeta>,
+    /// 1:1 발굴 소요(ms). `PairsState::last_run_duration_ms` 로 그대로 나간다.
+    disc_ms: u64,
+    pair_counts: HashMap<String, usize>,
+    pca: HashMap<String, GroupPcaResult>,
+    mn_pairs: HashMap<String, Vec<MPairResult>>,
+    sscores: SScoreState,
+}
+
+/// 재계산 사이클의 **CPU 바운드 전 구간** — DB I/O 는 호출자(`warmup_and_discover`)가 이미 끝냈다.
+///
+/// **`spawn_blocking` 전용**이고 안에서 `await` 하지 않는다. 예전엔 이 구간이 async 함수 본문에
+/// 동기로 박혀 있어서 tokio worker 스레드를 5~6초씩 점유했고, 그 워커에 배정된 요청이 통째로
+/// 밀렸다(2026-08-07 실측: 재계산 중 `/pairs` 응답 최대 5.6초 vs 평시 0.007초).
+/// 산출물·로그·순서는 이전과 완전히 동일하다 — 순수 스케줄링 변경이다.
+fn run_cycle_cpu(
+    cache: &SeriesCache,
+    names: HashMap<String, String>,
+    etf_meta: HashMap<String, EtfMeta>,
+    groups: &GroupsSnapshot,
+) -> CycleOutput {
     // 4. 1:1 발굴
     let t_disc = Instant::now();
     let mut result = discovery::discover_all_one_to_one(cache, &names);
     let disc_ms = t_disc.elapsed().as_millis() as u64;
-    stats.discovery_runs.fetch_add(1, Ordering::Relaxed);
-    stats.pairs_total.store(result.len() as u64, Ordering::Relaxed);
 
     // 4.5 엔리치 패스 — 발굴 hot loop 밖에서 leg 분류 태그 + 베이시스형 플래그 + 관계 안정성.
     //     발굴 게이팅과 무관한 부가 메타 (응답단 필터/표시용).
@@ -1438,15 +1543,15 @@ async fn warmup_and_discover(
     );
 
     // 5. 그룹별 통과 페어 수 산출 + 진단 로깅 (PR-A 검증 포인트)
-    let pair_counts = compute_group_pair_counts(&result, groups).await;
-    log_group_diagnostics(&pair_counts, &result, groups).await;
+    let pair_counts = compute_group_pair_counts(&result, groups);
+    log_group_diagnostics(&pair_counts, &result, groups);
 
     // 6. PR-B Dense PCA — 멤버 ≥ PCA_MIN_MEMBERS 그룹만 산출
-    let pca_map = compute_group_pcas(cache, groups).await;
-    log_pca_diagnostics(&pca_map, groups).await;
+    let pca_map = compute_group_pcas(cache, groups);
+    log_pca_diagnostics(&pca_map, groups);
 
     // 7. PR-C2: Sparse CCA M:N 발굴 — PCA candidate pool 기반
-    let (mut mn_map, mn_diag) = compute_group_mn_pairs(&pca_map, cache, &names, groups).await;
+    let (mut mn_map, mn_diag) = compute_group_mn_pairs(&pca_map, cache, &names, groups);
     // M:N 엔리치 — leg 분류 태깅(same_underlying 분리는 이번 범위 밖 — 태그만)
     // + PR-D Johansen 공적분 검정. **둘 다 발굴 게이팅과 무관한 부가 메타**다.
     // Johansen 은 leg ≤ 10 · 일봉 ~726봉이라 페어당 수십 μs — 별도 패스로 나눌 이유 없음.
@@ -1479,7 +1584,7 @@ async fn warmup_and_discover(
         joh.record(&j);
     }
     joh.elapsed_ms = t_joh.elapsed().as_secs_f64() * 1000.0;
-    log_mn_diagnostics(&mn_map, &mn_diag, groups).await;
+    log_mn_diagnostics(&mn_map, &mn_diag, groups);
     log_johansen_diagnostics(&joh, joh_lags);
 
     // 8. 팩터중립 s-score (Avellaneda-Lee) — **1:1/M:N 과 독립된 별도 트랙**.
@@ -1491,31 +1596,18 @@ async fn warmup_and_discover(
         it.asset_class = leg_class(&it.key, &etf_meta);
     }
     log_sscore_diagnostics(&sscore_state);
-    {
-        let mut s = sscores.write().await;
-        *s = sscore_state;
-    }
 
-    {
-        let mut s = groups.write().await;
-        s.pair_counts = pair_counts;
-        s.pca = pca_map;
-        s.mn_pairs = mn_map;
+    // 결과 저장(락 대입)은 호출자(async)가 한다 — 여긴 소유권만 돌려준다.
+    CycleOutput {
+        pairs: result,
+        names,
+        etf_meta,
+        disc_ms,
+        pair_counts,
+        pca: pca_map,
+        mn_pairs: mn_map,
+        sscores: sscore_state,
     }
-
-    {
-        let mut s = pairs.write().await;
-        s.pairs = result;
-        s.names = names;
-        s.etf_meta = etf_meta;
-        s.last_run_ms = chrono::Utc::now().timestamp_millis();
-        s.last_run_duration_ms = disc_ms;
-    }
-
-    info!(
-        "[전체] 완료 {:.1}초 (warmup + discovery)",
-        t_total.elapsed().as_secs_f64()
-    );
 }
 
 /// 캐시 일봉의 "종가 > 0" 불변식 점검 + 표본 깊이 요약.
@@ -1555,13 +1647,12 @@ fn log_cache_invariant(cache: &SeriesCache) {
 /// 시장 전체 1:1 통과 페어를 그룹 멤버 세트로 필터링해 그룹별 카운트 산출.
 /// 같은 페어가 여러 그룹에 속할 수 있음 (예: 삼성전자×하이닉스 = KOSPI200 + 반도체 sector + TIGER반도체ETF).
 /// 이 *중복*도 그룹의 가치 지표라 dedup 안 함.
-async fn compute_group_pair_counts(
+fn compute_group_pair_counts(
     pairs: &[PairResult],
-    groups: &Arc<RwLock<GroupsState>>,
+    groups: &GroupsSnapshot,
 ) -> HashMap<String, usize> {
-    let gs = groups.read().await;
-    let mut out: HashMap<String, usize> = HashMap::with_capacity(gs.groups.len());
-    for g in &gs.groups {
+    let mut out: HashMap<String, usize> = HashMap::with_capacity(groups.groups.len());
+    for g in groups.groups.iter() {
         let members: HashSet<&String> = g.members.iter().collect();
         let n = pairs
             .iter()
@@ -1574,36 +1665,33 @@ async fn compute_group_pair_counts(
 
 /// PR-B Dense PCA — 멤버 ≥ PCA_MIN_MEMBERS 그룹들에 대해 한 번씩 PCA 산출.
 /// 결과는 그룹 id → GroupPcaResult HashMap. 멤버 적거나 데이터 부족하면 entry 없음.
-async fn compute_group_pcas(
+fn compute_group_pcas(
     cache: &SeriesCache,
-    groups: &Arc<RwLock<GroupsState>>,
+    groups: &GroupsSnapshot,
 ) -> HashMap<String, GroupPcaResult> {
     let t = Instant::now();
-    let group_snapshots: Vec<(String, Vec<String>)> = {
-        let gs = groups.read().await;
-        gs.groups
-            .iter()
-            .filter(|g| g.member_count >= PCA_MIN_MEMBERS)
-            .map(|g| (g.id.clone(), g.members.clone()))
-            .collect()
-    };
+    let targets: Vec<&Group> = groups
+        .groups
+        .iter()
+        .filter(|g| g.member_count >= PCA_MIN_MEMBERS)
+        .collect();
 
-    let mut out: HashMap<String, GroupPcaResult> = HashMap::with_capacity(group_snapshots.len());
-    for (gid, members) in &group_snapshots {
+    let mut out: HashMap<String, GroupPcaResult> = HashMap::with_capacity(targets.len());
+    for g in &targets {
         if let Some(r) = discovery::compute_group_pca(
-            members,
+            &g.members,
             cache,
             PCA_N_FACTORS,
             PCA_POOL_SIZE,
             PCA_TOP_LOADINGS,
         ) {
-            out.insert(gid.clone(), r);
+            out.insert(g.id.clone(), r);
         }
     }
     info!(
         "[PR-B PCA] {}/{} 그룹 PCA 산출 완료 ({:.1}초)",
         out.len(),
-        group_snapshots.len(),
+        targets.len(),
         t.elapsed().as_secs_f64()
     );
     out
@@ -1629,22 +1717,13 @@ struct MnDiagnostics {
 /// 양변 분할 전략은 그룹 kind 따라:
 ///   - etf 그룹: ETF↔보유주식 자연 분할
 ///   - sector/index/etf_category: PCA factor 부호 분할 (factor2 → 3 → 1 탐색)
-async fn compute_group_mn_pairs(
+fn compute_group_mn_pairs(
     pca_map: &HashMap<String, GroupPcaResult>,
     cache: &SeriesCache,
     names: &HashMap<String, String>,
-    groups: &Arc<RwLock<GroupsState>>,
+    groups: &GroupsSnapshot,
 ) -> (HashMap<String, Vec<MPairResult>>, MnDiagnostics) {
     let t = Instant::now();
-
-    // group_id → (kind, name, members) snapshot
-    let group_info: HashMap<String, (GroupKind, String, Vec<String>)> = {
-        let gs = groups.read().await;
-        gs.groups
-            .iter()
-            .map(|g| (g.id.clone(), (g.kind, g.name.clone(), g.members.clone())))
-            .collect()
-    };
 
     let mut out: HashMap<String, Vec<MPairResult>> = HashMap::new();
     let mut attempted = 0_usize;
@@ -1653,16 +1732,16 @@ async fn compute_group_mn_pairs(
     let mut deflation_stop_reason: HashMap<&'static str, usize> = HashMap::new();
     for (gid, pca_r) in pca_map {
         attempted += 1;
-        let Some((kind, name, members)) = group_info.get(gid) else { continue };
-        let strategy = match kind {
+        let Some(g) = groups.get(gid) else { continue };
+        let strategy = match g.kind {
             GroupKind::Etf => MnSplitStrategy::EtfNatural,
             _ => MnSplitStrategy::FactorSign,
         };
         let outcome = discovery::discover_mn_in_group(
             gid,
-            name,
+            &g.name,
             strategy,
-            members,
+            &g.members,
             &pca_r.candidate_pool,
             cache,
             names,
@@ -1671,7 +1750,7 @@ async fn compute_group_mn_pairs(
             // 성분 1조차 못 뽑음 = 그룹 탈락 (이전 구조의 Err 와 같은 의미).
             let reason = outcome.stop.map(|(_, r)| r).unwrap_or("unknown");
             *fail_by_kind_reason
-                .entry((kind.as_str().to_string(), reason))
+                .entry((g.kind.as_str().to_string(), reason))
                 .or_insert(0) += 1;
             continue;
         }
@@ -1704,10 +1783,10 @@ fn median_of(pairs: &[&MPairResult], f: impl Fn(&MPairResult) -> f64) -> f64 {
 }
 
 /// PR-C2 진단 — 그룹/페어 수, 성분 순번별 분포·품질, 탈락 사유, 분할축, leg 분포, score Top 5.
-async fn log_mn_diagnostics(
+fn log_mn_diagnostics(
     mn_map: &HashMap<String, Vec<MPairResult>>,
     diag: &MnDiagnostics,
-    groups: &Arc<RwLock<GroupsState>>,
+    groups: &GroupsSnapshot,
 ) {
     let total_pairs: usize = mn_map.values().map(|v| v.len()).sum();
     info!(
@@ -1742,15 +1821,12 @@ async fn log_mn_diagnostics(
         return;
     }
     let all: Vec<&MPairResult> = mn_map.values().flatten().collect();
-    let gs = groups.read().await;
 
     // 종류별 카운트 (그룹 수 / 페어 수)
     let mut by_kind: HashMap<String, (usize, usize)> = HashMap::new();
     for (gid, v) in mn_map {
-        let kind = gs
-            .by_id
+        let kind = groups
             .get(gid)
-            .and_then(|i| gs.groups.get(*i))
             .map(|g| g.kind.as_str().to_string())
             .unwrap_or_else(|| "?".into());
         let e = by_kind.entry(kind).or_insert((0, 0));
@@ -2084,14 +2160,10 @@ fn log_sscore_diagnostics(state: &SScoreState) {
 }
 
 /// PR-B 검증 로깅 — factor 1 평균 explained variance, candidate pool 분포.
-async fn log_pca_diagnostics(
-    pca_map: &HashMap<String, GroupPcaResult>,
-    groups: &Arc<RwLock<GroupsState>>,
-) {
+fn log_pca_diagnostics(pca_map: &HashMap<String, GroupPcaResult>, groups: &GroupsSnapshot) {
     if pca_map.is_empty() {
         return;
     }
-    let gs = groups.read().await;
 
     // factor 1 explained variance 분포
     let mut evr1: Vec<f64> = pca_map
@@ -2121,7 +2193,7 @@ async fn log_pca_diagnostics(
     ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
     info!("[PR-B 진단] factor1 설명력 Top 5 (잘 응집된 그룹):");
     for (id, evr) in ranked.iter().take(5) {
-        let name = gs.by_id.get(*id).and_then(|i| gs.groups.get(*i)).map(|g| g.name.as_str()).unwrap_or("?");
+        let name = groups.name_of(id);
         let members = pca_map.get(*id).map(|r| r.members_used.len()).unwrap_or(0);
         info!("  · {id:40} ({name:20}) — factor1 {:.1}% / 멤버 {members}", evr * 100.0);
     }
@@ -2129,13 +2201,12 @@ async fn log_pca_diagnostics(
 
 /// PR-A 검증 로깅 — 그룹 입력 품질 진단.
 /// 종류별 그룹 수, 통과 페어 분포, 빈 그룹 비율, 최상위 productive 그룹.
-async fn log_group_diagnostics(
+fn log_group_diagnostics(
     pair_counts: &HashMap<String, usize>,
     market_pairs: &[PairResult],
-    groups: &Arc<RwLock<GroupsState>>,
+    groups: &GroupsSnapshot,
 ) {
-    let gs = groups.read().await;
-    if gs.groups.is_empty() {
+    if groups.groups.is_empty() {
         return;
     }
 
@@ -2144,7 +2215,7 @@ async fn log_group_diagnostics(
     // (그룹 수, 빈 그룹 수, 평균 멤버, 평균 페어)
     let mut kind_pair_sum: HashMap<String, usize> = HashMap::new();
     let mut kind_member_sum: HashMap<String, usize> = HashMap::new();
-    for g in &gs.groups {
+    for g in groups.groups.iter() {
         let kind = g.kind.as_str().to_string();
         let n_pairs = pair_counts.get(&g.id).copied().unwrap_or(0);
         let entry = by_kind.entry(kind.clone()).or_insert((0, 0, 0, 0));
@@ -2156,7 +2227,7 @@ async fn log_group_diagnostics(
         *kind_pair_sum.entry(kind).or_insert(0) += n_pairs;
     }
 
-    info!("[PR-A 진단] 그룹 입력 품질 — 총 {} 그룹, 시장 전체 통과 페어 {}", gs.groups.len(), market_pairs.len());
+    info!("[PR-A 진단] 그룹 입력 품질 — 총 {} 그룹, 시장 전체 통과 페어 {}", groups.groups.len(), market_pairs.len());
     let mut kinds: Vec<&String> = by_kind.keys().collect();
     kinds.sort();
     for k in kinds {
@@ -2176,7 +2247,7 @@ async fn log_group_diagnostics(
         if *n == 0 {
             break;
         }
-        let name = gs.by_id.get(*id).and_then(|i| gs.groups.get(*i)).map(|g| g.name.as_str()).unwrap_or("?");
+        let name = groups.name_of(id);
         info!("  · {id:40} ({name:20}) — {n} 페어");
     }
 }
