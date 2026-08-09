@@ -126,13 +126,16 @@ const COL_TOOLTIPS: Record<SortKey | 'pair', string> = {
 const FILTER_DEBOUNCE_MS = 350
 /** 테이블에 실제로 그리는 최대 행 수. 검색 시에도 반드시 적용 — 예전엔 검색 중엔 매칭
  *  전체를 무제한 렌더해서(4천 행+) 흔한 글자를 치면 화면이 멈췄다. */
-const MAX_RENDER_ROWS = 500
+const MAX_RENDER_ROWS = 150
 
 /** 칩(카테고리 제외·키워드 제외) 토글 디바운스(ms). 사용자가 여러 개를 연달아 누르는데
  *  토글마다 목록을 재요청하면 매번 수백 KB~MB를 새로 받고 500행을 재구축한다. 하이라이트는
  *  원본 state로 즉시 반영하고, **서버 요청만** 손이 멈춘 뒤 1회로 뭉친다. */
 const CHIP_DEBOUNCE_MS = 300
 
+/** 키워드 제외 프리셋 — 시장추세 바스켓형 허브(수백 페어를 도배하는 종목).
+ *  **전부 기본 ON**(사용자 요청 2026-08-10) — 켜둔 채로 쓰다가 필요할 때 해제한다.
+ *  localStorage 저장은 안 함(§22.2, 제외가 눌러앉으면 안 된다는 과거 피드백). */
 const QUICK_EXCLUDES: { label: string; term: string }[] = [
   { label: '코리아TOP10', term: '코리아top10' },
   { label: 'ESG사회책임', term: 'esg사회책임' },
@@ -204,7 +207,9 @@ export function StatArbPage() {
   const [search, setSearch] = useState<string>('')
   const [exclude, setExclude] = useState<string>('') // 종목명 단어/코드 제외 (쉼표 여러 개)
   // 빠른 제외 프리셋 토글 상태 — 기본 OFF(제외 안 함). 서버 필터로 적용.
-  const [quickExc, setQuickExc] = useState<Set<string>>(new Set())
+  const [quickExc, setQuickExc] = useState<Set<string>>(
+    () => new Set(QUICK_EXCLUDES.map((q) => q.term))
+  )
   const [sortKey, setSortKey] = useState<SortKey>('score')
   const [sortAsc, setSortAsc] = useState<boolean>(false) // 기본 내림차순
   const [loanRates, setLoanRates] = useState<Map<string, number>>(new Map())
