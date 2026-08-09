@@ -151,7 +151,9 @@ CSS 변수는 `globals.css`의 `@theme inline`에 정의. Tailwind 클래스로 
 ```bash
 ./start_dev.sh                                                                # 전체 (uvicorn + cargo×2 + vite, 로그 14일 회전)
 cd frontend && npx vite                                                       # 프론트만
-cd frontend && npx tsc --noEmit                                               # 타입 체크
+cd frontend && npx tsc --noEmit                                               # 타입 체크 (느슨 — 아래 주의)
+cd frontend && npm run build                                                  # ★ 진짜 게이트 (tsc -b + vite build)
+cd frontend && npx vite preview --port 4173                                   # 프로덕션 빌드 확인 (프록시 설정됨)
 cd frontend && npm run lint                                                   # ESLint
 cd backend && uvicorn main:app --host 0.0.0.0 --port 8100 --reload            # FastAPI만
 cd realtime && cargo build --release && ./target/release/lens-realtime        # Rust 실시간만
@@ -159,6 +161,12 @@ cd stat-arb-engine && cargo build --release && ./target/release/stat-arb-engine 
 ```
 
 **참고:** 테스트 프레임워크 미설정 (프론트: Vitest 없음, 백엔드: pytest 없음, Rust: 단위 테스트 정의 없음). 검증은 타입 체크 + lint + 실제 화면 동작 + agent 영향 범위 검증으로.
+
+> ⚠️ **`npx tsc --noEmit` 통과 = 빌드 통과가 아니다.** `npm run build`(`tsc -b`)가 더 엄격한
+> 설정(`noUnusedLocals` 등)을 써서 거기서만 잡히는 에러가 있다. 실제로 2026-08-10에
+> `tsc --noEmit`은 통과하는데 `npm run build`는 19건으로 실패해 **프로덕션 번들을 만들 수 없던
+> 상태**가 한동안 방치돼 있었다(내부망 zip 배포 불가). **프론트 변경 후에는 `npm run build`까지
+> 돌릴 것.** Node 20 필요: `. ~/.nvm/nvm.sh && nvm use 20`.
 
 **유틸 스크립트:**
 - `python3 scripts/scrape_ls_api_guide.py` — LS API 365개 TR 가이드 자동 갱신 (월 1회 권장, 결과: `docs/ls_api_guide/ls_api_full.md`)

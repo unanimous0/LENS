@@ -3,6 +3,7 @@ import { useSearchParams } from 'react-router-dom'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { cn, todayKst } from '@/lib/utils'
 import { useMarketStore } from '@/stores/marketStore'
+import type { EtfHistoryPoint } from '@/stores/marketStore'
 import { usePageStockSubscriptions } from '@/hooks/usePageStockSubscriptions'
 import { usePageInavSubscriptions } from '@/hooks/usePageInavSubscriptions'
 import { usePageOrderbookBulk } from '@/hooks/usePageOrderbookBulk'
@@ -691,7 +692,8 @@ export function EtfArbitragePage() {
         setMaster(masterItems)
         setLoadedAt(mEtf.loaded_at)
         const pdfItems: Record<string, EtfPdf> = {}
-        for (const [k, v] of Object.entries(mPdf.items ?? {} as Record<string, EtfPdf>)) {
+        const pdfSrc: Record<string, EtfPdf> = mPdf.items ?? {}
+        for (const [k, v] of Object.entries(pdfSrc)) {
           pdfItems[k] = { ...v, arbitrable: v.arbitrable ?? true }
         }
         setPdfs(pdfItems)
@@ -2196,7 +2198,9 @@ const STICKY_INHERIT_BG = { backgroundColor: 'inherit' as const }
 const EMPTY_SET: Set<string> = Object.freeze(new Set<string>()) as Set<string>
 // useSyncExternalStore 무한 루프 방지 — selector가 falsy/miss 시 *매번 새 빈 배열* 반환하면
 // React가 "변경됐다" 판단하고 무한 리렌더. 모듈 레벨 상수로 stable ref 보장.
-const EMPTY_HISTORY: readonly never[] = Object.freeze([]) as readonly never[]
+// (freeze는 readonly 타입을 만들지만 소비처(차트 props)는 mutable 배열 시그니처 — 읽기 전용으로만
+//  쓰이므로 단언으로 맞춘다. EMPTY_SET과 같은 패턴.)
+const EMPTY_HISTORY = Object.freeze([] as EtfHistoryPoint[]) as EtfHistoryPoint[]
 
 /** Sparkline — diffBp 시계열. signed 한 줄 라인 차트.
  * 색은 마지막 시점 부호로 결정 (양수=매수차 초록, 음수=매도차 빨강). */
@@ -2358,7 +2362,9 @@ const OrderbookPanel = memo(function OrderbookPanel({
 })
 
 /** 시계열 라인 차트 — 선택 ETF의 차익bp(diffBp) 추이. signed: 양수=매수차(초록), 음수=매도차(빨강). */
-const TimeSeriesChart = memo(function TimeSeriesChart({ code, etfName, history, isAuto }: { code: string | null; etfName: string; history: { t: number; diffBp: number }[]; isAuto: boolean }) {
+// isAuto(선택 없이 자동 선정된 종목인지)는 현재 렌더에 쓰지 않지만 prop은 유지 — memo 비교 대상이라
+// 자동↔수동 전환 시 리렌더 트리거 역할을 한다.
+const TimeSeriesChart = memo(function TimeSeriesChart({ code, etfName, history }: { code: string | null; etfName: string; history: { t: number; diffBp: number }[]; isAuto: boolean }) {
   if (!code) {
     return (
       <div className="flex h-full items-center justify-center text-[11px] text-t3">
@@ -2482,7 +2488,7 @@ function formatHM(ts: number): string {
  *  - price/nav: 같은 좌측 y축. 배경 라인 (흐릿하게)
  */
 const PriceNavChart = memo(function PriceNavChart({
-  code, etfName, history, isAuto,
+  code, etfName, history,
 }: {
   code: string | null; etfName: string;
   history: { t: number; price: number; nav: number; priceNavBp: number }[];

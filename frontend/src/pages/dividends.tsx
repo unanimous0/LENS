@@ -407,7 +407,7 @@ export function DividendsPage() {
                         <Cell key={i} fill={h.confirmed ? 'var(--color-up)' : 'var(--color-warning)'} />
                       ))}
                       <LabelList dataKey="amount" position="top"
-                        formatter={(v: number) => v.toLocaleString()}
+                        formatter={(v) => (typeof v === 'number' ? v.toLocaleString() : v)}
                         style={{
                           fill: 'var(--color-t2)',
                           fontSize: 10,

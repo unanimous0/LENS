@@ -66,7 +66,7 @@ export function isRankOp(op: Op): boolean {
 }
 
 /** 편집 조건 → 스키마 Condition. 유효하지 않으면 null (예: 값 미입력). */
-export function toCondition(idx: CatalogIndex, c: EditCond): Condition | null {
+export function toCondition(_idx: CatalogIndex, c: EditCond): Condition | null {
   if (!c.field) return null
   if (c.op === 'is_true' || c.op === 'is_false') {
     return { field: c.field, op: c.op }

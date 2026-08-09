@@ -81,7 +81,8 @@ function fmtMonth(m: string) {
 const TABLE_MAX_H = "max-h-[403px]"
 
 // --- 종목 행 + hover 상세 tooltip (fixed position) ---
-function StockRow({ item, no, cols, showSettlement = false, counterpartyLabel = "대여자", dailyLabel = "1D 비용" }: { item: CostItem; no?: number; cols: "stock" | "expensive"; showSettlement?: boolean; counterpartyLabel?: string; dailyLabel?: string }) {
+// dailyLabel은 호출부가 LenderRow와 동일 시그니처로 넘기지만 이 행의 툴팁엔 1D 컬럼이 없어 미사용 (타입은 유지).
+function StockRow({ item, no, cols, showSettlement = false, counterpartyLabel = "대여자" }: { item: CostItem; no?: number; cols: "stock" | "expensive"; showSettlement?: boolean; counterpartyLabel?: string; dailyLabel?: string }) {
   const details = item.details ?? []
   const [tooltip, setTooltip] = useState<{ x: number; y: number; above: boolean } | null>(null)
 

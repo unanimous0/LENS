@@ -86,7 +86,7 @@ function EtfRow({ snap }: { snap: EtfFairValueSnapshot }) {
           {snap.etf_price > 0 ? snap.etf_price.toLocaleString('ko-KR') : '-'}원
         </div>
       </td>
-      {HEDGE_ROUTE_COLUMNS.map((col, idx) => {
+      {HEDGE_ROUTE_COLUMNS.map((col) => {
         const cell = snap.cells.find((c) => c.route.kind === col.kind)
         const isBestBuy = snap.best_route_buy != null && snap.cells[snap.best_route_buy]?.route.kind === col.kind
         const isBestSell = snap.best_route_sell != null && snap.cells[snap.best_route_sell]?.route.kind === col.kind

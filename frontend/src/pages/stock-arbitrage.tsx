@@ -281,7 +281,7 @@ export function StockArbitragePage() {
   const rows = useMemo(() => {
     if (!master) return [] as Row[]
     const today = todayKst()
-    return master.items.map((item, idx): Row => {
+    return master.items.map((item): Row => {
       const spot = stockTicks[item.base_code]
       // 선택된 월물에 따라 선물 데이터 참조
       const sel = month === 'back' && item.back ? item.back : item.front
@@ -325,9 +325,8 @@ export function StockArbitragePage() {
       const tp = sp > 0 ? sp * (1 + (rate / 100) * dLeft / 365) - totalDividend : 0
       const tb = tp > 0 ? tp - sp : 0
       const gap = mb - (basisMode === 'zero' ? 0 : tb)
-      const ofp = otherFut?.price ?? other?.price ?? 0
+      const ofp = otherFut?.price ?? 0  // 실시간 JC0 체결만 (마스터 JSON엔 가격 없음)
       // 스프레드: 항상 원월 - 근월
-      const frontP = month === 'front' ? fp : ofp
       const backP = month === 'front' ? ofp : fp
       return {
         baseCode: item.base_code, baseName: item.base_name,
@@ -687,7 +686,8 @@ function Th({ children, className, sort, active, asc, left, sticky, style }: {
   )
 }
 
-function C({ children, c, sub, mute, className }: {
+// sub/mute는 호출부에 남아있는 레거시 플래그 — 색은 c(또는 기본 text-white)로만 결정한다 (타입은 유지).
+function C({ children, c, className }: {
   children: React.ReactNode; c?: string; sub?: boolean; mute?: boolean; className?: string
 }) {
   return (

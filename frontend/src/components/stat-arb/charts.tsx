@@ -108,7 +108,7 @@ const dailyLocalization = {
 // 공통 — 컨테이너 resize observer
 // ---------------------------------------------------------------------------
 function useResize(
-  ref: React.RefObject<HTMLDivElement>,
+  ref: React.RefObject<HTMLDivElement | null>,
   chartRef: React.RefObject<IChartApi | null>,
 ) {
   useEffect(() => {
