@@ -155,6 +155,28 @@ pub struct IndexFuturesTick {
     pub timestamp: String,
 }
 
+/// 지수선물 총잔량 틱 (LS FH9 호가 — KOSPI200 / KOSDAQ150).
+///
+/// `OrderbookTick`(H1_/HA_/JH0)과 **별도 타입**인 이유: "선물" 탭은 호가 레벨이 아니라
+/// **매도/매수 총잔량과 그 비율**만 본다. FH9 body의 `totofferrem`/`totbidrem`이 총잔량을
+/// 직접 주므로 5호가 레벨 파싱·전송이 통째로 불필요 — 틱이 매우 잦은 스트림이라
+/// 얇은 전용 타입이 대역폭·직렬화 양쪽에서 유리.
+#[derive(Debug, Clone, Serialize)]
+pub struct IndexFuturesDepthTick {
+    pub code: String,
+    /// 상품 구분: "kospi200" | "mini_k200" | "kosdaq150". IndexFuturesTick과 동일 체계.
+    pub product: &'static str,
+    /// 총 매도잔량 (FH9 `totofferrem`)
+    pub total_ask_qty: u64,
+    /// 총 매수잔량 (FH9 `totbidrem`)
+    pub total_bid_qty: u64,
+    /// 매수÷매도. >1이면 매수우위. 매도잔량 0이면 None (0 나눗셈 회피).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ratio: Option<f64>,
+    /// 수신 시각 (epoch ms). FH9 `hotime`(HHMMSS)은 초 단위라 서버 시계 사용.
+    pub time_ms: i64,
+}
+
 /// 호가 단일 레벨 (가격 + 잔량)
 #[derive(Debug, Clone, Serialize)]
 pub struct OrderbookLevel {

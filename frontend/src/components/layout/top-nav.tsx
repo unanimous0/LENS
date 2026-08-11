@@ -15,6 +15,7 @@ const tabs = [
   { label: "통계차익", href: "/stat-arb" },
   { label: "LP 매트릭스", href: "/lp-matrix" },
   { label: "배당", href: "/dividends" },
+  { label: "선물", href: "/futures" },
 ]
 
 export function TopNav() {

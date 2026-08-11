@@ -233,6 +233,26 @@ Mock:   MockFeed가 직접 프론트엔드 포맷 생성 → 브로드캐스트 
 - `basis`: 시장 베이시스 = 선물가 - 현물가 (순수 가격 차이, bp 아님)
 - bp 변환 필요 시 프론트엔드에서 `basis / underlying_price × 10000`
 
+**지수선물 총잔량 틱** (선물 탭, 2026-08-11):
+```json
+{
+  "type": "index_futures_depth",
+  "data": {
+    "code": "A0169000",
+    "product": "kospi200",
+    "total_ask_qty": 13136,
+    "total_bid_qty": 14458,
+    "ratio": 1.1006,
+    "time_ms": 1786406112000
+  }
+}
+```
+
+- FH9의 `totofferrem`/`totbidrem` 그대로 (5호가 합산 불필요 — TR이 총잔량을 직접 준다)
+- `ratio` = 매수총잔량 ÷ 매도총잔량 (ask==0이면 필드 생략)
+- product별 **500ms throttle**. 재접속 스냅샷 캐시 포함 (key `index_futures_depth:{product}`)
+- 당일 히스토리는 WS가 아니라 REST `GET /futures/depth-history` — 아래 "지수선물 총잔량 수집" 섹션
+
 **주의**: `timestamp`는 ISO 8601 문자열.
 
 ### 채널/토픽 구조
@@ -245,6 +265,59 @@ Mock:   MockFeed가 직접 프론트엔드 포맷 생성 → 브로드캐스트 
 /ws/basis           — 종목차익 베이시스 스트림 (향후)
 /ws/etf             — ETF NAV/괴리 스트림 (향후)
 ```
+
+---
+
+## 지수선물 총잔량 수집 — 선물 탭 (2026-08-11~12)
+
+`/futures` 탭(코스피200·코스닥150 지수선물 매도/매수 총잔량 + 비율 + 당일 차트)의 서버측 인프라.
+요구사항이 "브라우저를 닫아도 개장부터의 차트"라서 **수집·보관을 브라우저가 아닌 이 서비스가 상시 수행**한다.
+
+### 구독 (FH9)
+
+- **FH9(지수선물 호가)를 키A로 상시 구독** — 근월물 01(K200)·06(KQ150) 2종. mini(05)는 제외.
+- **FC9와 연결 분리**: FC9 = conn_base 700 / FH9 = conn_base **710** + 전용 `index_futures_depth_stream_us`.
+  같은 연결에 두면 FH9(초당 수십 틱)가 FC9 stall을 watchdog·`/debug/stats` 양쪽에서 가린다
+  (JC0 크로스마스킹과 동일 패턴). 분리 덕에 FH9 stall도 독립 감지·재접속된다.
+- front-month resolve는 FC9와 동일 (t8467, `ls_rest.rs`). 월물 롤 재resolve 부재도 FC9와 같은 한계 (후속 트랙).
+- `/debug/stats`: `index_futures_depth_age_sec` (FC9의 `index_futures_age_sec`와 독립).
+
+### 당일 히스토리 (`realtime/src/futures_depth.rs`)
+
+- product별 10초 샘플 링버퍼(상한 3,000점). 샘플 포인트(REST 필드명은 페이로드 절약용 축약):
+  `t`(epoch초) / `a`(매도총잔량) / `b`(매수총잔량) / `p`(선물가) / `v`(누적거래량) /
+  `oi`(미결제약정) / `u`(기초지수) / `th`(이론가) — 뒤 3개는 FC9 최신값 sticky, 0 = 미상 (2026-08-12 추가, `#[serde(default)]`로 구포맷 스냅샷 호환).
+- p/v/oi/u/th는 `main.rs` bridge의 `observe()` 훅에서 FC9·FH9를 한 지점에서 합쳐 기록 (ls_api·mock 공통 커버).
+- **파일 스냅샷** `data/futures_depth_intraday.json` (volume_cache.rs 패턴): 6샘플마다 spawn_blocking flush + SIGINT 시 최종 flush.
+  기동 시 같은 KST 날짜면 복원, 아니면 폐기. 날짜 롤오버 시 sticky 포함 전체 리셋.
+- **mock/live 혼입 차단**: 스냅샷·메모리에 `source`("mock"/"live") 태깅. 기동/모드 전환 시 `set_source()`가
+  소스 불일치면 메모리+파일 폐기, 전환 직후 1.5s 격리 창으로 in-flight 틱 차단.
+  ⚠️ live→mock 전환은 당일 실데이터를 폐기하므로 장중 mock 전환 주의.
+- 장 phase 게이트: 장중에만 append (mock 모드는 게이트 해제 — 장외 개발용).
+
+### REST
+
+`GET /futures/depth-history` (프론트는 vite 프록시로 `/realtime/futures/depth-history`):
+
+```json
+{"date":"20260811","source":"live","products":{
+  "kospi200":{"code":"A0169000","points":[{"t":1786406112,"a":13136,"b":14458,"p":991.3,"v":57993,"oi":312450,"u":329.4,"th":992.1}]},
+  "kosdaq150":{"code":"A0669000","points":[...]}}}
+```
+
+### 프론트 (`frontend/src/pages/futures.tsx`, `components/futures/`)
+
+- 시딩 = REST 히스토리, 라이브 = WS `index_futures_depth` + 기존 `index_futures_tick`. 페이지별 구독 훅 불필요 (서버 상시 구독).
+- 시간축 **09:00~15:45 KST 고정** (whitespace spacer + setVisibleRange). 세션 밖 표본/틱은 차트 제외,
+  세션 내 표본 0이면(장외 mock) fitContent 폴백. 공통 규칙은 `components/futures/session.ts` 한 벌.
+- 분봉(1~60분)은 **클라이언트 집계** (10초 샘플 근사 — 샘플 사이 고저 미포착). 당일 비율 통계(percentile 등)도 클라이언트 계산 — 서버/DB 무관.
+- 하단 미니 차트: OI 추이 / 베이시스(시장 = p−u, 이론 = th−u).
+
+### 한계
+
+- **internal 피드는 지수선물 미지원** (기존 TODO) → 내부망 모드에서 선물 탭 빈 화면.
+- SIGTERM은 graceful flush 훅(ctrl_c)을 안 탐 — 손실 상한 = 증분 flush 주기 ~30초 (volume_cache와 동일).
+- 총잔량은 LS에 과거분 조회 TR이 없어 **백필 불가** — 서비스가 꺼져 있던 구간은 영구 갭.
 
 ---
 

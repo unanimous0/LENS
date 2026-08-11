@@ -1,7 +1,7 @@
 import { useEffect } from 'react'
 import { useMarketStore } from '../stores/marketStore'
 import { useLpStore } from '../stores/lpStore'
-import type { IndexFuturesTick } from '../types/market'
+import type { IndexFuturesDepthTick, IndexFuturesProduct, IndexFuturesTick } from '../types/market'
 
 export function useWebSocket() {
   useEffect(() => {
@@ -18,6 +18,8 @@ export function useWebSocket() {
     let stockBuf: Record<string, any> = {}
     let futuresBuf: Record<string, any> = {}
     let indexFuturesBuf: Record<string, IndexFuturesTick> = {}
+    // 총잔량(FH9)은 product 키 — 월물 롤오버와 무관하게 상품당 1행.
+    let indexDepthBuf: Partial<Record<IndexFuturesProduct, IndexFuturesDepthTick>> = {}
     let obBuf: Record<string, any> = {}
     let volBuf: Record<string, number> = {}
     let dirty = false
@@ -32,6 +34,7 @@ export function useWebSocket() {
       const hasStock = Object.keys(stockBuf).length > 0
       const hasFutures = Object.keys(futuresBuf).length > 0
       const hasIndexFutures = Object.keys(indexFuturesBuf).length > 0
+      const hasIndexDepth = Object.keys(indexDepthBuf).length > 0
       const hasOb = Object.keys(obBuf).length > 0
 
       const hasVol = Object.keys(volBuf).length > 0
@@ -40,6 +43,7 @@ export function useWebSocket() {
       if (hasStock) { store.batchUpdateStocks(stockBuf); stockBuf = {} }
       if (hasFutures) { store.batchUpdateFutures(futuresBuf); futuresBuf = {} }
       if (hasIndexFutures) { store.batchUpdateIndexFutures(indexFuturesBuf); indexFuturesBuf = {} }
+      if (hasIndexDepth) { store.batchUpdateIndexFuturesDepth(indexDepthBuf); indexDepthBuf = {} }
       if (hasOb) { store.batchUpdateOrderbooks(obBuf); obBuf = {} }
       if (hasVol) { store.batchUpdateVolumes(volBuf); volBuf = {} }
     }
@@ -77,6 +81,7 @@ export function useWebSocket() {
         else if (m.type === 'stock_tick') stockBuf[m.data.code] = m.data
         else if (m.type === 'futures_tick') futuresBuf[m.data.code] = m.data
         else if (m.type === 'index_futures_tick') indexFuturesBuf[m.data.code] = m.data
+        else if (m.type === 'index_futures_depth') indexDepthBuf[m.data.product as IndexFuturesProduct] = m.data
         else if (m.type === 'orderbook_tick') obBuf[m.data.code] = m.data
         else if (m.type === 'volume_tick') volBuf[m.data.code] = m.data.cum_volume
         else if (m.type === 'hello') {

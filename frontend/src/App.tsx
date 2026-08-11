@@ -28,6 +28,8 @@ import type { NetworkMode } from './types/market'
 // dividends는 recharts/react-virtual 의존성이 무거워 lazy-load.
 // 내부망 등 일부 환경에서 패키지 없을 때 다른 페이지가 함께 transform 실패하지 않도록 격리.
 const DividendsPage = lazy(() => import('./pages/dividends').then((m) => ({ default: m.DividendsPage })))
+// 선물 탭도 lazy — lightweight-charts 번들이 무겁고 진입 빈도가 낮다.
+const FuturesPage = lazy(() => import('./pages/futures').then((m) => ({ default: m.FuturesPage })))
 
 function AppLayout() {
   useWebSocket()
@@ -83,6 +85,7 @@ function AppLayout() {
             <Route path="/stat-arb/positions/:id" element={<StatArbPositionDetailPage />} />
             <Route path="/lp-matrix" element={<LpMatrixPage />} />
             <Route path="/dividends" element={<Suspense fallback={<div className="p-4 text-sm text-t3">로드 중…</div>}><DividendsPage /></Suspense>} />
+            <Route path="/futures" element={<Suspense fallback={<div className="p-4 text-sm text-t3">로드 중…</div>}><FuturesPage /></Suspense>} />
           </Routes>
         </div>
       </main>

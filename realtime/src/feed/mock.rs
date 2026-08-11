@@ -9,7 +9,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 use crate::model::message::WsMessage;
-use crate::model::tick::{EtfTick, FuturesTick, IndexFuturesTick, OrderbookLevel, OrderbookTick, StockTick};
+use crate::model::tick::{EtfTick, FuturesTick, IndexFuturesDepthTick, IndexFuturesTick, OrderbookLevel, OrderbookTick, StockTick};
 
 use super::{MarketFeed, SubCommand};
 
@@ -103,6 +103,13 @@ fn walk_price(prev: f64, base: f64, rng: &mut impl Rng) -> f64 {
     snap(bounded)
 }
 
+/// 잔량 랜덤워크 — 가격보다 훨씬 변동이 커서(±2%) 비율이 눈에 띄게 진동하게.
+/// base 대비 ±60% 범위로 제한, 평균회귀 2%.
+fn walk_qty(prev: f64, base: f64, rng: &mut impl Rng) -> f64 {
+    let raw = prev * (1.0 + gauss(rng, 0.02)) + (base - prev) * 0.02;
+    raw.clamp(base * 0.4, base * 1.6).round()
+}
+
 /// 호가 단위에 맞춰 가격 정렬.
 fn snap(price: f64) -> f64 {
     let ts = tick_size(price);
@@ -180,6 +187,10 @@ fn make_index_futures_tick(
     product: &'static str,
     price: f64,
     underlying: f64,
+    // volume: 누적 거래량 — 호출부가 단조 증가로 관리 (구간 거래량 diff가 음수가 되지 않게).
+    volume: u64,
+    // oi: 미결제약정 — 호출부가 완만한 랜덤워크로 관리 (OI 추이 차트가 의미를 갖게).
+    oi: i64,
     rng: &mut impl Rng,
 ) -> IndexFuturesTick {
     let now = Utc::now().format("%Y-%m-%dT%H:%M:%S%.6f").to_string();
@@ -193,9 +204,9 @@ fn make_index_futures_tick(
         underlying_index: round2(underlying),
         basis: round2(price - underlying),
         theory_price: Some(round2(underlying * 1.0008)),
-        volume: rng.random_range(1_000..80_000),
+        volume,
         is_initial: false,
-        open_interest: Some(250_000),
+        open_interest: Some(oi),
         open_interest_change: Some(rng.random_range(-2_000..2_000)),
         timestamp: now,
     }
@@ -264,15 +275,17 @@ struct MockIndexFuture {
     product: &'static str,
     base_fut: f64,
     base_idx: f64,
+    /// 총잔량(매도/매수) 랜덤워크 기준값 (FH9 totofferrem/totbidrem 실측 오더).
+    base_rem: f64,
 }
 
 /// 지수선물 3종 합성 (FC9 대응). 코드는 A+상품2+연1+월1+000 형식 예시(9월물).
 /// base_idx는 2026-07-06 실측 근사 (KOSPI200 1293.13 / KOSDAQ150 1487.98) — mock FV_futures가
 /// matrix-config의 prev_index_close와 정합해 r_implied가 현실적(수십bp)이 되게. 선물은 +소폭 콘탱고.
 static MOCK_INDEX_FUTURES: &[MockIndexFuture] = &[
-    MockIndexFuture { code: "A0169000", name: "코스피200 F 2609", product: "kospi200", base_fut: 1295.5, base_idx: 1293.13 },
-    MockIndexFuture { code: "A0569000", name: "미니 코스피200 F 2609", product: "mini_k200", base_fut: 1295.5, base_idx: 1293.13 },
-    MockIndexFuture { code: "A0669000", name: "코스닥150 F 2609", product: "kosdaq150", base_fut: 1491.0, base_idx: 1487.98 },
+    MockIndexFuture { code: "A0169000", name: "코스피200 F 2609", product: "kospi200", base_fut: 1295.5, base_idx: 1293.13, base_rem: 15_000.0 },
+    MockIndexFuture { code: "A0569000", name: "미니 코스피200 F 2609", product: "mini_k200", base_fut: 1295.5, base_idx: 1293.13, base_rem: 3_000.0 },
+    MockIndexFuture { code: "A0669000", name: "코스닥150 F 2609", product: "kosdaq150", base_fut: 1491.0, base_idx: 1487.98, base_rem: 6_000.0 },
 ];
 
 pub struct MockFeed;
@@ -291,6 +304,12 @@ impl MarketFeed for MockFeed {
         let mut stock_prices: HashMap<String, f64> = HashMap::new();   // 현재가
         let mut etf_navs: HashMap<String, f64> = HashMap::new();        // NAV (basket 기반)
         let mut futures_prices: HashMap<String, f64> = HashMap::new();  // 선물가
+        // 지수선물 총잔량 (FH9 대응) — 코드 → (매도총잔량, 매수총잔량). 랜덤워크 누적.
+        let mut index_depth: HashMap<&'static str, (f64, f64)> = HashMap::new();
+        // 지수선물 누적 거래량 — 단조 증가여야 구간 거래량(인접 diff)이 의미를 가진다.
+        let mut index_fut_volume: HashMap<&'static str, u64> = HashMap::new();
+        // 지수선물 미결제약정 — 완만한 랜덤워크 ("선물" 탭 OI 추이 차트용).
+        let mut index_fut_oi: HashMap<&'static str, i64> = HashMap::new();
 
         // PDF 기반 NAV 계산: ETF 코드 → 현재 stock_prices로 basket 합 / cu_unit.
         let compute_basket_nav = |code: &str, stock_prices: &HashMap<String, f64>| -> Option<f64> {
@@ -437,7 +456,33 @@ impl MarketFeed for MockFeed {
                     let next = walk_price(prev, f.base_fut, &mut rng);
                     futures_prices.insert(f.code.to_string(), next);
                     let idx = walk_price(f.base_idx, f.base_idx, &mut rng);
-                    if tx.send(WsMessage::IndexFuturesTick(make_index_futures_tick(f.code, f.name, f.product, next, idx, &mut rng))).await.is_err() { return; }
+                    let vol = index_fut_volume.entry(f.code).or_insert(12_000);
+                    *vol += rng.random_range(50..900);
+                    let oi = index_fut_oi.entry(f.code).or_insert(250_000);
+                    // 완만한 증감 (실제 OI는 하루 수 % 내에서 움직인다)
+                    *oi = (*oi + rng.random_range(-400..420)).clamp(200_000, 300_000);
+                    if tx.send(WsMessage::IndexFuturesTick(make_index_futures_tick(f.code, f.name, f.product, next, idx, *vol, *oi, &mut rng))).await.is_err() { return; }
+                }
+            }
+
+            // ── 지수선물 총잔량 (FH9 대응 IndexFuturesDepth) — 1.5초 간격 ──
+            // 실 피드는 product별 500ms throttle이지만 mock은 부하가 없으니 여유롭게.
+            // 매도/매수 총잔량을 각각 평균회귀 랜덤워크시켜 비율(매수÷매도)이 자연스럽게 진동.
+            if iter_count % 3 == 0 {
+                for f in MOCK_INDEX_FUTURES {
+                    let (ask, bid) = index_depth.entry(f.code).or_insert((f.base_rem, f.base_rem));
+                    *ask = walk_qty(*ask, f.base_rem, &mut rng);
+                    *bid = walk_qty(*bid, f.base_rem, &mut rng);
+                    let (a, b) = (*ask as u64, *bid as u64);
+                    let msg = WsMessage::IndexFuturesDepth(IndexFuturesDepthTick {
+                        code: f.code.to_string(),
+                        product: f.product,
+                        total_ask_qty: a,
+                        total_bid_qty: b,
+                        ratio: if a > 0 { Some((b as f64 / a as f64 * 10_000.0).round() / 10_000.0) } else { None },
+                        time_ms: Utc::now().timestamp_millis(),
+                    });
+                    if tx.send(msg).await.is_err() { return; }
                 }
             }
 

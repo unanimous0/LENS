@@ -1,5 +1,6 @@
 mod calc;
 mod feed;
+mod futures_depth;
 mod holidays;
 mod model;
 mod phase;
@@ -181,6 +182,8 @@ fn msg_pending_key(msg: &WsMessage) -> String {
         WsMessage::StockTick(t) => format!("stock_tick:{}", t.code),
         WsMessage::FuturesTick(t) => format!("futures_tick:{}", t.code),
         WsMessage::IndexFuturesTick(t) => format!("index_futures_tick:{}", t.code),
+        // 총잔량은 product당 1행 — 월물 롤오버로 code가 바뀌어도 같은 슬롯을 갱신.
+        WsMessage::IndexFuturesDepth(t) => format!("index_futures_depth:{}", t.product),
         WsMessage::EtfTick(t) => format!("etf_tick:{}", t.code),
         WsMessage::OrderbookTick(t) => format!("orderbook_tick:{}", t.code),
         WsMessage::VolumeTick(t) => format!("volume_tick:{}", t.code),
@@ -200,6 +203,8 @@ fn msg_cache_key(msg: &WsMessage) -> Option<String> {
         WsMessage::FuturesTick(t) => Some(format!("futures_tick:{}", t.code)),
         // 지수선물 캐시 — 신규 클라이언트 연결 시 마지막 값 즉시 복원.
         WsMessage::IndexFuturesTick(t) => Some(format!("index_futures_tick:{}", t.code)),
+        // 총잔량도 캐시 — "선물" 탭 진입 즉시 카드가 채워지게 (product 단위 key).
+        WsMessage::IndexFuturesDepth(t) => Some(format!("index_futures_depth:{}", t.product)),
         WsMessage::EtfTick(t) => Some(format!("etf_tick:{}", t.code)),
         WsMessage::OrderbookTick(_) => None,
         // 거래대금은 캐시 — 신규 클라이언트가 전체 순위를 즉시 매길 수 있게.
@@ -293,6 +298,9 @@ async fn main() {
     // 초기 모드
     let initial_mode = std::env::var("FEED_MODE").unwrap_or_else(|_| "mock".to_string());
     info!("Initial feed mode: {initial_mode}");
+    // "선물" 탭 총잔량 시계열의 소스 확정 — 디스크 스냅샷이 다른 소스(mock↔live)면 여기서 폐기.
+    // mock은 장 phase 게이트도 함께 해제돼 장 외 오프라인 검증이 가능해진다.
+    futures_depth::set_source(&initial_mode);
     let (initial_handle, initial_sub_tx) =
         spawn_feed(&initial_mode, tx.clone(), &shared, &stats, &feed_last_data_us, &fetched_stocks, &failed_stocks).expect("Failed to spawn initial feed");
 
@@ -349,6 +357,8 @@ async fn main() {
                     let Some(mut msg) = maybe_msg else { break };
                     // LP 매트릭스 — 가격 dictionary 갱신 (sync, lock-free)
                     matrix_for_bridge.handle_tick(&msg);
+                    // "선물" 탭 당일 총잔량 히스토리 — FC9 price/volume 추적 + FH9 10초 샘플.
+                    futures_depth::observe(&msg);
                     // StockTick prev_close 백필
                     if let WsMessage::StockTick(ref mut t) = msg {
                         match t.prev_close {
@@ -549,6 +559,7 @@ async fn main() {
         .route("/orderbook/unsubscribe", post(unsubscribe_orderbook))
         .route("/debug/stats", get(debug_stats))
         .route("/intraday/today", get(intraday_today))
+        .route("/futures/depth-history", get(futures_depth_history))
         .route("/basis-route", get(basis_route))
         .with_state(state.clone())
         .layer(cors);
@@ -577,6 +588,8 @@ async fn main() {
                 h.cancel.cancel();
                 let _ = h.join.await;
             }
+            // 당일 총잔량 히스토리 최종 flush — 재기동 시 오전 구간 보존.
+            futures_depth::flush();
         })
         .await
         .expect("Server error");
@@ -795,6 +808,13 @@ async fn intraday_today(
     Json(serde_json::json!({"code": q.code, "interval_seconds": ncnt * 60, "bars": bars}))
 }
 
+/// 당일(개장~현재) 지수선물 총잔량 히스토리 — "선물" 탭 차트 시딩용.
+/// 서버가 10초 간격으로 상시 샘플링하므로 브라우저를 껐다 켜도 개장부터 보인다.
+/// 응답: {date, products: {kospi200: {code, points:[{t,a,b,p,v}]}, kosdaq150: {...}}}
+async fn futures_depth_history() -> Json<futures_depth::DepthHistory> {
+    Json(futures_depth::snapshot())
+}
+
 /// 런타임 피드 모드 전환. 기존 feed cancel → await join → 새 feed spawn.
 const MODE_COOLDOWN_SECS: u64 = 5;
 
@@ -883,6 +903,9 @@ async fn set_mode(
     // 그 반대로 stale EtfState (price/nav/volume)가 다음 모드에 남는 것 방지.
     state.stock_prev_close.clear();
     state.etf_state.clear();
+    // "선물" 탭 총잔량 시계열도 퍼지 — mock 합성 잔량이 실데이터 시계열에 이어붙거나 그 반대가
+    // 되지 않게. **반드시 old feed join 이후**에 호출 (그 전에 하면 이전 피드가 계속 append).
+    futures_depth::set_source(&mode);
     *handle_guard = Some(new_handle);
     *state.sub_tx.write().unwrap() = new_sub_tx;
     *state.feed_mode.write().unwrap() = mode.clone();
@@ -1495,13 +1518,18 @@ async fn debug_stats(State(state): State<AppState>) -> Json<serde_json::Value> {
         .unwrap_or(0);
     let futures_master_stale = loaded_mtime > 0 && current_mtime > loaded_mtime;
 
-    // FC9(지수선물) 스트림 age — 0이면 아직 해석/수신 전 → null.
-    let index_fut_us = feed::ls_api::index_futures_stream_us().load(Ordering::Relaxed);
-    let index_futures_age_sec = if index_fut_us == 0 {
-        serde_json::Value::Null
-    } else {
-        serde_json::json!(now_us().saturating_sub(index_fut_us) as f64 / 1_000_000.0)
+    // FC9/FH9(지수선물) 스트림 age — 0이면 아직 해석/수신 전 → null.
+    // 두 스트림은 연결·atomic이 분리돼 있어 서로를 마스킹하지 않는다 (FC9 stall 관측 가능).
+    let stream_age = |us: u64| {
+        if us == 0 {
+            serde_json::Value::Null
+        } else {
+            serde_json::json!(now_us().saturating_sub(us) as f64 / 1_000_000.0)
+        }
     };
+    let index_futures_age_sec = stream_age(feed::ls_api::index_futures_stream_us().load(Ordering::Relaxed));
+    let index_futures_depth_age_sec =
+        stream_age(feed::ls_api::index_futures_depth_stream_us().load(Ordering::Relaxed));
 
     Json(serde_json::json!({
         "uptime_sec": uptime_s,
@@ -1537,6 +1565,8 @@ async fn debug_stats(State(state): State<AppState>) -> Json<serde_json::Value> {
         // FC9 스트림 전용 마지막 데이터 age (초). JC0과 분리된 idle 판정 atomic 그대로 노출.
         // null = 아직 해석 전 (mock/internal 모드 포함). 해석 직후엔 anchor 시각 기준.
         "index_futures_age_sec": index_futures_age_sec,
+        // FH9(총잔량) 스트림 age. "선물" 탭이 stale인지 판단용 — FC9와 독립.
+        "index_futures_depth_age_sec": index_futures_depth_age_sec,
         "serialize": {
             "calls": ser_calls,
             "total_ns": ser_ns,

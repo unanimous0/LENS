@@ -12,7 +12,7 @@ use tracing::{debug, info, warn};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::model::message::WsMessage;
-use crate::model::tick::{EtfTick, FuturesTick, IndexFuturesTick, OrderbookLevel, OrderbookTick, StockTick};
+use crate::model::tick::{EtfTick, FuturesTick, IndexFuturesDepthTick, IndexFuturesTick, OrderbookLevel, OrderbookTick, StockTick};
 use crate::Stats;
 
 use super::{MarketFeed, SubCommand};
@@ -465,10 +465,19 @@ impl MarketFeed for LsApiFeed {
             &futures_to_spot, &tx, &cancel, &futures_cancel, &stats, &last_data_us, &last_subscribe_us, &last_data_futures, 100,
         );
 
-        // ─── 지수선물 (FC9) — LP FV_futures 앵커 (lp-system-design.md §13.3-A / §13.7 Phase 2) ───
-        // 기동 시 t8467로 KOSPI200/미니/KOSDAQ150 front-month 해석 → 전용 FC9 연결(키A) 스폰.
+        // ─── 지수선물 (FC9 체결 + FH9 호가) ───
+        // FC9: LP FV_futures 앵커 (lp-system-design.md §13.3-A / §13.7 Phase 2)
+        // FH9: 총잔량(매도/매수) — "선물" 탭 비율 추이.
+        // 기동 시 t8467로 KOSPI200/미니/KOSDAQ150 front-month 해석 → 전용 연결(키A) 스폰.
         // 실패해도 기동은 막지 않음 (지수선물 없이 진행). 월물 토글(futures_cancel)과 무관하게
         // 항상 살아있도록 별도 cancel 토큰(global cancel에만 종속) 사용.
+        //
+        // ⚠️ **FC9와 FH9는 연결을 분리**한다 (구독 수로는 한 연결에 다 들어가지만).
+        // run_single_connection의 idle 판정은 "그 연결에 뭐라도 왔는가"라서, 초당 수십 틱인
+        // FH9와 합치면 FC9만 stall해도 idle 미발동 + /debug/stats의 index_futures_age_sec가
+        // fresh로 보인다 → LP FV_futures 앵커가 조용히 굳는다. JC0↔FC9 크로스마스킹(2026-05-15)과
+        // 같은 원리. 대가는 키A WS 연결 +1(구독 2개)이며, 그 대신 FH9 stall도 독립적으로
+        // 감지·재접속된다("선물" 탭 stale 방지).
         {
             let ak = self.app_key.clone();
             let as_ = self.app_secret.clone();
@@ -482,24 +491,41 @@ impl MarketFeed for LsApiFeed {
             let last_subscribe_us = self.last_subscribe_us.clone();
             // FC9 전용 stream atomic — JC0의 last_data_futures_us와 공유 금지 (크로스마스킹).
             let stream_us = index_futures_stream_us().clone();
+            // FH9 전용 stream atomic — 위와 같은 이유로 FC9와도 분리.
+            let depth_stream_us = index_futures_depth_stream_us().clone();
             tokio::spawn(async move {
                 // t8467은 마스터라 장 외에도 가능. REST 키는 시간대 기준(rest_credentials).
                 let (ak_r, as_r) = super::ls_rest::rest_credentials();
                 match super::ls_rest::fetch_index_futures_front_months(&ak_r, &as_r).await {
                     Ok(resolved) if !resolved.is_empty() => {
-                        let subs: Vec<(String, String)> =
+                        let fc9_subs: Vec<(String, String)> =
                             resolved.iter().map(|r| ("FC9".to_string(), r.code.clone())).collect();
+                        // FH9(총잔량)는 화면 대상 2종만 — 미니는 KOSPI200과 같은 기초지수라 중복.
+                        let fh9_subs: Vec<(String, String)> = resolved
+                            .iter()
+                            .filter(|r| r.product != "mini_k200")
+                            .map(|r| ("FH9".to_string(), r.code.clone()))
+                            .collect();
                         info!(
-                            "지수선물 front-month 해석 완료: {}",
-                            resolved.iter().map(|r| format!("{}={}", r.product, r.code)).collect::<Vec<_>>().join(" ")
+                            "지수선물 front-month 해석 완료: {} (FC9 {} / FH9 {})",
+                            resolved.iter().map(|r| format!("{}={}", r.product, r.code)).collect::<Vec<_>>().join(" "),
+                            fc9_subs.len(), fh9_subs.len(),
                         );
                         // idle grace anchor — 해석 완료 시각부터 age 측정 (0=미수신과 구분).
-                        stream_us.store(now_us(), Ordering::Relaxed);
+                        let anchor = now_us();
+                        stream_us.store(anchor, Ordering::Relaxed);
                         // futures_cancel 대신 global cancel을 두 번 넘겨 월물 토글에 영향받지 않게.
                         spawn_futures_connections(
-                            &subs, &ak, &as_, &names, &stock_codes, &futures_to_spot,
+                            &fc9_subs, &ak, &as_, &names, &stock_codes, &futures_to_spot,
                             &tx_if, &cancel_if, &cancel_if, &stats, &last_data_us, &last_subscribe_us, &stream_us, 700,
                         );
+                        if !fh9_subs.is_empty() {
+                            depth_stream_us.store(anchor, Ordering::Relaxed);
+                            spawn_futures_connections(
+                                &fh9_subs, &ak, &as_, &names, &stock_codes, &futures_to_spot,
+                                &tx_if, &cancel_if, &cancel_if, &stats, &last_data_us, &last_subscribe_us, &depth_stream_us, 710,
+                            );
+                        }
                     }
                     Ok(_) => warn!("지수선물: t8467가 사용 가능한 계약을 반환하지 않음 — 지수선물 없이 진행"),
                     Err(e) => warn!("지수선물 front-month 해석 실패: {e} — 지수선물 없이 진행"),
@@ -1529,11 +1555,7 @@ async fn handle_tick(
                     tracing::info!("FC9 최초 수신 [{}]: code={} body={}", tr_key.get(1..3).unwrap_or("?"), tr_key, body);
                 }
             }
-            let product = match tr_key.get(1..3) {
-                Some("05") => "mini_k200",
-                Some("06") => "kosdaq150",
-                _ => "kospi200",
-            };
+            let product = index_futures_product(tr_key);
             let underlying = pf(&body["k200jisu"]);
             let basis = if underlying > 0.0 { price - underlying } else { 0.0 };
             let theory = body.get("theoryprice").filter(|v| !v.is_null()).map(pf).filter(|v| *v > 0.0);
@@ -1561,6 +1583,32 @@ async fn handle_tick(
                 open_interest: oi,
                 open_interest_change: oi_change,
                 timestamp: now,
+            }));
+        }
+        // 지수선물 호가 (FH9) — **총잔량만** 사용. 5호가 레벨은 "선물" 탭이 안 쓰므로 파싱 생략
+        // (totofferrem/totbidrem이 총잔량을 직접 준다). 틱이 매우 잦아 product별 500ms throttle.
+        "FH9" => {
+            let product = index_futures_product(tr_key);
+            let now_ms = chrono::Utc::now().timestamp_millis().max(0) as u64;
+            if !fh9_throttle_pass(product, now_ms) { return; }
+            let total_ask = pu(&body["totofferrem"]);
+            let total_bid = pu(&body["totbidrem"]);
+            // 둘 다 0 = 장 개시 전/이상치 — 비율 의미 없음.
+            if total_ask == 0 && total_bid == 0 { return; }
+            {
+                static FH9_SEEN: AtomicU64 = AtomicU64::new(0);
+                let bit: u64 = match tr_key.get(1..3) { Some("01") => 1, Some("06") => 2, _ => 0 };
+                if bit != 0 && FH9_SEEN.fetch_or(bit, Ordering::Relaxed) & bit == 0 {
+                    tracing::info!("FH9 최초 수신 [{product}]: code={tr_key} ask={total_ask} bid={total_bid}");
+                }
+            }
+            try_send_tick(tx, WsMessage::IndexFuturesDepth(IndexFuturesDepthTick {
+                code: tr_key.into(),
+                product,
+                total_ask_qty: total_ask,
+                total_bid_qty: total_bid,
+                ratio: if total_ask > 0 { Some(r4(total_bid as f64 / total_ask as f64)) } else { None },
+                time_ms: now_ms as i64,
             }));
         }
         // 주식 호가 (KOSPI H1_, KOSDAQ HA_): 10호가
@@ -1670,6 +1718,14 @@ pub fn index_futures_stream_us() -> &'static Arc<AtomicU64> {
     SLOT.get_or_init(|| Arc::new(AtomicU64::new(0)))
 }
 
+/// 지수선물 **호가**(FH9) 스트림 전용 last_data_us. FC9와 분리 — FH9는 초당 수십 틱이라
+/// 합치면 FC9 stall이 idle watchdog·/debug/stats 양쪽에서 마스킹된다 (연결도 분리).
+/// 값 0 = 아직 데이터 없음.
+pub fn index_futures_depth_stream_us() -> &'static Arc<AtomicU64> {
+    static SLOT: std::sync::OnceLock<Arc<AtomicU64>> = std::sync::OnceLock::new();
+    SLOT.get_or_init(|| Arc::new(AtomicU64::new(0)))
+}
+
 /// LS feed → bridge mpsc 채널이 full이거나 receiver dropped 시 drop 카운터.
 /// 핫 path에서 `.await` blocking을 피하기 위해 try_send 사용 — 거의 0이어야 정상.
 /// /debug/stats 의 tx_dropped 로 노출.
@@ -1680,6 +1736,31 @@ fn try_send_tick(tx: &mpsc::Sender<WsMessage>, msg: WsMessage) {
     if tx.try_send(msg).is_err() {
         TX_DROPPED.fetch_add(1, Ordering::Relaxed);
     }
+}
+
+/// 지수선물 상품 구분 — 코드 A+**상품2**(01 KOSPI200 / 05 미니 / 06 KOSDAQ150)+연1+월1+000.
+/// FC9(체결)·FH9(호가) 공용.
+fn index_futures_product(code: &str) -> &'static str {
+    match code.get(1..3) {
+        Some("05") => "mini_k200",
+        Some("06") => "kosdaq150",
+        _ => "kospi200",
+    }
+}
+
+/// FH9 broadcast 최소 간격 (ms). 총잔량은 호가 한 틱마다 바뀌어 초당 수십 건씩 오는데,
+/// 화면은 10초 샘플 차트 + 카드라 500ms면 충분하고 bridge/직렬화 부하를 크게 줄인다.
+const FH9_MIN_INTERVAL_MS: u64 = 500;
+
+/// product별 500ms throttle. 통과 시 true(+ 시각 갱신). 상품 3종 고정이라 map 대신 슬롯 배열.
+fn fh9_throttle_pass(product: &str, now_ms: u64) -> bool {
+    static SLOTS: [AtomicU64; 3] = [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)];
+    let idx = match product { "kospi200" => 0, "mini_k200" => 1, _ => 2 };
+    if now_ms.saturating_sub(SLOTS[idx].load(Ordering::Relaxed)) < FH9_MIN_INTERVAL_MS {
+        return false;
+    }
+    SLOTS[idx].store(now_ms, Ordering::Relaxed);
+    true
 }
 
 /// 지수선물 표시명 — code(A+상품2+연1+월1+000)에서 "코스피200 F 2609" 형태 생성.
@@ -1710,3 +1791,5 @@ fn pi(v: &serde_json::Value) -> i64 {
     match v { serde_json::Value::Number(n) => n.as_i64().unwrap_or(0), serde_json::Value::String(s) => s.parse().unwrap_or(0), _ => 0 }
 }
 fn r2(v: f64) -> f64 { (v * 100.0).round() / 100.0 }
+/// 총잔량 비율(≈1.0)은 소수 2자리면 뭉개져서 4자리로.
+fn r4(v: f64) -> f64 { (v * 10_000.0).round() / 10_000.0 }

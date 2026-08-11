@@ -78,11 +78,13 @@ export interface FuturesTick {
 
 /** 지수선물 (KOSPI200/미니/KOSDAQ150, LS FC9). 주식선물 FuturesTick과 별도 스트림.
  *  LP FV_futures 앵커(lp-system-design.md §13.3-A)용 이론가·기초지수 포함. */
+/** 지수선물 상품 구분 (LS 코드 A+상품2: 01 KOSPI200 / 05 미니 / 06 KOSDAQ150) */
+export type IndexFuturesProduct = 'kospi200' | 'mini_k200' | 'kosdaq150'
+
 export interface IndexFuturesTick {
   code: string
   name: string
-  /** "kospi200" | "mini_k200" | "kosdaq150" */
-  product: 'kospi200' | 'mini_k200' | 'kosdaq150'
+  product: IndexFuturesProduct
   price: number
   /** 전일대비 */
   change: number
@@ -99,6 +101,21 @@ export interface IndexFuturesTick {
   open_interest_change?: number
   timestamp: string
   is_initial?: boolean
+}
+
+/** 지수선물 총잔량 (LS FH9). "선물" 탭 — 호가 레벨 없이 매도/매수 총잔량 + 비율만.
+ *  서버(Rust 8200)가 상시 구독하며 product별 500ms throttle로 발행. */
+export interface IndexFuturesDepthTick {
+  code: string
+  product: IndexFuturesProduct
+  /** 총 매도잔량 */
+  total_ask_qty: number
+  /** 총 매수잔량 */
+  total_bid_qty: number
+  /** 매수÷매도. >1이면 매수우위. 매도잔량 0이면 미발행. */
+  ratio?: number
+  /** 수신 시각 (epoch ms) */
+  time_ms: number
 }
 
 export interface OrderbookLevel {

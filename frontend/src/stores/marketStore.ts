@@ -1,5 +1,14 @@
 import { create } from 'zustand'
-import type { ETFTick, StockTick, FuturesTick, IndexFuturesTick, OrderbookTick, NetworkMode } from '../types/market'
+import type {
+  ETFTick,
+  StockTick,
+  FuturesTick,
+  IndexFuturesTick,
+  IndexFuturesDepthTick,
+  IndexFuturesProduct,
+  OrderbookTick,
+  NetworkMode,
+} from '../types/market'
 
 export type FeedState = 'fresh' | 'quiet' | 'stale' | 'pre_open' | 'post_close' | 'closed' | 'mock' | 'internal' | 'unknown'
 
@@ -43,6 +52,11 @@ interface MarketState {
   indexFuturesTicks: Record<string, IndexFuturesTick>
   updateIndexFuturesTick: (tick: IndexFuturesTick) => void
   batchUpdateIndexFutures: (ticks: Record<string, IndexFuturesTick>) => void
+  /** 지수선물 총잔량(FH9). **product 키** — 월물이 롤오버돼도 같은 슬롯 (서버 캐시 키와 동일). */
+  indexFuturesDepth: Partial<Record<IndexFuturesProduct, IndexFuturesDepthTick>>
+  batchUpdateIndexFuturesDepth: (
+    ticks: Partial<Record<IndexFuturesProduct, IndexFuturesDepthTick>>,
+  ) => void
   orderbookTicks: Record<string, OrderbookTick>
   updateOrderbookTick: (tick: OrderbookTick) => void
   batchUpdateOrderbooks: (ticks: Record<string, OrderbookTick>) => void
@@ -174,6 +188,9 @@ export const useMarketStore = create<MarketState>((set) => ({
       }
       return changed ? { indexFuturesTicks: next } : state
     }),
+  indexFuturesDepth: {},
+  batchUpdateIndexFuturesDepth: (ticks) =>
+    set((state) => ({ indexFuturesDepth: { ...state.indexFuturesDepth, ...ticks } })),
   orderbookTicks: {},
   updateOrderbookTick: (tick) =>
     set((state) => ({ orderbookTicks: { ...state.orderbookTicks, [tick.code]: tick } })),
