@@ -121,6 +121,28 @@ static IGNORE_PHASE: AtomicBool = AtomicBool::new(false);
 /// 소스 전환 격리 해제 시각 (epoch ms). 이전보다 크면 append 금지.
 static QUARANTINE_UNTIL_MS: AtomicI64 = AtomicI64::new(0);
 
+/// 디스크 스냅샷 쓰기 허용 여부 (기본 true = 운영 인스턴스).
+///
+/// **기본 포트(8200)가 아닌 검증용 옆 인스턴스는 false**. `set_source`가 소스 전환 시
+/// 스냅샷 파일을 지우는 설계라, 같은 data 디렉터리에서 mock 인스턴스를 잠깐 띄우면
+/// **운영 인스턴스의 당일 라이브 히스토리 파일이 삭제된다** (2026-08-13 실제 발생 —
+/// 운영 프로세스가 메모리 스토어를 30초 뒤 다시 flush해서 복구됐지만, 그 창에서
+/// 운영 인스턴스를 재기동했으면 오전 구간이 통째로 날아갔다).
+static PERSIST: AtomicBool = AtomicBool::new(true);
+
+/// 기동 시 1회 — 포트가 기본값이 아니면 false로 꺼서 운영 파일을 건드리지 않게 한다.
+/// 읽기(복원)는 그대로 허용 (쓰기·삭제만 차단).
+pub fn set_persistence(enabled: bool) {
+    PERSIST.store(enabled, Ordering::Relaxed);
+    if !enabled {
+        info!("지수선물 총잔량 — 디스크 스냅샷 비활성 (검증 인스턴스: 파일 쓰기·삭제 안 함)");
+    }
+}
+
+fn persist_enabled() -> bool {
+    PERSIST.load(Ordering::Relaxed)
+}
+
 fn store() -> &'static Mutex<DepthHistory> {
     STORE.get_or_init(|| Mutex::new(load_from_disk()))
 }
@@ -157,6 +179,10 @@ pub fn set_source(mode: &str) {
     h.products.clear();
     drop(h);
     // 파일도 함께 폐기 — 안 지우면 재기동 시 이전 소스 데이터가 되살아난다.
+    // 단 검증 인스턴스(PERSIST=false)는 운영 스냅샷을 지우면 안 된다.
+    if !persist_enabled() {
+        return;
+    }
     if let Err(e) = std::fs::remove_file(PATH) {
         if e.kind() != std::io::ErrorKind::NotFound {
             warn!("futures_depth 스냅샷 삭제 실패: {e}");
@@ -214,6 +240,9 @@ fn load_from_disk() -> DepthHistory {
 }
 
 fn save_to_disk(snapshot: &DepthHistory) {
+    if !persist_enabled() {
+        return;
+    }
     let json = match serde_json::to_string(snapshot) {
         Ok(s) => s,
         Err(e) => {

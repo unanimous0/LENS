@@ -964,6 +964,55 @@ pub async fn fetch_t8407_volumes(
     }
 }
 
+/// 단발 현재가 스냅샷 1건 — 틱 발행 없이 값만.
+/// `volume == 0`(당일 체결 없음)이면 `price`는 전일 종가가 이월된 stale 값이다
+/// (t8402 초기가 경로와 같은 성질). 판정은 호출자 몫이라 그대로 실어 보낸다.
+pub struct QuoteSnapshot {
+    pub price: f64,
+    pub prev_close: f64,
+    /// 당일 누적 거래량 (주).
+    pub volume: u64,
+}
+
+/// 주식/ETF 6자리 코드의 현재가를 t8407 한 콜(≤50종목)로 조회 — **구독 없는 on-demand 경로**.
+/// WS 구독(ref-count·broadcast)과 무관하고 틱도 발행하지 않는다. 목록에서 한 페어만
+/// 잠깐 실시간으로 보고 싶을 때(통계차익 z 셀 hover)처럼 "지금 값만" 필요한 화면용.
+/// 청크 간격·TPS는 `fetch_t8407` 내부 전역 게이트가 처리.
+pub async fn fetch_quotes_snapshot(
+    codes: &[String],
+) -> Result<HashMap<String, QuoteSnapshot>, String> {
+    if codes.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let (ak, sk) = rest_credentials();
+    if ak.is_empty() || sk.is_empty() {
+        return Err("LS REST credential 없음 (mock/내부망 모드)".into());
+    }
+    let token = get_or_fetch_token(&ak, &sk).await?;
+    let client = reqwest::Client::new();
+    let mut out = HashMap::with_capacity(codes.len());
+    for chunk in codes.chunks(T8407_CHUNK) {
+        let refs: Vec<&String> = chunk.iter().collect();
+        let map = fetch_t8407(&client, &token, &refs).await?;
+        for (code, detail) in map {
+            // 전일종가 키는 t1102=recprice / t8407=jnilclose (emit_stock_from_detail와 동일 폴백).
+            let prev_close = {
+                let r = pf(detail.get("recprice"));
+                if r > 0.0 { r } else { pf(detail.get("jnilclose")) }
+            };
+            out.insert(
+                code,
+                QuoteSnapshot {
+                    price: pf(detail.get("price")),
+                    prev_close,
+                    volume: pu(detail.get("volume")),
+                },
+            );
+        }
+    }
+    Ok(out)
+}
+
 // ─── 지수선물 front-month 해석 (t8467 지수선물마스터) ─────────────────────────
 // LP FV_futures 앵커(lp-system-design.md §13.3-A / §13.7 Phase 2 전제조건)용.
 // 기동 시 1회 t8467로 KOSPI200(01)/미니(05)/KOSDAQ150(06) 최근월물 코드를 해석.

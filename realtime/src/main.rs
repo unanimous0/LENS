@@ -33,6 +33,14 @@ use ws::handler::ws_market;
 use calc::scheduler::{spawn_workers, MatrixState};
 
 const PORT: u16 = 8200;
+/// 리슨 포트. 기본 8200(프론트 프록시 대상). `LENS_REALTIME_PORT`로만 덮어쓴다 —
+/// 운영 중인 8200을 건드리지 않고 새 빌드를 옆 포트에서 확인할 때 쓴다.
+fn listen_port() -> u16 {
+    std::env::var("LENS_REALTIME_PORT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(PORT)
+}
 /// 브로드캐스트 링버퍼 크기. batch envelope 도입 후 송출 빈도 ~5/sec로 평탄화 →
 /// 8192면 슬로우 클라이언트에 27분 여유 (batch 단위라 단위 시간당 송출 수가 작음).
 /// 내부망 7000 코드·5+ 클라이언트 환경에서 한 클라이언트가 잠시 늦어져도 여유.
@@ -247,6 +255,11 @@ async fn main() {
                 .unwrap_or_else(|_| "lens_realtime=info".into()),
         )
         .init();
+
+    // 기본 포트가 아니면 = 운영(8200) 옆에 띄운 검증 인스턴스 → 당일 총잔량 스냅샷 파일을
+    // 쓰지도 지우지도 않게 한다. 피드 spawn(=set_source, 파일 삭제 경로)보다 먼저 정해야 함.
+    let port = listen_port();
+    futures_depth::set_persistence(port == PORT);
 
     // Phase watchdog — KST 시간대 전환 INFO 로그 (Sleep/WarmUp/Live/WindDown).
     // start_dev.sh 터미널과 logs/realtime.log 양쪽에서 시간대 변화 보임.
@@ -559,12 +572,13 @@ async fn main() {
         .route("/orderbook/unsubscribe", post(unsubscribe_orderbook))
         .route("/debug/stats", get(debug_stats))
         .route("/intraday/today", get(intraday_today))
+        .route("/quote", get(quote))
         .route("/futures/depth-history", get(futures_depth_history))
         .route("/basis-route", get(basis_route))
         .with_state(state.clone())
         .layer(cors);
 
-    let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{PORT}"))
+    let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{port}"))
         .await
         .expect("Failed to bind port");
 
@@ -577,12 +591,12 @@ async fn main() {
         }
     });
 
-    info!("Rust realtime service listening on port {PORT}");
+    info!("Rust realtime service listening on port {port}");
 
     // Graceful shutdown
     axum::serve(listener, app)
         .with_graceful_shutdown(async move {
-            tokio::signal::ctrl_c().await.ok();
+            shutdown_signal().await;
             info!("Shutting down...");
             if let Some(h) = state.feed_handle.lock().await.take() {
                 h.cancel.cancel();
@@ -719,8 +733,93 @@ async fn health() -> &'static str {
     "ok"
 }
 
+/// 종료 신호 — **SIGINT(ctrl+c)와 SIGTERM 둘 다**.
+/// SIGTERM을 안 받으면 `start_dev.sh`의 cleanup(`kill -TERM`)이나 `pkill` 로 죽을 때
+/// graceful 경로를 건너뛰어 당일 총잔량 히스토리의 마지막 flush 구간(최대 ~30초)이 날아간다.
+/// Windows(내부망 배포)에는 SIGTERM이 없어 cfg로 분기.
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        match signal(SignalKind::terminate()) {
+            Ok(mut term) => {
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {}
+                    _ = term.recv() => {}
+                }
+            }
+            Err(e) => {
+                warn!("SIGTERM 핸들러 등록 실패: {e} — ctrl+c만 대기");
+                tokio::signal::ctrl_c().await.ok();
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        tokio::signal::ctrl_c().await.ok();
+    }
+}
+
 async fn get_mode(State(state): State<AppState>) -> String {
     state.feed_mode.read().unwrap().clone()
+}
+
+#[derive(Deserialize)]
+struct QuoteQuery {
+    /// 콤마 구분 6자리 주식/ETF 코드 (최대 QUOTE_MAX_CODES개).
+    codes: String,
+}
+
+/// 한 번에 조회 가능한 코드 수 상한. t8407 한 콜 한도(50)와 동일 — 초과분은 잘라낸다.
+const QUOTE_MAX_CODES: usize = 50;
+
+/// 주식/ETF 현재가 단발 스냅샷 — `GET /quote?codes=069500,005930`.
+///
+/// **구독하지 않고 지금 값만** 필요한 화면용 (통계차익 목록 z 셀 hover). 목록 전체를
+/// WS 구독하면 수백 종목이라 LS 계정 한계(과거 호가 stall 전례)를 건드리는데, 이 경로는
+/// t8407 REST 1콜이라 부하가 페어 단위로 끝난다. 틱을 발행하지 않아 marketStore와 무관.
+///
+/// 응답: `{"quotes": {code: {price, prev_close, volume, stale}}, "ts": <UTC ms>}`.
+/// `stale=true` = 당일 체결 0 (price는 전일 종가 이월). 실패 시 `error` 필드 + 빈 quotes.
+async fn quote(Query(q): Query<QuoteQuery>) -> Json<serde_json::Value> {
+    // KRX 표준 6자리 영숫자만 t8407 대상 (8자리 주식선물·ISIN·CASH 등은 호출 자체가 에러).
+    let mut seen = HashSet::new();
+    let codes: Vec<String> = q
+        .codes
+        .split(',')
+        .map(|s| s.trim())
+        .filter(|s| s.len() == 6 && s.chars().all(|c| c.is_ascii_alphanumeric()))
+        .filter(|s| seen.insert(s.to_string()))
+        .take(QUOTE_MAX_CODES)
+        .map(|s| s.to_string())
+        .collect();
+    let ts = chrono::Utc::now().timestamp_millis();
+    if codes.is_empty() {
+        return Json(serde_json::json!({"quotes": {}, "ts": ts}));
+    }
+    match feed::ls_rest::fetch_quotes_snapshot(&codes).await {
+        Ok(map) => {
+            let quotes: serde_json::Map<String, serde_json::Value> = map
+                .into_iter()
+                .map(|(code, s)| {
+                    (
+                        code,
+                        serde_json::json!({
+                            "price": s.price,
+                            "prev_close": s.prev_close,
+                            "volume": s.volume,
+                            "stale": s.volume == 0,
+                        }),
+                    )
+                })
+                .collect();
+            Json(serde_json::json!({"quotes": quotes, "ts": ts}))
+        }
+        Err(e) => {
+            warn!("quote 실패 {:?}: {e}", codes);
+            Json(serde_json::json!({"quotes": {}, "ts": ts, "error": e}))
+        }
+    }
 }
 
 #[derive(Deserialize)]

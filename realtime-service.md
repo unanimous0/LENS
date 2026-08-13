@@ -80,6 +80,29 @@ Vite 프록시 (vite.config.ts):
 
 기존 Python의 WebSocket 관련 코드(`ws.py`, `app_state.py`, `MarketDataAdapter`)는 Rust 전환 완료 후 제거.
 
+리슨 포트는 상수 8200이고, `LENS_REALTIME_PORT`로만 덮어쓴다 — **운영 중인 8200을 재기동하지
+않고 새 빌드를 옆 포트에서 확인**하는 용도(장중 재기동은 t1102/t8407 초기값 sweep을 다시
+돌려 수 분간 데이터가 성긴다). 예: `FEED_MODE=mock LENS_REALTIME_PORT=8299 ./target/release/lens-realtime`.
+
+⚠️ 기본 포트가 아니면 **당일 총잔량 스냅샷(`data/futures_depth_intraday.json`) 쓰기·삭제가
+자동으로 꺼진다**(`futures_depth::set_persistence`). 안 그러면 검증 인스턴스의
+`set_source("mock")`이 소스 전환 규칙대로 **운영 인스턴스의 당일 파일을 지운다** —
+2026-08-13에 실제로 발생했고, 운영 프로세스가 30초 뒤 메모리 스토어를 다시 flush해서
+복구됐다(그 창에서 운영을 재기동했다면 오전 구간 유실). 읽기(복원)는 그대로 허용.
+
+### 단발 현재가 스냅샷 `GET /quote?codes=069500,005930` (2026-08-13)
+
+**구독 없이 지금 값만** 필요한 화면용. t8407(주식멀티현재가) 1콜 → `{quotes:{code:{price,
+prev_close, volume, stale}}, ts}`. 6자리 주식/ETF만·최대 50종목(초과분 절단), 실패 시
+`error` 필드 + 빈 quotes. **틱을 발행하지 않아** WS 구독·marketStore와 완전히 별개다.
+
+한계: **외부망(LS) 전용**. 내부망·mock 모드에선 REST credential이 없어 `error`를 돌려주고,
+프론트는 팝오버에 그 메시지를 그대로 띄운다(내부망 last-tick 스토어가 없어 폴백 불가).
+
+용처: 통계차익 목록의 z 셀 hover(그 페어 2종목만 라이브 z — `stat-arb-engine.md` §22.5-a).
+목록 전체를 WS 구독하면 수백 종목이라 계정 한계(§WS 두 키 분산의 stall)를 건드리므로,
+"보고 있는 한 페어만 REST로 찍는" 경로를 따로 둔 것.
+
 ---
 
 ## 어댑터 패턴
