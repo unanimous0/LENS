@@ -182,14 +182,7 @@ export function FuturesPage() {
   return (
     <div className="flex flex-col gap-1 p-1">
       <div className="bg-bg-primary px-3 py-2 flex items-baseline justify-between">
-        <div>
-          <div className="text-[13px] text-t2 font-medium">지수선물 총잔량</div>
-          <div className="text-[11px] text-t3">
-            총잔량 비율 — <span className="text-[#089981]">+</span>면 매수잔량 우위,{' '}
-            <span className="text-[#f23645]">−</span>면 매도잔량 우위이고 숫자가 배율(예 +1.24 = 매수
-            1.24배). 기준은 1.00. 서버가 10초 간격으로 당일 전 구간을 보관한다.
-          </div>
-        </div>
+        <div className="text-[13px] text-t2 font-medium">지수선물 총잔량</div>
         {/* 재조회 실패는 배지로만 — 이미 그려진 차트를 에러 문구로 대체하지 않는다
             (실시간 append는 WS라 계속 살아있고, 30초 뒤 자동 재시도한다). */}
         <div className="flex items-center gap-3 font-mono text-[11px] tabular-nums">
