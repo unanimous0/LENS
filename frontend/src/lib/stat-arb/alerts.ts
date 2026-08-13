@@ -45,8 +45,11 @@ export function pairKey(left: string, right: string): string {
   return `${left}|${right}`
 }
 
+/** 라이브 z 계산에 필요한 최소 필드. 목록 행·hover 조회 등 출처가 달라도 산식은 1벌. */
+export type LiveZStat = Pick<PairRow, 'alpha' | 'hedge_ratio' | 'resid_mean' | 'resid_std'>
+
 /** 일봉 회귀(α·β)와 정규화 기준(μ·σ)으로 라이브 z 계산. 입력 부족·σ 0이면 null. */
-export function liveZ(stat: PairRow | undefined, leftPrice: number, rightPrice: number): number | null {
+export function liveZ(stat: LiveZStat | undefined, leftPrice: number, rightPrice: number): number | null {
   if (!stat || !(leftPrice > 0) || !(rightPrice > 0)) return null
   const std = stat.resid_std
   if (std == null || !(std > 0) || stat.resid_mean == null) return null

@@ -7,8 +7,11 @@ frontend가 8300에 직접 가는 대신 backend(/api/stat-arb/...) 거치게 �
 
 stat-arb-engine이 안 떠있으면 503.
 
-예외: `/alerts/*` (목표 z 도달 알림 워치리스트)는 프록시가 아니라 **LENS SQLite 로컬 CRUD**.
-엔진은 알림을 모른다 — 감시·발화는 프론트, 저장은 여기.
+예외:
+  - `/alerts/*` (목표 z 도달 알림 워치리스트)는 프록시가 아니라 **LENS SQLite 로컬 CRUD**.
+    엔진은 알림을 모른다 — 감시·발화는 프론트, 저장은 여기.
+  - `/futures-carry` (주식선물 대체 캐리)도 프록시가 아니라 여기서 직접 계산.
+    Finance_Data 일봉 + futures_master.json만 있으면 되고 엔진의 통계와 독립이다.
 """
 from typing import Any, Literal, Optional
 
@@ -16,7 +19,7 @@ import httpx
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from services import stat_arb_alerts
+from services import futures_carry, stat_arb_alerts
 
 router = APIRouter(prefix="/stat-arb", tags=["stat-arb"])
 
@@ -162,6 +165,33 @@ async def mn_pair_detail(
     component = deflation 성분 순번(1-based). 해당 성분이 없으면 엔진이 404.
     """
     return await _proxy_get("/mn-pairs/detail", {"group": group, "component": component})
+
+
+# ---------------------------------------------------------------------------
+# 주식선물 대체 캐리 — 프록시 아님 (Finance_Data 일봉 + futures_master.json 직접 계산).
+# ---------------------------------------------------------------------------
+
+
+@router.get("/futures-carry")
+async def futures_carry_map(
+    rate: float = Query(futures_carry.DEFAULT_RATE, ge=0.0, le=0.3, description="회사금리(연, 소수)"),
+    margin: float = Query(futures_carry.DEFAULT_MARGIN, ge=0.0, lt=1.0, description="증거금률(소수)"),
+) -> dict:
+    """페어의 **매수 종목**을 주식선물로 대체했을 때의 캐리 이득 — 기초주식코드 → 지표 맵.
+
+    `carry_advantage = basis_theory − basis_now` (원/주, 양수 = 선물이 유리).
+    `basis_theory = spot × r×(1−margin) × d/365 − div_sum`. 산식·한계는
+    `stat-arb-engine.md §23`, 구현은 `services/futures_carry.py`.
+
+    일봉 종가 스냅샷이라 실시간이 아니다 (`asof`/`data_date` 표기). front 잔존일 < 2면
+    back 월물로 롤한다. `upcoming_dividends`/`past_dividends`는 롤 판단용 **가시화 전용**
+    으로, 캐리 숫자에는 만기까지의 `div_sum`만 들어간다.
+    """
+    try:
+        snap = await futures_carry.get_snapshot()
+    except Exception as e:  # noqa: BLE001 — 마스터 파일/DB 어느 쪽이 빠져도 화면은 캐리만 비면 됨
+        raise HTTPException(503, f"futures-carry 계산 불가: {e}") from e
+    return futures_carry.compute(snap, rate, margin)
 
 
 # ---------------------------------------------------------------------------

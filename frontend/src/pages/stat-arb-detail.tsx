@@ -9,6 +9,19 @@ import { RelationStabilityPanel } from '@/components/stat-arb/relation-stability
 import { TimeframeTable } from '@/components/stat-arb/timeframe-table'
 import { usePageStockSubscriptions } from '@/hooks/usePageStockSubscriptions'
 import { keyToCode, keyType } from '@/lib/stat-arb-keys'
+import {
+  buyLegKeys,
+  carryOf,
+  EMPTY_CARRY_MAP,
+  fmtExpiry,
+  fmtMonthDay,
+  fmtValue,
+  loadFuturesCarry,
+  splitDivsByExpiry,
+  type Dividend,
+  type FuturesCarry,
+  type FuturesCarryMap,
+} from '@/lib/stat-arb/futures-carry'
 import { CAL_PER_TRADING_DAY, toTradingDays } from '@/lib/stat-arb/half-life'
 import { useMarketStore } from '@/stores/marketStore'
 import type { PairDetail, SpreadPoint } from '@/types/stat-arb'
@@ -97,6 +110,8 @@ export function StatArbDetailPage() {
   const { left, right } = useParams<{ left: string; right: string }>()
   const [detail, setDetail] = useState<PairDetail | null>(null)
   const [loanRates, setLoanRates] = useState<Map<string, number>>(new Map())
+  // 주식선물 대체 캐리 (일봉 스냅샷) — 두 종목 각각의 선물 대체 이득
+  const [carry, setCarry] = useState<FuturesCarryMap>(EMPTY_CARRY_MAP)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   // 판단 기준 토글 — 일봉(스윙, 기본) / 10분(진입 타이밍). 카드·차트·히스토·베이시스·계산기 전부 연동.
@@ -161,6 +176,15 @@ export function StatArbDetailPage() {
       })
       .catch(() => {
         /* fail-safe */
+      })
+  }, [])
+
+  // 주식선물 대체 캐리 1회 로딩 (일봉 스냅샷 — 장중 안 바뀜)
+  useEffect(() => {
+    loadFuturesCarry()
+      .then(setCarry)
+      .catch(() => {
+        /* fail-safe: 패널이 '미상장'으로 보임 */
       })
   }, [])
 
@@ -826,6 +850,17 @@ export function StatArbDetailPage() {
         </div>
       </div>
 
+      {/* 주식선물 대체 — 두 종목 각각 선물로 바꿨을 때의 캐리 (일봉 기준) */}
+      <FuturesCarryPanel
+        carry={carry}
+        leftKey={detail.left_key}
+        rightKey={detail.right_key}
+        leftName={detail.left_name}
+        rightName={detail.right_name}
+        z={displayZ}
+        beta={betaWon}
+      />
+
       {/* PnL 시뮬레이터 — 페이지 하단 전체 너비 */}
       <PnlSimulator
         detail={detail}
@@ -838,6 +873,266 @@ export function StatArbDetailPage() {
         basisLabel={basisLabel}
         hlTradingDays={hlTradingDays}
       />
+    </div>
+  )
+}
+
+/** 주식선물 대체 — 두 종목 각각 "현물 대신 주식선물을 사면 얼마 이득인가" (stat-arb-engine.md §23).
+ *  매수 종목에만 의미가 있으므로(현금을 묶는 쪽) 진입 방향의 매수 종목을 강조한다. 매수 종목은
+ *  z 부호만이 아니라 **β 부호까지** 봐야 한다(β<0이면 두 종목이 같은 방향) — `buyLegKeys` 참조.
+ *  일봉 종가 스냅샷이라 실시간이 아니다 — 장중 실제 베이시스는 여기 값과 다를 수 있다. */
+function FuturesCarryPanel({
+  carry,
+  leftKey,
+  rightKey,
+  leftName,
+  rightName,
+  z,
+  beta,
+}: {
+  carry: FuturesCarryMap
+  leftKey: string
+  rightKey: string
+  leftName: string
+  rightName: string
+  z: number
+  beta: number
+}) {
+  const lc = carryOf(carry, leftKey)
+  const rc = carryOf(carry, rightKey)
+  const buyKeys = buyLegKeys(z, beta, leftKey, rightKey)
+  const leftIsBuy = buyKeys.includes(leftKey)
+  const rightIsBuy = buyKeys.includes(rightKey)
+  // 계약 라운딩 예시 — R 100주에 대응하는 β 헤지 수량(L = β×R). 계산기 수량과는 연동하지 않는다.
+  const EX_RIGHT_QTY = 100
+  const exLeftQty = Math.max(1, Math.round(Math.abs(beta) * EX_RIGHT_QTY))
+  return (
+    <div className="panel p-3">
+      <div className="mb-2 flex flex-wrap items-baseline gap-x-2 text-xs">
+        <span className="text-sm font-medium text-t1">주식선물 대체</span>
+        <span className="text-t3">
+          매수 종목을 현물 대신 주식선물로 — 증거금 외 현금이 남아 이자를 번다
+        </span>
+        <span className="ml-auto text-[10px] text-t4 tabular-nums">
+          {carry.asof ? `일봉 ${carry.asof} 기준 · 실시간 아님` : '로딩 중…'}
+          {carry.asof &&
+            ` · 금리 ${(carry.rate * 100).toFixed(1)}% · 증거금 ${(carry.margin * 100).toFixed(0)}%`}
+        </span>
+      </div>
+      {beta < 0 && (
+        <div className="mb-2 rounded-sm border-l-2 border-warning bg-bg-surface px-2 py-1.5 text-[11px] leading-relaxed text-t2">
+          β &lt; 0 (short pair) — 헤지가 β·L 매수라 <span className="text-t1">두 종목이 같은 방향</span>이다.
+          {buyKeys.length === 0
+            ? ' 현재 진입 방향(z ≥ 0)은 두 종목 모두 매도 — 매수 종목이 없어 선물 대체 대상도 없다.'
+            : ' 현재 진입 방향(z < 0)은 두 종목 모두 매수 — 둘 다 선물 대체 대상이다.'}
+        </div>
+      )}
+      <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+        <LegCarryCard
+          role="L (x)"
+          name={leftName}
+          code={keyToCode(leftKey)}
+          c={lc}
+          isBuy={leftIsBuy}
+          qty={exLeftQty}
+        />
+        <LegCarryCard
+          role="R (y)"
+          name={rightName}
+          code={keyToCode(rightKey)}
+          c={rc}
+          isBuy={rightIsBuy}
+          qty={EX_RIGHT_QTY}
+        />
+      </div>
+      <div className="mt-2 text-[11px] leading-relaxed text-t3">
+        캐리 = 이론 베이시스 − 실측 베이시스. 이론 = 현물 × 금리×(1−증거금률) × 잔존일/365 −
+        만기 전 확정배당. <span className="text-t2">양수면 선물이 싸다</span> = 현물 대신 선물
+        매수가 유리. 대여요율·대차 항은 포함하지 않는다. 만기 전에 청산하면 베이시스가 완전히
+        수렴하지 않아 실현 캐리는 이보다 작을 수 있다.{' '}
+        <span className="text-t2">만기 후 배당은 숫자에 넣지 않고 카드에 나열만 한다</span> — 롤해서
+        넘어갈 월물 가격에 이미 프라이싱돼 있어 여기서 또 빼면 이중 반영이다.
+      </div>
+    </div>
+  )
+}
+
+/** 종목 1개의 선물 대체 정보. 주식선물 미상장(ETF·지수·비대상 주식)이면 그 사실만 표시. */
+function LegCarryCard({
+  role,
+  name,
+  code,
+  c,
+  isBuy,
+  qty,
+}: {
+  role: string
+  name: string
+  code: string
+  c?: FuturesCarry
+  isBuy: boolean
+  qty: number
+}) {
+  const head = (
+    <div className="flex flex-wrap items-center gap-1.5">
+      <span className="rounded-sm bg-bg-base px-1 py-px text-[9px] font-semibold uppercase tracking-wider text-t3">
+        {role}
+      </span>
+      <span className="text-xs font-medium text-t1">{name}</span>
+      <span className="text-[10px] text-t3 tabular-nums">{code}</span>
+      <span
+        className={`rounded-sm px-1.5 py-px text-[10px] font-semibold ${
+          isBuy ? 'bg-up/15 text-up' : 'bg-bg-base text-t3'
+        }`}
+      >
+        {isBuy ? '매수 종목' : '매도 종목'}
+      </span>
+    </div>
+  )
+  if (!c) {
+    return (
+      <div className={`rounded-sm p-2.5 ${isBuy ? 'bg-bg-surface' : 'bg-bg-surface/50'}`}>
+        {head}
+        <div className="mt-2 text-xs text-t3">주식선물 미상장 — 현물로만 실행</div>
+      </div>
+    )
+  }
+  const perDay = c.carry_bp_per_day
+  const cls = perDay > 0 ? 'text-up' : perDay < 0 ? 'text-t2' : 'text-t3'
+  const contracts = Math.floor(qty / c.multiplier)
+  const rem = qty - contracts * c.multiplier
+  return (
+    <div className={`rounded-sm p-2.5 ${isBuy ? 'bg-bg-surface' : 'bg-bg-surface/50'}`}>
+      {head}
+      <div className="mt-2 space-y-1 text-xs tabular-nums">
+        <CarryRow
+          label="월물"
+          value={`${c.futures_code} · ${c.contract === 'back' ? '차월물' : '근월물'} ${fmtExpiry(
+            c.expiry
+          )} · 잔존 ${c.days_left}일`}
+        />
+        <CarryRow
+          label="베이시스"
+          value={`실측 ${Math.round(c.basis_now).toLocaleString()}원 / 이론 ${Math.round(
+            c.basis_theory
+          ).toLocaleString()}원`}
+          sub={
+            c.div_sum > 0
+              ? `만기 전 배당 ${Math.round(c.div_sum).toLocaleString()}원 차감 반영`
+              : undefined
+          }
+        />
+        <div className="flex items-baseline justify-between">
+          <span className="text-t3">캐리</span>
+          <span className={`font-semibold ${isBuy ? 'text-sm' : ''} ${cls}`}>
+            {perDay >= 0 ? '+' : ''}
+            {perDay.toFixed(3)} bp/일
+            <span className="ml-1.5 text-[11px] font-normal text-t3">
+              (만기까지 {c.carry_bp >= 0 ? '+' : ''}
+              {c.carry_bp.toFixed(1)}bp · {c.carry_advantage >= 0 ? '+' : ''}
+              {Math.round(c.carry_advantage).toLocaleString()}원/주)
+            </span>
+          </span>
+        </div>
+        <CarryRow
+          label="계약 단위"
+          value={`1계약 = ${c.multiplier}주 · 예시 ${qty.toLocaleString()}주 → ${contracts}계약${
+            rem > 0 ? ` + 현물 ${rem}주` : ' (딱 떨어짐)'
+          }`}
+          sub={rem > 0 ? '승수 배수로 안 떨어지는 잔차는 현물로 채운다' : undefined}
+        />
+        <CarryRow
+          label="유동성"
+          value={`근월물 30일 평균 ${fmtValue(c.avg_value_30d)}/일`}
+          sub={`일봉 ${c.data_date}`}
+        />
+      </div>
+      <DividendSection c={c} />
+    </div>
+  )
+}
+
+/** 배당 3분류 — 만기 내 확정(이론가에 이미 차감) / 만기 후 확정 예정(표시만) / 지난 1년 이력(힌트).
+ *  ⚠️ 만기 후 배당을 캐리 숫자에 넣지 않는 이유: 그 배당락은 롤해서 넘어갈 **다음 월물 가격에
+ *  이미 프라이싱**돼 있다. 여기서 또 빼면 이중 반영이다 (stat-arb-engine.md §23.1). 대신 롤하며
+ *  길게 들고 갈 때 언제 배당락을 맞는지는 보여야 해서 별도로 나열한다. */
+function DividendSection({ c }: { c: FuturesCarry }) {
+  const [showPast, setShowPast] = useState(false)
+  const { within, after } = splitDivsByExpiry(c)
+  const past = c.past_dividends ?? []
+  if (within.length === 0 && after.length === 0 && past.length === 0) {
+    return (
+      <div className="mt-2 border-t border-bg-base pt-2 text-[11px] text-t4">
+        최근 1년·향후 확정 배당 없음
+      </div>
+    )
+  }
+  return (
+    <div className="mt-2 space-y-1.5 border-t border-bg-base pt-2 text-[11px]">
+      {within.length > 0 && (
+        <div>
+          <div className="flex items-baseline justify-between gap-2">
+            <span className="text-t2">만기 내 확정</span>
+            <span className="text-t4 tabular-nums">
+              이론가에서 이미 차감 (−{Math.round(c.div_sum).toLocaleString()}원)
+            </span>
+          </div>
+          <DivList divs={within} />
+        </div>
+      )}
+      {after.length > 0 && (
+        <div>
+          <div className="flex items-baseline justify-between gap-2">
+            <span className="text-warning">
+              만기({fmtMonthDay(c.expiry)}) 이후 확정 예정 {after.length}건
+            </span>
+            <span className="text-t4">롤 시 반영 필요</span>
+          </div>
+          <DivList divs={after} tone="text-warning" />
+          <div className="mt-0.5 leading-relaxed text-t4">
+            롤 이후 월물 구간 — 캐리 숫자에 미반영. 그 배당락은 넘어갈 월물 가격에 이미
+            프라이싱돼 있어 여기서 또 빼면 이중 반영이다.
+          </div>
+        </div>
+      )}
+      {past.length > 0 && (
+        <div>
+          <button
+            type="button"
+            onClick={() => setShowPast((v) => !v)}
+            className="text-left text-t4 hover:text-t2"
+          >
+            {showPast ? '▾' : '▸'} 지난 1년 이력 {past.length}건 — 미공시 정기배당 힌트 (확정 아님)
+          </button>
+          {showPast && <DivList divs={past} tone="text-t3" />}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/** 배당락일 + 금액(원/주) 나열. 날짜 좌 / 금액 우 정렬. */
+function DivList({ divs, tone = 'text-t2' }: { divs: Dividend[]; tone?: string }) {
+  return (
+    <div className="mt-0.5 space-y-px tabular-nums">
+      {divs.map((d, i) => (
+        <div key={`${d.ex_date}-${i}`} className="flex items-baseline justify-between gap-2">
+          <span className="text-t3">{d.ex_date} 배당락</span>
+          <span className={tone}>{Math.round(d.amount).toLocaleString()}원</span>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function CarryRow({ label, value, sub }: { label: string; value: string; sub?: string }) {
+  return (
+    <div className="flex items-baseline justify-between gap-2">
+      <span className="shrink-0 text-t3">{label}</span>
+      <span className="text-right text-t2">
+        {value}
+        {sub && <span className="ml-1 text-[10px] text-t4">{sub}</span>}
+      </span>
     </div>
   )
 }

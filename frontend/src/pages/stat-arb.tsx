@@ -1,10 +1,22 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { AlertWatchlist } from '@/components/stat-arb/alert-watchlist'
 import { Seg } from '@/components/stat-arb/seg'
 import { useStatArbAlerts } from '@/hooks/useStatArbAlerts'
-import { keyToCode } from '@/lib/stat-arb-keys'
-import { pairKey } from '@/lib/stat-arb/alerts'
+import { keyToCode, keyType } from '@/lib/stat-arb-keys'
+import { liveZ, pairKey } from '@/lib/stat-arb/alerts'
+import { fetchQuotes, type Quote } from '@/lib/stat-arb/live-quote'
+import {
+  buyLegCarry,
+  divsAfterExpiry,
+  EMPTY_CARRY_MAP,
+  fmtExpiry,
+  fmtMonthDay,
+  fmtValue,
+  loadFuturesCarry,
+  type FuturesCarry,
+  type FuturesCarryMap,
+} from '@/lib/stat-arb/futures-carry'
 import { CLASS_COLORS, CLASS_LABELS } from '@/lib/stat-arb/asset-class'
 import { STABILITY_BADGES, STABILITY_RANK } from '@/lib/stat-arb/stability'
 
@@ -54,6 +66,9 @@ type Pair = {
   z_score: number
   sample_size: number
   score: number
+  // 잔차 정규화 기준 μ·σ — z 셀 hover의 라이브 z 재계산용 (z_score와 같은 잔차에서 나옴).
+  resid_mean?: number
+  resid_std?: number
   // ETF 분류 (엔진 신규): leg 분류 태그 + 베이시스형 여부
   left_class?: string
   right_class?: string
@@ -103,7 +118,17 @@ const STABILITY_PARAM: Record<StabilityView, string> = {
 // 안정성 등급 배지·랭크는 워치리스트와 공용 (@/lib/stat-arb/stability).
 
 // 정렬 가능한 컬럼
-type SortKey = 'score' | 'z' | 'hl' | 'r2' | 'adf' | 'corr' | 'beta' | 'loanrate' | 'stability'
+type SortKey =
+  | 'score'
+  | 'z'
+  | 'hl'
+  | 'r2'
+  | 'adf'
+  | 'corr'
+  | 'beta'
+  | 'loanrate'
+  | 'stability'
+  | 'carry'
 
 // 컬럼별 hover 설명
 const COL_TOOLTIPS: Record<SortKey | 'pair', string> = {
@@ -113,11 +138,17 @@ const COL_TOOLTIPS: Record<SortKey | 'pair', string> = {
   r2: 'OLS 결정계수 — 잔차가 얼마나 작은지 (≥0.9 강한 cointegration)',
   adf: 'ADF t-stat — 1년 잔차 stationarity (<-3 통과). 괄호 = 최근 6개월 잔차 ADF(같은 β) — 최근에도 평균회귀 유지하나(>-2면 발굴 제외)',
   hl: 'Mean-reversion half-life (그 timeframe 단위, 1d 기준 일)',
-  z: '현재 잔차 z-score — |z|≥2 진입 시그널',
+  z: '전일 종가 기준 잔차 z-score (발굴 시점 값) — |z|≥2 진입 시그널. 장중 값이 궁금하면 z 값에 마우스를 올리면 그 페어만 실시간 z를 조회한다 (상세 페이지 카드와 같은 기준)',
   stability:
     '관계 안정성 (Kalman 시변 β, 일봉) — 정적 OLS β 대비 적응 β 드리프트 ≥10% 또는 정적/적응 z 괴리 ≥2σ면 주의, ≥20%·≥3σ면 드리프트. 상세의 "관계 안정성" 패널과 동일 판정',
   score: '발굴 점수 = -ADF × (1/hl) × |corr|',
   loanrate: '대여요율 (left / right). ≥15% 강조 — 고요율 매수+송출 기회',
+  carry:
+    '주식선물 대체 캐리 (bp/일) — 진입 방향의 *매수* 종목을 현물 대신 주식선물로 사면 만기까지 하루당 얼마 이득인가. ' +
+    '(이론 베이시스 − 실측 베이시스) / 현물가. 이론 = 현물 × 금리×(1−증거금률) × 잔존일/365 − 만기 전 확정배당. ' +
+    '양수 = 선물이 쌈(선물 매수 유리). 매수 종목이 ETF·지수거나 주식선물 미상장이면 —. 전일 종가 일봉 기준. ' +
+    'β<0(short pair)이면 z≥0에서 두 종목 모두 매도라 매수 종목이 없어 —, z<0에서는 두 종목 모두 매수라 둘 중 캐리가 큰 쪽을 표시. ' +
+    '값 옆 배 = 만기 이후에도 확정 배당락이 남아 있다는 표시 (롤 시 반영 필요)',
 }
 
 // 빠른 제외 프리셋 — 시장추세 바스켓형 허브(수백 페어 도배)를 원클릭 토글. term은 소문자(매칭용).
@@ -127,6 +158,17 @@ const FILTER_DEBOUNCE_MS = 350
 /** 테이블에 실제로 그리는 최대 행 수. 검색 시에도 반드시 적용 — 예전엔 검색 중엔 매칭
  *  전체를 무제한 렌더해서(4천 행+) 흔한 글자를 치면 화면이 멈췄다. */
 const MAX_RENDER_ROWS = 150
+/** z 셀에 이만큼 머물러야 라이브 조회 발화 — 표를 훑고 지나갈 때 헛콜 방지. */
+const HOVER_DELAY_MS = 220
+
+/** 라이브 z 팝오버 앵커 (뷰포트 좌표 — position:fixed). */
+type HoverAnchor = { pk: string; x: number; y: number; pair?: Pair }
+
+type LiveState =
+  | { status: 'idle' }
+  | { status: 'loading' }
+  | { status: 'error'; message: string }
+  | { status: 'ok'; z: number | null; staticZ: number; left: Quote; right: Quote; at: number }
 
 /** 칩(카테고리 제외·키워드 제외) 토글 디바운스(ms). 사용자가 여러 개를 연달아 누르는데
  *  토글마다 목록을 재요청하면 매번 수백 KB~MB를 새로 받고 500행을 재구축한다. 하이라이트는
@@ -213,6 +255,8 @@ export function StatArbPage() {
   const [sortKey, setSortKey] = useState<SortKey>('score')
   const [sortAsc, setSortAsc] = useState<boolean>(false) // 기본 내림차순
   const [loanRates, setLoanRates] = useState<Map<string, number>>(new Map())
+  // 주식선물 대체 캐리 (일봉 스냅샷 1회 로드 — 대여요율과 같은 패턴)
+  const [carry, setCarry] = useState<FuturesCarryMap>(EMPTY_CARRY_MAP)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   // PR-B: 그룹 PCA — groupFilter 선택 시 fetch. 404 (작은 그룹/데이터 부족)면 null + reason.
@@ -240,6 +284,15 @@ export function StatArbPage() {
       })
       .catch(() => {
         /* fail-safe: 빈 Map */
+      })
+  }, [])
+
+  // 주식선물 대체 캐리 1회 로딩 (일봉 스냅샷 — 장중 안 바뀜)
+  useEffect(() => {
+    loadFuturesCarry()
+      .then(setCarry)
+      .catch(() => {
+        /* fail-safe: 캐리 컬럼만 '—' */
       })
   }, [])
 
@@ -402,16 +455,24 @@ export function StatArbPage() {
         if (l == null && r == null) return -1
         return Math.max(l ?? 0, r ?? 0)
       },
+      // 매수 종목(z·β 부호로 결정)의 선물 대체 캐리. 없으면 NaN → 오름/내림 무관하게 맨 뒤.
+      carry: (p) =>
+        buyLegCarry(carry, p.z_score, p.hedge_ratio, p.left_key, p.right_key)?.carry_bp_per_day ??
+        NaN,
     }
     const sorted = [...list].sort((a, b) => {
       const va = getter[sortKey](a)
       const vb = getter[sortKey](b)
+      // 값 없음(NaN)은 정렬 방향과 무관하게 항상 뒤로 — 빈칸이 위로 올라오면 표가 안 읽힌다.
+      const na = Number.isNaN(va)
+      const nb = Number.isNaN(vb)
+      if (na || nb) return na && nb ? 0 : na ? 1 : -1
       return sortAsc ? va - vb : vb - va
     })
     // 검색 중에도 반드시 상한을 건다. 예전엔 검색이면 매칭 전체를 렌더해서(4천 행+)
     // 흔한 글자를 치는 순간 화면이 멈췄다. 잘린 개수는 상단 카운트에 표기한다.
     return { rows: sorted.slice(0, MAX_RENDER_ROWS), matched: sorted.length }
-  }, [pairs, deferredSearch, deferredExclude, sortKey, sortAsc, loanRates])
+  }, [pairs, deferredSearch, deferredExclude, sortKey, sortAsc, loanRates, carry])
   const visiblePairs = visibleResult.rows
   const matchedCount = visibleResult.matched
 
@@ -481,9 +542,15 @@ export function StatArbPage() {
               </span>
             </td>
             <td className="px-3 py-2 text-right text-t2">{p.half_life.toFixed(1)}d</td>
-            <td className={`px-3 py-2 text-right ${zClass}`}>
-              {z >= 0 ? '+' : ''}
-              {z.toFixed(2)}
+            {/* hover 시 이 페어만 실시간 z 조회 (delegation — 핸들러는 tbody에 1개). */}
+            <td
+              data-zcell={pairKey(p.left_key, p.right_key)}
+              className={`px-3 py-2 text-right ${zClass}`}
+            >
+              <span className="cursor-help border-b border-dotted border-t4/60">
+                {z >= 0 ? '+' : ''}
+                {z.toFixed(2)}
+              </span>
             </td>
             <td className="px-3 py-2 text-right">
               <StabilityBadge
@@ -498,13 +565,124 @@ export function StatArbPage() {
                 rRate={loanRates.get(keyToCode(p.right_key))}
               />
             </td>
+            <td className="px-3 py-2 text-right">
+              <CarryCell
+                c={buyLegCarry(carry, p.z_score, p.hedge_ratio, p.left_key, p.right_key)}
+                asof={carry.asof}
+              />
+            </td>
             <td className="px-3 py-2 text-right text-t1">{p.score.toFixed(2)}</td>
           </tr>
         )
       }),
     // alertKeys/toggleAlert는 알림 추가·삭제 때만 바뀜 (toggleAlert identity 고정).
-    [visiblePairs, loanRates, alertKeys, toggleAlert]
+    // carry는 페이지당 1회 로드 후 불변.
+    [visiblePairs, loanRates, carry, alertKeys, toggleAlert]
   )
+
+  // --- z 셀 hover → 그 페어만 라이브 z ----------------------------------------
+  // 목록 z는 발굴(전일 종가) 값이라 장중엔 상세 카드(실시간)와 다르다. 목록 전체를 실시간
+  // 구독하면 수백 종목 WS라 계정 한계를 건드리므로, 마우스 올린 페어 2종목만 REST 1콜로 찍는다.
+  // hover 상태는 tableRows memo 밖에 둔다 — 안에 넣으면 hover마다 150행 JSX가 재생성된다.
+  const pairByKey = useMemo(() => {
+    const m = new Map<string, Pair>()
+    for (const p of visiblePairs) m.set(pairKey(p.left_key, p.right_key), p)
+    return m
+  }, [visiblePairs])
+
+  const [hover, setHover] = useState<HoverAnchor | null>(null)
+  const [live, setLive] = useState<LiveState>({ status: 'idle' })
+  const hoverPk = useRef<string | null>(null)
+  const hoverTimer = useRef<number | null>(null)
+  /** 늦게 도착한 이전 hover 응답이 현재 표시를 덮어쓰지 않게 하는 시퀀스. */
+  const liveSeq = useRef(0)
+
+  const clearHover = useCallback(() => {
+    if (hoverTimer.current != null) {
+      window.clearTimeout(hoverTimer.current)
+      hoverTimer.current = null
+    }
+    hoverPk.current = null
+    liveSeq.current += 1
+    setHover(null)
+    setLive({ status: 'idle' })
+  }, [])
+
+  const loadLive = useCallback(
+    async (pk: string) => {
+      const p = pairByKey.get(pk)
+      if (!p) return
+      const seq = ++liveSeq.current
+      const put = (s: LiveState) => {
+        if (seq === liveSeq.current) setLive(s)
+      }
+      // t8407은 6자리 주식/ETF 전용 — 지수·선물 종목은 현재가 조회 대상이 아니다.
+      const unsupported = [p.left_key, p.right_key].find((k) => {
+        const t = keyType(k)
+        return t !== 'S' && t !== 'E'
+      })
+      if (unsupported) {
+        put({ status: 'error', message: `${unsupported} — 지수·선물 종목은 실시간 조회 미지원` })
+        return
+      }
+      if (p.resid_mean == null || !(p.resid_std != null && p.resid_std > 0)) {
+        put({ status: 'error', message: '정규화 기준(μ·σ) 없음 — 엔진 응답이 구버전' })
+        return
+      }
+      put({ status: 'loading' })
+      const lCode = keyToCode(p.left_key)
+      const rCode = keyToCode(p.right_key)
+      try {
+        const q = await fetchQuotes([lCode, rCode])
+        const lq = q[lCode]
+        const rq = q[rCode]
+        if (!lq || !rq || !(lq.price > 0) || !(rq.price > 0)) {
+          put({ status: 'error', message: '현재가 응답 없음 (거래정지·장 시작 전)' })
+          return
+        }
+        put({
+          status: 'ok',
+          z: liveZ(p, lq.price, rq.price),
+          staticZ: p.z_score,
+          left: lq,
+          right: rq,
+          at: Date.now(),
+        })
+      } catch (e) {
+        put({ status: 'error', message: e instanceof Error ? e.message : String(e) })
+      }
+    },
+    [pairByKey]
+  )
+
+  const onTableOver = useCallback(
+    (e: React.MouseEvent<HTMLTableSectionElement>) => {
+      const cell = (e.target as HTMLElement).closest('td[data-zcell]') as HTMLElement | null
+      const pk = cell?.dataset.zcell
+      if (!pk) {
+        if (hoverPk.current) clearHover()
+        return
+      }
+      if (hoverPk.current === pk) return // 같은 셀 안에서의 이동 — 재조회 없음
+      if (hoverTimer.current != null) window.clearTimeout(hoverTimer.current)
+      hoverPk.current = pk
+      const r = cell!.getBoundingClientRect()
+      // 스쳐 지나가는 셀마다 조회하지 않도록 잠깐 머문 뒤에만 발화.
+      hoverTimer.current = window.setTimeout(() => {
+        setHover({ pk, x: r.right, y: r.bottom, pair: pairByKey.get(pk) })
+        void loadLive(pk)
+      }, HOVER_DELAY_MS)
+    },
+    [clearHover, loadLive, pairByKey]
+  )
+
+  // 스크롤하면 앵커 좌표가 어긋나므로 그냥 닫는다.
+  useEffect(() => {
+    if (!hover) return
+    const onScroll = () => clearHover()
+    window.addEventListener('scroll', onScroll, true)
+    return () => window.removeEventListener('scroll', onScroll, true)
+  }, [hover, clearHover])
 
   const sortClick = (k: SortKey) => {
     if (sortKey === k) setSortAsc(!sortAsc)
@@ -851,7 +1029,7 @@ export function StatArbPage() {
       )}
 
       {/* 페어 테이블.
-          contain:layout style — 최대 500행×11열(≈7,500 DOM 노드)이라, 위쪽 패널(알림 워치리스트
+          contain:layout style — 최대 MAX_RENDER_ROWS행×12열이라, 위쪽 패널(알림 워치리스트
           펼침/접힘 등)로 문서 높이가 바뀔 때마다 이 테이블 전체가 재레이아웃되면 체감 렉이 생긴다.
           레이아웃 격리로 외부 크기 변화가 내부 재계산을 강제하지 않게 한다. */}
       <div className="panel overflow-x-auto" style={{ contain: 'layout style' }}>
@@ -866,9 +1044,10 @@ export function StatArbPage() {
             <col className="w-16" /> {/* R² */}
             <col className="w-32" /> {/* ADF (recent 값 포함해 넓게) */}
             <col className="w-20" /> {/* half-life */}
-            <col className="w-16" /> {/* z */}
+            <col className="w-28" /> {/* z (+ '전일종가' 부제) */}
             <col className="w-24" /> {/* 안정성 */}
             <col className="w-28" /> {/* 대여 L/R */}
+            <col className="w-24" /> {/* 캐리 (선물대체) */}
             <col className="w-20" /> {/* score */}
           </colgroup>
           <thead className="sticky top-0 z-10 bg-bg-primary">
@@ -894,6 +1073,7 @@ export function StatArbPage() {
               </SortableTh>
               <SortableTh active={sortKey === 'z'} asc={sortAsc} onClick={() => sortClick('z')} title={COL_TOOLTIPS.z}>
                 z
+                <span className="ml-1 text-[10px] text-t4">전일종가</span>
               </SortableTh>
               <SortableTh active={sortKey === 'stability'} asc={sortAsc} onClick={() => sortClick('stability')} title={COL_TOOLTIPS.stability}>
                 안정성
@@ -901,13 +1081,20 @@ export function StatArbPage() {
               <SortableTh active={sortKey === 'loanrate'} asc={sortAsc} onClick={() => sortClick('loanrate')} title={COL_TOOLTIPS.loanrate}>
                 대여 L/R
               </SortableTh>
+              <SortableTh active={sortKey === 'carry'} asc={sortAsc} onClick={() => sortClick('carry')} title={COL_TOOLTIPS.carry}>
+                캐리
+                <span className="ml-1 text-[10px] text-t4">bp/일</span>
+              </SortableTh>
               <SortableTh active={sortKey === 'score'} asc={sortAsc} onClick={() => sortClick('score')} title={COL_TOOLTIPS.score}>
                 score
               </SortableTh>
             </tr>
           </thead>
-          <tbody>{tableRows}</tbody>
+          <tbody onMouseOver={onTableOver} onMouseLeave={clearHover}>
+            {tableRows}
+          </tbody>
         </table>
+        {hover && <LiveZPopover anchor={hover} state={live} />}
         {error && <div className="p-3 text-xs text-down">{error}</div>}
         {!error && visiblePairs.length === 0 && !loading && (
           <div className="p-3 text-xs text-t3">
@@ -986,7 +1173,116 @@ function LoanRateCell({ lRate, rRate }: { lRate?: number; rRate?: number }) {
   )
 }
 
+/** 주식선물 대체 캐리 셀 — 매수 종목을 선물로 바꿨을 때 하루당 이득(bp).
+ *  양수(선물 유리)만 색으로 띄우고 음수는 죽인다 — 150행에서 시각 소음 방지.
+ *  만기 이후 확정 배당락이 남아 있으면 '배' 마커 1개만 붙인다 (롤하면 맞는 배당 —
+ *  캐리 숫자에는 안 들어간다. 컬럼 폭·행 높이는 그대로 유지). */
+function CarryCell({ c, asof }: { c?: FuturesCarry; asof: string }) {
+  if (!c) return <span className="text-t4">—</span>
+  const v = c.carry_bp_per_day
+  const cls = v >= 0.05 ? 'text-up font-semibold' : v > 0 ? 'text-up' : 'text-t3'
+  const after = divsAfterExpiry(c)
+  return (
+    <span
+      className="tabular-nums"
+      title={
+        `${c.name} — 매수 종목을 주식선물로 대체\n` +
+        `${c.futures_code} (${c.contract === 'back' ? '차월물' : '근월물'} ${fmtExpiry(c.expiry)} · 잔존 ${c.days_left}일)\n` +
+        `실측 베이시스 ${Math.round(c.basis_now).toLocaleString()}원 / 이론 ${Math.round(c.basis_theory).toLocaleString()}원` +
+        (c.div_sum > 0 ? ` (배당 −${Math.round(c.div_sum).toLocaleString()}원 반영)` : '') +
+        `\n캐리 ${c.carry_advantage >= 0 ? '+' : ''}${Math.round(c.carry_advantage).toLocaleString()}원/주 = ${c.carry_bp.toFixed(1)}bp (만기까지)\n` +
+        `1계약 = ${c.multiplier}주 · 근월물 30일 평균 거래대금 ${fmtValue(c.avg_value_30d)}\n` +
+        (after.length > 0
+          ? `⚠ 만기(${fmtMonthDay(c.expiry)}) 이후 확정 배당락: ` +
+            after
+              .map((d) => `${fmtMonthDay(d.ex_date)} ${Math.round(d.amount).toLocaleString()}원`)
+              .join(', ') +
+            ' — 캐리 숫자엔 미반영, 롤 시 반영 필요\n'
+          : '') +
+        `일봉 ${c.data_date} 기준 (asof ${asof}) — 실시간 아님`
+      }
+    >
+      <span className={cls}>
+        {v >= 0 ? '+' : ''}
+        {v.toFixed(2)}
+      </span>
+      {after.length > 0 && <span className="ml-0.5 text-[10px] text-warning">배</span>}
+    </span>
+  )
+}
+
 /** 정렬 가능한 컬럼 헤더. 활성 시 ▲/▼ 표시. */
+/** 라이브 z 팝오버 — z 셀 hover 시 그 페어의 실시간 z(상세 카드와 같은 기준)를 보여준다.
+ *  pointer-events-none: 커서를 가로채지 않아 표를 계속 훑을 수 있다. */
+function LiveZPopover({ anchor, state }: { anchor: HoverAnchor; state: LiveState }) {
+  const W = 268
+  const H = 132
+  const left = Math.max(4, Math.min(anchor.x + 8, window.innerWidth - W - 8))
+  // 아래로 넘치면 셀 위쪽으로 뒤집어 띄운다.
+  const top = anchor.y + H + 8 > window.innerHeight ? Math.max(4, anchor.y - H - 24) : anchor.y + 6
+  const pct = (q: Quote) => (q.prev_close > 0 ? ((q.price / q.prev_close - 1) * 100).toFixed(2) : null)
+  const p = anchor.pair
+  return (
+    <div
+      style={{ left, top, width: W }}
+      className="pointer-events-none fixed z-50 rounded-sm border border-bg-surface bg-bg-primary p-2 text-xs shadow-lg"
+    >
+      <div className="mb-1 text-[10px] text-t4">실시간 z · 일봉 기준 (상세 카드와 동일)</div>
+      {state.status === 'loading' && <div className="text-t3">조회 중…</div>}
+      {state.status === 'error' && <div className="text-warning">{state.message}</div>}
+      {state.status === 'ok' && (
+        <>
+          <div className="flex items-baseline justify-between">
+            <span
+              className={`font-mono text-lg ${
+                state.z != null && Math.abs(state.z) >= 2.5
+                  ? 'text-warning'
+                  : state.z != null && Math.abs(state.z) >= 1.5
+                    ? 'text-t1'
+                    : 'text-t2'
+              }`}
+            >
+              {state.z != null ? `${state.z >= 0 ? '+' : ''}${state.z.toFixed(2)}` : '—'}
+            </span>
+            <span className="text-[10px] text-t4">
+              전일종가 z {state.staticZ >= 0 ? '+' : ''}
+              {state.staticZ.toFixed(2)}
+              {state.z != null && (
+                <span className="ml-1 text-t3">
+                  (Δ {state.z - state.staticZ >= 0 ? '+' : ''}
+                  {(state.z - state.staticZ).toFixed(2)})
+                </span>
+              )}
+            </span>
+          </div>
+          <div className="mt-1 grid grid-cols-[1fr_auto_auto] gap-x-2 gap-y-0.5 text-[11px] tabular-nums">
+            {(
+              [
+                [p?.left_name ?? '좌', state.left],
+                [p?.right_name ?? '우', state.right],
+              ] as Array<[string, Quote]>
+            ).map(([nm, q], i) => (
+              <div key={i} className="contents">
+                <span className="truncate text-t3">{nm}</span>
+                <span className="text-right text-t1">{q.price.toLocaleString()}</span>
+                <span className={`text-right ${q.price >= q.prev_close ? 'text-up' : 'text-down'}`}>
+                  {pct(q) != null ? `${Number(pct(q)) >= 0 ? '+' : ''}${pct(q)}%` : '—'}
+                </span>
+              </div>
+            ))}
+          </div>
+          {(state.left.stale || state.right.stale) && (
+            <div className="mt-1 text-[10px] text-warning">당일 체결 없는 종목 있음 — 전일 종가 이월값</div>
+          )}
+          <div className="mt-1 text-[10px] text-t4">
+            {new Date(state.at).toLocaleTimeString('ko-KR', { hour12: false })} 조회 · t8407 스냅샷
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
 function SortableTh({
   children,
   active,
