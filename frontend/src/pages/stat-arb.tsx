@@ -8,11 +8,18 @@ import { liveZ, pairKey } from '@/lib/stat-arb/alerts'
 import { fetchQuotes, type Quote } from '@/lib/stat-arb/live-quote'
 import {
   buyLegCarry,
-  divsAfterExpiry,
+  CARRY_CUSHION_BP,
+  CARRY_VERDICT_LABEL,
+  CARRY_VERDICT_TEXT_CLS,
+  carryVerdict,
+  carryVerdictTitle,
+  dividendCaution,
   EMPTY_CARRY_MAP,
+  fmtBp,
   fmtExpiry,
   fmtMonthDay,
   fmtValue,
+  fmtWon,
   loadFuturesCarry,
   type FuturesCarry,
   type FuturesCarryMap,
@@ -148,7 +155,8 @@ const COL_TOOLTIPS: Record<SortKey | 'pair', string> = {
     '(이론 베이시스 − 실측 베이시스) / 현물가. 이론 = 현물 × 금리×(1−증거금률) × 잔존일/365 − 만기 전 확정배당. ' +
     '양수 = 선물이 쌈(선물 매수 유리). 매수 종목이 ETF·지수거나 주식선물 미상장이면 —. 전일 종가 일봉 기준. ' +
     'β<0(short pair)이면 z≥0에서 두 종목 모두 매도라 매수 종목이 없어 —, z<0에서는 두 종목 모두 매수라 둘 중 캐리가 큰 쪽을 표시. ' +
-    '값 옆 배 = 만기 이후에도 확정 배당락이 남아 있다는 표시 (롤 시 반영 필요)',
+    `숫자 색 = 판정(상세 배지와 동일, 만기까지 총 bp 기준): 초록 ${CARRY_VERDICT_LABEL.futures}(≥ +${CARRY_CUSHION_BP}bp) / 회색 ${CARRY_VERDICT_LABEL.neutral}(0 ~ +${CARRY_CUSHION_BP}bp, 쿠션 미만이라 실익 미미) / 흐림 ${CARRY_VERDICT_LABEL.spot}(음수). ` +
+    '값 옆 배 = 배당 확인 — 만기 후 확정 배당락이 남았거나, 지난 1년 배당락이 잔존 구간에 투영되는데 확정분이 없다(미공시 정기배당 가능 = 캐리 과대). 사유는 값에 마우스를 올리면 나온다',
 }
 
 // 빠른 제외 프리셋 — 시장추세 바스켓형 허브(수백 페어 도배)를 원클릭 토글. term은 소문자(매칭용).
@@ -1174,39 +1182,37 @@ function LoanRateCell({ lRate, rRate }: { lRate?: number; rRate?: number }) {
 }
 
 /** 주식선물 대체 캐리 셀 — 매수 종목을 선물로 바꿨을 때 하루당 이득(bp).
- *  양수(선물 유리)만 색으로 띄우고 음수는 죽인다 — 150행에서 시각 소음 방지.
- *  만기 이후 확정 배당락이 남아 있으면 '배' 마커 1개만 붙인다 (롤하면 맞는 배당 —
- *  캐리 숫자에는 안 들어간다. 컬럼 폭·행 높이는 그대로 유지). */
+ *  숫자 색 = 상세와 같은 **판정 1벌**(`carryVerdict`, 만기까지 총 bp 기준): 선물 매수(up) /
+ *  중립(t3) / 현물 매수(t4). 150행에서 색이 곧 결론이라 임계를 여기 또 두지 않는다.
+ *  캐리 숫자에 안 들어간 배당 리스크(`dividendCaution` — 만기 후 확정분 / 이력 투영 힌트)가
+ *  있으면 '배' 마커 1개만 붙인다 (컬럼 폭·행 높이는 그대로 유지, 사유는 툴팁). */
 function CarryCell({ c, asof }: { c?: FuturesCarry; asof: string }) {
   if (!c) return <span className="text-t4">—</span>
   const v = c.carry_bp_per_day
-  const cls = v >= 0.05 ? 'text-up font-semibold' : v > 0 ? 'text-up' : 'text-t3'
-  const after = divsAfterExpiry(c)
+  const verdict = carryVerdict(c)
+  const cls = `${CARRY_VERDICT_TEXT_CLS[verdict]}${verdict === 'futures' ? ' font-semibold' : ''}`
+  const caution = dividendCaution(c)
   return (
     <span
       className="tabular-nums"
       title={
         `${c.name} — 매수 종목을 주식선물로 대체\n` +
+        `▶ ${carryVerdictTitle(c)}\n` +
         `${c.futures_code} (${c.contract === 'back' ? '차월물' : '근월물'} ${fmtExpiry(c.expiry)} · 잔존 ${c.days_left}일)\n` +
         `실측 베이시스 ${Math.round(c.basis_now).toLocaleString()}원 / 이론 ${Math.round(c.basis_theory).toLocaleString()}원` +
         (c.div_sum > 0 ? ` (배당 −${Math.round(c.div_sum).toLocaleString()}원 반영)` : '') +
-        `\n캐리 ${c.carry_advantage >= 0 ? '+' : ''}${Math.round(c.carry_advantage).toLocaleString()}원/주 = ${c.carry_bp.toFixed(1)}bp (만기까지)\n` +
+        `\n캐리 ${fmtWon(c.carry_advantage)}원/주 = ${fmtBp(c.carry_bp)}bp (만기까지)\n` +
         `1계약 = ${c.multiplier}주 · 근월물 30일 평균 거래대금 ${fmtValue(c.avg_value_30d)}\n` +
-        (after.length > 0
-          ? `⚠ 만기(${fmtMonthDay(c.expiry)}) 이후 확정 배당락: ` +
-            after
-              .map((d) => `${fmtMonthDay(d.ex_date)} ${Math.round(d.amount).toLocaleString()}원`)
-              .join(', ') +
-            ' — 캐리 숫자엔 미반영, 롤 시 반영 필요\n'
+        (caution.flag
+          ? `⚠ 배 = 배당 확인 (만기 ${fmtMonthDay(c.expiry)}) — 캐리 숫자엔 미반영\n` +
+            caution.reasons.map((r) => `· ${r}`).join('\n') +
+            '\n'
           : '') +
         `일봉 ${c.data_date} 기준 (asof ${asof}) — 실시간 아님`
       }
     >
-      <span className={cls}>
-        {v >= 0 ? '+' : ''}
-        {v.toFixed(2)}
-      </span>
-      {after.length > 0 && <span className="ml-0.5 text-[10px] text-warning">배</span>}
+      <span className={cls}>{fmtBp(v)}</span>
+      {caution.flag && <span className="ml-0.5 text-[10px] text-warning">배</span>}
     </span>
   )
 }
