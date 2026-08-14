@@ -18,8 +18,10 @@
   (upcoming_dividends / past_dividends).
 - 대여요율/대차 항은 넣지 않는다 (대여 송출이 안 나갈 가능성이 높아 사용자 결정으로 제외).
 - 롤 규칙: front 잔존일 < ROLL_MIN_DAYS 면 back 월물 (만기일 당일 front를 잡으면 d=0).
-  선택한 월물의 코드와 DB 일봉의 contract_code가 다르면(롤 경계일) 그 종목은 **제외**한다 —
-  틀린 숫자보다 빈 값이 낫다. 제외 수는 응답 skipped_roll_mismatch.
+  일봉은 라벨(NEAR/NEXT)이 아니라 **선택한 월물의 contract_code로 직접 조회**한다. 만기 다음날
+  처럼 마스터와 DB 라벨이 어긋나는 날에도(마스터 front=신규 월물인데 DB 최신 NEAR는 소멸한
+  구월물) 같은 계약의 종가·베이시스를 정확히 집어온다. 그 코드의 일봉이 최근 거래일 안에
+  아예 없을 때만 제외 — 틀린 숫자보다 빈 값이 낫다. 제외 수는 응답 skipped_roll_mismatch.
 - 롤을 반복하며 길게 들고 갈 때를 위해 향후 1년 확정 배당(만기 후 포함)과 지난 1년 이력을
   같이 내려준다. 이력은 아직 미공시인 정기배당(12월 결산 등)의 **힌트일 뿐 확정이 아니다**.
 
@@ -84,7 +86,7 @@ class CarrySnapshot:
     asof: str  # 선물 일봉 최신 거래일
     today: date  # 스냅샷을 만든 날 (배당·잔존일 기준)
     rows: list[CarryRow]
-    skipped_roll_mismatch: int  # 마스터 월물 ≠ DB 최신 일봉 계약 → 제외한 종목 수
+    skipped_roll_mismatch: int  # 선택 월물의 최근 일봉 없음 → 제외한 종목 수
 
 
 class _Cache:
@@ -190,32 +192,32 @@ async def _load_snapshot(today: date) -> CarrySnapshot:
         if not ucodes:
             raise RuntimeError("futures_underlyings 매핑 0건")
 
-        # ③ 종목×월물별 최신 1행 (NEAR/NEXT 둘 다 받아 선택은 파이썬에서).
-        #    contract_code를 같이 받아 **마스터가 고른 월물과 같은 계약인지 검증**한다. 롤 경계일
-        #    (만기 다음 영업일 장중)에는 마스터 front가 이미 신규 월물인데 DB 최신 NEAR는 만기
-        #    소멸한 구월물이라, 라벨(NEAR/NEXT)만 믿으면 엉뚱한 계약의 베이시스를 붙이게 된다.
+        # ③ **계약(contract_code)별** 최신 1행. NEAR/NEXT 라벨로 조인하지 않는다 — 만기 다음날
+        #    에는 마스터 front가 이미 신규 월물인데 DB 최신 NEAR는 만기 소멸한 구월물이라
+        #    (신규 월물은 아직 NEXT), 라벨을 믿으면 전 종목이 어긋난다. contract_code는 기초자산
+        #    까지 포함해 전역 유일하므로 코드만으로 키를 잡는다. 같은 코드가 창 안에서 라벨을
+        #    갈아타도(NEXT→NEAR) DISTINCT ON 이 최신 1행만 남긴다.
         last_rows = (
             await session.execute(
                 text(
-                    "SELECT DISTINCT ON (underlying_code, contract_class) "
-                    "  underlying_code, contract_class, contract_code, time, close, "
-                    "  underlying_basis "
+                    "SELECT DISTINCT ON (contract_code) "
+                    "  contract_code, time, close, underlying_basis "
                     "FROM futures_ohlcv_daily "
                     "WHERE underlying_code = ANY(:codes) AND time >= :since "
-                    "ORDER BY underlying_code, contract_class, time DESC"
+                    "  AND contract_code IS NOT NULL "
+                    "ORDER BY contract_code, time DESC"
                 ),
                 {"codes": ucodes, "since": recent_min},
             )
         ).all()
-        last: dict[tuple[str, str], tuple[date, float, float, str]] = {}
+        last: dict[str, tuple[date, float, float]] = {}
         for r in last_rows:
             if r.close is None or r.underlying_basis is None:
                 continue
-            last[(str(r.underlying_code), str(r.contract_class))] = (
+            last[str(r.contract_code).strip()] = (
                 r.time,
                 float(r.close),
                 float(r.underlying_basis),
-                str(r.contract_code or "").strip(),
             )
 
         # ④ 유동성 참고 — **근월물(NEAR) 30거래일 평균 거래대금**. 선택 월물이 back일 때
@@ -268,16 +270,14 @@ async def _load_snapshot(today: date) -> CarrySnapshot:
         ucode = by_stock.get(base)
         if not ucode:
             continue  # 선물 상장 종목인데 매핑 없음 (마스터-DB 시차) → 제외
-        cls = "NEAR" if contract == "front" else "NEXT"
-        hit = last.get((ucode, cls))
-        if hit is None:
-            continue  # 최근 5거래일 데이터 없음 → 제외
-        data_date, close, basis_now, contract_code = hit
         code = str(leg.get("code") or "").strip()
-        if contract_code != code:
-            # 롤 경계 불일치 — 다른 계약의 종가/베이시스를 붙이느니 이 종목을 아예 뺀다.
+        hit = last.get(code)
+        if hit is None:
+            # 마스터가 고른 그 계약의 일봉이 최근 거래일 안에 없음 (신규 상장 월물·거래 중단
+            # 등). 다른 계약 숫자를 갖다 붙이느니 이 종목을 뺀다.
             skipped_roll_mismatch += 1
             continue
+        data_date, close, basis_now = hit
         spot = close - basis_now
         if spot <= 0:
             continue
@@ -375,7 +375,7 @@ def compute(snap: CarrySnapshot, rate: float, margin: float) -> dict:
         "margin": margin,
         "r_eff": round(r_eff, 6),
         "count": len(items),
-        # 롤 경계일 진단용 — 마스터 월물과 DB 최신 일봉 계약이 달라 제외한 종목 수. 평시 0.
+        # 진단용 — 마스터가 고른 월물의 최근 일봉이 없어 제외한 종목 수. 평시 0~소수.
         "skipped_roll_mismatch": snap.skipped_roll_mismatch,
         "items": items,
     }
