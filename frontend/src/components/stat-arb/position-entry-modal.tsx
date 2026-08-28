@@ -29,9 +29,14 @@ export function PositionEntryModal({
     lendOutBuy: boolean                     // 매수분 대여송출 여부
     buyLoanRate: number                     // 매수 leg 대여요율 (0이면 미등록)
     entryZ: number                          // 진입 z (실시간 또는 DB)
+    // 진입 시점 통계량 freeze. alpha/beta/center/scale = 고정 z 좌표계 (§24) —
+    // 넷 다 *같은 기준(basis)*에서 떠야 frozen_z(진입가) ≡ entryZ 가 성립한다.
     entryStats: {
       alpha: number
       beta: number
+      center: number
+      scale: number
+      basis: string
       half_life: number
       adf: number
       r2: number
@@ -101,6 +106,10 @@ export function PositionEntryModal({
       entry_stats: {
         alpha: prefill.entryStats.alpha,
         beta: prefill.entryStats.beta,
+        // 밴드(μ·σ) — 이 둘이 있어야 청산 판단용 고정 z를 나중에 재계산할 수 있다.
+        center: prefill.entryStats.center,
+        scale: prefill.entryStats.scale,
+        basis: prefill.entryStats.basis,
         half_life: prefill.entryStats.half_life,
         adf: prefill.entryStats.adf,
         r2: prefill.entryStats.r2,
@@ -177,6 +186,20 @@ export function PositionEntryModal({
           <div className="mt-0.5 text-[10px] text-t4">
             진입 z = {prefill.entryZ.toFixed(2)} · β = {beta.toFixed(4)} ·
             half-life = {prefill.entryStats.half_life.toFixed(1)}d
+          </div>
+          {/* 고정 z 좌표계 — 저장되는 값이 뭔지 명시 (나중에 청산 판단 자가 된다). */}
+          <div className="mt-0.5 text-[10px]">
+            {prefill.entryStats.scale > 0 ? (
+              <span className="text-t4">
+                고정 z 밴드 저장: {prefill.entryStats.basis === '1d' ? '일봉' : '10분'} μ={' '}
+                {Math.round(prefill.entryStats.center).toLocaleString()} · σ={' '}
+                {Math.round(prefill.entryStats.scale).toLocaleString()}원
+              </span>
+            ) : (
+              <span className="text-warning">
+                밴드(σ) 미확보 — 이 기록은 고정 z 계산 불가
+              </span>
+            )}
           </div>
         </div>
 

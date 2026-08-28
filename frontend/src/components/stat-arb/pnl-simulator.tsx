@@ -27,7 +27,10 @@ export function PnlSimulator({
   liveSpread,
   stat,
   lastPoint,
+  basis,
   basisLabel,
+  center,
+  scale,
   hlTradingDays,
 }: {
   detail: PairDetail
@@ -39,8 +42,13 @@ export function PnlSimulator({
   stat: TimeframeStat | undefined
   /// 헤드라인 시계열 마지막 점(선택 기준) — spread·기준가 fallback.
   lastPoint: SpreadPoint | undefined
+  /// 실효 기준 timeframe — 저장되는 고정 z 밴드가 어느 자인지 기록용.
+  basis: '1d' | '10m'
   /// 기준 라벨('일봉'|'10분') — 표시용.
   basisLabel: string
+  /// 선택 기준의 잔차 정규화 μ·σ (화면 z와 동일 기준). 진입 스냅샷에 얼려 고정 z에 쓴다.
+  center: number
+  scale: number
   /// 선택 기준의 half-life를 거래일 단위로 변환한 값(저장 포지션용). 10분=÷봉수, 일봉=그대로.
   hlTradingDays: number | null
 }) {
@@ -379,6 +387,11 @@ export function PnlSimulator({
             entryStats: {
               alpha: stat1d.alpha,
               beta: stat1d.hedge_ratio,
+              // 밴드(μ·σ)는 화면 z를 만든 그 기준 그대로 — α·β와 같은 자여야
+              // frozen_z(진입가) ≡ 진입 z 가 성립한다 (§24).
+              center,
+              scale,
+              basis,
               // half_life는 거래일 단위로 저장 (position-detail이 '일'로 표시).
               // 기준별 변환은 부모가 계산(hlTradingDays): 10분=÷봉수, 일봉=그대로.
               half_life: hlTradingDays ?? stat1d.half_life,

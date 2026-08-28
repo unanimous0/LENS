@@ -3,6 +3,7 @@ import { Link, useParams } from 'react-router-dom'
 
 import { ResidualHistogram, SpreadChart, ZScoreChart } from '@/components/stat-arb/charts'
 import { PositionCloseModal } from '@/components/stat-arb/position-close-modal'
+import { PositionEditModal } from '@/components/stat-arb/position-edit-modal'
 import { usePageStockSubscriptions } from '@/hooks/usePageStockSubscriptions'
 import {
   LABEL_META,
@@ -11,11 +12,25 @@ import {
   holdDays,
   regressionPct,
 } from '@/lib/position-labels'
+import {
+  BAND_SHIFT_TOOLTIP,
+  BAND_SOURCE_MARK,
+  BAND_SOURCE_NOTE,
+  NO_BAND_REASON,
+  bandShift,
+  bandSourceLabel,
+  entryZNotice,
+  frozenBand,
+  frozenZ,
+  isBandShiftWarn,
+  type FrozenBand,
+  type ZBand,
+} from '@/lib/stat-arb/frozen-z'
 import { CAL_PER_TRADING_DAY, toTradingDays } from '@/lib/stat-arb/half-life'
 import { keyToCode, keyType } from '@/lib/stat-arb-keys'
 import { useMarketStore } from '@/stores/marketStore'
 import type { Position } from '@/types/positions'
-import type { PairDetail } from '@/types/stat-arb'
+import type { PairDetail, TimeframeStat } from '@/types/stat-arb'
 
 /** 일봉 spread_series mean/std (PR15b 와 동일 로직) */
 function spreadStats(series: { spread: number }[]): { mean: number; std: number } {
@@ -32,6 +47,21 @@ function spreadStats(series: { spread: number }[]): { mean: number; std: number 
   return { mean, std: Math.sqrt(sq / (n - 1)) }
 }
 
+/** 진입 스냅샷이 어느 timeframe에서 떴는지.
+ *
+ *  basis를 저장하기 시작한 건 2026-08-27부터라 구 기록은 모른다. 그때는 저장된 β₀에 가장
+ *  가까운 자를 고른다 — 일봉 β와 10분 β는 보통 10% 이상 벌어져 판별이 쉽다(실측 방산 페어:
+ *  β₀=103.50 vs 1d 102.50 / 10m 92.81). 잘못 고르면 "오늘 z"가 다른 자로 계산돼 없던
+ *  밴드 이동 경고가 뜬다. */
+function pickBasis(band: FrozenBand | null, tfs: TimeframeStat[]): '1d' | '10m' {
+  if (band?.basis === '1d' || band?.basis === '10m') return band.basis
+  const daily = tfs.find((t) => t.timeframe === '1d')
+  const intraday = tfs.find((t) => t.timeframe === '10m')
+  if (!band || !daily || !intraday) return '10m'
+  const rel = (b: number) => (b === 0 ? Infinity : Math.abs(band.beta - b) / Math.abs(b))
+  return rel(daily.hedge_ratio) <= rel(intraday.hedge_ratio) ? '1d' : '10m'
+}
+
 export function StatArbPositionDetailPage() {
   const { id } = useParams<{ id: string }>()
   const [position, setPosition] = useState<Position | null>(null)
@@ -42,6 +72,9 @@ export function StatArbPositionDetailPage() {
   const [noteDraft, setNoteDraft] = useState('')
   const [labelDraft, setLabelDraft] = useState('')
   const [closeModalOpen, setCloseModalOpen] = useState(false)
+  const [editModalOpen, setEditModalOpen] = useState(false)
+  // 기록 수정 후 서버의 entry_z 처리 결과 안내 (재계산/무시) — §24.7
+  const [zNotice, setZNotice] = useState<string | null>(null)
 
   // 포지션 + 페어 상세 병렬 로딩
   useEffect(() => {
@@ -147,34 +180,61 @@ export function StatArbPositionDetailPage() {
   const loanPnL = estimateLoanPnL(position)
   const totalPnL = (markPnL ?? 0) + loanPnL
 
-  // half-life 단위 환산: stat1d(10분봉) half_life는 "10분봉 개수" → 거래일(toTradingDays=÷38).
+  // ── 고정 z (§24) — 진입 밴드(α₀·β₀·μ₀·σ₀)에 현재가만 넣은 z. 손익과 1:1이라
+  //    청산 판단(회귀·라벨·예상일)은 전부 이 자로 한다. 롤링 z는 밴드 이동 확인용 보조.
+  //    저장 밴드 우선, 구 기록은 진입 z에서 σ₀ 역산 (source로 구분해 화면에 표기).
+  const band = frozenBand(position)
+  // 비교용 롤링 밴드는 진입 스냅샷과 *같은 timeframe*에서 떠야 의미가 있다.
+  const bandBasis = pickBasis(band, detail.timeframes)
+  const basisLabel = bandBasis === '1d' ? '일봉' : '10분'
+  const rollStat = detail.timeframes.find((t) => t.timeframe === bandBasis) ?? stat1d
+  const _fbDaily = spreadStats(detail.spread_series_daily ?? [])
+  const rollCenter = bandBasis === '1d' ? detail.daily_center ?? _fbDaily.mean : spMean
+  const rollScale = bandBasis === '1d' ? detail.daily_scale ?? _fbDaily.std : spStd
+  const rollingBand: ZBand | null =
+    rollStat && rollScale > 0
+      ? {
+          alpha: rollStat.alpha,
+          beta: rollStat.hedge_ratio,
+          center: rollCenter,
+          scale: rollScale,
+        }
+      : null
+  // 가격 — 청산분은 확정 체결가, 아니면 실시간, 그것도 없으면 마지막 봉 종가.
+  const markLeft = leftMarkPrice > 0 ? leftMarkPrice : dbLast?.left ?? 0
+  const markRight = rightMarkPrice > 0 ? rightMarkPrice : dbLast?.right ?? 0
+  const frozenZValue = frozenZ(band, markLeft, markRight)
+  const frozenReason =
+    band == null ? NO_BAND_REASON : markLeft > 0 && markRight > 0 ? null : '현재가 없음'
+  // 오늘 z — 롤링 밴드 + *같은 가격*. 차이는 온전히 밴드 이동분(가격 시점차 아님).
+  const todayZ = frozenZ(rollingBand, markLeft, markRight)
+  const shift = bandShift(frozenZValue, todayZ)
+  const shiftWarn = isBandShiftWarn(shift, band, bandBasis)
+  // 판단 기준 z — 고정 z 우선, 밴드 없는 구 포지션만 롤링으로 폴백.
+  const judgeZ = frozenZValue ?? currentZ
+
+  // half-life 단위 환산: 인트라데이 half_life는 "봉 개수" → 거래일(toTradingDays).
   // entry.half_life는 진입 시 거래일로 저장된 기존값. (deriveLabel/예상청산 계산은 거래일 기준)
   const currentHalfLifeDays =
-    stat1d?.half_life != null ? toTradingDays('10m', stat1d.half_life) : null
+    rollStat?.half_life != null ? toTradingDays(bandBasis, rollStat.half_life) : null
 
   // 자동 라벨 — closed는 라벨 안 보여줌 (별도 "청산" 뱃지가 명확)
   const halfLife = entry.half_life ?? currentHalfLifeDays
-  const label = !isClosed ? deriveLabel(position, currentZ, halfLife) : null
+  const label = !isClosed ? deriveLabel(position, judgeZ, halfLife) : null
   const labelMeta = label ? LABEL_META[label] : null
-  const regress = regressionPct(position.entry_z, currentZ)
+  const regress = regressionPct(position.entry_z, judgeZ)
   const days = holdDays(position.opened_at)
 
-  // 예상 청산 도달 — half-life(거래일) × log2(|currentZ|/0.3) → 달력일(×1.49). closed면 의미 없음.
+  // 예상 청산 도달 — half-life(거래일) × log2(|고정 z|/0.3) → 달력일(×1.49). closed면 의미 없음.
   let projectedExitCalDays: number | null = null
-  if (
-    !isClosed &&
-    halfLife &&
-    halfLife > 0 &&
-    currentZ != null &&
-    Math.abs(currentZ) > 0.3
-  ) {
-    const tradingDays = halfLife * (Math.log(Math.abs(currentZ) / 0.3) / Math.log(2))
+  if (!isClosed && halfLife && halfLife > 0 && judgeZ != null && Math.abs(judgeZ) > 0.3) {
+    const tradingDays = halfLife * (Math.log(Math.abs(judgeZ) / 0.3) / Math.log(2))
     projectedExitCalDays = tradingDays * CAL_PER_TRADING_DAY
   }
 
   // β 드리프트 — 진입 β 대비 현재 β 변화. 자동 리밸런싱 X, 경고 + 수동 판단.
   // 헤지: left:right 주식 수 = β:1 → right 고정 시 β-정합 left 수량 = round(β × rightQty).
-  const curBeta = stat1d?.hedge_ratio ?? null
+  const curBeta = rollStat?.hedge_ratio ?? null
   const betaDriftPct =
     entry.beta != null && entry.beta !== 0 && curBeta != null
       ? ((curBeta - entry.beta) / Math.abs(entry.beta)) * 100
@@ -231,6 +291,14 @@ export function StatArbPositionDetailPage() {
             )}
           </span>
         </div>
+        <button
+          type="button"
+          onClick={() => setEditModalOpen(true)}
+          className="rounded-sm bg-bg-surface px-3 py-1 text-xs text-t2 hover:text-t1"
+          title="진입일·수량·진입가·라벨/메모 수정"
+        >
+          기록 수정
+        </button>
         {!isClosed && (
           <button
             type="button"
@@ -245,17 +313,46 @@ export function StatArbPositionDetailPage() {
         </span>
       </div>
 
-      {/* KPI 카드 */}
-      <div className="panel grid grid-cols-2 gap-2 p-3 md:grid-cols-4">
+      {zNotice && (
+        <div className="panel px-3 py-1.5 text-[10px] text-warning">{zNotice}</div>
+      )}
+
+      {/* KPI 카드 — 청산 판단은 고정 z, 오늘 z는 밴드 이동 확인용 (§24) */}
+      <div className="panel grid grid-cols-2 gap-2 p-3 md:grid-cols-5">
         <Kpi
-          label="진입 z → 현재 z"
+          label="진입 z → 고정 z"
           value={
-            position.entry_z != null && currentZ != null
-              ? `${position.entry_z.toFixed(2)} → ${currentZ.toFixed(2)}`
+            position.entry_z != null && frozenZValue != null
+              ? `${position.entry_z.toFixed(2)} → ${frozenZValue.toFixed(2)}`
+              : position.entry_z != null
+              ? `${position.entry_z.toFixed(2)} → —`
               : '—'
           }
+          hint={
+            frozenReason ??
+            (band
+              ? `${bandSourceLabel(band.source)} · ${basisLabel} σ₀=${Math.round(
+                  band.scale
+                ).toLocaleString()}`
+              : undefined)
+          }
+          title={band ? BAND_SOURCE_NOTE[band.source] : undefined}
         />
-        <Kpi label="회귀" value={regress != null ? `${regress.toFixed(0)}%` : '—'} />
+        <Kpi
+          label={`오늘 z · 롤링 ${basisLabel}`}
+          value={todayZ != null ? todayZ.toFixed(2) : '—'}
+          hint={
+            shift != null
+              ? `밴드 이동 Δ${shift >= 0 ? '+' : ''}${shift.toFixed(2)}σ`
+              : '같은 가격 · 오늘 재추정 밴드'
+          }
+          tone={shiftWarn ? 'warning' : undefined}
+          title={shiftWarn ? BAND_SHIFT_TOOLTIP : undefined}
+        />
+        <Kpi
+          label={`회귀 (${frozenZValue != null ? '고정 z' : '오늘 z'})`}
+          value={regress != null ? `${regress.toFixed(0)}%` : '—'}
+        />
         <Kpi
           label={isClosed ? '확정 보유' : '청산권(±0.3σ) 예상'}
           value={
@@ -263,7 +360,7 @@ export function StatArbPositionDetailPage() {
               ? `${days}일`
               : projectedExitCalDays != null
               ? `약 ${Math.round(projectedExitCalDays)}일 후`
-              : Math.abs(currentZ ?? 0) <= 0.3
+              : Math.abs(judgeZ ?? 0) <= 0.3
               ? '청산권 도달'
               : '—'
           }
@@ -342,9 +439,13 @@ export function StatArbPositionDetailPage() {
           </div>
         </div>
         <div className="panel p-3">
+          {/* 차트 축은 엔진 롤링 밴드(10분) — 고정 z와 자가 다르므로 숫자를 나란히 적어 둔다. */}
           <div className="mb-2 text-xs text-t3">
-            z-score · 진입 {position.entry_z?.toFixed(2) ?? '—'} → 현재{' '}
-            {currentZ?.toFixed(2) ?? '—'}
+            z-score <span className="text-t4">(롤링 밴드 축)</span> · 진입{' '}
+            {position.entry_z?.toFixed(2) ?? '—'} → 현재 {currentZ?.toFixed(2) ?? '—'}
+            {frozenZValue != null && (
+              <span className="ml-1 text-t2">· 고정 z {frozenZValue.toFixed(2)}</span>
+            )}
           </div>
           <div className="h-[260px]">
             <ZScoreChart
@@ -445,7 +546,17 @@ export function StatArbPositionDetailPage() {
 
         {/* 통계 변화 */}
         <div className="panel p-3">
-          <div className="mb-2 text-xs text-t3">통계량 변화 (진입 freeze vs 현재 10m)</div>
+          <div className="mb-2 flex items-center gap-2">
+            <span className="text-xs text-t3">통계량 변화 (진입 freeze vs 현재 {basisLabel})</span>
+            {shiftWarn && (
+              <span
+                className="rounded-sm bg-warning/15 px-2 py-0.5 text-[10px] text-warning"
+                title={BAND_SHIFT_TOOLTIP}
+              >
+                밴드 이동
+              </span>
+            )}
+          </div>
           <table className="w-full text-xs tabular-nums">
             <thead className="text-t3">
               <tr>
@@ -459,14 +570,27 @@ export function StatArbPositionDetailPage() {
               <StatRow
                 label="hedge ratio β"
                 entry={entry.beta}
-                current={stat1d?.hedge_ratio}
+                current={rollStat?.hedge_ratio}
                 fmt={(v) => v.toFixed(4)}
               />
               <StatRow
                 label="α"
                 entry={entry.alpha}
-                current={stat1d?.alpha}
+                current={rollStat?.alpha}
                 fmt={(v) => v.toFixed(1)}
+              />
+              {/* μ·σ = 고정 z의 밴드. σ가 벌어지면 같은 잔차라도 화면 z가 줄어 '수렴'처럼 보인다. */}
+              <StatRow
+                label="밴드 중심 μ"
+                entry={band?.center}
+                current={rollCenter}
+                fmt={(v) => Math.round(v).toLocaleString()}
+              />
+              <StatRow
+                label={`밴드 σ${band && BAND_SOURCE_MARK[band.source] ? ` (${BAND_SOURCE_MARK[band.source]})` : ''}`}
+                entry={band?.scale}
+                current={rollScale}
+                fmt={(v) => Math.round(v).toLocaleString()}
               />
               <StatRow
                 label="half-life (달력일)"
@@ -477,13 +601,13 @@ export function StatArbPositionDetailPage() {
               <StatRow
                 label="ADF t-stat"
                 entry={entry.adf}
-                current={stat1d?.adf_tstat}
+                current={rollStat?.adf_tstat}
                 fmt={(v) => v.toFixed(2)}
               />
               <StatRow
                 label="R²"
                 entry={entry.r2}
-                current={stat1d?.r_squared}
+                current={rollStat?.r_squared}
                 fmt={(v) => v.toFixed(3)}
               />
             </tbody>
@@ -538,15 +662,55 @@ export function StatArbPositionDetailPage() {
         )}
         onClosed={(updated) => setPosition(updated)}
       />
+
+      {/* 기록 수정 모달 — 진입일·수량·진입가 (entry_z 정합은 서버, §24.7) */}
+      <PositionEditModal
+        open={editModalOpen}
+        onClose={() => setEditModalOpen(false)}
+        position={position}
+        leftName={detail.left_name}
+        rightName={detail.right_name}
+        onSaved={(updated, zUpdate) => {
+          setPosition(updated)
+          setNoteDraft(updated.note ?? '')
+          setLabelDraft(updated.label ?? '')
+          setZNotice(entryZNotice(zUpdate))
+        }}
+      />
     </div>
   )
 }
 
-function Kpi({ label, value }: { label: string; value: string }) {
+function Kpi({
+  label,
+  value,
+  hint,
+  tone,
+  title,
+}: {
+  label: string
+  value: string
+  /** 값 아래 한 줄 — 기준·사유 표기 (예: 밴드 미저장 사유). */
+  hint?: string
+  tone?: 'warning'
+  title?: string
+}) {
   return (
-    <div className="rounded-sm bg-bg-surface px-3 py-2">
+    <div
+      className={`rounded-sm px-3 py-2 ${
+        tone === 'warning' ? 'bg-warning/10 ring-1 ring-warning/30' : 'bg-bg-surface'
+      }`}
+      title={title}
+    >
       <div className="text-[10px] text-t3">{label}</div>
-      <div className="text-base font-semibold tabular-nums text-t1">{value}</div>
+      <div
+        className={`text-base font-semibold tabular-nums ${
+          tone === 'warning' ? 'text-warning' : 'text-t1'
+        }`}
+      >
+        {value}
+      </div>
+      {hint && <div className="mt-0.5 text-[10px] text-t4">{hint}</div>}
     </div>
   )
 }

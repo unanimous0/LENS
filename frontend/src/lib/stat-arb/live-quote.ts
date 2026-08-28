@@ -17,6 +17,9 @@ export type Quote = {
 /** 캐시 유효 시간. 같은 셀을 오가며 hover해도 이 안에서는 재조회하지 않는다. */
 const TTL_MS = 20_000
 
+/** realtime `/quote` 한 콜 상한 (main.rs QUOTE_MAX_CODES). 넘으면 서버가 잘라버린다 → 분할 요청. */
+const MAX_PER_CALL = 50
+
 const cache = new Map<string, { q: Quote; at: number }>()
 /** 같은 코드 집합에 대한 동시 요청 합류 (hover 왕복 시 중복 콜 방지). */
 const inflight = new Map<string, Promise<Record<string, Quote>>>()
@@ -26,8 +29,27 @@ function fresh(code: string, now: number): Quote | null {
   return hit && now - hit.at < TTL_MS ? hit.q : null
 }
 
+/** 한 덩어리(≤ MAX_PER_CALL) 조회 — 같은 코드 집합의 동시 호출은 합류시킨다. */
+function fetchChunk(codes: string[]): Promise<Record<string, Quote>> {
+  const key = [...codes].sort().join(',')
+  const hit = inflight.get(key)
+  if (hit) return hit
+  const job = (async () => {
+    const res = await fetch(`/realtime/quote?codes=${encodeURIComponent(codes.join(','))}`)
+    if (!res.ok) throw new Error(`quote HTTP ${res.status}`)
+    const data: { quotes?: Record<string, Quote>; error?: string } = await res.json()
+    if (data.error) throw new Error(data.error)
+    const at = Date.now()
+    const got = data.quotes ?? {}
+    for (const [code, q] of Object.entries(got)) cache.set(code, { q, at })
+    return got
+  })().finally(() => inflight.delete(key))
+  inflight.set(key, job)
+  return job
+}
+
 /**
- * 코드들의 현재가 조회. 캐시에 살아있는 건 그대로 쓰고 부족한 것만 1콜로 가져온다.
+ * 코드들의 현재가 조회. 캐시에 살아있는 건 그대로 쓰고 부족한 것만 가져온다.
  * 조회 실패·무응답 코드는 결과에서 빠진다 (호출자가 없으면 없는 대로 처리).
  */
 export async function fetchQuotes(codes: string[]): Promise<Record<string, Quote>> {
@@ -37,25 +59,14 @@ export async function fetchQuotes(codes: string[]): Promise<Record<string, Quote
   for (const c of codes) {
     const q = fresh(c, now)
     if (q) out[c] = q
-    else missing.push(c)
+    else if (!missing.includes(c)) missing.push(c)
   }
   if (missing.length === 0) return out
 
-  const key = [...missing].sort().join(',')
-  let job = inflight.get(key)
-  if (!job) {
-    job = (async () => {
-      const res = await fetch(`/realtime/quote?codes=${encodeURIComponent(missing.join(','))}`)
-      if (!res.ok) throw new Error(`quote HTTP ${res.status}`)
-      const data: { quotes?: Record<string, Quote>; error?: string } = await res.json()
-      if (data.error) throw new Error(data.error)
-      const at = Date.now()
-      const got = data.quotes ?? {}
-      for (const [code, q] of Object.entries(got)) cache.set(code, { q, at })
-      return got
-    })().finally(() => inflight.delete(key))
-    inflight.set(key, job)
+  const chunks: Promise<Record<string, Quote>>[] = []
+  for (let i = 0; i < missing.length; i += MAX_PER_CALL) {
+    chunks.push(fetchChunk(missing.slice(i, i + MAX_PER_CALL)))
   }
-  Object.assign(out, await job)
+  for (const got of await Promise.all(chunks)) Object.assign(out, got)
   return out
 }

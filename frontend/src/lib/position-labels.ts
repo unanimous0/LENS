@@ -85,6 +85,26 @@ export function estimateMarkPnL(
   return Math.abs(entrySpread) * rightQty * regression
 }
 
+/** 정밀 평가손익 — leg별 (현재가 − 진입가) × 방향 × 수량.
+ *
+ *  청산된 leg는 exit_price(확정), 아니면 `priceByCode`의 현재가. 한 leg라도 가격이 없으면
+ *  null → 호출자가 `estimateMarkPnL`(회귀비율 추정)로 폴백. 상세 페이지와 같은 산식이라
+ *  목록·상세 손익이 어긋나지 않는다.
+ */
+export function markPnLFromPrices(
+  pos: Position,
+  priceByCode: Record<string, number>
+): number | null {
+  if (!pos.legs || pos.legs.length < 2) return null
+  let total = 0
+  for (const leg of pos.legs) {
+    const price = leg.exit_price ?? priceByCode[leg.code] ?? 0
+    if (!(price > 0)) return null
+    total += (price - leg.entry_price) * leg.side * leg.qty
+  }
+  return total
+}
+
 /** 대여수익 누적 — leg.entry_price × loan.qty × rate × 보유일/365. 종료된 loan은 ended_at 기준. */
 export function estimateLoanPnL(pos: Position, nowMs: number = Date.now()): number {
   if (!pos.loans || pos.loans.length === 0 || !pos.legs) return 0

@@ -880,7 +880,10 @@ export function StatArbDetailPage() {
         liveSpread={liveSpread}
         stat={dayStat}
         lastPoint={headlineSeries[headlineSeries.length - 1]}
+        basis={effBasis}
         basisLabel={basisLabel}
+        center={spreadMean}
+        scale={spreadStd}
         hlTradingDays={hlTradingDays}
       />
     </div>
