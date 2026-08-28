@@ -205,6 +205,7 @@ print_status() {
 ( sleep 12; print_status | tee /tmp/lens-status.log ) &
 
 cleanup() {
+    trap '' INT TERM   # 정리 중 ctrl+c 연타로 cleanup이 중단·재진입되는 것 방지
     echo ""
     echo "[종료] 모든 프로세스 정리 중..."
     # 프로세스 그룹 단위 SIGTERM — subshell + set -m 덕에 각 &는 별도 PGID
@@ -214,6 +215,12 @@ cleanup() {
     sleep 1
     # 잔존 프로세스 백업 정리 (포트 기반)
     fuser -k 3100/tcp 8100/tcp 8200/tcp 8300/tcp 2>/dev/null
+    # 최종 백업: SIGTERM에 행 걸린 프로세스 + 포트 미보유(bind 실패) 중복 인스턴스까지 강제 정리
+    for pid in "$BACKEND_PID" "$REALTIME_PID" "$STATARB_PID" "$FRONTEND_PID"; do
+        [ -n "$pid" ] && kill -KILL -- "-$pid" 2>/dev/null
+    done
+    pkill -9 -x lens-realtime 2>/dev/null
+    pkill -9 -x stat-arb-engine 2>/dev/null
     exit 0
 }
 trap cleanup INT TERM
