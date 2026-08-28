@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LP 데스크 — 화면 항목 가이드</title>
+<style>
+  :root{
+    --bg:#000; --panel:#111114; --surface:#1c1c1e; --line:#26262a;
+    --t1:#fff; --t2:#d1d1d6; --t3:#8e8e93;
+    --up:#00b26b; --down:#bb4a65; --warn:#ff9f0a; --blue:#0a84ff;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--t2);
+    font:14px/1.65 Inter,Pretendard,-apple-system,"Segoe UI",sans-serif;padding:36px 20px 80px}
+  .wrap{max-width:920px;margin:0 auto}
+  h1{color:var(--t1);font-size:21px;margin:0 0 6px}
+  h2{color:var(--t1);font-size:15px;margin:38px 0 10px;padding-top:18px;border-top:1px solid var(--line)}
+  .sub{color:var(--t3);font-size:13px;margin-bottom:8px}
+  .loop{background:var(--panel);border-radius:6px;padding:14px 18px;margin:18px 0;font-size:13.5px}
+  .loop b{color:var(--t1)}
+  table{width:100%;border-collapse:collapse;background:var(--panel);border-radius:6px;overflow:hidden;font-size:13px}
+  th{background:var(--surface);color:var(--t3);font-weight:600;text-align:left;padding:8px 12px;font-size:12px;white-space:nowrap}
+  td{padding:9px 12px;border-top:1px solid var(--line);vertical-align:top}
+  td.col{color:var(--t1);font-weight:600;white-space:nowrap;width:110px}
+  .num{font-variant-numeric:tabular-nums}
+  code{background:var(--surface);color:var(--t2);padding:1px 6px;border-radius:3px;font-size:12px;
+    font-family:"SF Mono",Consolas,monospace}
+  .u{color:var(--up)} .d{color:var(--down)} .w{color:var(--warn)}
+  .note{background:var(--panel);border-left:3px solid var(--warn);border-radius:0 6px 6px 0;
+    padding:10px 14px;margin:14px 0;font-size:13px}
+  .scroll{overflow-x:auto}
+</style>
+</head>
+<body><div class="wrap">
+
+<h1>LP 데스크 — 화면 항목 가이드</h1>
+<div class="sub">/lp-desk · 섹터 ETF 36종 LP 운영 콕핏 · 정본: lp-system-design.md §14</div>
+
+<div class="loop">
+운영 루프: <b>① 제안 호가를 OMS에 대고 대기</b> → <b>② 체결되면 헤더 입력줄에 기록</b> (진입 시점 iNAV·선물가 자동 저장)
+→ <b>③ 계기판이 알려주는 계약수로 선물 헤지</b> → <b>④ edge가 청산 기준을 넘으면 정리</b> (반대매매 또는 "정리 미리보기" 바스켓).
+</div>
+
+<h2>계기판 (상단 고정)</h2>
+<div class="scroll"><table>
+<tr><th>항목</th><th>의미</th></tr>
+<tr><td class="col">K200F · KQ150F</td><td>지수선물 실시간 시세 (미니K200 우선, 없으면 K200F 폴백). 헤지 계산의 기준가.</td></tr>
+<tr><td class="col">미헤지 델타</td><td>버킷 노출 + 보유 선물 가치의 합. <span class="u">초록</span>=미니K200 0.5계약 이내(더 못 줄이는 수준), <span class="w">주황</span>=1.5계약 이내, <span class="d">빨강</span>=초과.</td></tr>
+<tr><td class="col">버킷 2줄</td><td>K200/KQ150 버킷별 노출(₩) = Σ(포지션 평가액 × β). 그 옆이 실행 지시: <code>미니K200 3계약 매도 (보유 0 / 목표 −3)</code> — 이 숫자만 읽고 집행하면 됨.</td></tr>
+<tr><td class="col">잔차 / 한도</td><td>β 헤지로 지워지지 않는 섹터 고유 리스크 추정(Σ|평가액|×잔차변동성). 한도 대비 표시.</td></tr>
+<tr><td class="col">호가 z 토글</td><td>제안 호가 폭의 배수 <code>1.0σ / 1.25σ / 1.5σ / 2.0σ</code> (기본 1.5). 낮출수록 타이트 → 자주 체결, 높일수록 극단만. x 툴팁의 "도달 N일"을 보며 조절.</td></tr>
+<tr><td class="col">지평 토글</td><td>σ선물을 재는 시간 단위 <code>1분/2분/5분</code> (기본 1분 = 체결→헤지 소요 감각). 길수록 폭이 넓어짐.</td></tr>
+<tr><td class="col">체결 입력</td><td><code>396500 +5000 @33100</code> / 헤지는 <code>MK200 -3 @1016.25</code>. A접두·ISIN 코드도 수용. 입력 순간의 iNAV·지수선물가가 진입 기준으로 저장됨.</td></tr>
+<tr><td class="col">정리 미리보기</td><td>전 포지션을 PDF로 종목 분해·넷팅한 주식 바스켓 + 선물 청산 레그. "바스켓 복사"로 OMS에 붙여넣기.</td></tr>
+</table></div>
+
+<h2>테이블 ① 시세·호가</h2>
+<div class="scroll"><table>
+<tr><th>컬럼</th><th>의미</th><th>산식 / 출처</th></tr>
+<tr><td class="col">현재가</td><td>실시간 체결가와 등락률</td><td>WS 실시간</td></tr>
+<tr><td class="col">괴리bp</td><td>지금 가격이 iNAV에서 몇 bp 벌어져 있나. <b>이 값이 x에 80% 이상 다가오면 셀이 강조 = 체결 임박.</b></td><td class="num">(mid 또는 현재가 − iNAV) / iNAV</td></tr>
+<tr><td class="col">iNAV</td><td>실시간 지표가치 — <b>제안 호가의 앵커</b></td><td>거래소 I5_ 실시간</td></tr>
+<tr><td class="col">제안매도<br>제안매수</td><td>내가 대야 할 호가. <b>가격 + x bp</b> 표기. hover에 x 분해(μ·σ)·도달 일수·시장 대비 틱 거리.</td><td class="num">iNAV × (1 + x) → 5원 틱 (매도 올림 / 매수 내림)</td></tr>
+<tr><td class="col">시장ask<br>시장bid</td><td>시장 최우선 매도/매수 호가 — 내 제안이 시장 어디에 서는지 비교 기준</td><td>호가 H1_ 실시간</td></tr>
+<tr><td class="col">시장bp</td><td>시장 스프레드 폭. 좁으면 경쟁 치열한 ETF, 넓으면 한산한 ETF.</td><td class="num">(ask − bid) / mid</td></tr>
+</table></div>
+
+<h2>테이블 ② 통계 근거 — "왜 이 호가인가"</h2>
+<div class="scroll"><table>
+<tr><th>컬럼</th><th>의미</th><th>산식 / 출처</th></tr>
+<tr><td class="col">x매도<br>x매수</td><td>호가를 붙일 bp 폭. 아랫줄 "N일 중 M일" = 최근 캘리브 창에서 장중 괴리가 이 레벨에 닿은 날 수 (<b>체결 가능성</b>). 매도가 0일이면 그 호가는 장식.</td>
+<td class="num">x = μ<sub>괴리</sub> ± z·√(σ<sub>괴리</sub>² + σ<sub>선물</sub>²)<br>
+μ·σ<sub>괴리</sub>: 최근 10일 30초봉, 가격 vs 재구성 NAV 괴리의 평균·σ<br>
+σ<sub>선물</sub>: 선물 대비 괴리의 지평(1/2/5분) 변화 σ — 직접 측정<br>
+1시간 주기 자동 재계산</td></tr>
+<tr><td class="col">선물대비</td><td>오늘 이 ETF가 선물 대비 몇 bp 아웃/언더퍼폼했나 — <b>잔차 리스크 감각용, 호가 산식과는 무관</b></td><td class="num">ETF 등락률 − (β_K×K200F 등락 + β_Q×KQ150F 등락)</td></tr>
+<tr><td class="col">β_K · β_Q</td><td>이 ETF가 K200/KQ150을 얼마나 따라가나 — 헤지 계약수와 edge 계산의 핵심. PDF 구성(코스피/코스닥 비중)이 여기 반영됨.</td><td>120일 일봉 2-팩터 회귀 (지수 기준)</td></tr>
+<tr><td class="col">R²</td><td>회귀 설명력. <b>낮으면 지수선물 헤지 신뢰도가 낮다</b> → 호가 폭·수량 보수적으로.</td><td>0~1</td></tr>
+</table></div>
+
+<h2>테이블 ③ 포지션 — "언제 정리하나"</h2>
+<div class="scroll"><table>
+<tr><th>컬럼</th><th>의미</th><th>산식 / 출처</th></tr>
+<tr><td class="col">수량</td><td>순수량 + 평가액. 평균원가법 (부분 청산 시 평단 불변, 관통 시 리셋).</td><td>체결 입력 합산</td></tr>
+<tr><td class="col">진입→현재</td><td>들어올 때 괴리 → 지금 괴리. 괴리 개선분이 곧 LP 스프레드 수취분.</td><td class="num">진입 괴리는 체결 입력 시점 iNAV 기준 (수량 가중)</td></tr>
+<tr><td class="col">edge bp</td><td><b>내 포지션이 선물을 몇 bp 이겼나</b> — 청산 판단의 기준 숫자. 여러 날 들고 가도 이 하나만 보면 됨.</td><td class="num">sign(수량) × [ETF 수익률 − β·선물 수익률] (진입 시점 기준)</td></tr>
+<tr><td class="col">헤지PnL</td><td>선물 헤지 후 남는 손익 (ETF 단독 손익 아님)</td><td class="num">edge × |평가액|</td></tr>
+<tr><td class="col">신호</td><td>edge ≥ 청산 기준(기본 15bp, 튜너블)이면 배지 — 정리 검토 타이밍</td><td></td></tr>
+</table></div>
+
+<h2>행 클릭 (상세 펼침)</h2>
+<div class="scroll"><table>
+<tr><th>패널</th><th>보는 법</th></tr>
+<tr><td class="col">괴리 분포</td><td>최근 10일 장중 괴리 히스토그램 + 내 x매도/x매수 마커. 내 호가가 분포 어디에 서 있고 얼마나 자주 걸릴지가 그림으로 보임.</td></tr>
+<tr><td class="col">선물 대비 경로</td><td>최근 2~3일의 선물 대비 괴리(s) 30초 경로 — 이 섹터가 지수와 얼마나 붙어 다니는지, 최근 틀어지고 있는지.</td></tr>
+<tr><td class="col">rolling β</td><td>60일 이동 β 추이 — 관계가 안정적인지. 출렁이면 헤지 신뢰 하락.</td></tr>
+<tr><td class="col">PDF 상위 10</td><td>구성종목·비중·시장(코스피/코스닥) — β 구성의 근거 확인.</td></tr>
+</table></div>
+
+<div class="note">
+알아둘 것: ① x의 원천인 재구성 NAV는 공식 NAV와 상수 편차(보수·배당 계상)가 있을 수 있음 — 장중 괴리bp 컬럼과 μ를 대조하며 운용 (공식 NAV 적재는 Finance_Data 후속).
+② 선물 30초봉이 오후(11:26~)만 있어 σ선물은 오후장 표본 기준.
+③ 내부망에서는 지수선물 실시간이 아직 없어 호가·괴리는 뜨지만 계약수 환산·edge·선물대비는 비어 있음.
+</div>
+
+</div></body>
+</html>

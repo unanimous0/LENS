@@ -27,7 +27,7 @@ app.add_middleware(
 
 logger = logging.getLogger("uvicorn.error")
 
-for module_name in ("arbitrage", "backtest", "borrowing", "dividends", "etfs", "flow", "health", "lending", "loan_rates", "lp", "permanent_sub", "positions", "repayment", "stat_arb", "stocks"):
+for module_name in ("arbitrage", "backtest", "borrowing", "dividends", "etfs", "flow", "health", "lending", "loan_rates", "lp", "lp_desk", "permanent_sub", "positions", "repayment", "stat_arb", "stocks"):
     try:
         module = __import__(f"routers.{module_name}", fromlist=["router"])
         app.include_router(module.router, prefix="/api")
@@ -38,7 +38,7 @@ for module_name in ("arbitrage", "backtest", "borrowing", "dividends", "etfs", "
 @app.on_event("startup")
 async def _ensure_schemas_on_startup() -> None:
     """SQLite 스키마 보장 — 라우터의 lazy _ensure는 안전망 (uvicorn reload race 회피)."""
-    for module_name in ("positions", "loan_rates", "lp_ledger"):
+    for module_name in ("positions", "loan_rates", "lp_ledger", "lp_desk"):
         try:
             module = __import__(f"services.{module_name}", fromlist=["ensure_schema"])
             await module.ensure_schema()
@@ -78,6 +78,33 @@ async def _warmup_flow_ranking() -> None:
             logger.info("flow ranking warmup done (as_of=%s)", info.as_of)
         except Exception as e:  # noqa: BLE001
             logger.warning("flow ranking warmup skipped: %s", e)
+
+    asyncio.create_task(_run())
+
+
+@app.on_event("startup")
+async def _warmup_lp_desk_stats() -> None:
+    """LP 데스크 통계 사전 계산 (lp-system-design.md §14.3·§14.5 '기동 시 갱신').
+
+    ① 2-팩터 회귀 — 36종 × 181봉 1쿼리라 가볍다.
+    ② 인트라데이 캘리브(30초봉 s 분위수·도달빈도·g) — 십수 초짜리 배치라 반드시 백그라운드로.
+       이후 1시간 주기 버전 프로브 루프가 이어받는다 (§14.5).
+    부팅을 막지 않도록 둘 다 create_task로 분리."""
+    import asyncio
+
+    async def _run() -> None:
+        try:
+            from services import lp_desk_stats
+
+            await lp_desk_stats.warmup()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("lp_desk stats warmup skipped: %s", e)
+        try:
+            from services import lp_desk_calib
+
+            lp_desk_calib.start_background()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("lp_desk calib loop skipped: %s", e)
 
     asyncio.create_task(_run())
 

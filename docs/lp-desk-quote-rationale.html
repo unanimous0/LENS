@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LP 데스크 — 호가 산정 근거</title>
+<style>
+  :root{--bg:#000;--panel:#111114;--surface:#1c1c1e;--line:#26262a;
+    --t1:#fff;--t2:#d1d1d6;--t3:#8e8e93;--up:#00b26b;--down:#bb4a65;--warn:#ff9f0a}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--t2);
+    font:14px/1.7 Inter,Pretendard,-apple-system,"Segoe UI",sans-serif;padding:36px 20px 80px}
+  .wrap{max-width:880px;margin:0 auto}
+  h1{color:var(--t1);font-size:21px;margin:0 0 4px}
+  h2{color:var(--t1);font-size:15px;margin:36px 0 10px;padding-top:18px;border-top:1px solid var(--line)}
+  h3{color:var(--t1);font-size:14px;margin:22px 0 8px}
+  .sub{color:var(--t3);font-size:13px;margin-bottom:10px}
+  .formula{background:var(--panel);border-radius:6px;padding:16px 20px;margin:14px 0;
+    font-family:"SF Mono",Consolas,monospace;font-size:13.5px;color:var(--t1);text-align:center}
+  .formula .dim{color:var(--t3);font-size:12px}
+  table{width:100%;border-collapse:collapse;background:var(--panel);border-radius:6px;overflow:hidden;font-size:13px;margin:10px 0}
+  th{background:var(--surface);color:var(--t3);font-weight:600;text-align:left;padding:8px 12px;font-size:12px}
+  td{padding:8px 12px;border-top:1px solid var(--line)}
+  td:first-child{color:var(--t1);font-weight:600;white-space:nowrap}
+  .num{font-variant-numeric:tabular-nums;text-align:right}
+  th.num{text-align:right}
+  .u{color:var(--up)} .d{color:var(--down)} .w{color:var(--warn)}
+  .note{background:var(--panel);border-left:3px solid var(--warn);border-radius:0 6px 6px 0;
+    padding:10px 14px;margin:14px 0;font-size:13px}
+  .chain{background:var(--panel);border-radius:6px;padding:12px 18px;margin:8px 0;
+    font-family:"SF Mono",Consolas,monospace;font-size:12.5px;color:var(--t2)}
+  p{margin:8px 0}
+  .scroll{overflow-x:auto}
+  b{color:var(--t1)}
+</style>
+</head>
+<body><div class="wrap">
+
+<h1>LP 데스크 — 호가 산정 근거</h1>
+<div class="sub">섹터 ETF LP 호가 엔진 · 2026-08-26 실데이터 기준 · 산출 파라미터 z=1.5, 지평 1분</div>
+
+<h2>1. 한 줄 요약</h2>
+<p>모든 ETF에 같은 거리로 호가하지 않고, <b>ETF마다 "괴리가 실제로 노는 범위"를 데이터로 재서</b>
+그 범위의 유리한 끝(기본 1.5σ)에 호가를 놓는다. 체결이 잦은 대형 ETF는 자동으로 NAV에 바짝 붙고,
+거친 ETF는 자동으로 멀어진다.</p>
+
+<h2>2. 산식</h2>
+<div class="formula">
+  매도호가 = iNAV × (1 + x<sub>매도</sub>) &nbsp;·&nbsp; 매수호가 = iNAV × (1 + x<sub>매수</sub>) &nbsp; <span class="dim">(5원 틱, 매도 올림 / 매수 내림)</span><br><br>
+  x = μ &nbsp;±&nbsp; z · √( σ<sub>괴리</sub>² + σ<sub>선물</sub>² )
+</div>
+
+<div class="scroll"><table>
+<tr><th>성분</th><th>의미</th><th>측정</th></tr>
+<tr><td>μ (중심)</td><td>이 ETF가 평소 NAV에서 몇 bp 벌어져 거래되는가 — 구조적 프리미엄/디스카운트. 대부분의 섹터 ETF가 약한 디스카운트(−8~−15bp)에서 거래됨이 실측으로 확인됨.</td><td rowspan="2">최근 10거래일 30초봉에서 (가격 − NAV)/NAV 분포. NAV는 당일 PDF × 구성종목 30초봉으로 장중 재구성. 1시간 주기 자동 갱신.</td></tr>
+<tr><td>σ<sub>괴리</sub> (폭 ①)</td><td>괴리가 그 중심 주변에서 얼마나 흔들리는가 — 체결 기회가 오는 범위.</td></tr>
+<tr><td>σ<sub>선물</sub> (폭 ②)</td><td>호가가 체결된 뒤 <b>선물 헤지를 넣기까지(~1분)</b> ETF가 선물 대비 얼마나 더 밀릴 수 있는가 — 집행 리스크 버퍼. √T 환산이 아니라 1분 변화를 직접 측정 (환산 가정은 실측 분산비 0.5~0.8로 기각됨).</td><td>ETF 수익률 − β·지수선물 수익률의 1분 변화 분포 (30초봉).</td></tr>
+<tr><td>z (배수)</td><td>폭을 몇 σ 잡을지 = <b>체결 빈도와 건당 마진의 트레이드오프.</b> 기본 1.5 (매수 기준 10일 중 8~9일 도달 수준). 장이 험하면 2.0으로 한 클릭.</td><td>화면 상단 토글 (1.0/1.25/1.5/2.0σ)</td></tr>
+</table></div>
+
+<h2>3. 설계 논리 — 왜 이 구조인가</h2>
+<p><b>① 괴리는 수익원, 섹터 등락은 리스크.</b> ETF 가격 = NAV × (1+괴리)로 분해하면, LP가 먹는 것은
+평균회귀하는 괴리 조각이고, NAV 자체의 등락(섹터가 시장 따라 움직이는 것)은 지수선물 헤지가 담당한다.
+그래서 호가 위치는 <b>괴리 분포만으로</b> 정하고, 섹터의 지수 대비 고유 움직임(일중 ±100bp+)은
+호가에 넣지 않는다 — 넣는 순간 호가가 NAV에서 수백 bp 떨어져 무의미해진다.</p>
+<p><b>② 체결에서 헤지까지의 1분이 유일한 예외.</b> 체결 순간부터 선물이 잡히기 전까지는 섹터 움직임에
+노출되므로, 그 1분어치 변동(σ<sub>선물</sub>)만 폭에 가산한다.</p>
+<p><b>③ 체결 가능성을 사후 검증한다.</b> 산출된 x 레벨에 최근 10일 중 며칠이나 괴리가 실제로
+도달했는지("도달 일수")를 함께 계산 — 도달 0일짜리 호가는 장식이라는 것을 화면에서 바로 확인할 수 있다.</p>
+
+<h2>4. 예시 3종 (2026-08-26 캘리브레이션 실측, z=1.5)</h2>
+
+<h3>A. TIGER 반도체TOP10 (396500) — 대형·경쟁 치열 → 초타이트</h3>
+<div class="chain">μ −9.6 · σ괴리 5.2 · σ선물 4.5 → σ결합 6.9 → ×1.5 = ±10.3bp<br>
+x매도 = −9.6+10.3 = <b>+0.6bp</b> · x매수 = −9.6−10.3 = <b>−19.9bp</b><br>
+기준가 35,105원 → <span class="d">매도 35,110</span> / <span class="u">매수 35,035</span> &nbsp;(스프레드 75원 ≈ 21bp)</div>
+<p>AUM 9조, 경쟁 LP가 많아 괴리가 하루 최고 +7bp를 넘지 못한다(10일 실측). 그래서 매도호가가
+NAV 바로 위에 붙는다 — 이 종목에서 +15bp에 팔겠다는 호가는 열흘간 한 번도 체결 기회가 없었다.
+도달: 매도 7/9일 · 매수 8/9일.</p>
+
+<h3>B. TIGER 코스닥150IT (261060) — 고변동 → 넓게</h3>
+<div class="chain">μ −12.5 · σ괴리 15.8 · σ선물 13.4 → σ결합 20.7 → ×1.5 = ±31.0bp<br>
+x매도 = <b>+18.5bp</b> · x매수 = <b>−43.5bp</b><br>
+기준가 23,425원 → <span class="d">매도 23,470</span> / <span class="u">매수 23,320</span> &nbsp;(스프레드 150원 ≈ 64bp)</div>
+<p>코스닥 기술주 바스켓이라 괴리가 하루 +77bp/−164bp까지 출렁인 날도 있다. 같은 공식이
+σ를 크게 재서 호가가 자동으로 멀어진다 — A와 B는 같은 규칙, 다른 데이터일 뿐이다.
+도달: 매도 7/9일 · 매수 9/9일.</p>
+
+<h3>C. TIGER 중국소비테마 (150460) — 지수와 관계 약함 → 괴리 자체가 넓음</h3>
+<div class="chain">μ −11.3 · σ괴리 19.3 · σ선물 7.9 → σ결합 20.9 → ×1.5 = ±31.4bp<br>
+x매도 = <b>+20.1bp</b> · x매수 = <b>−42.7bp</b><br>
+기준가 7,880원 → <span class="d">매도 7,900</span> / <span class="u">매수 7,845</span></div>
+<p>중국 소비 테마라 국내 지수로 설명이 안 되는 종목(R² 0.50 — B의 0.86과 대조).
+지수와 따로 노는 만큼 NAV 괴리 분포 자체가 넓고(σ괴리 19bp), 폭의 대부분이 σ<sub>선물</sub>이 아니라
+σ<sub>괴리</sub>에서 나온다. 이런 종목은 헤지 신뢰도도 낮으므로(β_K −0.10 / β_Q 0.47) 수량을 보수적으로 가져간다.
+도달: 매도 9/9일 · 매수 9/9일.</p>
+
+<h2>5. 한계와 운영 원칙</h2>
+<div class="note">
+① <b>재구성 NAV의 상수 편차</b> — 통계의 NAV는 PDF 재구성값이라 공식 NAV와 보수·배당 계상 차이가
+있을 수 있다 (μ가 전 종목 음수로 쏠린 원인 후보). 장중 실시간 괴리 컬럼과 대조하며 운용하고,
+공식 NAV 히스토리 적재(Finance_Data 후속)로 근본 해소 예정.<br>
+② <b>파생 내장 ETF</b>(커버드콜 등)는 옵션·선물 레그를 제외한 주식+현금만으로 재구성 — 레벨 편차를
+감수하는 의도적 단순화. 실측(472150 배당커버드콜액티브): 레그 4개 제외 후 μ −5.5bp·σ 14.7bp로
+일반 ETF 대역과 동일 (현재 PDF의 파생 레그 계약수가 0으로 적재돼 실질 편차 없음).<br>
+③ σ<sub>선물</sub>은 지수선물 30초봉이 오후(11:26~)만 적재돼 오후장 표본 기준.<br>
+④ 위 수치는 최근 10일 창의 스냅샷 — 시장 변동성이 바뀌면 1시간 주기로 자동 추적된다.
+</div>
+
+</div></body>
+</html>
