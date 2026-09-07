@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>섹터 ETF LP · OMS 호가 전략 v1.1 확정판</title>
+<style>
+  :root{--bg:#000;--panel:#111114;--surface:#1c1c1e;--line:#26262a;
+    --t1:#fff;--t2:#d1d1d6;--t3:#8e8e93;--up:#00b26b;--down:#bb4a65;--warn:#ff9f0a}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--t2);
+    font:14.5px/1.75 Pretendard,Inter,-apple-system,sans-serif;padding:36px 20px 90px}
+  .wrap{max-width:900px;margin:0 auto}
+  h1{color:var(--t1);font-size:20px;margin:0 0 4px}
+  h2{color:var(--t1);font-size:15.5px;margin:38px 0 12px;padding-top:20px;border-top:1px solid var(--line)}
+  .sub{color:var(--t3);font-size:13px;margin-bottom:14px}
+  .eq{background:var(--panel);border-radius:6px;padding:14px 18px;margin:12px 0;
+    font-family:"SF Mono",Consolas,monospace;font-size:13px;color:var(--t1)}
+  pre{background:var(--panel);border-radius:6px;padding:16px 18px;margin:12px 0;overflow-x:auto;
+    font-family:"SF Mono",Consolas,monospace;font-size:12.5px;line-height:1.65;color:var(--t2)}
+  pre b{color:var(--t1)} pre i{color:var(--t3);font-style:normal}
+  table{width:100%;border-collapse:collapse;background:var(--panel);border-radius:6px;overflow:hidden;font-size:13px;margin:12px 0}
+  th{background:var(--surface);color:var(--t3);font-weight:600;text-align:left;padding:8px 12px;font-size:12px}
+  td{padding:8px 12px;border-top:1px solid var(--line)}
+  td.k{color:var(--t1);font-weight:600;white-space:nowrap}
+  .num{font-variant-numeric:tabular-nums;text-align:right}
+  .note{background:var(--panel);border-left:3px solid var(--warn);border-radius:0 6px 6px 0;
+    padding:10px 14px;margin:14px 0;font-size:13px}
+  .good{border-left-color:var(--up)}
+  b{color:var(--t1)}
+  .scroll{overflow-x:auto}
+</style>
+</head>
+<body><div class="wrap">
+
+<h1>섹터 ETF LP · OMS 호가 전략 v1.1 <span style="color:var(--up)">확정판</span> — 연속 재고편향 · 파생 구조</h1>
+<div class="sub">2026-09-07 확정 (앵커 RealNav · 자전은 자전방지 플래그 전담 · E/F 제거로 단순화) · 대상: 섹터/테마 ETF 38종 (자기종목 템플릿 — 함수 3개 공용) · 조건변수 <b>A~D, % 단위 부호 입력</b> (매도 +5bp → 0.05 / 매수 −30bp → −0.30)</div>
+
+<h2>1. 전략 전체</h2>
+<div class="eq">
+재고편향 = RealNav × D × 포지션 ÷ C ÷ 100<br>
+매도호가 = RealNav × (100 + A) / 100 − 재고편향<br>
+매수호가 = <b>매도호가</b> − RealNav × (A − B) / 100<br>
+<span style="color:var(--t3)">매수를 매도에서 빼서 만든다 → 간격 = (A − B)% 로 산술 고정 (같은 평가 안 크로스 불가)</span>
+</div>
+<p>A·B는 부호 그대로 입력한다 — 매도를 −0.05(NAV 아래)에 벌리는 날도 식이 그대로 작동한다.
+유일한 제약은 <b>A &gt; B</b> (간격 양수). 재고 처리는 분기 스위칭이 아니라 <b>연속 편향</b> —
+재고 1주부터 비례해서 양쪽 호가가 같이 밀리고, 한도(C)에서 매도호가가 정확히 정리 레벨
+(평균+0.5σ)에 도달하며, 초과분은 더 세게 밀린다. 절벽·깜빡임·이중분기 정지 사고가 구조적으로 없다.</p>
+
+<h2>2. 재고별 동작 (예: A=0.084, B=−0.288, σ=0.124%, C=25,000주)</h2>
+<div class="scroll"><table>
+<tr><th>재고 (롱)</th><th class="num">편향</th><th class="num">매도호가 위치</th><th class="num">매수호가 위치</th><th>상태</th></tr>
+<tr><td>0주</td><td class="num">0</td><td class="num">+0.084%</td><td class="num">−0.288%</td><td>설계 밴드 그대로</td></tr>
+<tr><td>3,000 (12%)</td><td class="num">0.015%</td><td class="num">+0.069%</td><td class="num">−0.303%</td><td>소량도 즉시 비례 정리 — 한도 전에도 항상 정리 가능</td></tr>
+<tr><td>12,500 (50%)</td><td class="num">0.062%</td><td class="num">+0.022%</td><td class="num">−0.350%</td><td>기울어짐 — 팔기 쉬워지고 사기 어려워짐</td></tr>
+<tr><td class="k">25,000 (100%)</td><td class="num">0.124%</td><td class="num"><b>−0.040% (= 정리 레벨 μ+0.5σ)</b></td><td class="num">−0.412%</td><td>기존 d/e 스위칭과 동일 지점</td></tr>
+<tr><td>37,500 (150%)</td><td class="num">0.186%</td><td class="num">−0.102% (= μ)</td><td class="num">−0.474%</td><td>초과분 — 더 강한 정리 압력, 절벽 없음</td></tr>
+</table></div>
+<p>숏 재고는 부호가 뒤집혀 양쪽이 위로 밀린다 (대칭). 마감 전 의무 매수 물량(305540 등)은
+이 전략이 플랫된 뒤 15:30 단일가에서 별도로 집행 — 함수와 무관.</p>
+
+<h2>3. 자전(自轉) 방어 — 2층</h2>
+<div class="scroll"><table>
+<tr><th>층</th><th>무엇이 막나</th><th>어떻게</th></tr>
+<tr><td class="k">⓪ 파생 구조</td><td>같은 평가 안의 크로스</td><td>매수 = 매도 − RealNav×(A−B)/100. 두 함수가 다른 재고·시세를 읽어도 편향이 소거돼 간격 불변 (증명 §4 하단)</td></tr>
+<tr><td class="k">① 자전방지 플래그</td><td><b>시차 자전</b> — NAV 급변 시 새 정정이 아직 안 움직인 옛 반대편 주문과 만나는 경로</td><td>전 주문에 플래그 활성 (지원 확인됨) → OMS단에서 자기 주문 간 체결 차단</td></tr>
+</table></div>
+<div class="note">
+가드(호가1 기준 캡)를 함수에 넣지 않은 이유: NAV 급변으로 호가가 시장을 관통하는 경우, 그 체결가는
+상대방 호가 — 즉 <b>내 밴드보다 유리한 가격</b>이라 경제적 손해가 아니다 (싸게 나온 물량을 밴드 한도로
+받는 것). 자기 주문 간 충돌만 플래그가 막으면 충분하다.
+<b>확인 1건</b>: 플래그의 동작 모드가 "신규 주문 거부"인지 "기존 주문 취소 후 진행"인지 — 어느 쪽이든
+치명적이지 않으나 로그 해석에 필요.
+</div>
+
+<h2>4. 함수 코드 (3개 · 전 종목 공용 — 자기종목 템플릿)</h2>
+
+<pre><b>70. LP_재고편향</b>
+if 1&gt;0
+then
+return [자기종목.RealNav] * [조건변수.D]
+     * [자기잔고.포지션수량] / [조건변수.C] / 100
+else
+return 0</pre>
+
+<pre><b>71. LP_매도호가</b>
+if [자기종목.RealNav] &lt;= 0
+then
+return 0                                                            <i>① NAV 무효 → 호가 미제출</i>
+else
+return [자기종목.RealNav] * (100 + [조건변수.A]) / 100
+     - [함수.LP_재고편향.70]                                        <i>② 정상</i></pre>
+
+<pre><b>72. LP_매수호가 — 71의 파생 (자기 크로스 불가)</b>
+if [자기종목.RealNav] &lt;= 0
+then
+return 0                                                            <i>① NAV 무효 → 호가 미제출</i>
+else
+return [함수.LP_매도호가.71]
+     - [자기종목.RealNav] * ([조건변수.A] - [조건변수.B]) / 100      <i>② 정상</i></pre>
+
+<div class="note good">
+<b>자기 크로스 불가 증명</b> — 매수호가는 항상 매도호가에서 양수(RealNav×(A−B)/100, A&gt;B 전제)를 뺀 값이다.
+따라서 매도 − 매수 = RealNav×(A−B)/100 &gt; 0 이 항상 성립한다. 편향(70)은 양쪽에 같은 크기로 들어가
+뺄셈에서 소거된다 — 두 함수가 서로 다른 순간의 재고를 읽어도 간격은 흔들리지 않는다.
+</div>
+
+<h2>5. 조건변수 (종목별 · 매일 아침 LENS 엑셀 OMS 시트 A~D 그대로 복사)</h2>
+<div class="scroll"><table>
+<tr><th>변수</th><th>의미</th><th>입력 예</th><th>출처</th></tr>
+<tr><td class="k">A</td><td>매도 % (부호 그대로 — 매도 +5bp면 0.05, −5bp면 −0.05)</td><td class="num">0.084</td><td>OMS 시트 A 컬럼</td></tr>
+<tr><td class="k">B</td><td>매수 % (부호 그대로 — 매수 −30bp면 −0.30)</td><td class="num">−0.288</td><td>OMS 시트 B 컬럼</td></tr>
+<tr><td class="k">C</td><td>재고한도 주수</td><td class="num">25,000</td><td>OMS 시트 C 컬럼 (기본 2.5억 환산 — 하루 감내 500만 기준)</td></tr>
+<tr><td class="k">D</td><td>스큐 강도 = 1σ % (한도 도달 시 매도호가가 정리 레벨에 닿는 값. 키우면 정리 가속)</td><td class="num">0.124</td><td>OMS 시트 D 컬럼</td></tr>
+</table></div>
+<p><b>제약: 항상 A &gt; B.</b> 호가 수량(1,000주)·갱신 주기(30초)·자전방지 플래그는 함수 밖 주문 설정.
+험한 날(종목 간 등락 격차 평소 1.5배+)은 C를 절반으로.</p>
+
+<h2>6. 정리 모드 — D(스큐) 스텝업</h2>
+<p>같은 함수 구조에서 <b>D만 키우면 정리 모드가 된다</b> — 편향이 세져 재고 방향의 호가가 시장 쪽으로
+더 깊이 밀리고, 재고가 소진될수록 편향이 자동으로 풀린다. 별도 함수·분기가 필요 없다.</p>
+<div class="scroll"><table>
+<tr><th>시각</th><th>D 배수</th><th>효과 (재고 100% 기준 매도호가 위치)</th></tr>
+<tr><td class="k">~14:30</td><td class="num">×1</td><td>정리 레벨 μ+0.5σ (평상시)</td></tr>
+<tr><td class="k">14:30</td><td class="num">×2</td><td>μ−0.5σ — 평균 아래로 밀어 소진 가속</td></tr>
+<tr><td class="k">14:45</td><td class="num">×3</td><td>μ−1.5σ — 시장 최우선 근처</td></tr>
+<tr><td class="k">14:55</td><td class="num">—</td><td>잔량만 CD 시분할로 강제 마감 (기존 방식)</td></tr>
+</table></div>
+<p>운용: 조건변수는 장중 조정이 가능하므로 <b>14:30·14:45에 전 종목 D를 일괄 배수 변경</b>한다.
+OMS에 시각 필드나 변수 예약 변경 기능이 있으면 함수 자동화 가능 — 있으면 알릴 것.
+근거: 정리 물량을 패시브 호가로 소진하는 것이 CD 대비 편측 +15~28bp 우위 (8/28~9/2 채널 분석).</p>
+
+<h2>7. 배포 전 체크리스트</h2>
+<div class="scroll"><table>
+<tr><th>#</th><th>확인</th><th>방법</th></tr>
+<tr><td>1</td><td><b>평가 순서</b> — 72가 71을 같은 틱 안에서 참조 (직전 틱 캐시면 간격이 순간 흔들릴 수 있음)</td><td>소량 운용으로 두 반환값 차이가 항상 RealNav×(A−B)/100인지</td></tr>
+<tr><td>2</td><td><b>템플릿 스코프</b> — [자기잔고.포지션수량]이 종목별로 잡히는지 (전략 합산이면 안 됨)</td><td>두 종목에 붙이고 한쪽만 체결시켜 편향 분리 확인</td></tr>
+<tr><td>3</td><td><b>자전방지 플래그 모드</b> — 자전 상황에서 신규 거부인지 / 기존 취소 후 진행인지</td><td>모의 또는 소량으로 1회 유발해 로그 확인</td></tr>
+<tr><td>4</td><td><b>return 0 동작</b> — RealNav 미수신으로 0 반환 시 호가 미제출인지, 0원 주문 시도인지</td><td>장 전 테스트</td></tr>
+<tr><td>5</td><td><b>조건변수 소수 자리</b> — 0.084 같은 3자리 소수가 정상 저장되는지</td><td>변수 입력 화면</td></tr>
+</table></div>
+
+<div class="note">
+운영 각주: ① 기존 c 스위칭(a/b↔d/e)·E(재고 중심)·F(가드 여유)는 폐지 — 마감 의무 매수(305540 등)는
+이 전략 플랫 후 15:30 단일가에서 별도 집행이라 함수가 알 필요 없음. ② VI·단일가 구간에는 호가1이 없어도
+함수는 RealNav 기준으로 값을 반환한다 — 해당 구간 주문 처리 방식은 OMS 기본 동작을 따름.
+③ A~D는 매일 갱신 — 값의 단일 진실원은 LENS 엑셀 OMS 시트.
+</div>
+
+</div></body>
+</html>

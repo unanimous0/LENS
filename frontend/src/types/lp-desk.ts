@@ -116,12 +116,21 @@ export interface LpDeskMasterItem {
   resid_vol_bp: number | null
   /** 최근 잔차 z (창 내 표준화). */
   resid_z: number | null
+  /**
+   * 오버나이트 상한 (₩, §14.12) = 50만 ÷ (1.645 × 잔차σ) — 1박 5% 꼬리손실 기준, 백만 내림.
+   * 금지 종목은 0, 회귀 표본 부족이면 null(= 산출 불가 — 금지와 다른 상태).
+   */
+  overnight_cap_won?: number | null
+  /** 잔차σ > 250bp 또는 회귀 표본 60 미만 — 오버나이트 금지. */
+  overnight_banned?: boolean
   /** 과거 괴리 분포 (§14.3, PDF 재구성 NAV 기준) — 상세 패널 참고용 (호가에는 미사용). */
   gap_mean_bp: number | null
   gap_sigma_bp: number | null
   /** 필터 통과 유효 표본수 (null 판정 근거 표시용). */
   gap_obs?: number | null
   creation_unit: number | null
+  /** 회귀에 실제로 쓰인 수익률 개수 — O/N 금지 사유(표본 부족 vs σ 초과) 구분용. */
+  obs?: number
   /** 서버가 표본부족을 명시할 때. 미제공이면 beta_k200 == null로 판정. */
   insufficient?: boolean
   /** ETF 전일종가 — 등락률·오늘 s의 기준가. 실시간 틱의 prev_close가 우선. (호가 앵커는 iNAV) */
@@ -136,7 +145,22 @@ export interface LpDeskMasterItem {
 
 export interface LpDeskMaster {
   stats_date: string
-  params: { window: number; gap_window?: number; gap_min_obs?: number }
+  /** 통계 파라미터 + 오버나이트 상한 룰(§14.12) — 룰 숫자의 단일 진실원은 서버다. */
+  params: {
+    window: number
+    gap_window?: number
+    gap_min_obs?: number
+    /** 1박 5% 꼬리에서 허용하는 손실 (₩). */
+    on_tail_loss_won?: number
+    /** 5% 단측 정규분위수 (1.645). */
+    on_tail_z?: number
+    /** 이 위의 잔차σ(bp)는 오버나이트 금지. */
+    on_max_resid_vol_bp?: number
+    /** 회귀 표본이 이 미만이면 금지. */
+    on_min_obs?: number
+    /** 상한 표시 단위 (₩, 백만). */
+    on_cap_unit_won?: number
+  }
   calib_params?: LpDeskCalibParams | null
   items: LpDeskMasterItem[]
 }

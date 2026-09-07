@@ -1,0 +1,962 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>삼성전자 단일종목 레버리지 ETF · LP 호가 전략 v12</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@300;400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --paper:#F6F7F9; --card:#FFFFFF;
+  --ink:#11151B; --ink-2:#3D4753; --ink-3:#6B7686;
+  --rule:#D9DEE6; --rule-2:#EBEEF3;
+  --bid:#C0303A; --bid-bg:#FBF0F0;
+  --ask:#17509B; --ask-bg:#EEF3FA;
+  --brass:#8A6A16; --brass-bg:#FBF6E9;
+  --ok:#1D6E4E; --ok-bg:#EDF5F1;
+}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--paper);color:var(--ink);
+  font-family:'IBM Plex Sans KR',-apple-system,BlinkMacSystemFont,'Malgun Gothic',sans-serif;
+  font-weight:400;line-height:1.75;font-size:15.5px;letter-spacing:-0.005em}
+.wrap{max-width:1020px;margin:0 auto;padding:0 28px 120px}
+.masthead{padding:60px 0 38px;border-bottom:2px solid var(--ink)}
+.eyebrow{font-family:'IBM Plex Mono',monospace;font-size:11px;font-weight:500;letter-spacing:.16em;text-transform:uppercase;color:var(--ink-3);margin-bottom:16px}
+h1{font-size:clamp(27px,4.2vw,42px);line-height:1.22;font-weight:600;margin:0 0 16px;letter-spacing:-0.028em}
+h1 em{font-style:normal;color:var(--ink-3);font-weight:300}
+.standfirst{font-size:17px;color:var(--ink-2);max-width:64ch;margin:0 0 32px;font-weight:300}
+.keyrow{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--rule);border:1px solid var(--rule)}
+.keycell{background:var(--card);padding:18px 20px}
+.keycell .k{font-family:'IBM Plex Mono',monospace;font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-3);margin-bottom:7px}
+.keycell .v{font-family:'IBM Plex Mono',monospace;font-size:22px;font-weight:600;letter-spacing:-0.02em;font-variant-numeric:tabular-nums;line-height:1.2}
+.keycell .s{font-size:12.5px;color:var(--ink-3);margin-top:5px;line-height:1.5}
+.thesis{margin:42px 0 0;padding:26px 28px;background:var(--ink);color:#fff}
+.thesis .lbl{font-family:'IBM Plex Mono',monospace;font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;opacity:.55;margin-bottom:12px}
+.thesis .fml{font-family:'IBM Plex Mono',monospace;font-size:14px;line-height:2.05;font-weight:500}
+.thesis .fml b{color:#FFD98A;font-weight:600}
+.thesis .fml i{font-style:normal;color:#9FC4F0}
+.thesis p{margin:14px 0 0;font-size:14px;opacity:.72;font-weight:300}
+.step{margin-top:70px}
+.step-head{display:flex;gap:20px;align-items:baseline;border-bottom:1px solid var(--ink);padding-bottom:12px;margin-bottom:26px}
+.step-no{font-family:'IBM Plex Mono',monospace;font-size:12px;font-weight:600;letter-spacing:.08em;color:var(--ink-3);flex:none;padding-top:4px}
+.step-title{font-size:24px;font-weight:600;letter-spacing:-0.022em;margin:0;line-height:1.3}
+.step-sub{font-size:14px;color:var(--ink-3);margin-top:6px;font-weight:300}
+h3{font-size:17px;font-weight:600;margin:36px 0 12px;letter-spacing:-0.015em}
+p{margin:0 0 14px}
+.lede{font-size:16px;color:var(--ink-2)}
+code{font-family:'IBM Plex Mono',monospace;font-size:.92em;background:#EDF0F4;padding:1px 5px;border-radius:2px}
+.code{background:var(--card);border:1px solid var(--rule);border-left:3px solid var(--ink);
+  font-family:'IBM Plex Mono',monospace;font-size:12.5px;line-height:1.85;
+  padding:18px 20px;overflow-x:auto;white-space:pre;margin:14px 0 18px;font-variant-numeric:tabular-nums}
+.code.bid{border-left-color:var(--bid)}
+.code.ask{border-left-color:var(--ask)}
+.code.brass{border-left-color:var(--brass)}
+.code .cm{color:var(--ink-3)}
+.code .vr{color:var(--brass);font-weight:600}
+.code .hi{background:#FFF3C4;padding:0 2px}
+.fnlabel{font-family:'IBM Plex Mono',monospace;font-size:12px;letter-spacing:.06em;color:#fff;background:var(--ink);display:inline-block;padding:3px 10px;margin:24px 0 0;font-weight:500}
+.fnlabel.bid{background:var(--bid)}
+.fnlabel.ask{background:var(--ask)}
+.fnlabel.brass{background:var(--brass)}
+.tw{overflow-x:auto;margin:18px 0 22px}
+table{border-collapse:collapse;width:100%;font-size:13.5px;background:var(--card)}
+th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--rule-2)}
+thead th{background:#EDF0F4;font-weight:600;font-size:11.5px;letter-spacing:.04em;border-bottom:1px solid var(--rule);white-space:nowrap;color:var(--ink-2)}
+tbody tr:last-child td{border-bottom:1px solid var(--rule)}
+td.n,th.n{text-align:right;font-family:'IBM Plex Mono',monospace;font-variant-numeric:tabular-nums;white-space:nowrap}
+tbody tr:hover{background:#FAFBFC}
+.vcode{font-family:'IBM Plex Mono',monospace;font-weight:600;font-size:13px}
+.dim{color:var(--ink-3)}
+tr.flat{background:#FFFBF0}
+.no{color:var(--bid);font-weight:600}
+.yes{color:var(--ok);font-weight:600}
+.note{border:1px solid var(--rule);border-left:3px solid var(--brass);background:var(--brass-bg);padding:16px 20px;margin:20px 0;font-size:14px}
+.note .t{font-weight:600;margin-bottom:6px;color:var(--brass);font-size:13px;letter-spacing:.02em}
+.note p:last-child{margin-bottom:0}
+.warn{border-left-color:var(--bid);background:var(--bid-bg)}
+.warn .t{color:var(--bid)}
+.good{border-left-color:var(--ok);background:var(--ok-bg)}
+.good .t{color:var(--ok)}
+.mono{font-family:'IBM Plex Mono',monospace;font-size:12.5px;line-height:1.9}
+.flow{background:var(--card);border:1px solid var(--rule);padding:24px;margin:22px 0;
+  font-family:'IBM Plex Mono',monospace;font-size:12.5px;line-height:2.05;overflow-x:auto;white-space:pre}
+.flow b{font-weight:600}
+.flow .a{color:var(--ask)}
+.flow .b{color:var(--bid)}
+.flow .g{color:var(--brass)}
+.flow .d{color:var(--ink-3)}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:16px;margin:22px 0}
+.card{background:var(--card);border:1px solid var(--rule);overflow:hidden}
+.card h5{margin:0;padding:12px 16px;font-size:13.5px;font-weight:600;background:#EDF0F4;border-bottom:1px solid var(--rule)}
+.card table{font-size:12.5px}
+.card td{padding:6px 16px}
+.check{background:var(--card);border:1px solid var(--rule);padding:6px 0;margin:20px 0}
+.check div{padding:10px 20px 10px 46px;position:relative;border-bottom:1px solid var(--rule-2);font-size:14px}
+.check div:last-child{border-bottom:none}
+.check div::before{content:'';position:absolute;left:20px;top:15px;width:13px;height:13px;border:1.5px solid var(--ink-3);border-radius:2px}
+.foot{margin-top:78px;padding-top:24px;border-top:2px solid var(--ink);font-size:12.5px;color:var(--ink-3);line-height:1.8}
+/* 조건변수 상세 카드 */
+.varcard{background:var(--card);border:1px solid var(--rule);margin:18px 0;overflow:hidden}
+.varcard .vhead{display:flex;align-items:baseline;gap:14px;padding:13px 20px;background:#EDF0F4;border-bottom:1px solid var(--rule)}
+.varcard .vhead .letter{font-family:'IBM Plex Mono',monospace;font-size:19px;font-weight:600;flex:none;width:26px}
+.varcard .vhead .role{font-weight:600;font-size:14.5px}
+.varcard .vhead .meta{margin-left:auto;font-family:'IBM Plex Mono',monospace;font-size:12px;color:var(--ink-3);white-space:nowrap}
+.varcard .vbody{padding:14px 20px 6px}
+.varcard .vbody p{font-size:14px;margin:0 0 12px}
+.varcard .vrow{display:grid;grid-template-columns:88px 1fr;gap:12px;padding:8px 0;border-top:1px solid var(--rule-2);font-size:13.5px}
+.varcard .vrow .vk{font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3);padding-top:2px}
+.varcard .vrow .vv{line-height:1.7}
+.varcard.daily .vhead{border-left:3px solid var(--brass)}
+.varcard.knob .vhead{border-left:3px solid var(--ask)}
+.varcard.fixed .vhead{border-left:3px solid var(--bid)}
+.tag{display:inline-block;font-family:'IBM Plex Mono',monospace;font-size:10.5px;letter-spacing:.06em;padding:1px 8px;border:1px solid var(--rule);border-radius:2px;color:var(--ink-2);background:#F2F4F7;vertical-align:2px}
+.tag.red{border-color:var(--bid);color:var(--bid);background:var(--bid-bg)}
+.tag.blue{border-color:var(--ask);color:var(--ask);background:var(--ask-bg)}
+.tag.gold{border-color:var(--brass);color:var(--brass);background:var(--brass-bg)}
+@media (max-width:720px){.wrap{padding:0 18px 80px}.keyrow{grid-template-columns:1fr}.step-head{flex-direction:column;gap:4px}.varcard .vhead{flex-wrap:wrap}.varcard .vhead .meta{margin-left:40px}}
+@media print{
+  body{background:#fff;font-size:10.5pt}.wrap{max-width:none;padding:0}
+  .step{page-break-inside:avoid;margin-top:32px}
+  .code,.tw,.note,.flow,.varcard{page-break-inside:avoid}
+  .thesis{background:#fff;color:#000;border:2px solid #000}
+  .thesis .fml b,.thesis .fml i{color:#000}.thesis p{opacity:1}
+  .fnlabel{background:#000!important;color:#fff}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="masthead">
+  <div class="eyebrow">단일종목 레버리지 ETF · LP 호가 전략 · v12 · 흐름 앵커판</div>
+  <h1>삼성전자 2X 호가 전략 <em>— 공정가의 기준점을 흐름 쪽으로</em></h1>
+  <p class="standfirst">하락장에서 매수는 최우선, 매도는 3~4호가 밖 — 잔량 신호를 끄고 게이트를 넣어도 이 편향이 남았습니다. 추적 결과 주범은 신호가 아니라 <b>공정가의 기준점(앵커)</b>이었습니다. 현·선물 <b>중간가</b>를 쓰는 한 하락장에서 공정가가 상시 <b>+26.2원(5.2 ETF틱)</b> 높습니다. v12는 앵커를 체결 흐름이 향하는 쪽 호가로 옮기고(54·51 신설), 52·53을 파생 구조로 바꿔 OMS 정지를 산술적으로 차단하고, 체결 문턱을 조건변수 N으로 빼내 장중 조정을 가능하게 합니다.</p>
+  <div class="keyrow">
+    <div class="keycell">
+      <div class="k">함수</div>
+      <div class="v">10 <span style="font-size:13px;font-weight:400">개</span></div>
+      <div class="s">54·51 흐름 앵커 신설<br>53은 52 파생 — 크로스 불가</div>
+    </div>
+    <div class="keycell">
+      <div class="k">조건변수</div>
+      <div class="v">13 <span style="font-size:13px;font-weight:400">개</span></div>
+      <div class="s">N(체결 문턱 분모) 신설<br>J = 0 · L = 1.0 · D·E = 8</div>
+    </div>
+    <div class="keycell">
+      <div class="k">운용 모드</div>
+      <div class="v">2 <span style="font-size:13px;font-weight:400">벌</span></div>
+      <div class="s">평상시 게이트 자동 판별<br>극단일만 수동 폭풍 프리셋</div>
+    </div>
+  </div>
+  <div class="thesis">
+    <div class="lbl">전략 전체를 한 줄로</div>
+    <div class="fml"><b>매도호가</b> = 공정가(<i>흐름 앵커</i>) + D − 재고편향 + 매도방어 → 무효 · 한도 · 침범 검사<br><b>매수호가</b> = <b>매도호가</b> − D − E − 매도방어 + 매수방어 → 한도 시 추가 후퇴 · 침범 검사<br><i>매수를 매도에서 빼서 만든다 → 간격 = D + E 이상으로 산술 고정</i></div>
+    <p>앵커(54·51)가 공정가의 기준점을 흐름 쪽으로 옮겨 방향 편향을 없애고, 마진(D·E)이 수익, 재고편향(F·G·H)이 분산, 역선택방어(L)가 확정 손실을 다룹니다. 크로스 방지는 침범 검사(I)가 시장 쪽을, <b>파생 구조 자체</b>가 자기 크로스를 담당합니다. 흐름 인정 문턱은 N으로 장중 조정합니다.</p>
+  </div>
+</header>
+
+<!-- ============================================================ -->
+<section class="step">
+  <div class="step-head">
+    <div class="step-no">STEP 01</div>
+    <div>
+      <h2 class="step-title">사건 기록 — 편향의 몸통은 신호가 아니라 앵커였다</h2>
+      <div class="step-sub">7/28 급락일 → 7/29~30 잔여 편향 · OMS 정지 · 원인 재판정</div>
+    </div>
+  </div>
+
+  <h3>관측된 사실 — 실제로 본 것</h3>
+  <div class="tw"><table>
+    <thead><tr><th>#</th><th>날짜</th><th>관측</th></tr></thead>
+    <tbody>
+      <tr><td class="n">1</td><td>7/28</td><td>하락 내내 <b style="color:var(--bid)">매수호가 최우선 고정</b>, <b style="color:var(--ask)">매도호가 3호가 밖</b>. 반등하자 매도우위로 <b>반전</b>. 매수 일방 체결 → 큰 실현손실</td></tr>
+      <tr><td class="n">2</td><td>7/28</td><td>시장 하락폭이 컸고 <b>NAV 대비 ETF 호가가 벌어져</b> 있었음</td></tr>
+      <tr><td class="n">3</td><td>7/29</td><td>거래량 정상 · 방향 쏠림 없음, 그런데 <b>주당 −6.5원 확정손실</b>. 재고는 2,000주 내외 유지</td></tr>
+      <tr><td class="n">4</td><td>7/30</td><td><b>[매수기준가 ≥ 매도기준가]로 OMS가 반복 정지</b></td></tr>
+      <tr class="flat"><td class="n">5</td><td>7/30</td><td><b>잔량 신호를 껐는데도 하락세에 여전히 매수 우위.</b> 매도 3~4호가, 매수 최우선 — 구조적 편향</td></tr>
+      <tr class="flat"><td class="n">6</td><td>7/30</td><td>ETF 잔량이 <b>매도 4,500 / 매수 1,000</b>이었는데도 우리 매도호가는 3호가에 머묾</td></tr>
+    </tbody>
+  </table></div>
+
+  <div class="note warn">
+    <div class="t">관측 5·6이 초기 진단을 반증했습니다</div>
+    <p>7/28 직후 저는 주원인을 <b>잔량 신호의 방향 해석 역전</b>으로 판정했습니다. 그 진단은 <b>틀렸거나, 최소한 몸통이 아니었습니다.</b> 신호를 끈 상태(J=0)에서도 같은 편향이 같은 크기로 남았습니다(관측 5). 관측 6은 더 결정적입니다 — 매도잔량 4.5배 우위는 잔량 신호가 낼 수 있는 <b>최대급 음수 신호</b>인데도 매도호가가 시장 쪽으로 내려오지 않았습니다. 잔량 신호로는 설명할 수 없는 편향이 그 아래에 깔려 있었다는 뜻입니다.</p>
+  </div>
+
+  <h3>재판정 — 중간가 앵커가 하락장에서 구조적으로 높습니다</h3>
+  <p>공정가는 <code>A + (B×현물가 + C×선물가)/10000</code>이고, 현물가·선물가에 <b>중간가</b>를 넣고 있었습니다. 그런데 하락 흐름이 확인된 순간의 진짜 가치는 중간가가 아니라 <b>매수1호가 쪽</b>에 있습니다 — 다음 체결이 거기서 나기 때문입니다. 중간가를 쓰면 다리마다 반틱(250원)씩 과대평가됩니다.</p>
+
+  <div class="flow"><span class="d">하락 확인 중 · 기초 스프레드 1틱(500원) 가정 · KODEX</span>
+
+현물 중간가 과대분   =  472.00 × 250 / 10000  =  <b class="b">+11.8원</b>
+선물 중간가 과대분   =  575.48 × 250 / 10000  =  <b class="b">+14.4원</b>
+──────────────────────────────────────────────────
+공정가 상시 상향 편향                          =  <b class="b">+26.2원  =  5.2 ETF틱</b>
+<span class="d">기초 스프레드가 2틱으로 벌어지면              →  최대 +52원 = 10.5 ETF틱</span>
+
+매수호가 = 진짜가치 + 26.2 − 8(E)  = <b class="b">+18원</b>  → <b>최우선 3~4틱 위에서 계속 받아줌</b>  <span class="d">(관측 1·5)</span>
+매도호가 = 진짜가치 + 26.2 + 8(D)  = <b class="a">+34원</b>  → <b>시장 매도 3~4호가 밖</b>        <span class="d">(관측 1·5·6)</span>
+
+<span class="d">상승 확인 중에는 부호가 반대로 뒤집힘 → 매도 최우선, 매수 후퇴</span>  <span class="d">(관측 1의 반등 구간)</span></div>
+
+  <div class="note warn">
+    <div class="t">v11 문서의 계산 오류 — 정정</div>
+    <p>v11 STEP 06에서 저는 이 편향을 <b>"다리당 반틱, 합쳐 최대 1~2 ETF틱으로 유계"</b>라고 썼습니다. <b>산수가 틀렸습니다.</b> 기초의 반틱(250원)은 ETF로 환산하면 <code>(B+C)/40 = 26.19원 = 5.2 ETF틱</code>입니다. 1~2틱이 아니라 5틱 이상입니다. 이 오류 때문에 편향의 몸통을 "L 방어(2.6틱)가 덮는 수준의 잔여 항"으로 치부하고, 게이트·J·L만 손보는 방향으로 두 번(v10·v11) 헛돌았습니다. 관측 5·6이 나오기 전까지 이 항을 후보에 올리지 않은 것이 이번 손실의 직접적 원인입니다.</p>
+  </div>
+
+  <p>이 편향은 <b>압력 항이 아니라 앵커</b>라서 게이트·J·L 어느 것도 건드리지 못합니다. J를 0으로 내려도, 게이트를 닫아도 남습니다. 검증도 간단합니다 — 관측 6의 상황을 수식에 넣으면:</p>
+
+  <div class="code brass"><span class="cm">매도잔량 4,500 / 매수잔량 1,000 · 불균형 −0.64 · J=1 가정 (v9 원본 신호 풀가동)</span>
+압력            = 250 × (−0.64)         = −159원
+신호가 내리는 힘 = 159 × 1047.48/10000   = <span class="vr">−16.7원</span>
+중간가 앵커 편향                        = <span class="vr">+26.2원</span>
+──────────────────────────────────────────────
+순편향                                 = <b>+9.5원</b>
+매도호가 = 진짜가치 + 9.5 + 8(D) = +17.5원 ≈ <b>3.5틱 위</b>   <span class="cm">← 관측 6과 일치</span>
+
+<span class="cm">최대급 음수 잔량 신호조차 앵커 편향을 이기지 못합니다.</span></div>
+
+  <h3>OMS 정지(관측 4) — 한도 분기가 간격을 좁혔습니다</h3>
+  <p>정지 판정은 <b>실제 주문 제출 직전</b> 기준입니다 — 계산 결과를 호가로 내보내는 순간 매도 ≤ 매수면 멈춥니다. 원인은 52·53이 각자 포지션을 읽고 <b>서로 다른 분기</b>를 타는 것이었습니다.</p>
+
+  <div class="flow"><span class="d">F = 2,000 경계에서 재고가 출렁이는 순간</span>
+
+T0  52 평가 — 포지션 2,100 (한도 초과) → 정리 분기 → 매도 = 공정가 <b class="a">− 52원</b>
+T1  53 평가 — 그 사이 매도 체결로 1,950 (한도 미만) → 정상 분기 → 매수 = 공정가 <b class="b">− 32원</b>
+제출 순간 → 매수(−32) &gt; 매도(−52)  →  <b>정지</b>
+
+<span class="d">두 번째 경로: 48 재고편향을 두 함수가 각자 읽으면 그 차이만으로도 크로스</span>
+600주 괴리 × G/F(24/2000) = 7.2원  &gt;  D+E = 4원(D·E=2 시)  →  간격 역전</div>
+
+  <div class="note">
+    <div class="t">구조적 결함의 정체 — 간격을 좁히는 분기가 존재했다는 것</div>
+    <p>기존 52②의 <code>공정가 − (B+C)/20</code>은 <b>절대값 하한</b>이라 반대편 정상 호가(공정가 − 16~32원)보다 아래에 놓일 수 있었습니다. v9에서 이 분기를 "크로스 방지용 상·하한"으로 도입했지만, 두 함수가 동시에 분기를 전환한다는 전제 아래서만 성립하는 보호였습니다. 순차 제출·경계 출렁임에서 그 전제가 깨집니다. <b>v12는 간격을 좁히는 분기를 전부 제거합니다</b>(STEP 02 파생 구조).</p>
+  </div>
+
+  <h3>주당 −6.5원(관측 3) — 대칭 역선택</h3>
+  <p>D=E=4의 총마진은 라운딩 포함 +6.5원입니다. 실현이 −6.5원이면 <b>왕복당 26원</b>이 마진을 넘어 빠져나간 것이고, 이 값은 <code>(B+C)/40 = 26.19원</code>, 즉 <b>기초 반틱</b>과 일치합니다. 기초 1틱이 ETF 52원 점프를 만드는데 마진 4원으로는 아무것도 막지 못합니다. 쏠림 없이 손실이 나는 형태는 방향 편향이 아니라 <b>양쪽이 번갈아 뜯기는 대칭 역선택</b>뿐이며, 처방은 마진 확대(D·E 8)와 앵커 정확도입니다.</p>
+
+  <h3>세 층의 원인 정리</h3>
+  <div class="tw"><table>
+    <thead><tr><th>층</th><th>증상</th><th>크기</th><th>v12 처방</th></tr></thead>
+    <tbody>
+      <tr class="flat"><td><b>앵커 편향</b><br><span class="dim">주범</span></td><td>하락 시 매수우위 · 상승 시 매도우위 (관측 1·5·6)</td><td class="n">26.2 ~ 52원<br>5.2 ~ 10.5틱</td><td class="yes">54·51 흐름 앵커 신설 + 47 교체</td></tr>
+      <tr><td>자기 크로스</td><td>OMS 반복 정지 (관측 4)</td><td class="n">간격 역전</td><td class="yes">53을 52 파생으로 · 좁히는 분기 제거</td></tr>
+      <tr><td>대칭 역선택</td><td>쏠림 없는 주당 −6.5원 (관측 3)</td><td class="n">왕복 26원</td><td class="yes">D·E 8 · L 1.0 · 건당 125</td></tr>
+      <tr><td><span class="dim">잔량 신호 역전</span></td><td><span class="dim">7/28 손실에 기여했을 수 있으나 몸통 아님</span></td><td class="n dim">최대 26원</td><td class="dim">게이트 유지, J=0으로 봉인</td></tr>
+      <tr><td><span class="dim">④ 편향 차폐 해제</span></td><td><span class="dim">스프레드 확대 시 편향이 체결가로 직결</span></td><td class="n dim">증폭기</td><td class="dim">앵커가 편향 자체를 없애면 무해화</td></tr>
+    </tbody>
+  </table></div>
+
+  <div class="note">
+    <div class="t">이번에 배운 진단 원칙 — 앵커부터 의심할 것</div>
+    <p>편향을 볼 때 순서를 거꾸로 짚었습니다. 올바른 순서는 <b>① 앵커(기준점이 맞나) → ② 상수항(A·H) → ③ 신호(J·L)</b>입니다. 신호는 크기가 유계이고 부호가 자주 바뀌어 오차가 상쇄되지만, 앵커 오차는 <b>상시·단방향</b>이라 누적됩니다. "신호를 껐는데도 편향이 남는다"는 관측이 나오면 그 즉시 앵커를 의심해야 하며, 반대로 신호를 끄고도 편향이 사라지지 않는 한 신호를 범인으로 지목하면 안 됩니다.</p>
+  </div>
+</section>
+<!-- ============================================================ -->
+<section class="step">
+  <div class="step-head">
+    <div class="step-no">STEP 02</div>
+    <div>
+      <h2 class="step-title">v12의 세 가지 수정</h2>
+      <div class="step-sub">흐름 앵커 · 파생 호가 구조 · 문턱 변수 N</div>
+    </div>
+  </div>
+
+  <h3>수정 ① 흐름 앵커 — 공정가의 기준점을 옮깁니다</h3>
+  <p>중간가 대신 <b>체결이 향하는 쪽 호가</b>를 앵커로 씁니다. 논리는 한 줄입니다 — 다음 체결이 나올 곳이 지금의 가치입니다.</p>
+
+  <div class="tw"><table>
+    <thead><tr><th>직전 체결</th><th>해석</th><th>앵커</th><th>공정가 효과 (KODEX)</th></tr></thead>
+    <tbody>
+      <tr><td>매도 방향, 문턱 초과</td><td>하락 흐름 — 다음 체결은 매수1호가에서</td><td><b>기초 매수1호가</b></td><td class="n">−26.2원 (편향 소멸)</td></tr>
+      <tr><td>매수 방향, 문턱 초과</td><td>상승 흐름 — 다음 체결은 매도1호가에서</td><td><b>기초 매도1호가</b></td><td class="n">+26.2원 (편향 소멸)</td></tr>
+      <tr><td>문턱 미달 · 흐름 없음</td><td>양방향 · 판단 근거 없음</td><td>중간가 (기존)</td><td class="n">0 — 대칭 호가</td></tr>
+    </tbody>
+  </table></div>
+
+  <div class="flow"><span class="d">하락 확인 시 (L=0.5 기준) 호가가 어떻게 달라지는가</span>
+
+앵커 이동    <b class="b">−26.2원</b>   <span class="d">공정가 편향 소멸</span>
+50 매수방어  <b class="b">−13.1원</b>   <span class="d">확인된 하락 → 매수만 추가 후퇴</span>
+──────────────────────────────────────
+매수호가  기존 대비 <b class="b">−39원 (8틱)</b>  → 최우선에서 물러남 · 떨어지는 칼을 안 받음
+매도호가  기존 대비 <b class="a">−26원 (5틱)</b>  → 시장 매도 경쟁권 진입 · <b>하락 중 재고를 실제로 덜어냄</b>
+
+<span class="d">흐름이 없거나 양방향이면 중간가로 복귀 → 지금의 정상 거래량 유지</span></div>
+
+  <div class="note good">
+    <div class="t">이것이 관측 6을 고치는 방식입니다</div>
+    <p>지금까지 하락장에서 매도호가가 3~4호가 밖에 떠 있어 <b>팔지도 못한 채 매수만 쌓였습니다.</b> 앵커가 내려오면 매도가 체결권으로 들어옵니다. 방향이 맞는 쪽으로 거래가 되기 시작하는 것 — 이것이 v12의 목적입니다.</p>
+  </div>
+
+  <div class="note">
+    <div class="t">앵커와 J(마이크로가격)를 동시에 켜지 마세요</div>
+    <p>둘은 같은 질문("스프레드 안 어디가 진짜 가치인가")에 답합니다. 앵커는 <b>체결 흐름</b>으로, J는 <b>잔량 불균형</b>으로. 동시에 켜면 같은 것을 두 번 세어 최대 52원(10틱) 과잉 이동이 됩니다. <b>v12 배포 시 J = 0</b>이 원칙이고, 앵커가 안정적으로 작동하는 것이 확인된 뒤 J 0.3 재도입을 검토합니다. 45·46 게이트는 코드에 남겨두되 J=0이면 결과에 영향이 없습니다.</p>
+  </div>
+
+  <h3>수정 ② 파생 호가 구조 — 자기 크로스를 산술적으로 불가능하게</h3>
+  <p>매수호가를 공정가에서 따로 계산하지 않고 <b>매도호가에서 빼서</b> 만듭니다.</p>
+
+  <div class="code"><span class="cm">전개해보면 가격 결과는 기존과 완전히 동일합니다</span>
+53 = 52 − D − E − 49 + 50
+   = (공정가 + D − 48 + 49) − D − E − 49 + 50
+   = 공정가 − E − 48 + 50        <span class="cm">← 기존 정상 분기와 같은 식</span>
+
+<span class="cm">그러나 48(재고편향)이 산술적으로 소거됩니다 → 두 함수가 다른 포지션을 읽어도 간격 불변</span>
+
+52 − 53  =  D + E + 49 − 50        49 ≥ 0, 50 ≤ 0  →  <b>항상 D + E 이상</b>
+한도 후퇴 시 = D + E + (B+C)/20    →  <b>D + E + 52원</b></div>
+
+  <div class="note good">
+    <div class="t">전수 검증 결과</div>
+    <p>두 함수가 서로 다른 포지션(최대 1,000주 괴리)·다른 방어값·다른 시장 스냅샷을 읽는 경쟁 상황까지 포함해 <b>960만 개 분기 조합</b>을 전수 검증했습니다. <b>크로스 0건</b>, 최소 간격은 정확히 D+E로 고정. 나타난 분기쌍 12종 전부에서 간격이 D+E 이상이었습니다.</p>
+  </div>
+
+  <p>핵심은 <b>모든 분기가 간격을 넓히는 방향으로만 작동</b>한다는 것입니다. 기존 52②의 절대값 하한(<code>공정가 − 52원</code>)처럼 <b>간격을 좁히는 분기를 전부 제거</b>했습니다. 롱 한도 정리는 분기 없이 48 재고편향의 연속 이동과 침범 방지 상한이 담당합니다.</p>
+
+  <div class="tw"><table>
+    <thead><tr><th>재고 (F=2,000 · G=24)</th><th class="n">48</th><th>매도호가</th><th>매수호가</th><th>동작</th></tr></thead>
+    <tbody>
+      <tr class="flat"><td>2,500주 (한도 초과)</td><td class="n">30원</td><td>매수1호가 + I<br><span class="dim">④ 정리 상한</span></td><td>시장 −60원<br><span class="dim">③ 한도 후퇴</span></td><td class="yes">매도 최우선으로 정리 · <b>매수 체결 불가</b></td></tr>
+      <tr><td>2,000주 (한도)</td><td class="n">24원</td><td>공정가 −16원</td><td>공정가 −76원</td><td>정리 계속</td></tr>
+      <tr><td>1,900주 (한도 미만)</td><td class="n">22.8원</td><td>공정가 −15원</td><td>공정가 −31원</td><td>편향 잔존 → 계속 밀어냄</td></tr>
+      <tr><td>0주</td><td class="n">0원</td><td>공정가 +8원</td><td>공정가 −8원</td><td>대칭 정상</td></tr>
+    </tbody>
+  </table></div>
+  <p>한도 조건을 <code>&gt; F</code>에서 <code>&gt;= F</code>로 바꿔 정확히 2,000주에서도 정리가 계속되고, 2,000주 미만이 될 때까지 매수는 시장에서 빠져 있습니다. 미만이 된 뒤에도 48이 남아 있어 자연스럽게 계속 감축됩니다.</p>
+
+  <div class="note warn">
+    <div class="t">새 제약 — D + E ≥ 10 (2틱)</div>
+    <p>간격 하한이 D+E이므로 1틱(5원)이면 라운딩 여유가 없습니다. 또 52가 ④ 상한에 걸릴 때 파생 매수호가가 시장 매수1호가보다 확실히 아래에 있으려면 <b>D + E &gt; I = 5</b>가 필요합니다. <b>D = E = 8</b>이면 간격 16원(3.2틱)으로 충분하며, 대칭 역선택 대응(관측 3)과도 겸용됩니다.</p>
+    <p style="margin-top:10px"><b>남는 외부 레이스:</b> 계산 시점과 제출 시점 사이에 시장 최우선호가가 움직이는 경우는 코드로 못 막습니다. ① 직전호가 변동틱 취소 1틱 초과(낡은 반대편 호가를 먼저 회수), ② 정정 딜레이 0 고정, ③ 극단일 I=10으로 대응합니다.</p>
+  </div>
+
+  <h3>수정 ③ 문턱 변수 N — 꺼져 있던 스위치를 켭니다</h3>
+  <p>기존 코드의 체결 문턱은 <code>(매수1잔량 + 매도1잔량) / 20</code>, 즉 최우선 잔량 합의 5%로 <b>하드코딩</b>되어 있었습니다. 이 20을 조건변수 N으로 빼냅니다. 개념이 새로 생긴 것이 아니라 <b>장중에 돌릴 수 있게 만든 것</b>입니다.</p>
+
+  <div class="tw"><table>
+    <thead><tr><th class="n">N</th><th>문턱 (잔량 합 20만 주 기준)</th><th>삼전 개별 체결(수십~수백 주)이 넘는가</th><th>결과</th></tr></thead>
+    <tbody>
+      <tr class="flat"><td class="n">20 <span class="dim">기존</span></td><td class="n">10,000주 (5%)</td><td class="no">거의 못 넘음</td><td class="no">앵커·방어가 <b>사실상 꺼진 상태</b></td></tr>
+      <tr><td class="n">100</td><td class="n">2,000주 (1%)</td><td>큰 체결만</td><td>간헐 작동</td></tr>
+      <tr><td class="n">400</td><td class="n">500주 (0.25%)</td><td class="yes">자주 넘음</td><td class="yes">정상 작동</td></tr>
+    </tbody>
+  </table></div>
+
+  <p><b>N이 클수록 문턱이 낮아져 민감해집니다</b> — 분모이므로 방향이 직관과 반대입니다. 그리고 문턱을 고정 주수가 아니라 잔량 대비 비율로 두는 이유는, 잔량 50만 주인 한산한 시간의 500주와 잔량 3만 주로 얇아진 급변 구간의 500주가 전혀 다른 의미이기 때문입니다.</p>
+
+  <div class="note warn">
+    <div class="t">N을 반드시 함께 넣어야 하는 이유</div>
+    <p><b>N=20으로 두고 앵커만 넣으면 아무 일도 일어나지 않습니다.</b> 앵커는 체결이 문턱을 넘을 때만 움직이도록 설계돼 있으니, 문턱이 너무 높으면 하루 종일 중간가에 앉아 있고 호가는 어제와 똑같이 나옵니다. 브레이크와 브레이크 배선의 관계입니다 — N은 차를 세우는 장치가 아니라, 브레이크가 실제로 작동하게 하는 조건입니다.</p>
+    <p style="margin-top:10px">오차의 비대칭도 명확합니다. 문턱이 낮아 앵커가 잘못 움직이는 비용은 <b>한 방향 반틱(26원)이 잠깐</b>이고, 문턱이 높아 앵커가 안 움직이는 비용은 <b>하락장 내내 26원 편향</b>입니다. 낮은 쪽으로 실수하는 것이 맞습니다.</p>
+  </div>
+
+  <div class="note">
+    <div class="t">앵커와 압력에 다른 문턱을 쓰는 확장</div>
+    <p>이론적으로는 압력(45·46)은 틀리면 방향 베팅이 되므로 엄격하게, 앵커(54·51)는 반틱 유계이므로 관대하게 — 서로 다른 문턱이 맞습니다. M 슬롯이 비어 있어 앵커용 문턱만 M으로 분리해 M=400 / N=100 식으로 갈 수 있습니다. 다만 <b>첫 배포는 N 하나로 단순하게</b> 가고, 로그를 본 뒤 분리 여부를 판단하세요. J=0이면 압력은 결과에 영향이 없으므로 지금은 분리 이득이 없습니다.</p>
+  </div>
+
+  <div class="note good">
+    <div class="t">장세 구분 전략을 따로 만들지 않는 이유 — 유지</div>
+    <p>이 전략을 죽이는 축은 변동성이 아니라 <b>방향성(흐름의 일방성)</b>입니다. 변동이 커도 양방향인 장은 최적 환경(양쪽 체결 → 거래량↑ 재고 중립)이고, 변동이 작아도 한 방향으로 스미는 장이 위험합니다. 그 판별을 앵커가 <b>틱 단위로 자동</b> 수행합니다. 장세는 하루 안에서도 바뀌므로(7/28: 오전 폭락 → 오후 반등) 아침에 사람이 선언하는 방식은 구조적으로 늦습니다. 전략은 한 벌, 극단일용 다이얼 프리셋만 별도(STEP 08).</p>
+  </div>
+</section>
+<!-- ============================================================ -->
+<section class="step">
+  <div class="step-head">
+    <div class="step-no">STEP 03</div>
+    <div>
+      <h2 class="step-title">PDF 세 숫자가 A·B·C가 된다</h2>
+      <div class="step-sub">매일 아침 갱신하는 유일한 값 · v9와 동일</div>
+    </div>
+  </div>
+
+  <div class="code">NAV_1CU = 현물주수 × 현물가 + (근월물계약수 × 10) × (선물가 − 기준가) + 현금
+NAV_1주 = NAV_1CU ÷ CU단위(25,000주)
+
+<span class="vr">A</span> = (현금 − 근월물계약수 × 10 × 기준가) ÷ CU단위        <span class="cm">상수항 · 스케일 없음</span>
+<span class="vr">B</span> = 현물주수 ÷ CU단위 <span class="hi">× 10000</span>                      <span class="cm">현물계수</span>
+<span class="vr">C</span> = (근월물계약수 × 10) ÷ CU단위 <span class="hi">× 10000</span>            <span class="cm">선물계수</span>
+
+공정가 = A + ( B × 현물가 + C × 선물가 ) / 10000</div>
+
+  <div class="tw"><table>
+    <thead><tr><th>ETF</th><th class="n">현물(주)</th><th class="n">근월물</th><th class="n">현금(원)</th><th class="n">A</th><th class="n">B</th><th class="n">C</th></tr></thead>
+    <tbody>
+      <tr><td>RISE 삼전 2X</td><td class="n">912.35</td><td class="n">149.54</td><td class="n">79,478,383</td><td class="n">−12,462.74868</td><td class="n">364.94</td><td class="n">598.16</td></tr>
+      <tr><td>KODEX 삼전 2X</td><td class="n">1,180.00</td><td class="n">143.87</td><td class="n">34,419,364</td><td class="n">−13,672.02744</td><td class="n">472.00</td><td class="n">575.48</td></tr>
+      <tr><td>TIGER 삼전 2X</td><td class="n">1,094.00</td><td class="n">131.00</td><td class="n">29,210,770</td><td class="n">−12,534.16920</td><td class="n">437.60</td><td class="n">524.00</td></tr>
+    </tbody>
+  </table></div>
+
+  <div class="note">
+    <div class="t">B·C는 반드시 ×10000 — 조건변수가 소수 5자리까지만</div>
+    <p>원값은 소수 6자리가 필요해 5자리로 잘리면 공정가에 −2.1~−2.6원의 상시 편향이 생기고 배율검증으로 안 잡힙니다. ×10000 저장 후에는 소수 2자리로 충분. A는 스케일하지 않습니다.</p>
+  </div>
+
+  <div class="code brass"><span class="cm">배율 검산 — 매일 아침</span>
+① 델타금액 = (B + C) ÷ 10000 × 기준가
+② 배율     = 델타금액 ÷ (A + 델타금액)      <span class="cm">← 기준가에서 선물 평가손익 0 → 이것이 곧 공정가</span>
+
+   1.95 ~ 2.05 밖이면 PDF 또는 기준가 입력 오류
+   A + 델타금액이 13,700원 근처(ETF 실제 가격대)인지 눈으로 확인
+   /10000 누락 시 여기서 수백만 원이 나와 즉시 드러남
+
+          B+C        델타금액      A+델타금액    배율
+RISE      963.10     25,185.07    12,722.32    1.980×
+KODEX   1,047.48     27,391.60    13,719.57    1.997×
+TIGER     961.60     25,145.84    12,611.67    1.994×</div>
+
+  <p class="dim">원월물이 0이 아니면 C에 원월물 델타를 더하고 A는 근월·원월 각각의 기준가로 따로 뺍니다. 선물 종목코드는 월물이 바뀌면 교체.</p>
+</section>
+<!-- ============================================================ -->
+<section class="step">
+  <div class="step-head">
+    <div class="step-no">STEP 04</div>
+    <div>
+      <h2 class="step-title">함수 10개 — 코드 전문</h2>
+      <div class="step-sub">54·51 신설 · 47 앵커 교체 · 52 재작성 · 53 파생 · 45·46·49·50 문턱을 N으로</div>
+    </div>
+  </div>
+
+  <div class="flow"><span class="d">[입력]  현물 호가·잔량·체결 · 선물 호가·잔량·체결 · 자기잔고 · 자기종목 호가</span>
+
+<b>54. 삼전_현물앵커</b>   체결 방향이 향하는 쪽 호가 · 흐름 없으면 중간가        <span class="g">← 신설</span>
+<b>51. 삼전_선물앵커</b>   동일 (선물)                                          <span class="g">← 신설</span>
+45. 삼전_현물압력   체결·잔량 동조 시 불균형 → 원 단위 (J=0이면 미사용)
+46. 삼전_선물압력   동일 (선물)
+       ↓
+47. 삼전_공정가     A + ( B×(<b>54</b> + J×45) + C×(<b>51</b> + J×46) ) / 10000   <span class="g">← 앵커 교체</span>
+48. 삼전_재고편향   G × (포지션 − H) / F
+49. 삼전_매도방어   현·선물 체결 모두 매수 확인 시  L × (B+C) / 40
+50. 삼전_매수방어   현·선물 체결 모두 매도 확인 시  L × (B+C) / −40
+       ↓
+<span class="a">52. 삼전_매도호가   독립 계산 — 무효 · 숏한도 후퇴 · 침범/정리 상한 · 정상</span>
+<span class="b">53. 삼전_매수호가   <b>52 − D − E − 49 + 50</b> — 롱한도 추가 후퇴 · 침범 검사</span>
+
+<span class="d">55는 비움 (확인 로직이 49·50·54·51에 흡수됨)</span></div>
+
+  <div class="fnlabel brass">54. 삼전_현물앵커 — 신설</div>
+  <div class="code brass">if [종목변수.코스피.A005930.시장체결수량]
+     &lt; ([종목변수.코스피.A005930.매수1호가 수량] + [종목변수.코스피.A005930.매도1호가 수량]) / -1 / [조건변수.N]
+then
+return [종목변수.코스피.A005930.매수1호가]
+else if [종목변수.코스피.A005930.시장체결수량]
+     &gt; ([종목변수.코스피.A005930.매수1호가 수량] + [종목변수.코스피.A005930.매도1호가 수량]) / [조건변수.N]
+then
+return [종목변수.코스피.A005930.매도1호가]
+else
+return ([종목변수.코스피.A005930.매수1호가] + [종목변수.코스피.A005930.매도1호가]) / 2</div>
+  <p>하락 확인(체결 음수, 문턱 초과) → 매수1호가. 상승 확인 → 매도1호가. 그 외 중간가. 음수 문턱은 <code>/ -1 / [조건변수.N]</code> 순으로 나눠 부호를 만듭니다(곱셈 대신 나눗셈 두 번 — OMS 표현 제약 회피).</p>
+
+  <div class="fnlabel brass">51. 삼전_선물앵커 — 신설</div>
+  <div class="code brass">if [종목변수.주식선물.KA1168000.시장체결수량]
+     &lt; ([종목변수.주식선물.KA1168000.매수1호가 수량] + [종목변수.주식선물.KA1168000.매도1호가 수량]) / -1 / [조건변수.N]
+then
+return [종목변수.주식선물.KA1168000.매수1호가]
+else if [종목변수.주식선물.KA1168000.시장체결수량]
+     &gt; ([종목변수.주식선물.KA1168000.매수1호가 수량] + [종목변수.주식선물.KA1168000.매도1호가 수량]) / [조건변수.N]
+then
+return [종목변수.주식선물.KA1168000.매도1호가]
+else
+return ([종목변수.주식선물.KA1168000.매수1호가] + [종목변수.주식선물.KA1168000.매도1호가]) / 2</div>
+  <p class="dim">현물과 선물이 각자 독립적으로 판정합니다. 한쪽 시장만 일방 흐름이면 그쪽 다리의 앵커만 이동합니다.</p>
+
+  <div class="fnlabel">47. 삼전_공정가 — 앵커 교체</div>
+  <div class="code">if 1&gt;0
+then
+return ( [조건변수.A]
+       + ( [조건변수.B] * ( [함수.삼전_현물앵커.54] + [조건변수.J] * [함수.삼전_현물압력.45] )
+         + [조건변수.C] * ( [함수.삼전_선물앵커.51] + [조건변수.J] * [함수.삼전_선물압력.46] ) ) / 10000 )
+else
+return 0</div>
+  <p>중간가 계산식이 54·51 호출로 바뀐 것이 전부입니다. <b>J = 0으로 운용</b>하므로 압력 항은 무효화되며, 앵커가 스프레드 내 가치 위치를 단독으로 결정합니다.</p>
+
+  <div class="fnlabel">45 · 46. 삼전_현물/선물압력 — 문턱만 N으로 교체</div>
+  <div class="code">기존 코드에서 문턱 표현만 치환:
+     ... / 20        →  ... / [조건변수.N]
+     ... / -20       →  ... / -1 / [조건변수.N]
+게이트 구조(체결·잔량 동조 시에만 압력 반환, 그 외 0)는 그대로 유지.
+J = 0으로 운용하는 동안 이 두 함수의 반환값은 공정가에 영향을 주지 않습니다.</div>
+
+  <div class="fnlabel">48. 삼전_재고편향 — 변경 없음</div>
+  <div class="code">if 1&gt;0
+then
+return [조건변수.G] * ([자기잔고.포지션수량] - [조건변수.H]) / [조건변수.F]
+else
+return 0</div>
+  <p class="dim">클램프 불필요. 한도를 넘어도 선형으로 계속 커지며, 이것이 v12에서 <b>롱 한도 정리를 담당하는 주 장치</b>입니다(분기 없이 연속 작동).</p>
+
+  <div class="fnlabel ask">49. 삼전_매도방어 — 문턱만 N으로</div>
+  <div class="code ask">if ( [종목변수.코스피.A005930.시장체결수량]
+       &gt; ([종목변수.코스피.A005930.매수1호가 수량] + [종목변수.코스피.A005930.매도1호가 수량]) / [조건변수.N]
+     and [종목변수.주식선물.KA1168000.시장체결수량]
+       &gt; ([종목변수.주식선물.KA1168000.매수1호가 수량] + [종목변수.주식선물.KA1168000.매도1호가 수량]) / [조건변수.N] )
+then
+return [조건변수.L] * ([조건변수.B] + [조건변수.C]) / 40
+else
+return 0</div>
+
+  <div class="fnlabel bid">50. 삼전_매수방어 — 문턱만 N으로</div>
+  <div class="code bid">if ( [종목변수.코스피.A005930.시장체결수량]
+       &lt; ([종목변수.코스피.A005930.매수1호가 수량] + [종목변수.코스피.A005930.매도1호가 수량]) / -1 / [조건변수.N]
+     and [종목변수.주식선물.KA1168000.시장체결수량]
+       &lt; ([종목변수.주식선물.KA1168000.매수1호가 수량] + [종목변수.주식선물.KA1168000.매도1호가 수량]) / -1 / [조건변수.N] )
+then
+return [조건변수.L] * ([조건변수.B] + [조건변수.C]) / -40
+else
+return 0</div>
+  <p>앵커와 방어는 <b>중복이 아니라 보완</b>입니다. 앵커는 스프레드 내 가치 위치를 고치고(양방향, 편향 제거), 방어는 확인된 추세에서 위험한 쪽만 추가 후퇴시킵니다(단방향, 역선택 회피). 하락 확인 시 앵커 −26.2원 + 매수방어 −13.1원이 합쳐 매수호가가 39원 물러납니다.</p>
+
+  <div class="fnlabel ask">52. 삼전_매도호가 — 재작성 (독립 계산)</div>
+  <div class="code ask">if [자기종목.매수1호가] &lt;= 0
+   or [자기종목.매도1호가] &lt;= 0
+then
+return ([함수.삼전_공정가.47] + [조건변수.D] - [함수.삼전_재고편향.48] + [함수.삼전_매도방어.49]
+        + ([조건변수.B] + [조건변수.C]) / 20 + [조건변수.I])                    <span class="cm">① 데이터 무효 → 전면 후퇴</span>
+else if ([자기잔고.포지션수량] - [조건변수.H]) &lt;= [조건변수.F] * -1
+     and ([함수.삼전_공정가.47] + [조건변수.D] - [함수.삼전_재고편향.48] + [함수.삼전_매도방어.49]
+          + ([조건변수.B] + [조건변수.C]) / 20) &lt;= ([자기종목.매수1호가] + [조건변수.I])
+then
+return [자기종목.매수1호가] + [조건변수.I]                                      <span class="cm">② 숏 한도 후퇴 + 시장 침범 방지</span>
+else if ([자기잔고.포지션수량] - [조건변수.H]) &lt;= [조건변수.F] * -1
+then
+return ([함수.삼전_공정가.47] + [조건변수.D] - [함수.삼전_재고편향.48] + [함수.삼전_매도방어.49]
+        + ([조건변수.B] + [조건변수.C]) / 20)                                   <span class="cm">③ 숏 한도 → 매도 후퇴</span>
+else if ([함수.삼전_공정가.47] + [조건변수.D] - [함수.삼전_재고편향.48] + [함수.삼전_매도방어.49])
+      &lt;= ([자기종목.매수1호가] + [조건변수.I])
+then
+return [자기종목.매수1호가] + [조건변수.I]                                      <span class="cm">④ 침범 방지 = 정리 상한</span>
+else
+return ([함수.삼전_공정가.47] + [조건변수.D] - [함수.삼전_재고편향.48] + [함수.삼전_매도방어.49])  <span class="cm">⑤ 정상</span></div>
+  <p><b>롱 한도 분기가 없습니다.</b> 기존 ②의 절대값 하한(<code>공정가 − (B+C)/20</code>)이 간격을 좁히던 원인이었으므로 제거했고, 롱 재고 정리는 48의 연속 이동 + ④ 상한이 담당합니다. ①은 VI·단일가·한쪽 호가 소멸 시 0 값이 그대로 흘러 들어오는 것을 막습니다.</p>
+
+  <div class="fnlabel bid">53. 삼전_매수호가 — 파생 구조 (52 참조)</div>
+  <div class="code bid">if [자기종목.매수1호가] &lt;= 0
+   or [자기종목.매도1호가] &lt;= 0
+then
+return ([함수.삼전_매도호가.52] - [조건변수.D] - [조건변수.E]
+        - [함수.삼전_매도방어.49] + [함수.삼전_매수방어.50]
+        - ([조건변수.B] + [조건변수.C]) / 20 - [조건변수.I])                    <span class="cm">① 데이터 무효 → 전면 후퇴</span>
+else if ([자기잔고.포지션수량] - [조건변수.H]) &gt;= [조건변수.F]
+     and ([함수.삼전_매도호가.52] - [조건변수.D] - [조건변수.E]
+          - [함수.삼전_매도방어.49] + [함수.삼전_매수방어.50]
+          - ([조건변수.B] + [조건변수.C]) / 20) &gt;= ([자기종목.매도1호가] - [조건변수.I])
+then
+return [자기종목.매도1호가] - [조건변수.I]                                      <span class="cm">② 롱 한도 후퇴 + 시장 침범 방지</span>
+else if ([자기잔고.포지션수량] - [조건변수.H]) &gt;= [조건변수.F]
+then
+return ([함수.삼전_매도호가.52] - [조건변수.D] - [조건변수.E]
+        - [함수.삼전_매도방어.49] + [함수.삼전_매수방어.50]
+        - ([조건변수.B] + [조건변수.C]) / 20)                                   <span class="cm">③ 롱 한도 → 매수 후퇴</span>
+else if ([함수.삼전_매도호가.52] - [조건변수.D] - [조건변수.E]
+        - [함수.삼전_매도방어.49] + [함수.삼전_매수방어.50]) &gt;= ([자기종목.매도1호가] - [조건변수.I])
+then
+return [자기종목.매도1호가] - [조건변수.I]                                      <span class="cm">④ 침범 방지</span>
+else
+return ([함수.삼전_매도호가.52] - [조건변수.D] - [조건변수.E]
+        - [함수.삼전_매도방어.49] + [함수.삼전_매수방어.50])                     <span class="cm">⑤ 정상</span></div>
+
+  <div class="note good">
+    <div class="t">자기 크로스 불가 증명</div>
+    <p>모든 분기에서 매수호가는 매도호가에서 <b>양수만큼 뺀 값</b>이거나(①③⑤), 이미 그보다 <b>더 낮은 값</b>으로 잘린 값(②④, 조건상 후보값 이하)입니다. 따라서 <code>52 − 53 = D + E + 49 − (50) ≥ D + E</code>가 항상 성립합니다(49 ≥ 0, 50 ≤ 0). 52·53이 서로 다른 포지션·시장 스냅샷을 읽어도 48이 소거되므로 간격이 흔들리지 않습니다. 960만 조합 전수 검증에서 크로스 0건, 최소 간격 = D+E 확인.</p>
+  </div>
+
+  <div class="note warn">
+    <div class="t">배포 전 확인 두 가지</div>
+    <p><b>① 53이 52를 참조하는 평가 순서.</b> 52는 53을 참조하지 않으므로 순환은 없습니다. 같은 틱 안에서 52가 먼저 평가되어야 하며, 직전 틱 값이 캐시된다면 보호가 느슨해집니다 — 소량 운용으로 두 함수의 반환값 차이가 항상 D+E 이상인지 확인하세요.</p>
+    <p style="margin-top:10px"><b>② 앵커 필드 실측.</b> 54·51이 하락 구간에서 <b>중간가가 아닌 값</b>을 실제로 반환하는지. 장중 내내 중간가면 N이 아직 작은 것입니다(100 → 200 → 400 순으로 완화).</p>
+  </div>
+</section>
+<!-- ============================================================ -->
+<section class="step">
+  <div class="step-head">
+    <div class="step-no">STEP 05</div>
+    <div>
+      <h2 class="step-title">조건변수 13개 — 완전 해설</h2>
+      <div class="step-sub">역할 · 값을 바꾸면 무엇이 달라지는가 · 어떤 증상일 때 만지는가</div>
+    </div>
+  </div>
+
+  <p class="lede">변수는 세 부류입니다. <span class="tag gold">매일 갱신</span> A·B·C는 PDF에서 나오는 계산값이라 "조정"의 대상이 아니고 틀리면 안 되는 값입니다. <span class="tag blue">조정 다이얼</span> D·E·F·G·H·J·K·L·N은 운용하며 돌리는 값입니다. <span class="tag red">고정</span> I는 건드리면 안 됩니다. 아래 숫자는 전부 KODEX(B+C=1047.48) 기준이며 RISE·TIGER는 약 8% 작습니다.</p>
+  <div class="note">
+    <div class="t">v12 값 요약 — 이번 배포에 쓸 세트</div>
+    <p><b>D = E = 8</b>(간격 하한 16원, 대칭 역선택 대응) · <b>J = 0</b>(앵커와 중복이므로 봉인) · <b>L = 1.0</b>(단방향 방어, 앵커가 못 잡는 ETF 자체 디스카운트까지 흡수) · <b>N = 100</b>(문턱 1%, 첫날 열리는지 확인하며 200·400으로 완화) · F = 2,000 · G = 24 · I = 5 · K = 4 · 건당 125주.</p>
+  </div>
+
+  <h3>한눈 요약</h3>
+  <div class="tw"><table>
+    <thead><tr><th>변수</th><th>역할</th><th>단위</th><th class="n">현재값</th><th>올리면</th><th>내리면</th></tr></thead>
+    <tbody>
+      <tr class="flat"><td class="vcode">A</td><td>상수항 (현금 + 선물 기준가)</td><td>ETF원</td><td class="n">−13,672.03</td><td colspan="2" class="dim">조정 대상 아님 — 매일 PDF에서 재계산. 1원 오차 = 공정가 1원 평행이동</td></tr>
+      <tr class="flat"><td class="vcode">B</td><td>현물계수 ×10000</td><td>—</td><td class="n">472.00</td><td colspan="2" class="dim">조정 대상 아님 — 현물 1틱 → ETF B/20 = 23.6원</td></tr>
+      <tr class="flat"><td class="vcode">C</td><td>선물계수 ×10000</td><td>—</td><td class="n">575.48</td><td colspan="2" class="dim">조정 대상 아님 — 선물 1틱 → ETF C/20 = 28.8원</td></tr>
+      <tr><td class="vcode">D</td><td>매도 마진</td><td>ETF원</td><td class="n">8.0</td><td>매도 체결당 이익↑ · 체결↓</td><td>거래량↑ · 체결당 이익↓ · <b>D+E ≥ 10 유지</b></td></tr>
+      <tr><td class="vcode">E</td><td>매수 마진</td><td>ETF원</td><td class="n">8.0</td><td>매수 체결당 이익↑ · 체결↓</td><td>거래량↑ · 체결당 이익↓ · <b>D+E ≥ 10 유지</b></td></tr>
+      <tr><td class="vcode">F</td><td>재고 한도 · 편향 분모</td><td>주</td><td class="n">2,000</td><td>한도 늦게 발동 · 편향 기울기↓</td><td>한도 자주 발동 · 편향 기울기↑</td></tr>
+      <tr><td class="vcode">G</td><td>한도 도달 시 편향 크기</td><td>ETF원</td><td class="n">12.0</td><td>재고 회전↑ · 마진 잠식 빨라짐</td><td>재고 오래 물고 감</td></tr>
+      <tr><td class="vcode">H</td><td>중립 재고 (타 전략 보유량)</td><td>주</td><td class="n">타 전략</td><td colspan="2" class="dim">조정이 아니라 입력 — 틀리면 방향 고정 편향</td></tr>
+      <tr class="flat"><td class="vcode">I</td><td>침범 회피 폭</td><td>ETF원</td><td class="n">5</td><td class="no" colspan="2">고정. 5 미만 절대 금지 (0 = 즉시 체결)</td></tr>
+      <tr class="flat"><td class="vcode">J</td><td>잔량 기반 가치 추정 게인</td><td>0~1</td><td class="n">0</td><td class="no">앵커와 중복 계산 — 최대 52원 과잉</td><td>0 = 봉인 (v12 기본)</td></tr>
+      <tr><td class="vcode">K</td><td>1호가 배수</td><td>배</td><td class="n">4</td><td>1호가에 민감 (빠르나 노이즈↑)</td><td>2호가와 균등 (둔하나 안정)</td></tr>
+      <tr><td class="vcode">L</td><td>역선택 방어 게인 (수비)</td><td>0~1</td><td class="n">1.0</td><td>확인된 추세에서 더 후퇴</td><td>후퇴 폭↓ · 0 = 방어 없음</td></tr>
+      <tr class="flat"><td class="vcode">N</td><td>체결 문턱 분모 (앵커·방어·게이트 공용)</td><td>배</td><td class="n">100</td><td>문턱↓ · <b>민감해짐</b> · 앵커 자주 이동</td><td>문턱↑ · 둔감 · 20이면 사실상 꺼짐</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3>변수별 상세</h3>
+
+  <div class="varcard daily">
+    <div class="vhead"><span class="letter">A</span><span class="role">상수항</span><span class="meta">ETF원 · KODEX −13,672.02744 · 매일 갱신</span></div>
+    <div class="vbody">
+      <p>공정가의 <b>바닥값</b>입니다. PDF 현금과 선물 기준가 노출을 담고 있어, 현물가·선물가와 무관하게 공정가 전체를 평행이동시킵니다. 날짜만 바뀌어도(기준가가 전일 정산가로 갱신되므로) 반드시 다시 계산해야 합니다.</p>
+      <div class="vrow"><div class="vk">틀리면</div><div class="vv">A가 10원 크면 공정가가 10원 높음 → 매수가 항상 우위, 매도가 항상 후퇴. <b>방향이 하루 종일 고정</b>된 편향이 생깁니다(추세 따라 뒤집히는 신호 문제와 구별되는 지문).</div></div>
+      <div class="vrow"><div class="vk">검증</div><div class="vv">A + 델타금액 ≈ 13,700원(ETF 가격대), 배율 1.95~2.05, 장 시작 후 47 공정가가 ETF 중간가 ±20원 안.</div></div>
+    </div>
+  </div>
+
+  <div class="varcard daily">
+    <div class="vhead"><span class="letter">B</span><span class="role">현물계수 (×10000)</span><span class="meta">KODEX 472.00 · 매일 갱신</span></div>
+    <div class="vbody">
+      <p>현물가 1원 변화가 공정가를 B/10000원 움직입니다. 직관적으로는 <b>현물 1틱(500원) → ETF 23.6원(4.7틱)</b>. 공정가의 현물 민감도이자, 45 압력이 공정가에 전달되는 배율이기도 합니다.</p>
+      <div class="vrow"><div class="vk">틀리면</div><div class="vv">소수 6자리를 5자리로 자르면 −2.1~−2.6원 상시 편향 — 그래서 ×10000 저장이 필수입니다. B가 통째로 틀리면 배율 검산(1.95~2.05)에서 걸립니다.</div></div>
+    </div>
+  </div>
+
+  <div class="varcard daily">
+    <div class="vhead"><span class="letter">C</span><span class="role">선물계수 (×10000)</span><span class="meta">KODEX 575.48 · 매일 갱신</span></div>
+    <div class="vbody">
+      <p>선물가 1원 변화가 공정가를 C/10000원 움직입니다. <b>선물 1틱 → ETF 28.8원(5.8틱)</b>. B와 합친 (B+C)가 총델타이고, 이 합에서 전략의 핵심 상수들이 파생됩니다: <code>(B+C)/20 = 기초 1틱 = 52.37원(후퇴 거리·한도 상하한)</code>, <code>(B+C)/40 = 반틱 = 26.19원(J 최대 이동·L 방어 기준)</code>.</p>
+      <div class="vrow"><div class="vk">주의</div><div class="vv">월물 교체 주간에 원월물이 섞이면 C에 원월물 델타를 합산, A는 월물별 기준가로 따로. 선물 종목코드 교체 확인.</div></div>
+    </div>
+  </div>
+
+  <div class="varcard knob">
+    <div class="vhead"><span class="letter">D</span><span class="role">매도 마진</span><span class="meta">ETF원 · 현재 4.0 · 권장 2~8</span></div>
+    <div class="vbody">
+      <p>공정가에서 매도호가를 얼마나 위에 놓을지. <b>이 전략의 유일한 수익 원천</b>입니다. 실현 마진은 절상 라운딩 평균을 더해 D + 2.5 ≈ 6.5원.</p>
+      <div class="vrow"><div class="vk">올리면</div><div class="vv">매도 체결당 이익이 1원당 1원씩 늘지만 체결 빈도가 줄어듭니다. 호가는 5원 격자라 D를 1 올려도 호가가 반드시 1틱 밀리는 건 아니고 <b>격자를 넘는 순간에만</b> 이동합니다 — 확실히 1틱 물러나려면 5를 올려야 합니다.</div></div>
+      <div class="vrow"><div class="vk">내리면</div><div class="vv">거래량이 늘어납니다. 거래량 확보 수단 중 가장 싼 축(주당 1.5~3원)으로, 크로스(5~8원)보다 압도적으로 효율적입니다. D=0이어도 라운딩 마진 2.5원이 남지만 역선택 완충이 사라지므로 2 밑으로는 권장하지 않습니다.</div></div>
+      <div class="vrow"><div class="vk">제약</div><div class="vv"><b>D + E &gt; 0</b> 필수(정상 분기 크로스 방지). D를 내릴 때 G를 3D로 따라 내리지 마세요 — G는 주당 리스크에 걸린 값이고 마진을 좁힌다고 리스크가 줄지 않습니다.</div></div>
+      <div class="vrow"><div class="vk">증상→조정</div><div class="vv">최우선호가에 거의 못 서 있다 → D·E가 시장 스프레드보다 넓은 것. 4 → 3 → 2 순으로 한 단계씩.</div></div>
+    </div>
+  </div>
+
+  <div class="varcard knob">
+    <div class="vhead"><span class="letter">E</span><span class="role">매수 마진</span><span class="meta">ETF원 · 현재 4.0 · D와 대칭</span></div>
+    <div class="vbody">
+      <p>공정가에서 매수호가를 얼마나 아래에 놓을지. 절하 라운딩이라 실현 마진 구조는 D와 동일합니다.</p>
+      <div class="vrow"><div class="vk">비대칭 운용</div><div class="vv">D ≠ E로 두면 의도적 방향 편향이 됩니다(예: E만 키우면 매수를 소극적으로). 원칙적으로 방향 대응은 재고편향(G)과 방어(L)의 몫이므로, D=E 대칭을 기본으로 하고 비대칭은 구조적 디스카운트(거래세 방향성) 보정처럼 <b>상시적인 이유가 있을 때만</b> 씁니다.</div></div>
+      <div class="vrow"><div class="vk">체감</div><div class="vv">E를 5 낮춰야 매수호가가 확실히 1틱 올라갑니다(5원 격자).</div></div>
+    </div>
+  </div>
+
+  <div class="varcard knob">
+    <div class="vhead"><span class="letter">F</span><span class="role">재고 한도 · 편향 기울기의 분모</span><span class="meta">주 · 현재 2,000</span></div>
+    <div class="vbody">
+      <p>역할이 <b>둘</b>이라 헷갈리기 쉬운 변수입니다. ① |포지션−H| &gt; F면 52·53이 한도 분기(후퇴·강제 정리)로 전환되는 <b>스위치</b>, ② 재고편향 48의 <b>분모</b>(기울기 = G/F).</p>
+      <div class="vrow"><div class="vk">올리면</div><div class="vv">F 2,000 → 4,000이면 한도가 늦게 발동해 더 큰 재고를 허용하고, <b>동시에</b> 같은 재고에서 편향이 절반이 됩니다(1,000주 편향 6원 → 3원). 주당 리스크가 두 배로 커지는 셈이니, 한도만 늘리고 싶으면 G도 함께 두 배로 올려 기울기를 유지하세요.</div></div>
+      <div class="vrow"><div class="vk">내리면</div><div class="vv">한도 분기가 자주 떠서 후퇴·강제 정리가 잦아지고 거래 흐름이 끊깁니다.</div></div>
+      <div class="vrow"><div class="vk">연동</div><div class="vv">건당수량과 비율 관리: 현재 건당 250주 = F의 1/8. 건당수량을 500으로 올리면(큐 몫 2배) F도 4,000으로 — 관통 리스크와 한도 여유가 같이 커집니다.</div></div>
+      <div class="vrow"><div class="vk">증상→조정</div><div class="vv">한도에 하루 3회 이상 닿으면 F가 작아서가 아니라 J·L이 공격적이거나 G가 약한 것부터 의심.</div></div>
+    </div>
+  </div>
+
+  <div class="varcard knob">
+    <div class="vhead"><span class="letter">G</span><span class="role">한도 도달 시 재고편향 크기</span><span class="meta">ETF원 · 현재 12.0 (3D) · 24까지 안전</span></div>
+    <div class="vbody">
+      <p>재고가 한도 F에 닿았을 때 양쪽 호가를 얼마나 밀어낼지. 편향은 선형이라 <b>1주당 G/F = 0.006원</b>, 1,000주면 6원(1.2틱), 2,000주(한도)면 12원(2.4틱). 재고를 시장에 되파는 <b>회전 속도 다이얼</b>입니다.</p>
+      <div class="vrow"><div class="vk">올리면</div><div class="vv">쏠린 재고가 빨리 풀립니다. 대신 편향이 마진을 잠식하는 지점이 앞당겨집니다: 편향 &gt; D가 되는 재고 = F×D/G = 현재 667주. 이 지점부터 한쪽 호가는 마진 없이 공격적으로 나갑니다 — 의도된 동작이지만 알고 있어야 합니다.</div></div>
+      <div class="vrow"><div class="vk">내리면</div><div class="vv">재고를 오래 물고 갑니다. 추세일에는 위험(7/28에서 확인).</div></div>
+      <div class="vrow"><div class="vk">제약 없음</div><div class="vv">v9 수정으로 한도 분기 상·하한이 후퇴 거리 기준이 되어 <b>G에 크로스 제약이 없습니다.</b> 24(6D)까지 올려도 안전. 폭풍 프리셋에서 24를 쓰는 근거입니다.</div></div>
+    </div>
+  </div>
+
+  <div class="varcard knob">
+    <div class="vhead"><span class="letter">H</span><span class="role">중립 재고</span><span class="meta">주 · 다른 전략 보유량 그대로 · 매일 입력</span></div>
+    <div class="vbody">
+      <p>계좌 포지션 중 <b>이 전략 몫이 아닌 부분</b>. 재고편향과 한도 분기는 (포지션 − H)로 계산하므로, H는 "0으로 돌아가려는 목표점"을 옮기는 값입니다. 다른 전략이 5,000주를 들고 있으면 H=5,000.</p>
+      <div class="vrow"><div class="vk">틀리면</div><div class="vv">영구 방향 편향이 생깁니다. H가 실제보다 500 크면 전략은 항상 "500주 모자라다"고 판단해 <b>상시 매수우위</b>가 됩니다. 지문: 추세와 무관하게 체결비가 한 방향으로 고정 — A 오류와 같은 부류(고정 편향)입니다.</div></div>
+      <div class="vrow"><div class="vk">운용</div><div class="vv">장중 다른 전략이 거래하면 H가 낡습니다. 타 전략 체결이 큰 날은 장중 갱신하거나, 이 전략 전용 계좌 분리가 근본 해법.</div></div>
+    </div>
+  </div>
+
+  <div class="varcard fixed">
+    <div class="vhead"><span class="letter">I</span><span class="role">침범 회피 폭</span><span class="meta">ETF원 · 5 고정 · 유일한 불가침 변수</span></div>
+    <div class="vbody">
+      <p>침범 방지 분기(④)와 한도 정리 분기(③)가 상대 최우선호가에서 얼마나 떨어질지. <b>크로스 금지를 보장하는 것은 I ≥ 5 하나뿐입니다.</b></p>
+      <div class="vrow"><div class="vk">I = 0이면</div><div class="vv">④가 매수1호가 <b>정확히 그 값</b>을 반환 → 최우선매수호가를 때리는 즉시 체결 → 크로스 비용(반스프레드 5~8원)이 왕복 이익을 통째로 지움. OMS 정지 리스크도 부활.</div></div>
+      <div class="vrow"><div class="vk">올리면</div><div class="vv">10으로 올리면 안전 여유는 늘지만 호가 개선 여지가 1틱 줄어 거래량이 감소합니다. 5(정확히 1틱)가 최적점.</div></div>
+    </div>
+  </div>
+
+  <div class="varcard knob">
+    <div class="vhead"><span class="letter">J</span><span class="role">잔량 기반 가치 추정 게인</span><span class="meta">0~1 · <b>v12 기본값 0 (봉인)</b></span></div>
+    <div class="vbody">
+      <p>게이트를 통과한 잔량 압력을 공정가에 얼마나 반영할지. 최대 이동 = J × 반틱 = J × 26.19원.</p>
+      <div class="vrow"><div class="vk">왜 0인가</div><div class="vv">앵커(54·51)와 <b>같은 질문에 답합니다</b> — "스프레드 안 어디가 진짜 가치인가". 앵커는 체결 흐름으로, J는 잔량 불균형으로. 동시에 켜면 같은 것을 두 번 세어 <b>최대 52원(10틱) 과잉 이동</b>이 됩니다. 앵커가 더 직접적인 증거(실제 체결)를 쓰므로 앵커를 채택하고 J를 봉인합니다.</div></div>
+      <div class="vrow"><div class="vk">재도입 조건</div><div class="vv">앵커가 안정 작동(체결비 0.9~1.1 유지, 정정 폭증 없음)하는 것이 한 주 이상 확인된 뒤 <b>0.3</b>부터. 그때도 1.0은 쓰지 않습니다 — 앵커가 이미 반틱을 쓰고 있으므로 남은 여지가 작습니다.</div></div>
+      <div class="vrow"><div class="vk">7/28 교훈</div><div class="vv">"J ≤ 1이면 반틱 이내라 안전"이라는 논리는 편차의 <b>크기</b>만 묶었고 편향의 <b>지속성</b>은 다루지 않았습니다. 추세장에서 한 방향으로 몇 시간 지속되면 유계라도 손실원이 됩니다.</div></div>
+    </div>
+  </div>
+
+  <div class="varcard knob">
+    <div class="vhead"><span class="letter">K</span><span class="role">1호가 배수</span><span class="meta">배 · 현재 4 (= 1호가:2호가 80:20)</span></div>
+    <div class="vbody">
+      <p>압력 계산에서 1호가 잔량을 2호가 대비 몇 배로 칠지. 4면 1호가가 2호가의 4배 가중 = 80:20.</p>
+      <div class="vrow"><div class="vk">올리면</div><div class="vv">1호가 변화에 민감해져 신호가 빨라지지만, 1호가의 순간 출렁임(대량 체결 직후 비었다 채워짐)에 같이 출렁입니다.</div></div>
+      <div class="vrow"><div class="vk">내리면</div><div class="vv">K=1이면 1·2호가 균등 — 둔하지만 안정. 스푸핑(1호가 허수)에도 상대적으로 강해집니다.</div></div>
+      <div class="vrow"><div class="vk">참고</div><div class="vv">삼성전자는 1호가 잔량이 크고 잘 안 변하는 구조라 4가 적정. 게이트 도입으로 순간 출렁임의 해악이 줄었으므로 당분간 고정 권장.</div></div>
+    </div>
+  </div>
+
+  <div class="varcard knob">
+    <div class="vhead"><span class="letter">L</span><span class="role">역선택 방어 게인 — 수비</span><span class="meta">0~1 · <b>v12 권장 1.0</b> · 체결 확인 기반</span></div>
+    <div class="vbody">
+      <p>현·선물 체결이 <b>동시에 한 방향</b>으로 확인될 때 위험한 쪽 호가를 얼마나 후퇴시킬지. 후퇴 폭 = L × 반틱 = L × 26.19원. <b>0.5면 13.1원(2.6틱), 1.0이면 기초 반틱 완전 방어.</b></p>
+      <div class="vrow"><div class="vk">올리면</div><div class="vv">확인된 추세에서 더 깊이 물러납니다. 방어는 단방향(위험쪽만)이라 반대쪽 호가와 거래량에는 영향이 없습니다 — 그래서 J보다 부담 없이 올릴 수 있습니다.</div></div>
+      <div class="vrow"><div class="vk">내리면 / 0</div><div class="vv">0이면 49·50이 항상 0 — 방어 완전 비활성. 게이트만으로 J 편향은 막히지만, 확인된 추세에서 중간가 지연분(1~2틱)을 그대로 맞습니다.</div></div>
+      <div class="vrow"><div class="vk">앵커와의 관계</div><div class="vv"><b>중복이 아니라 보완입니다.</b> 앵커는 스프레드 내 가치 위치를 고쳐 편향을 없애고(양방향), L은 확인된 추세에서 위험한 쪽만 추가로 물러나게 합니다(단방향). 하락 확인 시 앵커 −26.2원 + L 방어 −13.1원(L=0.5) 또는 −26.2원(L=1.0)이 합산됩니다.</div></div>
+      <div class="vrow"><div class="vk">v12에서 1.0 권장</div><div class="vv">단방향이라 반대쪽 거래량에 영향이 없고, 앵커가 잡지 못하는 <b>ETF 자체 디스카운트</b>(급락장에서 ETF가 NAV 아래로 거래되는 부분)까지 흡수합니다. 1.0이면 하락 확인 시 매수호가가 앵커+방어로 총 52원(10틱) 물러납니다.</div></div>
+      <div class="vrow"><div class="vk">이력</div><div class="vv">v9의 L은 잔량 압력에 비례해 추세장에서 <b>안전한 쪽을 후퇴</b>시키는 결함이 있었고, v11에서 체결 확인 기반 고정 폭으로 재건했습니다.</div></div>
+    </div>
+  </div>
+
+  <div class="varcard knob">
+    <div class="vhead"><span class="letter">N</span><span class="role">체결 문턱 분모</span><span class="meta">배 · <b>v12 신설 · 초기값 100</b> · 앵커·방어·게이트 공용</span></div>
+    <div class="vbody">
+      <p>"직전 체결이 이 정도는 되어야 흐름으로 인정한다"의 기준선. 문턱 = <code>(매수1잔량 + 매도1잔량) ÷ N</code>. 기존 코드에 <code>÷ 20</code>으로 하드코딩돼 있던 값을 조건변수로 빼낸 것이며, <b>개념이 새로 생긴 것이 아니라 장중에 돌릴 수 있게 된 것</b>입니다.</p>
+      <div class="vrow"><div class="vk">왜 비율인가</div><div class="vv">고정 주수로 두면 안 됩니다. 잔량 50만 주인 한산한 시간의 500주는 티끌이고, 잔량 3만 주로 얇아진 급변 구간의 500주는 큰 흐름입니다. 호가창 두께 대비 상대 크기가 의미를 정합니다.</div></div>
+      <div class="vrow"><div class="vk">방향 주의</div><div class="vv"><b>분모이므로 직관과 반대입니다.</b> N을 <b>키우면</b> 문턱이 낮아져 <b>민감</b>해지고, 줄이면 둔감해집니다. "N = 민감도"로 기억하세요.</div></div>
+      <div class="vrow"><div class="vk">기존 20의 문제</div><div class="vv">최우선 잔량 합 20만 주 기준 문턱이 <b>1만 주</b>. 삼성전자 개별 체결은 보통 수십~수백 주라 거의 못 넘습니다 → 앵커·방어가 <b>사실상 꺼진 스위치</b>였습니다. N=100이면 2,000주(1%), N=400이면 500주(0.25%).</div></div>
+      <div class="vrow"><div class="vk">오차 비대칭</div><div class="vv">문턱이 낮아 앵커가 잘못 움직이는 비용은 <b>한 방향 반틱(26원)이 잠깐</b>. 문턱이 높아 앵커가 안 움직이는 비용은 <b>하락장 내내 26원 편향</b>. 낮은 쪽으로 실수하는 것이 맞습니다.</div></div>
+      <div class="vrow"><div class="vk">조정 절차</div><div class="vv">100에서 시작 → 하락 구간인데 54·51이 계속 중간가만 반환하면 200 → 400으로 키움. 반대로 호가 정정이 분당 수십 회로 폭증하면 한 단계 줄임. <b>조건변수라 장중 실시간 조정이 가능하므로 첫날 30분이면 적정값이 나옵니다.</b></div></div>
+    </div>
+  </div>
+
+  <div class="varcard">
+    <div class="vhead"><span class="letter">M</span><span class="role">예비</span><span class="meta">비어 있음</span></div>
+    <div class="vbody">
+      <p>확장용. 1순위 후보: <b>앵커 전용 문턱</b>(압력은 엄격하게 N, 앵커는 관대하게 M — 예: M=400 / N=100). 압력이 틀리면 방향 베팅이 되지만 앵커는 반틱 유계라 서로 다른 문턱이 이론적으로 맞습니다. J=0인 동안은 분리 이득이 없으므로 J 재도입 시점에 검토. 그 외: 3호가 배수, 폭풍 프리셋 자동 전환 임계.</p>
+    </div>
+  </div>
+
+  <h3>변수 없이 계산되는 파생값</h3>
+  <div class="code brass">후퇴 거리        = (B + C) / 20 + I        <span class="cm">← 기초 1틱 바로 바깥 · 종목별 자동</span>
+                   KODEX 57.374 · TIGER 53.080 · RISE 53.155
+한도 분기 상·하한 = 공정가 ∓ (B + C) / 20     <span class="cm">← 크로스 근본 차단 (v9 실전 수정)</span>
+L 방어 폭        = L × (B + C) / 40          <span class="cm">← 기초 반틱 × L</span>
+앵커 이동 폭      = (B + C) / 40              <span class="cm">← 기초 반틱 = 26.19원 = 5.2 ETF틱 (v12)</span>
+체결 문턱        = (매수1잔량 + 매도1잔량) / N  <span class="cm">← N=100이면 잔량 합의 1%</span>
+호가 간격 하한    = D + E                     <span class="cm">← 파생 구조의 산술 보장 · 10 이상 유지</span>
+G 기본값         = 3 × D                     <span class="cm">← 단, D를 내려도 G는 절대값 유지</span></div>
+
+  <div class="note">
+    <div class="t">서로 물려 있는 변수 — 하나만 만지면 안 되는 조합</div>
+    <p><b>J ↔ 앵커</b> : 같은 질문에 답하므로 동시 사용 금지 — 앵커 운용 중에는 J=0. <b>D+E ↔ I</b> : 간격 하한이 D+E이므로 D+E ≥ 10 (그리고 D+E &gt; I) 필수. <b>N ↔ 앵커·방어·게이트</b> : N 하나가 셋의 민감도를 동시에 바꿉니다 — 하나만 조절하려면 M으로 분리. <b>F ↔ G</b> : 편향 기울기 = G/F. F만 올리면 기울기가 풀립니다 — 한도만 늘리려면 G를 같은 배율로. <b>F ↔ 건당수량</b> : 건당 = F/8 비율 유지(큐 몫과 관통 리스크가 같이 움직임). <b>D ↔ G</b> : 기본 3D지만 D를 내릴 때 G는 유지(리스크는 마진과 무관). <b>J ↔ L</b> : 공격/수비 분리 — 같은 턴에 같이 바꾸지 않기. <b>D ↔ E</b> : 대칭 기본, 비대칭은 상시적 이유가 있을 때만.</p>
+  </div>
+</section>
+<!-- ============================================================ -->
+<section class="step">
+  <div class="step-head">
+    <div class="step-no">STEP 06</div>
+    <div>
+      <h2 class="step-title">손익 구조 — 게이트가 바꾸는 것</h2>
+    </div>
+  </div>
+
+  <div class="code">주당 손익 = <span class="vr">마진</span>(D·E) − <span class="vr">편향손실</span> − <span class="vr">역선택손실</span> − <span class="vr">재고손익</span>
+              ↑            ↑              ↑              ↑
+           수익 원천    공정가 정확도     게이트 · L      F · G · H
+우선순위:  편향 → 역선택 → 분산 → 마진</div>
+
+  <p>역선택은 이 전략의 최대 손실원입니다 — 헤지 없는 2배 레버리지에서 역선택 포지션은 들고 있어도 손실, 바로 정리해도 손실이라 <b>발생 확률 자체를 낮추는 것</b>이 유일한 해법입니다. 그런데 v9~v11의 실전은 더 근본적인 사실을 보여줬습니다: <b>공정가 편향이 있으면 역선택 방어를 아무리 정교하게 만들어도 소용이 없습니다.</b> 편향된 공정가는 매 순간 한쪽에 유리한 가격을 내놓으므로, 시장이 그 쪽만 골라 체결시킵니다. 그래서 v12의 우선순위는 <b>편향 제거(앵커) → 역선택 방어(L) → 분산(F·G) → 마진(D·E)</b> 순입니다. v12의 분업:</p>
+
+  <div class="tw"><table>
+    <thead><tr><th>국면</th><th>앵커 (54·51)</th><th>J</th><th>L (방어)</th><th>기대 동작</th></tr></thead>
+    <tbody>
+      <tr><td>평온장 · 양방향 흐름</td><td>중간가 (자주 전환)</td><td>0 (봉인)</td><td>확인 순간만 후퇴</td><td>대칭 호가 · 정상 거래량</td></tr>
+      <tr><td>추세장 · 일방향 흐름</td><td class="yes"><b>흐름 쪽 호가로 이동 (±26.2원)</b></td><td>0 (봉인)</td><td>위험쪽 26.2원 후퇴 (L=1.0)</td><td><b>방향 편향 소멸.</b> 위험쪽 총 52원 후퇴, 안전쪽은 체결권 진입 — 방향에 맞게 재고를 덜어냄</td></tr>
+      <tr><td>무흐름 · 한산</td><td>중간가 (문턱 미달)</td><td>0</td><td>0</td><td>순수 중간가 ± 마진 — 판단 근거 없는 구간</td></tr>
+    </tbody>
+  </table></div>
+
+  <div class="note">
+    <div class="t">게이트로도 안 막히는 잔여 리스크 — 중간가 지연</div>
+    <p><b>v11까지 이 항을 "다리당 반틱, 합쳐 최대 1~2 ETF틱"으로 잘못 계산했습니다.</b> 기초 반틱(250원)을 ETF로 환산하면 <code>(B+C)/40 = 26.19원 = 5.2 ETF틱</code>이며, 기초 스프레드가 2틱이면 최대 10.5틱입니다. 이것이 편향의 <b>몸통</b>이었고 v12의 앵커 교체(54·51)가 정면으로 처리합니다.</p>
+    <p style="margin-top:10px">앵커로도 남는 것은 <b>ETF 자체의 디스카운트</b>입니다 — 급락장에서 ETF가 NAV 아래로 거래되는 부분은 기초 호가로 계산되는 공정가가 알 수 없습니다. 이는 L 방어(L=1.0이면 5.2틱)와 마진(D·E)이 흡수하며, 며칠 관측치가 한 방향으로 일관되면 D·E 비대칭으로 반영합니다(A를 손대지 말 것 — 고정 편향을 스스로 만드는 길).</p>
+  </div>
+
+  <h3>헤지를 하지 않는 이유 — 불변</h3>
+  <div class="code">베이시스 100원 스프레드로 버는 것  =  0.047200 × 100 = 4.72원 / ETF주
+선물 반스프레드 크로싱 비용        =  0.104748 × 250 = 26.19원 / ETF주
+                                     헤지가 5.5배 더 비쌈</div>
+  <p class="dim">이 전략이 최적화하는 것: 매매로 돈을 버는 것이 아니라, 손익을 0 근처의 잡음으로 묶어놓고 거래량을 뽑는 구조. 마진은 거래량을 위해 최소화하고, 대신 편향을 0으로 만들고 분산을 조입니다.</p>
+</section>
+
+<!-- ============================================================ -->
+<section class="step">
+  <div class="step-head">
+    <div class="step-no">STEP 07</div>
+    <div>
+      <h2 class="step-title">운용 · 체크리스트</h2>
+      <div class="step-sub">v12 배포 첫날 검증 포함</div>
+    </div>
+  </div>
+
+  <h3>배포 첫날 — 순서대로</h3>
+  <div class="check">
+    <div><b>1순위 · 앵커가 실제로 움직이는가</b> — 소량 운용 중 54·51이 하락 구간에서 <b>중간가가 아닌 값</b>(매수1호가)을 반환하는지. 장중 내내 중간가면 N을 100 → 200 → 400으로 완화. <b>이것이 안 되면 v12의 모든 수정이 무효입니다</b></div>
+    <div><b>2순위 · 크로스가 사라졌는가</b> — 52 − 53 차이가 항상 D+E(16원) 이상인지. 정지가 한 번이라도 재발하면 53의 52 참조가 직전 틱 값으로 캐시되는지 확인</div>
+    <div>시장체결수량이 양·음 부호를 오가는지 — 항상 한쪽이거나 0 고정이면 필드명·부호 정의 오류</div>
+    <div>하락 5분 구간의 <b>매수/매도 체결비가 1.0 근처</b>인지 — v12의 존재 이유 검증. 여전히 매수우위면 앵커가 안 열렸거나(N) ETF 자체 디스카운트가 큰 것</div>
+    <div>하락 구간에서 <b>우리 매도호가가 시장 매도 1~2호가 안에 들어오는지</b> — 3~4호가에 머물면 편향이 남아 있음</div>
+    <div>호가 정정 빈도 — 분당 수십 회로 폭증하면 N을 한 단계 줄임</div>
+  </div>
+
+  <h3>매일 아침</h3>
+  <div class="check">
+    <div>오늘 PDF 조회 — 현물주수 · 근월물계약수 · 현금 · CU단위 · 원월물이 0인지</div>
+    <div>A · B · C 재계산 후 입력 — B·C는 ×10000 값</div>
+    <div>배율 검증: 델타금액 = (B+C)÷10000×기준가 → 배율 = 델타금액÷(A+델타금액)이 1.95~2.05, A+델타금액이 13,700원 근처</div>
+    <div>선물 종목코드가 이번 월물인가</div>
+    <div>H 입력 — 다른 전략의 현재 보유량</div>
+    <div>47 공정가가 ETF 시장 중간가의 ±20원 안인가 — 벗어나면 A 또는 ×10000 오류</div>
+    <div>J = 0 · L = 1.0 · N = 어제 확정값 · D = E = 8 · G = 24 · I = 5 확인</div>
+    <div>예정 매크로 이벤트(FOMC · 실적 · 옵션만기) 확인 — 해당 시 폭풍 프리셋으로 시작 (STEP 08)</div>
+  </div>
+
+  <h3>장중 상시 감시</h3>
+  <div class="check">
+    <div>재고 (포지션 − H) — 몇 분 만에 F의 절반까지 가면 시스템 문제 의심, 즉시 STOP</div>
+    <div>ETF 현재가 − 47 공정가 — 중심이 어디인지. 0이라고 가정하지 말 것</div>
+    <div><b>ETF 시장 스프레드</b> — 5틱(25원)을 넘어서면 ④의 편향 차폐가 풀리는 구간. 이때부터 공정가 정확도가 그대로 체결가가 됨 (STEP 01 증폭기)</div>
+    <div><b>54·51 앵커 반환값</b> — 흐름 구간에서 중간가를 벗어나는지. 계속 중간가면 N 완화</div>
+    <div><b>ETF 중간가 − NAV(괴리)</b>의 부호와 추이 — 하락 중 디스카운트로 벌어지면 중심 이동 후보. 관측값을 중심으로 삼되 임의 보정은 금지</div>
+    <div>③ · ④ 분기 발동 빈도 — 재고 정리인지 편향인지 구분</div>
+    <div>내 호가 정정 횟수 — 분당 수십 번이면 큐를 못 쌓는 중 (게이트 도입 후 줄어드는 게 정상)</div>
+    <div>매수/매도 체결비 — 0.9~1.1 밖으로 지속 이탈 시 원인 규명 우선</div>
+  </div>
+
+  <h3>거래량이 부족할 때 — 원인부터 가릅니다</h3>
+  <div class="tw"><table>
+    <thead><tr><th>관찰</th><th>원인</th><th>손댈 것</th></tr></thead>
+    <tbody>
+      <tr><td>최우선에 거의 없다</td><td>스프레드가 넓음</td><td class="vcode">D · E</td></tr>
+      <tr><td>최우선인데 체결이 안 붙는다</td><td>큐 뒤쪽 — 같은 가격에서 순번이 밀림</td><td>건당수량 · 정정 빈도 (→ J)</td></tr>
+      <tr><td>한도 분기가 자주 뜬다</td><td>재고 한도에 자주 닿음</td><td class="vcode">F · G</td></tr>
+      <tr><td>혼자 최우선인데 안 붙는다</td><td>중심이 시장과 다름</td><td class="vcode">A · H</td></tr>
+      <tr><td>한쪽만 계속 최우선, 반대쪽은 3~4호가</td><td><b>공정가 편향 — 앵커가 안 열렸음</b></td><td class="vcode">N</td></tr>
+      <tr><td>추세 구간에서만 거래량 급감</td><td><b>게이트·방어가 정상 작동 중</b></td><td class="yes">건드리지 않음 — 그 거래량은 손실이었음</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3>스테일 · 중심 이동 후보에 대한 상시 설정</h3>
+  <p>주원인은 코드(게이트)로 고쳤지만, 나머지 두 후보는 화면 설정과 관측으로 관리합니다. 어느 쪽도 코드를 건드리지 않으므로 지금 바로 적용 가능합니다.</p>
+  <div class="tw"><table>
+    <thead><tr><th>항목</th><th>권장</th><th>이유</th></tr></thead>
+    <tbody>
+      <tr><td>정정 딜레이</td><td class="n">0 고정</td><td>기초 1틱 = ETF 52원. 스테일 1주가 최대 52원이라 지연을 사는 이득이 없음</td></tr>
+      <tr><td>직전호가 변동틱 취소</td><td class="n">1틱 초과</td><td>52원 점프 시 낡은 호가 자동 회수 — 스테일 후보의 1차 방어</td></tr>
+      <tr><td>자동정정</td><td class="n">On</td><td>큐를 유지하며 리프라이스</td></tr>
+      <tr><td>건당 수량</td><td class="n">250 (폭풍 시 125)</td><td>관통 시 피해를 선형으로 제한</td></tr>
+      <tr><td>중심 보정</td><td class="n">관측 후에만</td><td>괴리 관측치가 며칠 일관되게 한 방향이면 D·E 비대칭으로 반영. <b>하루 관측으로 A를 손대지 말 것</b> — 고정 편향을 스스로 만드는 길</td></tr>
+      <tr><td>운용 시간</td><td class="n">09:10 ~ 15:15</td><td>동시호가·빈 호가 레벨 원천 차단</td></tr>
+      <tr><td>헷지 사용 여부</td><td class="n">OFF</td><td>헤지 비용이 마진의 5.5배</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3>즉시 중단해야 하는 신호</h3>
+  <div class="tw"><table>
+    <thead><tr><th></th><th>신호</th><th>의심 지점</th></tr></thead>
+    <tbody>
+      <tr><td class="n">1</td><td>매수/매도 체결비 1.5 초과 또는 0.67 미만</td><td>방향 고정이면 A·기준가·H 오류. 추세 따라 뒤집히면 게이트·방어 미작동 — 45·46·49·50 코드 확인</td></tr>
+      <tr><td class="n">2</td><td>주당 손익 −5원을 3회 연속 초과</td><td>D·E 2배로 넓히고 원인 파악</td></tr>
+      <tr><td class="n">3</td><td>재고가 한도(F)에 하루 3회 이상 도달</td><td>G를 키우거나 건당수량 축소</td></tr>
+      <tr><td class="n">4</td><td>45·46이 장중 내내 0 고정, 또는 ±250 밖</td><td>시장체결수량 · 잔량 필드명</td></tr>
+      <tr><td class="n">5</td><td>매수호가 ≥ 매도호가로 OMS 정지</td><td>53이 52를 파생 참조하는지 · 평가 순서·캐시 확인 · D+E ≥ 10인지. 구조상 발생 불가이므로 재발 시 즉시 중단하고 참조 방식 재검토</td></tr>
+      <tr><td class="n">7</td><td>하락 구간에서 매도호가가 계속 3호가 밖</td><td><b>앵커 미작동</b> — 54·51 반환값 확인, N 완화</td></tr>
+      <tr><td class="n">6</td><td>사이드카 · 기초 일중 ±4% · 신호 1이 2회</td><td><b>오류 아님 — 폭풍 프리셋 전환 (STEP 08)</b></td></tr>
+    </tbody>
+  </table></div>
+
+  <div class="note">
+    <div class="t">1단계 지표를 '주당 손익'으로 두지 마세요</div>
+    <p>주당 손익에는 편향·역선택·분산이 섞여 있어 며칠로는 신호가 안 나옵니다. <b>매수 체결량 ÷ 매도 체결량</b>은 편향만 잡아내고 방향까지 알려줍니다. 7/28도 이 비율이 가장 먼저, 가장 크게 무너진 지표였습니다 — 감시 자동화(알림)에 최우선으로 걸 값입니다.</p>
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<section class="step">
+  <div class="step-head">
+    <div class="step-no">STEP 08</div>
+    <div>
+      <h2 class="step-title">폭풍 프리셋 — 수동 전환 1벌</h2>
+      <div class="step-sub">7/28급 극단일 · 전략은 한 벌, 다이얼만 두 벌</div>
+    </div>
+  </div>
+
+  <p class="lede">게이트는 추세장의 <b>신호 역전</b>을 막지만, 코스피 −10%급 극단일에는 게이트로 안 막히는 것이 남습니다: 중간가 지연 편향(1~2틱)이 상시화되고, 무엇보다 그런 날은 <b>최우선호가에 서 있는 것 자체가 손실원</b>입니다. 거래량 경쟁을 접고 물러서는 다이얼 한 벌을 미리 정해둡니다 — 당일에 판단하지 않기 위해서입니다.</p>
+
+  <h3>두 모드 비교</h3>
+  <div class="tw"><table>
+    <thead><tr><th>변수</th><th class="n">평상시 (게이트판)</th><th class="n">폭풍 모드</th><th>변경 이유</th></tr></thead>
+    <tbody>
+      <tr><td class="vcode">J</td><td class="n">0</td><td class="n">0</td><td>이미 봉인 — 변경 없음</td></tr>
+      <tr><td class="vcode">L</td><td class="n">1.0</td><td class="n">1.0 유지</td><td>극단일에도 방어는 유지. 앵커가 방향을 잡고 L이 위험쪽을 물리는 조합이 극단일에도 유효</td></tr>
+      <tr><td class="vcode">N</td><td class="n">확정값 (100~400)</td><td class="n">그대로 유지</td><td><b>극단일에 앵커를 끄면 안 됩니다</b> — 편향이 가장 커지는 국면이 바로 그때. 문턱은 잔량 대비 비율이라 잔량이 얇아지면 자동으로 낮아짐</td></tr>
+      <tr><td class="vcode">D · E</td><td class="n">8</td><td class="n">12 ~ 16</td><td>앵커가 못 잡는 ETF 자체 디스카운트를 마진이 직접 흡수. 16이면 라운딩 포함 실현 스프레드 ~37원(7.4틱)</td></tr>
+      <tr><td class="vcode">G</td><td class="n">12</td><td class="n">24 (6D 상당)</td><td>쏠린 재고를 두 배 속도로 밀어냄 — 크로스 제약 없음이 확인된 값</td></tr>
+      <tr><td class="vcode">F</td><td class="n">2,000</td><td class="n">2,000 유지</td><td>한도를 줄이면 한도 분기 강제 정리가 잦아져 오히려 손실 실현이 늘어남 — G로 대응</td></tr>
+      <tr><td>건당 수량</td><td class="n">250</td><td class="n">125</td><td>관통 시 피해 절반. 큐 몫 감소는 이날 목표가 아님</td></tr>
+      <tr><td>직전호가 변동틱 취소</td><td class="n">1틱 초과</td><td class="n">1틱 초과 유지</td><td>52원 점프 방어 — 극단일에 더 중요</td></tr>
+      <tr><td class="vcode">I</td><td class="n">5</td><td class="n">10</td><td>계산·제출 사이 외부 레이스 여유분 1틱 추가</td></tr>
+      <tr><td>기타 (K · H · A·B·C)</td><td colspan="2" class="n">동일</td><td>구조 불변 — 다이얼만 바꾼다</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3>전환 기준 — 하나라도 걸리면 전환</h3>
+  <div class="check">
+    <div><b>선제 (장전):</b> FOMC · 삼성전자 실적 · 옵션만기 등 예정 이벤트일은 폭풍 모드로 시작, 안정 확인 후 평상시 복귀</div>
+    <div><b>사이드카 · 서킷브레이커</b> 발동 즉시</div>
+    <div>삼성전자 <b>일중 ±4%</b> 돌파</div>
+    <div><b>ETF 시장 스프레드가 5틱(25원)을 넘어 지속</b> — ④의 편향 차폐가 풀리는 구간이라 공정가 오차가 그대로 손실이 됨 (7/28의 증폭 조건)</div>
+    <div>즉시중단 신호 1(체결비 1.5 / 0.67)이 <b>하루 2회</b> 발생</div>
+    <div>KODEX 반도체 사례 같은 <b>선물 수급 이상</b>(신규 상장 러시 · 만기 주간 캘린더 왜곡) 인지 시</div>
+  </div>
+
+  <h3>복귀 기준 — 전부 충족 시</h3>
+  <div class="check">
+    <div>매수/매도 체결비가 <b>0.9~1.1 범위를 30분</b> 유지</div>
+    <div>기초 5분 변동이 평상 수준으로 복귀 (연속 일방향 틱 소멸)</div>
+    <div>재고 |포지션 − H| &lt; F/2</div>
+    <div>복귀는 <b>한 번에 하지 않음</b>: D·E 16 → 12 → 8 순서로 30분 간격, I는 마지막에 5로</div>
+  </div>
+
+  <div class="note warn">
+    <div class="t">폭풍 모드는 "덜 버는 날"이 아니라 "안 잃는 날"입니다</div>
+    <p>극단일의 거래량은 대부분 역선택 체결입니다 — 7/28에 v9가 뽑은 거래량이 정확히 그것이었습니다. 단 v12에서는 <b>앵커를 끄지 않는다</b>는 점이 v11과 다릅니다: 편향이 가장 커지는 국면에 편향 제거 장치를 끄는 것은 앞뒤가 맞지 않습니다. 물러서는 것은 마진(D·E)과 수량으로 하고, 방향 판단은 앵커에 계속 맡깁니다. 이날의 성과 지표는 거래량이 아니라 <b>주당 손익이 −5원 안에 있는가</b> 하나입니다. 수수료 배분은 연간 누적 게임이고, 하루 물러선 거래량은 다음 날 큐에서 회복되지만 하루에 실현한 추세 손실은 몇 주의 마진으로도 안 돌아옵니다.</p>
+  </div>
+
+  <div class="note">
+    <div class="t">자동 전환을 하지 않는 이유 (현재)</div>
+    <p>OMS 조건변수는 장중 수동 변경이 가능하고, 전환 기준이 전부 사람이 즉시 인지 가능한 이벤트(사이드카·±4%·알림)라 수동으로 충분합니다. 자동화하려면 52·53에 "기초 일중 변화율" 분기를 넣어야 하는데 기준가 대비 변화율 계산에 조건변수 하나(M)와 분기 추가가 필요합니다 — 게이트 검증이 끝난 뒤 M의 용도로 검토하되, 그 전에는 <b>규칙이 명문화된 수동</b>이 오판보다 낫습니다.</p>
+  </div>
+</section>
+
+<footer class="foot">
+  <p><b>산출 근거</b> — CU 단위 25,000주 · 주식선물 승수 10주 · 삼성전자 기준가 261,500원 · 원월물 0 가정. ETF 호가단위 5원, 삼성전자 현물·선물 호가단위 500원. 시장체결수량: 부호로 매수(+)/매도(−) 구분, 직전 1건 반환, 체결 공백 시 최근 값 유지(현·선물 모두 국내 거래량 1위라 실질 공백 없음). 수치 예시는 전부 KODEX(B+C = 1,047.48) 기준.</p>
+  <p><b>v12 변경 — 세 가지</b> — ① <b>흐름 앵커 54·51 신설 + 47 교체</b>: 체결 방향이 문턱을 넘으면 공정가의 기준점을 중간가에서 <b>흐름이 향하는 쪽 기초 호가</b>로 옮깁니다(하락 확인 → 매수1호가, 상승 확인 → 매도1호가, 흐름 없음 → 중간가). 하락장 상시 +26.2원(5.2 ETF틱) 편향을 제거합니다. ② <b>53을 52 파생 구조로 재작성 + 52의 롱 한도 분기 제거</b>: <code>53 = 52 − D − E − 49 + 50</code>이므로 48이 소거되어 간격이 <code>D+E</code> 이상으로 산술 고정됩니다. 간격을 좁히던 절대값 하한(<code>공정가 − (B+C)/20</code>)을 제거하고, 롱 재고 정리는 48의 연속 이동 + ④ 침범 상한이 담당합니다. 한도 조건은 <code>&gt;= F</code>로 변경(정확히 F에서도 정리 계속). 960만 분기 조합 전수 검증: 크로스 0건, 최소 간격 = D+E. ③ <b>조건변수 N 신설</b>: 하드코딩돼 있던 체결 문턱 <code>÷ 20</code>을 <code>÷ N</code>으로 빼내 장중 조정 가능하게 했습니다(45·46·49·50·54·51 공용). 20은 삼성전자 잔량 규모에 비해 문턱이 1만 주 수준이라 앵커·방어가 사실상 꺼진 상태였습니다 — 초기값 100.</p>
+  <p><b>v12 값 변경</b> — <b>J 1.0 → 0</b>(앵커와 동일 질문에 답하므로 봉인, 동시 사용 시 최대 52원 과잉 이동) · <b>L 0.5 → 1.0</b>(단방향 방어, ETF 자체 디스카운트 흡수) · <b>D·E 4 → 8</b>(간격 하한 16원 확보 + 대칭 역선택 대응) · <b>N = 100 신설</b> · G 24 · I 5 · 건당 125주. 새 제약: <b>D + E ≥ 10</b>(그리고 D+E &gt; I) — 파생 구조의 간격 하한이 D+E이므로 라운딩 여유와 시장 침범 여유를 위해 필수.</p>
+  <p><b>v12 사건 서술 개정 — 원인 재판정</b> — ⓐ v10·v11에서 주원인으로 지목한 <b>잔량 신호 방향 해석 역전을 주범 판정에서 내렸습니다.</b> 신호를 끈 상태(J=0)에서도 같은 편향이 같은 크기로 남았고(7/30 관측), ETF 잔량 매도 4,500 / 매수 1,000이라는 최대급 음수 신호에도 매도호가가 3호가에 머물렀습니다 — 잔량 신호로 설명되지 않는 편향이 아래에 있었다는 뜻입니다. ⓑ <b>v11 STEP 06의 계산 오류를 정정</b>했습니다: 중간가 앵커 편향을 "합쳐 최대 1~2 ETF틱"이라 썼으나 실제로는 <code>(B+C)/40 = 26.19원 = 5.2 ETF틱</code>이며 기초 스프레드 2틱이면 10.5틱입니다. 이 오류 때문에 편향의 몸통을 "L이 덮는 잔여 항"으로 치부하고 게이트·J·L만 손보며 두 버전을 헛돌았습니다. ⓒ <b>OMS 정지 원인 확정</b>: 판정이 실제 주문 제출 직전 기준이며, F 경계에서 52·53이 서로 다른 포지션 스냅샷으로 다른 분기를 타면서 간격이 역전됐습니다(48을 각자 읽는 것만으로도 600주 괴리 × G/F = 7.2원 &gt; D+E). ⓓ 진단 원칙 명문화: <b>앵커 → 상수항 → 신호</b> 순으로 의심할 것. 신호는 유계·양방향이라 상쇄되지만 앵커 오차는 상시·단방향으로 누적됩니다.</p>
+  <p><b>남은 확인</b> — ⓐ <b>앵커가 실제로 열리는지</b>(54·51이 흐름 구간에서 중간가를 벗어나는지) — N 조정으로 첫날 30분 내 확정. ⓑ 하락 구간 매수/매도 체결비 0.9~1.1 · 우리 매도호가가 시장 1~2호가 안에 들어오는지 — v12의 존재 이유 검증. ⓒ 정지 재발 여부 및 52 참조 캐시 확인. ⓓ 괴리(ETF 중간가 − NAV) 하루치 로그로 <b>앵커로도 남는 ETF 자체 디스카운트</b> 측정 — 며칠 일관되면 D·E 비대칭으로 반영(A는 손대지 않음). ⓔ J 재도입 판단(앵커 안정 1주 후, 0.3부터) 및 앵커 전용 문턱 M 분리 여부. ⓕ 스프레드 구간별 주당 손익 분해(2틱 이하 / 2~5틱 / 5틱 초과). ⓖ 실제 왕복 지연 측정 — 병목 증거 전 추가 최적화 금지.</p>
+  <p style="margin-top:14px">삼성전자 단일종목 레버리지 ETF · LP 호가 전략 v12 · 체결 게이트판 — 2026-07-29</p>
+</footer>
+
+</div>
+</body>
+</html>

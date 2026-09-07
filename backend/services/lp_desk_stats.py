@@ -10,6 +10,9 @@
    `gap_t = (ETF close_t − navʳ_t)/navʳ_t × 1e4` (bp). gap_mean / gap_sigma / 유효표본수 +
    상세용 gap 시계열·히스토그램.
 
+①에서 파생으로 **오버나이트 상한**(§14.12)도 같이 낸다 — 잔차 σ가 곧 1박 리스크라서 새 통계가
+필요 없다: `상한 = 50만원 ÷ (1.645 × σ)`, σ > 250bp거나 표본 60 미만이면 금지(상한 0).
+
 규약:
 - 회귀용 ETF 가격은 **`ohlcv_daily.adj_close`** (수정주가). raw close는 분할/병합 spike로
   회귀를 무력화 — CLAUDE.md 작업 규칙. 지수(`index_ohlcv_daily.close`)는 분할이 없어 raw.
@@ -62,6 +65,20 @@ GAP_MIN_OBS = 60      # 유효 표본이 이 미만이면 gap_* 전부 null (§1
 # 튄 실측이 있다(전 ETF 공통). 정상 괴리는 수십 bp라 500bp는 넉넉한 이상치 컷.
 GAP_ABS_MAX_BP = 500.0
 GAP_HIST_BINS = 24    # 괴리 히스토그램 bin 수
+
+# ── 오버나이트 상한 (§14.12, 2026-08-28 백테스트 확정) ─────────────────────
+# 백테스트 결론: 괴리 회귀는 **첫 밤에 종결**되고(반감기 0.28일) 잔차 σ1d 중앙 211bp가 기대
+# 수익 30bp를 압도한다. 두 레짐 모두에서 살아남은 건 잔차 σ가 작은 지수형뿐이라, 오버나이트는
+# "며칠 들고 갈까"가 아니라 **"얼마까지 들고 갈까"** 하나로 좁힌다.
+#
+#   상한(₩) = 허용 꼬리손실 ÷ (z₅% × 잔차σ)   ⇒ 1박 5% 꼬리손실이 허용치를 넘지 않는 금액
+#
+# 잔차σ는 위 2-팩터 회귀의 잔차 표준편차(bp/일) 그대로다 — 새 통계를 만들지 않는다.
+ON_TAIL_LOSS_WON = 500_000     # 1박 5% 꼬리에서 허용하는 손실 (사용자 확정)
+ON_TAIL_Z = 1.645              # 5% 단측 정규분위수
+ON_MAX_RESID_VOL_BP = 250.0    # 이 위는 금액과 무관하게 금지 — 당일 청산 종목
+ON_MIN_OBS = 60                # 회귀 표본이 이 미만(신규상장)이면 σ를 못 믿는다 → 금지
+ON_CAP_UNIT_WON = 1_000_000    # 상한 표시 단위 — 백만 내림 (보수적 방향)
 
 _PROBE_TTL_SECS = 60.0
 
@@ -129,6 +146,20 @@ def _fit(y: np.ndarray, x1: np.ndarray, x2: np.ndarray) -> tuple[np.ndarray, np.
     r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else float("nan")
     sigma = math.sqrt(ss_res / max(n - 3, 1))
     return coef, resid, r2, sigma
+
+
+def _overnight_cap(resid_vol_bp: float | None, obs: int) -> tuple[int | None, bool]:
+    """(오버나이트 상한 ₩, 금지 여부) — §14.12.
+
+    통계가 없으면 `(None, False)`: **"금지"와 "모름"은 다른 상태**다. 금지는 σ를 재 보니 크더라는
+    판정이고, 모름은 아직 못 쟀다는 뜻이라 화면·엑셀에서 다른 문구가 나가야 한다.
+    """
+    if resid_vol_bp is None or resid_vol_bp <= 0:
+        return None, False
+    if resid_vol_bp > ON_MAX_RESID_VOL_BP or obs < ON_MIN_OBS:
+        return 0, True
+    raw = ON_TAIL_LOSS_WON / (ON_TAIL_Z * resid_vol_bp * 1e-4)
+    return int(raw // ON_CAP_UNIT_WON) * ON_CAP_UNIT_WON, False
 
 
 def _histogram(values: np.ndarray, bins: int) -> dict:
@@ -482,6 +513,9 @@ def _master_item(
         "r2": None,
         "resid_vol_bp": None,
         "resid_z": None,
+        # 오버나이트 상한 (§14.12) — 회귀 없이는 산출 불가(null), 금지는 아니다.
+        "overnight_cap_won": None,
+        "overnight_banned": False,
         **_gap_stats(gap),
         "obs": len(rdates),
         "insufficient": True,
@@ -491,12 +525,17 @@ def _master_item(
         return base
     n = min(WINDOW, len(rdates))
     coef, resid, r2, sigma = _fit(ry[-n:], rk[-n:], rq[-n:])
+    # 상한은 **표시되는 잔차σ 그대로**로 계산한다 — 툴팁 산식을 손으로 따라가도 같은 값이 나와야 한다.
+    resid_vol_bp = _finite(sigma * 1e4, 2)
+    cap_won, banned = _overnight_cap(resid_vol_bp, n)
     base.update({
         "beta_k200": _finite(coef[1], 4),
         "beta_kq150": _finite(coef[2], 4),
         "r2": _finite(r2, 4),
-        "resid_vol_bp": _finite(sigma * 1e4, 2),
+        "resid_vol_bp": resid_vol_bp,
         "resid_z": _finite(resid[-1] / sigma, 3) if sigma > 0 else None,
+        "overnight_cap_won": cap_won,
+        "overnight_banned": banned,
         "obs": n,
         "insufficient": False,
     })
@@ -533,6 +572,13 @@ async def master() -> dict:
         "params": {
             "window": WINDOW, "roll": ROLL, "min_obs": MIN_OBS,
             "gap_window": GAP_WINDOW, "gap_min_obs": GAP_MIN_OBS,
+            # 오버나이트 상한 룰(§14.12) — 프론트 툴팁·엑셀 사용법이 이 숫자를 그대로 쓴다.
+            # 같은 상수를 화면/엑셀에 다시 적지 않기 위해 페이로드로 내려보낸다.
+            "on_tail_loss_won": ON_TAIL_LOSS_WON,
+            "on_tail_z": ON_TAIL_Z,
+            "on_max_resid_vol_bp": ON_MAX_RESID_VOL_BP,
+            "on_min_obs": ON_MIN_OBS,
+            "on_cap_unit_won": ON_CAP_UNIT_WON,
         },
         "count": len(panel.items),
         "items": panel.items,

@@ -3,7 +3,7 @@
   GET    /master              유니버스 36종 회귀 통계 (β·R²·잔차) + 괴리 분포 + 인트라데이 캘리브
   GET    /detail/{etf_code}   rolling β / 잔차·괴리·s·g 분포 / s 경로 / PDF 상위 10
   GET    /universe            유니버스 코드 (디버깅·프론트 부트스트랩)
-  GET    /export.xlsx         파라미터 엑셀 (내부망 반입 — β·호가 밴드 + DDE 결합 수식, §14.11)
+  GET    /export.xlsx         파라미터 엑셀 (내부망 반입 — β·호가 밴드 + OMS 조건변수 + DDE 결합 수식, §14.11)
   GET    /fills               ETF 체결 목록          POST /fills        등록
   DELETE /fills/{id}          삭제
   GET    /hedge-fills         선물 체결 목록         POST /hedge-fills  등록
@@ -103,11 +103,16 @@ async def get_export(
         description="호가 폭 σ 배수 — 범위는 프론트 튜너 Z_MIN~Z_MAX(0.25~4)와 동일",
     ),
     horizon: int = Query(lp_desk_export.HORIZON_DEFAULT, description="σ_r 지평(초) — 서버가 직접 측정한 지평만"),
+    intraday_cap_won: int = Query(
+        lp_desk_export.INTRADAY_CAP_WON_DEFAULT, ge=1_000_000, le=100_000_000_000,
+        description="OMS 시트 C(재고한도) 산출용 장중 재고 상한(원). 전 종목 동일 — C = 상한 ÷ 전일종가, 100주 내림",
+    ),
 ) -> StreamingResponse:
     """파라미터 엑셀 (§14.11 내부망 반입).
 
     실집행은 LENS가 없는 내부망에서 한다 — β·호가 밴드 같은 **정적 파라미터만** 값으로 넘기고,
     체결·시세·선물가는 내부망 엑셀이 DDE로 받아 워크북 수식이 헤지 계약수를 낸다. 매크로 없음.
+    `OMS` 시트는 같은 밴드를 함수 전략 v1.1의 조건변수 **A~D**(% 단위)로 옮겨 적은 것 (매일 아침 반입용).
 
     x는 화면과 어긋나면 안 되므로 프론트 튜너(z·지평)를 그대로 받아 같은 산식으로 채운다.
     캘리브가 없으면 x가 전부 빈칸인 파일이 나가므로 **503** — 조용히 반쪽짜리를 내보내지 않는다.
@@ -122,7 +127,9 @@ async def get_export(
     if not master.get("calib_params"):
         raise HTTPException(503, "캘리브레이션 없음 — 호가 밴드를 채울 수 없습니다 (POST /calib/refresh 후 재시도)")
 
-    blob = lp_desk_export.build_workbook(master, z=z, horizon=horizon)
+    blob = lp_desk_export.build_workbook(
+        master, z=z, horizon=horizon, intraday_cap_won=intraday_cap_won
+    )
     name = lp_desk_export.filename()
     return StreamingResponse(
         io.BytesIO(blob),

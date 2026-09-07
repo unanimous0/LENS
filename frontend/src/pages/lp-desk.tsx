@@ -153,13 +153,13 @@ type SK =
   | 'name' | 'price' | 'changePct' | 'nav' | 'premiumBp' | 'mktSpreadBp'
   | 'quoteBid' | 'quoteAsk' | 'bidBp' | 'askBp'
   | 'betaK' | 'betaQ' | 'r2' | 'relBp'
-  | 'qty' | 'improveBp' | 'edgeBp' | 'pnl'
+  | 'qty' | 'onCapWon' | 'improveBp' | 'edgeBp' | 'pnl'
 
 /** 절댓값으로 정렬해야 자연스러운 키 (롱·숏을 같이 위로). */
 const ABS_SORT: Partial<Record<SK, true>> = { qty: true }
 
 /** 테이블 컬럼 수 — 빈 상태·행 펼침 td의 colSpan. 헤더와 같이 고쳐야 한다. */
-const COLS = 20
+const COLS = 21
 
 /** x 컬럼 헤더 툴팁 — 산식과 보조줄(도달 일수)이 무엇인지 한 곳에만 적는다. */
 function xHeaderTip(horizonSeconds: number): string {
@@ -201,6 +201,19 @@ function xBreakdown(
 function excludedLegsNote(n: number): string {
   return n > 0 ? `\n⚠️ 가격 없는 구성 ${n}개 제외(옵션·선물 등) — 주식+현금만의 g라 μ에 그만큼 레벨 편차` : ''
 }
+
+/**
+ * 오버나이트 상한 룰(§14.12) 파라미터. **숫자는 서버 `/master`의 params가 단일 진실원**이라
+ * 화면에 다시 적지 않고 받아서 문장에만 끼운다 (백테스트 갱신 시 서버만 고치면 된다).
+ */
+type OvernightRule = {
+  tailLossWon: number | null
+  z: number | null
+  maxResidVolBp: number | null
+  minObs: number | null
+}
+
+const EMPTY_ON_RULE: OvernightRule = { tailLossWon: null, z: null, maxResidVolBp: null, minObs: null }
 
 type ExpandPanel = 'none' | 'exit' | 'fills'
 
@@ -503,6 +516,10 @@ export function LpDeskPage() {
         r2: insufficient ? null : it.r2,
         residVol,
         residZ: insufficient ? null : it.resid_z,
+        // 오버나이트 상한 (§14.12) — 서버 산출값 그대로. 금지 = 0, 표본부족 = null.
+        onCapWon: it.overnight_cap_won ?? null,
+        onBanned: it.overnight_banned === true,
+        obs: it.obs ?? null,
         gapMeanBp: it.gap_mean_bp ?? null,
         gapSigmaBp: it.gap_sigma_bp ?? null,
         gapObs: it.gap_obs ?? null,
@@ -645,6 +662,18 @@ export function LpDeskPage() {
   }, [rows, futByProduct, hedgeByContract])
 
   const positionCount = useMemo(() => rows.reduce((n, r) => n + (r.qty !== 0 ? 1 : 0), 0), [rows])
+
+  /** 오버나이트 상한 룰(§14.12) — 툴팁 문장에만 쓰인다. 서버가 안 주면 문장에서 그 항만 빠진다. */
+  const onRule = useMemo<OvernightRule>(() => {
+    const p = master?.params
+    if (!p) return EMPTY_ON_RULE
+    return {
+      tailLossWon: p.on_tail_loss_won ?? null,
+      z: p.on_tail_z ?? null,
+      maxResidVolBp: p.on_max_resid_vol_bp ?? null,
+      minObs: p.on_min_obs ?? null,
+    }
+  }, [master])
 
   // ── 체결 입력 ──
   useEffect(() => {
@@ -1035,6 +1064,17 @@ export function LpDeskPage() {
               <Th sort={() => doSort('r2')} active={sk === 'r2'} asc={asc} className="min-w-[46px]">R²</Th>
               {/* ③ 포지션 */}
               <Th sort={() => doSort('qty')} active={sk === 'qty'} asc={asc} className="min-w-[86px] border-l border-white/[0.06]">수량</Th>
+              <Th
+                sort={() => doSort('onCapWon')} active={sk === 'onCapWon'} asc={asc} className="min-w-[92px]"
+                title={
+                  '오버나이트로 넘길 수 있는 평가액 상한 (§14.12).\n' +
+                  `${onRule.tailLossWon != null ? `${onRule.tailLossWon.toLocaleString()}원` : '허용 꼬리손실'} ÷ (${onRule.z ?? 'z'} × 잔차σ) — 1박 5% 꼬리손실이 그 금액을 넘지 않는 크기.\n` +
+                  (onRule.maxResidVolBp != null && onRule.minObs != null
+                    ? `잔차σ > ${onRule.maxResidVolBp}bp(또는 회귀 표본 ${onRule.minObs} 미만)는 "—" = 금지 — 당일 정리한다.\n`
+                    : '잔차σ가 큰 종목(또는 신규상장)은 "—" = 금지 — 당일 정리한다.\n') +
+                  '현재 평가액이 상한을 넘으면 경고 톤 — 14:30 전에 초과분을 줄인다.'
+                }
+              >O/N 상한</Th>
               <Th sort={() => doSort('improveBp')} active={sk === 'improveBp'} asc={asc} className="min-w-[80px]">진입→현재</Th>
               <Th sort={() => doSort('edgeBp')} active={sk === 'edgeBp'} asc={asc} className="min-w-[62px]">edge bp</Th>
               <Th sort={() => doSort('pnl')} active={sk === 'pnl'} asc={asc} className="min-w-[78px]">헤지PnL</Th>
@@ -1151,6 +1191,10 @@ export function LpDeskPage() {
                   )}
                   {/* ③ 포지션 — 수량 셀에 평가액을 겹쳐 담아 컬럼 수를 늘리지 않는다 */}
                   <QtyCell qty={r.qty} value={r.value} />
+                  <OvernightCell
+                    capWon={r.onCapWon} banned={r.onBanned} residVolBp={r.residVol} obs={r.obs}
+                    positionValue={r.value} rule={onRule}
+                  />
                   <C c="text-[#8b8b8e]" title="진입 시점 괴리 → 현재 괴리 (보조 지표 — 청산 판정은 edge)">
                     {r.qty === 0 || r.entryGapBp == null ? '-' : (
                       <>
@@ -1584,6 +1628,74 @@ function QtyCell({ qty, value }: { qty: number; value: number }) {
         {qty > 0 ? '+' : ''}{qty.toLocaleString()}
       </div>
       <div className="text-[9px] tabular-nums leading-none mt-[2px] text-[#8b8b8e]">{fmtWon(value)}</div>
+    </td>
+  )
+}
+
+/**
+ * O/N 상한 셀 (§14.12) — 이 종목을 밤 넘겨 들고 갈 수 있는 평가액.
+ *
+ * 상한은 잔차σ만의 함수라 **포지션이 없어도 미리 보인다**(체결 전에 "여긴 얼마까지"를 알아야
+ * 한다). 판단이 필요한 순간은 하나뿐 — **현재 평가액이 상한을 넘었을 때**. 그때만 경고 톤 +
+ * 초과분을 둘째 줄에 찍는다(= 14:30 전에 줄일 금액). 롱·숏 모두 1박 리스크는 |평가액|이라
+ * 부호는 보지 않는다 (§14.4 잔차 합산과 같은 규약).
+ */
+function OvernightCell({
+  capWon, banned, residVolBp, obs, positionValue, rule,
+}: {
+  /** 상한(₩). 금지 = 0, 회귀 표본 부족 = null (금지와 다른 상태). */
+  capWon: number | null
+  banned: boolean
+  residVolBp: number | null
+  obs: number | null
+  /** 현재 포지션 평가액 (부호 포함 — 여기서 절댓값을 취한다). */
+  positionValue: number
+  rule: OvernightRule
+}) {
+  const exposure = Math.abs(positionValue)
+  const over = capWon != null && exposure > capWon ? exposure - capWon : 0
+  const sigma = residVolBp != null ? `${residVolBp.toFixed(0)}bp` : '-'
+  const overNote = over > 0
+    ? `\n현재 ${fmtWonAbs(exposure)} — 초과 ${fmtWonAbs(over)}: 14:30 전에 초과분을 정리한다.`
+    : ''
+
+  let title: string
+  if (capWon == null) {
+    title = '회귀 표본 부족 — 잔차σ가 없어 O/N 상한 산출 불가.'
+  } else if (banned) {
+    const why = rule.minObs != null && obs != null && obs < rule.minObs
+      ? `회귀 표본 ${obs} < ${rule.minObs} (신규상장) — 잔차σ를 믿을 수 없다`
+      : `잔차 σ ${sigma}${rule.maxResidVolBp != null ? ` > ${rule.maxResidVolBp}bp` : ' 한도 초과'}`
+    title =
+      `${why} — 오버나이트 금지.\n` +
+      '1박 잔차 꼬리가 허용 손실을 넘는다. 저잔차 지수형만 오버나이트 가치가 있다는 백테스트 결론(§14.12).' +
+      overNote
+  } else {
+    const formula = rule.tailLossWon != null && rule.z != null
+      ? ` = ${rule.tailLossWon.toLocaleString()} ÷ (${rule.z} × 잔차σ ${sigma})`
+      : ` (잔차σ ${sigma})`
+    title =
+      `O/N 상한 ${capWon.toLocaleString()}원${formula}\n` +
+      '1박 5% 꼬리손실 기준 — 이 금액까지만 밤을 넘긴다 (백만 내림).' +
+      overNote
+  }
+
+  return (
+    <td
+      title={title}
+      className={cn('px-2 py-[9px] text-right whitespace-nowrap', over > 0 && 'bg-warning/10')}
+    >
+      <div
+        className={cn(
+          'text-[11px] tabular-nums leading-none',
+          over > 0 ? 'text-warning' : capWon == null || banned ? 'text-t4' : 'text-[#d1d1d6]',
+        )}
+      >
+        {capWon == null || banned ? '—' : fmtWonAbs(capWon)}
+      </div>
+      {over > 0 && (
+        <div className="text-[9px] tabular-nums leading-none mt-[2px] text-warning">초과 {fmtWonAbs(over)}</div>
+      )}
     </td>
   )
 }

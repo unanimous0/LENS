@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>섹터 ETF LP 신규 운용 — 시범 결과 및 운영 계획</title>
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;background:#f5f5f7;color:#1d1d1f;
+    font:15px/1.8 Pretendard,-apple-system,"Segoe UI",sans-serif;padding:40px 20px 80px}
+  .wrap{max-width:820px;margin:0 auto;background:#fff;border-radius:10px;
+    padding:48px 52px;box-shadow:0 1px 4px rgba(0,0,0,.08)}
+  h1{font-size:22px;margin:0 0 4px}
+  .sub{color:#6e6e73;font-size:13.5px;margin-bottom:28px}
+  h2{font-size:16.5px;margin:38px 0 12px;padding-top:22px;border-top:1px solid #e5e5ea}
+  p{margin:10px 0}
+  b{color:#000}
+  .cards{display:flex;gap:12px;flex-wrap:wrap;margin:16px 0}
+  .card{flex:1;min-width:150px;background:#f5f5f7;border-radius:8px;padding:14px 16px}
+  .card .v{font-size:20px;font-weight:700;letter-spacing:-.3px}
+  .card .k{font-size:12.5px;color:#6e6e73;margin-top:2px}
+  .up{color:#0a7d47} .down{color:#c0392b}
+  table{width:100%;border-collapse:collapse;font-size:14px;margin:12px 0}
+  th{text-align:left;padding:8px 12px;background:#f5f5f7;color:#6e6e73;font-weight:600;font-size:13px}
+  td{padding:9px 12px;border-top:1px solid #e5e5ea;vertical-align:top}
+  .num{text-align:right;font-variant-numeric:tabular-nums}
+  th.num{text-align:right}
+  .note{background:#fff8e6;border-left:4px solid #e6a817;border-radius:0 8px 8px 0;
+    padding:12px 16px;margin:16px 0;font-size:14px}
+  .good{background:#eef8f1;border-left-color:#0a7d47}
+  .term{background:#f0f4fa;border-radius:8px;padding:12px 16px;margin:14px 0;font-size:13.5px;color:#3a3a3c}
+  ol,ul{margin:8px 0;padding-left:22px}
+  li{margin:6px 0}
+  @media print{body{background:#fff;padding:0}.wrap{box-shadow:none;padding:24px}}
+</style>
+</head>
+<body><div class="wrap">
+
+<h1>섹터 ETF LP 신규 운용 — 시범 결과 보고</h1>
+<div class="sub">2026. 9. 1 · ETF LP/MM 데스크 · 대상: 섹터·테마 ETF 38종</div>
+
+<h2>1. 요약</h2>
+<p><b>섹터 ETF에 유동성을 공급하면서 그 대가(호가 스프레드)를 수취하는 신규 운용</b>을 구축해
+이틀간 시범 매매를 했습니다. 결과는 첫날 <b class="up">+357만원</b>, 둘째 날 <b class="down">−1,184만원</b>이었습니다.
+둘째 날 손실의 원인을 체결 856건 전수 분석으로 규명했고, 원인이 전부 <b>수정 가능한 운영 문제</b>(호가 로직이 아니라
+재고·헤지 관리)였음을 확인했습니다. 이후 7개월치 데이터로 수정된 규칙을 검증한 결과가 아래이며,
+<b>9월부터 수정 규칙으로 재개</b>하고자 합니다.</p>
+
+<div class="cards">
+  <div class="card"><div class="v">+12~14bp</div><div class="k">왕복 1회당 기대 수익 (비용 차감 후, 7개월 검증)</div></div>
+  <div class="card"><div class="v">63.5%</div><div class="k">왕복 승률 · 거래일의 84%가 플러스</div></div>
+  <div class="card"><div class="v">일 +66만원</div><div class="k">기대 손익 (하루 6~15억 회전 기준)</div></div>
+  <div class="card"><div class="v">−130만원</div><div class="k">검증 기간 중 최악 하루</div></div>
+</div>
+
+<h2>2. 무엇을 하는 운용인가</h2>
+<div class="term">용어 하나만: <b>괴리</b> = ETF의 시장 가격과 실제 자산가치(NAV)의 차이.
+예: 가치가 10,000원인 ETF가 9,980원에 거래되면 괴리 −20bp(−0.2%).</div>
+<p>원리는 세 단계입니다.</p>
+<ol>
+<li><b>싸게 사 준다</b> — 종목마다 과거 데이터로 "괴리가 평소 어느 범위에서 움직이는지"를 매일 계산해,
+그 범위의 유리한 끝(평소 변동의 1.5~2배 벌어진 지점)에 매수·매도 호가를 상시 제시합니다.
+체결됐다는 것 자체가 "통계적으로 유리한 가격에 거래했다"는 뜻이 되도록 설계돼 있습니다.</li>
+<li><b>시장 위험은 즉시 제거</b> — 체결되는 즉시 지수선물(미니코스피200·코스닥150)로 반대 방향 헤지를 걸어,
+시장이 오르내리는 위험을 없앱니다. 남는 것은 "싸게 샀다"는 이익뿐입니다.</li>
+<li><b>제자리로 돌아오면 판다</b> — 벌어졌던 괴리는 대부분 <b>몇 분 안에</b> 정상 수준으로 돌아옵니다
+(7개월 실측: 95%가 당일 내, 중앙값 4분). 그 순간 반대매매로 이익을 확정합니다.</li>
+</ol>
+<p>즉 방향을 맞히는 운용이 아니라, <b>시장의 일시적 가격 왜곡을 사고팔며 그 폭을 수취하는 운용</b>입니다.
+이를 위해 종목별 통계를 매일 자동 산출하는 시스템(사내 도구 LENS)을 구축했고,
+호가 기준값은 매일 아침 엑셀로 내부망 OMS에 반영되는 체계입니다.</p>
+
+<h2>3. 시범 매매 결과와 손실 원인 (8/26~27)</h2>
+<table>
+<tr><th></th><th class="num">8/26</th><th class="num">8/27</th></tr>
+<tr><td>ETF 매매 손익</td><td class="num up">+204만</td><td class="num down">−1,439만</td></tr>
+<tr><td>선물 헤지 손익</td><td class="num up">+153만</td><td class="num up">+255만</td></tr>
+<tr><td><b>합계</b></td><td class="num up"><b>+357만</b></td><td class="num down"><b>−1,184만</b></td></tr>
+<tr><td>매매 규모 (왕복)</td><td class="num">18.5억</td><td class="num">51.1억</td></tr>
+</table>
+<p>8/27 체결 856건을 전수 분석한 결과, <b>호가 자체는 정상 작동했습니다</b> — 유리한 가격에 체결받아 확보한
+스프레드가 <b class="up">+796만원</b>이었습니다. 손실은 전부 그 이후의 <b>재고 관리</b>에서 났습니다.</p>
+<table>
+<tr><th>손실 원인</th><th class="num">금액</th><th>교훈 → 수정 규칙</th></tr>
+<tr><td>① 헤지 규칙 미집행 — 필요 수량의 일부만 헤지한 채 재고가 25억까지 커짐</td><td class="num down">−641만</td><td>헤지 자동 기준(필요 계약수 도달 시 즉시 집행) 준수</td></tr>
+<tr><td>② 종목 고유 변동 — 섹터가 지수와 따로 움직인 부분 (지수선물로는 방어 불가)</td><td class="num down">−738만</td><td>종목당 재고 한도 3억 신설 · 초과분 즉시 정리</td></tr>
+<tr><td>③ 장 막판 수동 시장가 청산 — 벌어둔 스프레드를 되돌려줌</td><td class="num down">−588만</td><td>청산도 호가 방식으로 (같은 시간대 호가 청산은 +, 시장가 투매는 −로 실측 대비 30bp 차이)</td></tr>
+</table>
+<div class="note">둘째 날은 시장 전체가 아니라 <b>섹터들이 서로 크게 어긋난 날</b>(종목 간 등락 격차가 평소의 2배)에
+재고를 키운 것이 화근이었습니다. 이런 날을 위한 안전장치(재고 한도, 당일 정리 원칙)가 이번에 추가됐습니다.</div>
+
+<h2>4. 수정 규칙의 검증 (7개월 데이터, 체결 단위 시뮬레이션)</h2>
+<p>2026년 1~8월의 30초 단위 시세로, 실제 운영 방식(1회 1,000주 · 체결 후 60초 대기 · 즉시 헤지)을
+그대로 재현해 검증했습니다. 주요 확인 사항:</p>
+<ul>
+<li><b>괴리는 몇 분 안에 돌아온다</b> — 왕복의 95%가 당일 완결(중앙 4분). 반대로 <b>돌아오지 않은 소수를
+며칠씩 들고 가는 것이 손실의 사실상 전부</b>였음을 확인 → <b>당일 정리 원칙</b> 채택.</li>
+<li><b>"며칠 기다리면 돌아온다"는 통념은 데이터가 부정</b> — 하루가 지나면 되돌아오는 힘이 사라짐(4년 반 데이터로
+교차 확인). 밤을 넘기는 재고는 수익 수단이 아니라 보관이며, 지수와 유사하게 움직이는 26종에 한해
+종목별 한도(800만~6,100만원) 내에서만 허용.</li>
+<li><b>선별 조건의 효과</b> — ① 괴리 변동이 충분한 종목·날에만 참여 ② 개장 직후 50분·마감 30분 제외
+③ "방금 급하게 벌어진 괴리"만 진입(하루 종일 눌러앉은 낡은 신호 제외). 세 조건을 적용하면
+왕복당 수익이 커지면서 총수익은 유지되고 최악의 날 손실이 20% 줄었습니다.</li>
+</ul>
+<table>
+<tr><th>검증 성과 (조건 적용 후, 139거래일)</th><th class="num">수치</th></tr>
+<tr><td>왕복 1회 순수익 (전 비용 차감)</td><td class="num up">평균 +13.9bp</td></tr>
+<tr><td>승률 / 플러스 거래일 비율</td><td class="num">63.5% / 84%</td></tr>
+<tr><td>누적 손익 (7개월)</td><td class="num up">+9,200만원</td></tr>
+<tr><td>하루 평균 / 하루 최악</td><td class="num">+66만원 / −99만원</td></tr>
+<tr><td>하루 체결 / 평균 보유시간</td><td class="num">약 47건 / 3.5분</td></tr>
+</table>
+<div class="note good">규모에 대한 정직한 평가: 이 운용은 하루 6~15억 회전 수준에서 수익이 포화됩니다.
+무리하게 키우면 수익은 안 늘고 위험만 커지는 구조로, <b>데스크의 주력이 아니라 안정적 보조 수익원</b>
+(월 1,300만원 내외 기대)으로 자리매김하는 것이 적정합니다.</div>
+
+<h2>5. 운영 원칙 (확정)</h2>
+<ol>
+<li><b>호가</b>: 종목별 통계 기준가 ± 밴드(매일 자동 산출) → 아침에 엑셀로 OMS 조건변수 입력. 1회 1,000주, 체결 후 60초 대기.</li>
+<li><b>헤지</b>: 체결 누적으로 필요 계약수 2~3계약 도달 시 지수선물 즉시 집행 (재량 지연 금지).</li>
+<li><b>재고</b>: 종목당 3억 한도. 초과 시 OMS가 자동으로 정리용 호가(평소 수준)로 전환.</li>
+<li><b>정리</b>: 당일 정리 원칙. 시장가 투매 금지 — 호가 방식으로 소진. 지수 유사 26종만 한도 내 1박 허용.</li>
+<li><b>중단 기준</b>: 괴리 변동이 좁아진 시장(수익 원천 소멸)에서는 시스템이 참여 종목을 자동 축소.</li>
+</ol>
+
+<h2>6. 향후 계획</h2>
+<ul>
+<li><b>9월</b>: 수정 규칙으로 실매매 재개, 검증치와 실적 대조 (규칙별 성과 추적).</li>
+<li><b>다음 단계</b>: 장 막판 잔여 재고를 구성종목 바스켓으로 전환하는 절차 정착(종목 고유 변동 위험의 근본 제거 —
+대형 글로벌 LP들의 표준 방식), 공식 NAV 데이터 확충, 호가 자동화 범위 확대.</li>
+</ul>
+
+<div class="note">유의 사항: 검증 기간(2026.1~8)은 시장 변동성이 이례적으로 컸던 시기로, 평상시에는
+기회(체결)가 줄어들 수 있습니다. 다만 규칙상 수익성이 없는 구간에서는 참여가 자동으로 줄어들도록
+설계되어 있어, 조용한 시장에서 손실이 커지는 구조는 아닙니다.</div>
+
+</div></body>
+</html>

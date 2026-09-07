@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LP 데스크 — 재고·헤지·출구 개념 가이드</title>
+<style>
+  :root{--bg:#000;--panel:#111114;--surface:#1c1c1e;--line:#26262a;
+    --t1:#fff;--t2:#d1d1d6;--t3:#8e8e93;--up:#00b26b;--down:#bb4a65;--warn:#ff9f0a;--blue:#4da3ff}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--t2);
+    font:14px/1.75 Inter,Pretendard,-apple-system,"Segoe UI",sans-serif;padding:36px 20px 90px}
+  .wrap{max-width:880px;margin:0 auto}
+  h1{color:var(--t1);font-size:21px;margin:0 0 4px}
+  h2{color:var(--t1);font-size:15.5px;margin:40px 0 10px;padding-top:20px;border-top:1px solid var(--line)}
+  .sub{color:var(--t3);font-size:13px;margin-bottom:10px}
+  table{width:100%;border-collapse:collapse;background:var(--panel);border-radius:6px;overflow:hidden;font-size:13px;margin:12px 0}
+  th{background:var(--surface);color:var(--t3);font-weight:600;text-align:left;padding:8px 12px;font-size:12px}
+  td{padding:9px 12px;border-top:1px solid var(--line);vertical-align:top}
+  td.k{color:var(--t1);font-weight:600;white-space:nowrap}
+  .num{font-variant-numeric:tabular-nums;text-align:right}
+  th.num{text-align:right}
+  .u{color:var(--up)} .d{color:var(--down)} .w{color:var(--warn)} .b{color:var(--blue)}
+  .box{background:var(--panel);border-radius:6px;padding:14px 18px;margin:14px 0}
+  .eq{background:var(--panel);border-radius:6px;padding:16px 20px;margin:14px 0;
+    font-family:"SF Mono",Consolas,monospace;font-size:13.5px;color:var(--t1)}
+  .eq .dim{color:var(--t3);font-size:12px}
+  .note{background:var(--panel);border-left:3px solid var(--warn);border-radius:0 6px 6px 0;
+    padding:10px 14px;margin:14px 0;font-size:13px}
+  .good{border-left-color:var(--up)}
+  .bar{display:flex;height:34px;border-radius:4px;overflow:hidden;margin:10px 0;font-size:12px;color:#000;font-weight:600}
+  .bar div{display:flex;align-items:center;justify-content:center;white-space:nowrap}
+  p{margin:9px 0}
+  b{color:var(--t1)}
+  .qa dt{color:var(--t1);font-weight:600;margin-top:16px}
+  .qa dd{margin:4px 0 0 0}
+  .scroll{overflow-x:auto}
+</style>
+</head>
+<body><div class="wrap">
+
+<h1>LP 데스크 — 재고·헤지·출구 개념 가이드</h1>
+<div class="sub">호가 산정 가이드(lp-desk-quote-rationale.html)의 후속편 — 체결 이후의 이야기: 재고는 무엇에 노출되고, 각 출구는 무엇을 확정하는가</div>
+
+<h2>1. 용어 — ETF 가격을 세 겹으로 쪼개기</h2>
+
+<p>ETF 가격의 움직임은 항상 세 성분의 합이다:</p>
+
+<div class="bar">
+  <div style="flex:5;background:#7fb2e5">① 지수 성분 (시장 전체)</div>
+  <div style="flex:3;background:#e5b97f">② 잔차 (섹터 고유)</div>
+  <div style="flex:1.4;background:#8ee5b0">③ 괴리</div>
+</div>
+
+<div class="scroll"><table>
+<tr><th>성분</th><th>정의</th><th>성질</th><th>대응 수단</th></tr>
+<tr><td class="k">① 지수 성분</td><td>NAV 중에서 코스피200·코스닥150이 움직여서 같이 움직이는 부분 (β × 지수 수익률)</td><td>방향 예측 불가, 크기 큼</td><td class="u">지수선물로 제거 가능</td></tr>
+<tr><td class="k">② 잔차</td><td>NAV 중에서 그 섹터가 지수와 <b>따로</b> 움직인 부분 (반도체만 급등, 은행만 급락…)</td><td>평균 0 근처의 노이즈지만 <b>되돌아온다는 보장 없음</b> (재평가일 수도)</td><td class="d">지수선물로 제거 불가 — 크기 제한(상한)만 가능</td></tr>
+<tr><td class="k">③ 괴리 (g)</td><td>가격과 NAV 사이의 간격: g = (가격−NAV)/NAV</td><td>설정·환매 차익 메커니즘이 묶어둠 → <b>되돌아오는 성질 있음</b> (실측: 체결 후 30분 +5bp 회귀)</td><td class="b">LP의 수익원 — 싸게 사서 간격이 닫히면 번다</td></tr>
+</table></div>
+
+<div class="note good">핵심 문장: <b>①은 선물로 지운다. ③은 벌 것이다. ②는 남는다.</b> 이 문서 전체가 이 한 줄의 전개다.</div>
+
+<h2>2. 손익 항등식 — 선물 헤지가 걸린 재고는 정확히 두 개에만 노출된다</h2>
+
+<div class="eq">
+  헤지된 재고의 손익 &nbsp;=&nbsp; <span class="b">괴리 변화 × 평가액</span> &nbsp;+&nbsp; <span class="w">잔차 × 평가액</span><br>
+  <span class="dim">(지수 성분은 선물이 상쇄 — 식에서 사라짐. 두 항은 조건 없이 그냥 더해진다.)</span>
+</div>
+
+<p><b>수치 예 (이하 전체 공통)</b>: 반도체 ETF, NAV 35,000일 때 34,895원(<b>괴리 −30bp</b>)에 10,000주 매수 = 3.5억. β=1로 선물 3.5억 매도. 이후 지수는 +2% 상승했다고 하자.</p>
+
+<div class="scroll"><table>
+<tr><th>시나리오 (보유 중 일어난 일)</th><th class="num">ETF 손익</th><th class="num">선물 손익</th><th class="num">합계</th><th>분해</th></tr>
+<tr><td>괴리 0 복귀 · 잔차 0</td><td class="num">+805만</td><td class="num">−700만</td><td class="num u"><b>+105만</b></td><td>괴리 +105 · 잔차 0</td></tr>
+<tr><td>괴리 −30bp 그대로 · 잔차 0</td><td class="num">+698만</td><td class="num">−700만</td><td class="num">−2만 ≈ 0</td><td>괴리 0 · 잔차 0</td></tr>
+<tr><td>괴리 0 복귀 · 섹터 −1% 언더퍼폼</td><td class="num">+455만</td><td class="num">−700만</td><td class="num d"><b>−245만</b></td><td>괴리 +105 · 잔차 −350</td></tr>
+<tr><td>괴리 0 복귀 · 섹터 +1% 아웃퍼폼</td><td class="num">+1,155만</td><td class="num">−700만</td><td class="num u">+455만</td><td>괴리 +105 · 잔차 +350</td></tr>
+</table></div>
+
+<p>세 번째·네 번째 줄을 보면: <b>괴리가 벌어준 +105만은 잔차가 어디로 가든 항상 그 자리에 있다.</b>
+잔차 ±350만이 그 위에 얹힐 뿐이다. "괴리 회수는 기대값이고, 잔차는 그 주변의 리스크"라는 말의 뜻이 이것이다.
+지수가 +2%든 −2%든 상관없다는 점도 표에서 확인된다 — 선물이 그 부분을 이미 지웠다.</p>
+
+<h2>3. 출구 4종 — 각각 무엇을 "확정"하고 무엇이 "남는가"</h2>
+
+<p>같은 포지션(−30bp 매수 + 선물 헤지)에서 시간이 지난 시점 T에 선택할 수 있는 길:</p>
+
+<div class="scroll"><table>
+<tr><th>출구</th><th>확정되는 것</th><th>의존하는 것 / 남는 것</th><th>비고</th></tr>
+<tr><td class="k">A. 정석 LP<br>(체결 <b>순간</b> 바스켓 매도)</td><td class="u">진입 괴리 30bp 전액 + <b>잔차 원천 차단</b></td><td>없음 — 그 순간 모든 노출 종료</td><td>이론상 최선. 그러나 체결 순간 동시에 슬리피지 없이 바스켓을 팔아야 성립 — <b>실행이 안 돼서 포기한 방식</b> (이게 이 시스템의 출발점)</td></tr>
+<tr><td class="k">B. 시장가 ETF 매도<br>(시점 T)</td><td>괴리 <b>변화분</b>(g<sub>T</sub> − g<sub>0</sub>) + 그때까지 잔차</td><td class="d"><b>g<sub>T</sub>에 의존</b> — 괴리가 안 돌아와 있으면 (아직 −30bp면) 괴리 수익 0</td><td>27일 14:30 수동 플랫이 이것. 하필 시장 전체가 −15bp 디스카운트일 때 던져서 스프레드를 반납</td></tr>
+<tr><td class="k">C. 바스켓 매도<br>(시점 T)</td><td class="u"><b>진입 괴리 30bp 전액</b> — g<sub>T</sub>가 어디 있든 무관 (바스켓은 시장가가 아니라 사실상 NAV에 청산되므로)</td><td>t0~T 사이 쌓인 잔차는 <b>이미 실현된 것</b> (무를 수 없음). T 이후 노출은 종료</td><td>B와의 차이 = "괴리 복귀를 기다릴 필요가 없다". 잔차를 소급해서 지우는 게 아니라 <b>이후를 멈추는 것</b></td></tr>
+<tr><td class="k">D. 계속 보유<br>(오버나이트)</td><td>아직 아무것도 확정 안 됨</td><td class="w">괴리 회귀 기대(+) 지속 · 잔차 리스크(±) 지속</td><td>ETF 재고 + 선물 헤지 <b>둘 다 세트로</b> 다음날로 넘어감</td></tr>
+</table></div>
+
+<div class="note">
+자주 나오는 혼동 정리: <b>"바스켓이 잔차를 0으로 만든다"는 A에만 해당한다.</b>
+나중에 하는 바스켓(C)은 잔차를 소급해 지우지 못한다 — C의 가치는 두 가지다:
+① 진입 괴리를 g<sub>T</sub>와 무관하게 전액 회수 (B는 못 함), ② 그 시점부터 잔차 노출 종료.
+</div>
+
+<p><b>B vs C 수치 비교</b> (지수 +2%, 잔차 −1%, 괴리가 아직 −30bp 그대로인 시점 T):</p>
+
+<div class="scroll"><table>
+<tr><th>출구</th><th class="num">ETF 청산 손익</th><th class="num">선물</th><th class="num">합계</th><th>왜</th></tr>
+<tr><td class="k">B. 시장가 매도 @35,244</td><td class="num">+349만</td><td class="num">−700만</td><td class="num d">−351만</td><td>괴리 변화 0 + 잔차 −350</td></tr>
+<tr><td class="k">C. 바스켓 매도 (≈NAV 35,350)</td><td class="num">+455만</td><td class="num">−700만</td><td class="num d">−245만</td><td>괴리 +105 확정 + 잔차 −350</td></tr>
+</table></div>
+<p>차이 +106만 = 그 시점의 괴리 −30bp × 3.5억. <b>ETF가 디스카운트에 있는 동안에는 바스켓 출구가 시장가 출구보다 항상 그만큼 유리하다.</b> (반대로 프리미엄에 떠 있으면 시장가가 유리 — 그때는 B가 정답.)</p>
+
+<h2>4. 오버나이트 — 무엇이 넘어가고, 무엇이 위험인가</h2>
+
+<div class="scroll"><table>
+<tr><th></th><th>내용</th></tr>
+<tr><td class="k">넘어가는 것</td><td><b>ETF 재고 + 지수선물 헤지, 반드시 세트.</b> 선물을 빼고 ETF만 넘기면 지수 리스크(①)가 통째로 열린다 — 그건 오버나이트가 아니라 방향 베팅이다.</td></tr>
+<tr><td class="k">다음날 노출</td><td>지수(①)는 선물이 계속 커버. <b>남는 건 잔차(②) 하나.</b> 괴리(③)는 리스크가 아니라 기다리는 이유.</td></tr>
+<tr><td class="k">기대 구조</td><td>괴리 회수 기대(진입 30bp 중 미회수분) vs 잔차 σ×√보유일수. 이 비율이 종목마다 달라서 백테스트로 종목별 상한을 정한다.</td></tr>
+<tr><td class="k">추가 비용</td><td>숏 재고는 대차(차입) 필요 · 선물 증거금 · 배당/분배락 일정.</td></tr>
+<tr><td class="k">출구</td><td>다음날 이후: ⓐ 반대쪽 호가가 맞으면서 자연 소진 (매일 매매하니까 호가 자체가 출구) ⓑ 괴리가 유리해진 순간 시장가(B) ⓒ 안 풀리면 바스켓(C).</td></tr>
+</table></div>
+
+<h2>5. 3펀드 운영과의 결합 — 대사(리컨)는 그대로 무기억으로</h2>
+
+<p>계좌 구성: <b>1 = LP/주식 매수, 2 = 차입주식 매도(헤지), 3 = 지수선물(헤지)</b>. 매일 ETF를 PDF로 분해해 2·3과 수량을 대사한다.</p>
+
+<div class="box">
+<b>규칙 하나로 끝난다:</b> 오버나이트 재고의 헤지는 <b>계좌3(선물) 전담</b> — 계좌2에는 아무것도 만들지 않는다.<br><br>
+그러면 대사 기대치가 원장에서 기계적으로 나온다:<br>
+<span style="font-family:monospace">계좌2에 있어야 할 종목별 수량 = (전체 ETF 보유 분해 수량) − (오버나이트 지정 ETF 재고의 분해 수량)</span><br><br>
+"일부러 차이나는 것"과 "진짜 어긋난 것"의 구분에 <b>기억이나 의도 태그가 필요 없다</b> — 오늘의 재고 원장(어느 ETF를 얼마나 오버나이트로 지정했나)만 있으면 기대 차이가 계산되고, <b>실제 차이 − 기대 차이 ≠ 0인 종목만</b> 맞추면 된다. 대사 시트에 열 하나 추가.
+</div>
+
+<h2>6. 헷갈리는 질문 정리</h2>
+
+<dl class="qa">
+<dt>Q. −30bp에 샀을 때 그 30bp는 언제 "고정"되나?</dt>
+<dd>체결 순간 바스켓을 같이 팔 때만(출구 A) 즉시 고정된다. 선물 헤지는 30bp를 고정하지 않는다 —
+"기대값 +30bp + 잔차 노이즈"로 바꿔줄 뿐이다(§2 표). 나중에라도 바스켓으로 나가면(C) 그 시점 괴리와 무관하게 진입 30bp를 회수한다.</dd>
+
+<dt>Q. 괴리가 0으로 돌아와도 "그때의 ETF와 선물의 괴리"는 다른 수준일 텐데?</dt>
+<dd>맞다 — ETF와 선물 사이의 총 간격 = 괴리 + 누적 잔차이고, 그 총 간격이 어디로 가는지는 아무도 모른다.
+하지만 손익 항등식(§2)에서 두 항은 <b>따로 더해진다</b>: 괴리가 −30→0으로 닫히면 +105만은 잔차가 뭘 했든 이미 들어와 있다.
+잔차는 그 위의 별도 ±항이다. "총 간격이 돌아와야 번다"가 아니라 "괴리 항만 돌아오면 그 몫은 번다"가 정확한 문장.</dd>
+
+<dt>Q. 오버나이트하면 뭐가 넘어가나?</dt>
+<dd>ETF 재고와 선물 헤지가 <b>둘 다, 세트로</b>. 다음날 위험은 잔차뿐이다(§4).</dd>
+
+<dt>Q. 왜 델타는 진입 단가가 아니라 시가평가(NAV×수량)로 재나?</dt>
+<dd>헤지가 상쇄해야 하는 건 "지금부터 시장이 1% 움직일 때의 손익 = 수량 × 현재가 × β × 1%"이고 이 식에 진입 단가는 없다.
+단가 기준은 오른 롱을 과소 헤지(내린 숏도 과소 헤지)하는 방향성 베팅이 된다.
+계약수 = 원화델타 ÷ (선물가×승수)라서 ETF와 선물이 같이 움직이면 계약수 자체는 크게 안 변한다 —
+잦은 추격이 부담이면 델타 기준이 아니라 집행 임계(|필요계약| ≥ 2~3)로 조절한다.</dd>
+
+<dt>Q. PDF 종목을 나눠서 일부만 오버나이트할 수 있나?</dt>
+<dd>아니다. ①②③은 종목 목록이 아니라 <b>한 재고의 손익을 세 갈래로 나눈 것</b>이라 물리적으로 분리할 수 없다.
+결정 단위는 "이 ETF 재고를 얼마나 넘길까" 하나이고, 넘기는 만큼 통째로 + β×평가액만큼 선물이 따라간다.</dd>
+</dl>
+
+</div></body>
+</html>
