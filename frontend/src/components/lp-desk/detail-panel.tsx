@@ -68,6 +68,7 @@ export function LpDeskDetailPanel({
   gapObs,
   xBidBp,
   xAskBp,
+  biasBp = 0,
   z,
   xBreakdown,
   touchDaysBid,
@@ -88,9 +89,11 @@ export function LpDeskDetailPanel({
   gapMeanBp: number | null
   gapSigmaBp: number | null
   gapObs: number | null
-  /** 현재 x 레벨 (bp) = μ_g ± z·σ결합. 캘리브 없으면 null. */
+  /** 현재 x 레벨 (bp) = μ_g ± z·σ결합 − 재고편향. 캘리브 없으면 null. */
   xBidBp: number | null
   xAskBp: number | null
+  /** x에 이미 반영된 재고 편향 bp (OMS v1.5) — 0이 아니면 라벨에 밝힌다. */
+  biasBp?: number
   /** σ결합 배수 (튜너). 마커 라벨에 표기. */
   z: number
   /** x 분해 한 줄 (`μ … · σ괴리 … · σ선물 … → ±zσ`) — 헤더 툴팁용. */
@@ -134,7 +137,7 @@ export function LpDeskDetailPanel({
           <span className="tabular-nums" style={{ color: C.up }}>
             {xBidBp != null ? fmtSignedBp(xBidBp) : '—'}
           </span>
-          <span className="text-[#5a5a5e]">bp (μ_g ± {z}σ결합)</span>
+          <span className="text-[#5a5a5e]">bp (μ_g ± {z}σ결합{biasBp !== 0 ? ' − 재고편향' : ''})</span>
           <span
             className="ml-1 text-[#5a5a5e] tabular-nums"
             title="장중 g가 그 x 레벨을 한 번이라도 넘은 날 수 (매도/매수) — z가 클수록 줄어든다"
@@ -196,8 +199,8 @@ export function LpDeskDetailPanel({
             touchDaysBid={touchDaysBid}
             touchDaysAsk={touchDaysAsk}
             calibDays={touchTotalDays}
-            bidLabel={`x매수 −${z}σ`}
-            askLabel={`x매도 +${z}σ`}
+            bidLabel={`x매수 −${z}σ${biasBp !== 0 ? '−편향' : ''}`}
+            askLabel={`x매도 +${z}σ${biasBp !== 0 ? '−편향' : ''}`}
             nowLabel="now"
           />
         </Card>

@@ -158,12 +158,57 @@ export function zLabel(z: number): string {
   return `${z.toFixed(2).replace(/0$/, '')}σ`
 }
 
+// ── 재고 편향 (OMS 함수 전략 v1.5) ─────────────────────────────────────────
+// 아래 세 상수는 백엔드 `lp_desk_export.py`와 **같은 수**여야 한다. 엑셀 OMS 시트가 뽑아 주는
+// C·D를 실제 OMS 함수가 그대로 쓰므로, 화면이 다른 수를 쓰면 제안가만 혼자 어긋난다.
+
+/** 장중 재고 상한(원) — 백엔드 `INTRADAY_CAP_WON_DEFAULT`. 전 종목 동일(§14.11). */
+export const INTRADAY_CAP_WON = 300_000_000
+/** C(재고한도)를 끊는 단위 주 수 — 백엔드 `LOT_SHARES`. 상한을 넘지 않게 내림. */
+export const LOT_SHARES = 100
+/** 편향 폭(= OMS D) = σ결합 × 이 배수 — 백엔드 `SKEW_SIGMA_MULT`. */
+export const SKEW_SIGMA_MULT = 1.0
+
+/**
+ * 재고한도 C(주) = 장중 상한 ÷ 전일종가, 100주 내림. 백엔드 `inventory_cap_shares`와 같은 산식.
+ *
+ * 백엔드는 0을 그대로 돌려주지만(엑셀은 셀에 0을 적으면 그만) 여기선 **0도 null**로 접는다 —
+ * 편향의 분모라 0이면 ±Infinity가 된다. null = 편향 없음(= 밴드 그대로).
+ */
+export function inventoryCapShares(prevClose: number | null, capWon = INTRADAY_CAP_WON): number | null {
+  if (prevClose == null || !Number.isFinite(prevClose) || prevClose <= 0 || capWon <= 0) return null
+  const c = Math.floor(capWon / prevClose / LOT_SHARES) * LOT_SHARES
+  return c > 0 ? c : null
+}
+
+/**
+ * 재고 편향 (bp) — OMS 함수 전략 v1.5의 유일한 재고 항 (정본 `docs/lp-oms-strategy-v1.html`).
+ *
+ *   편향 = RealNav × D × 포지션 ÷ C ÷ 100   ·   매도/매수 = 밴드 − 편향
+ *   D(%) = σ결합(bp) × `SKEW_SIGMA_MULT` ÷ 100  ⟹  **편향(bp) = σ결합 × 포지션 ÷ C**
+ *
+ * 매도·매수에서 **같은 값을 뺀다** — 간격(=2zσ)은 그대로 두고 밴드 전체를 옮기는 항이다.
+ * 롱이면(+) 양쪽이 내려가 매도가 잘 맞고 매수는 멀어진다. 임계·분기 없이 수량에 정비례
+ * (한도 C에서 μ±0.5σ, 절반에서 μ±1σ). 한도를 넘긴 재고도 **클램프하지 않는다** — OMS 함수가
+ * 그렇고, 한도 초과분은 더 세게 밀리는 게 의도다.
+ */
+export function inventoryBiasBp(
+  sigmaCombBp: number | null,
+  positionQty: number,
+  capShares: number | null,
+): number {
+  if (sigmaCombBp == null || !Number.isFinite(sigmaCombBp)) return 0
+  if (!Number.isFinite(positionQty) || positionQty === 0 || capShares == null) return 0
+  return (sigmaCombBp * SKEW_SIGMA_MULT * positionQty) / capShares
+}
+
 /**
  * 제안 호가 (§14.5 **호가 층**, 2026-08-21 4차 보완 두 분포 결합 z·σ + **5차 지평 직접 측정**).
  *
  *   매도 = tick올림( iNAV × (1 + x_ask) )   /   매수 = tick내림( iNAV × (1 + x_bid) )
- *   x_ask = μ_g + z·σ_comb   /   x_bid = μ_g − z·σ_comb        (z 기본 1.5 — `Z_DEFAULT`)
+ *   x_ask = μ_g + z·σ_comb − bias   /   x_bid = μ_g − z·σ_comb − bias   (z 기본 1.5 — `Z_DEFAULT`)
  *   σ_comb = √(σ_g² + σ_r²)  ·  σ_r = `s_diff_sigma_bp[T]` (지평 T에서 **직접 측정**, 기본 1분)
+ *   bias = σ_comb × 포지션 ÷ C  (`inventoryBiasBp` — OMS 전략 v1.5의 재고 편향, 2026-09-09)
  *
  * 앵커는 **iNAV**, 중심은 **μ_g**(가격이 장중 재구성 NAV에서 평소 얼마나 벌어져 거래되나),
  * 폭은 **두 괴리 분포의 결합**이다. 호가가 걸려 있는 몇 분 동안 나를 때리는 움직임은 두 갈래다:
@@ -177,6 +222,10 @@ export function zLabel(z: number): string {
  * 체결은 "가격이 NAV에서 x만큼 벌어진 순간"에 일어난다 — 표의 `괴리bp`가 곧 실시간 g이므로
  * 그게 x에 다가가는 게 체결 임박이다 (`nearSide`).
  *
+ * **x는 "호가가 실제로 설 레벨"이다** — 재고가 있으면 밴드가 아니라 편향까지 뺀 값이 x가 된다
+ * (2026-09-09). OMS가 그 자리에 호가를 걸므로, 체결 임박 판정(`nearSide`)·도달 일수·x 컬럼이
+ * 전부 같은 레벨을 봐야 화면과 OMS가 한 화면에서 말이 된다. 밴드만 보고 싶으면 `bandAskBp`.
+ *
  * ⚠️ 재구성 NAV와 공식 iNAV의 상수 편차(보수·배당 계상)가 μ_g에 실릴 수 있다 (§14.5 주석).
  *    운용 중 괴리 컬럼과 대조할 것.
  *
@@ -188,8 +237,16 @@ export function zLabel(z: number): string {
 export type QuoteSuggestion = {
   /** 호가 앵커 = iNAV. 미수신이면 null. */
   anchor: number | null
+  /** 호가가 설 레벨 = 밴드 − 재고 편향. */
   xAskBp: number | null
   xBidBp: number | null
+  /** 편향 전 진입 밴드 (μ ± zσ) — 툴팁에서 "밴드 → 편향 → x"를 보여줄 때. */
+  bandAskBp: number | null
+  bandBidBp: number | null
+  /** 재고 편향 bp (양수 = 호가 양쪽을 그만큼 아래로). 재고·한도 없으면 0. */
+  biasBp: number
+  /** 편향 계산에 쓴 재고한도 C(주). 전일종가 없으면 null. */
+  capShares: number | null
   bid: number | null
   ask: number | null
   /** x 분해 (툴팁 표시용) — 중심 μ_g / NAV 괴리 σ / 선물 괴리 σ(T 지평 직접 측정) / 결합 σ. */
@@ -219,6 +276,10 @@ export function suggestQuote(args: {
   z: number
   /** 호가 지평 T (초) — `QUOTE_HORIZON_OPTIONS` 중 하나. 서버가 그 지평의 σ를 직접 잰다. */
   horizonSeconds?: number
+  /** 현재 순포지션(주) — OMS 재고 편향의 분자. 없으면 0(편향 없음). */
+  positionQty?: number
+  /** 전일종가 — 재고한도 C를 만드는 기준가. 없으면 C 불명 → 편향 0. */
+  prevClose?: number | null
 }): QuoteSuggestion {
   const { inav, calib, z } = args
   const horizonSeconds = clampHorizon(args.horizonSeconds)
@@ -228,13 +289,19 @@ export function suggestQuote(args: {
   const sigmaRBp = num(calib?.s_diff_sigma_bp?.[String(horizonSeconds)])
   const sigmaCombBp = sigmaGBp != null ? Math.hypot(sigmaGBp, sigmaRBp ?? 0) : null
   const halfBp = sigmaCombBp != null ? z * sigmaCombBp : null
-  const xAskBp = muBp != null && halfBp != null ? muBp + halfBp : null
-  const xBidBp = muBp != null && halfBp != null ? muBp - halfBp : null
+  const bandAskBp = muBp != null && halfBp != null ? muBp + halfBp : null
+  const bandBidBp = muBp != null && halfBp != null ? muBp - halfBp : null
+  // 재고 편향 — 양쪽에서 **같은 값**을 빼 밴드를 통째로 옮긴다 (간격 불변, OMS v1.5).
+  const positionQty = args.positionQty ?? 0
+  const capShares = inventoryCapShares(num(args.prevClose))
+  const biasBp = inventoryBiasBp(sigmaCombBp, positionQty, capShares)
+  const xAskBp = bandAskBp != null ? bandAskBp - biasBp : null
+  const xBidBp = bandBidBp != null ? bandBidBp - biasBp : null
   const dayMax = calib?.g_day_max ?? null
   const dayMin = calib?.g_day_min ?? null
 
   const base = {
-    anchor: null, xAskBp, xBidBp, bid: null, ask: null,
+    anchor: null, xAskBp, xBidBp, bandAskBp, bandBidBp, biasBp, capShares, bid: null, ask: null,
     muBp, sigmaGBp, sigmaRBp, sigmaCombBp, horizonSeconds,
     degraded: sigmaGBp != null && sigmaRBp == null,
     touchDaysAsk: touchDays(dayMax, xAskBp, 'ask'),

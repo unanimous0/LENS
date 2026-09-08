@@ -14,6 +14,7 @@ import {
   fmtWon,
   fmtWonAbs,
   horizonLabel,
+  INTRADAY_CAP_WON,
   LP_DOWN,
   LP_UP,
   nearSide,
@@ -164,9 +165,11 @@ const COLS = 21
 /** x 컬럼 헤더 툴팁 — 산식과 보조줄(도달 일수)이 무엇인지 한 곳에만 적는다. */
 function xHeaderTip(horizonSeconds: number): string {
   return (
-    '호가가 설 레벨 x = μ_g ± z·σ결합 (bp, iNAV 대비).\n' +
+    '호가가 설 레벨 x = μ_g ± z·σ결합 − 재고편향 (bp, iNAV 대비).\n' +
     `σ결합 = √(σ괴리² + σ선물²) — NAV 괴리 분포와 선물 괴리 분포의 결합.\n` +
     `σ선물은 ${horizonLabel(horizonSeconds)} 지평에서 **직접 측정**한 값이다 (√T 환산 폐기 — §14.5 5차).\n` +
+    '재고편향 = σ결합 × 포지션 ÷ 재고한도 — 매도·매수를 같이 내리므로 간격은 그대로다\n' +
+    '(OMS 함수 전략 v1.5와 같은 항. 재고가 없으면 0).\n' +
     '보조줄 "N일 중 M일" = 장중 g가 그 x 레벨을 한 번이라도 넘은 날 수.\n' +
     'z를 올릴수록 유리하지만 도달 일수는 줄어든다 (정의상 단조).'
   )
@@ -176,6 +179,7 @@ function xHeaderTip(horizonSeconds: number): string {
  * x 분해 한 줄 — `μ −9.2 · σ괴리 8.1 · σ선물(1분) 9.8 → ±1.5σ 19.2bp`.
  * 셀·툴팁 여러 곳이 같은 문장을 쓰므로 한 벌로 둔다. 지평은 산출에 실제로 쓰인 값
  * (`suggestQuote`가 돌려준 `horizonSeconds`)을 그대로 적는다 — 라벨과 값이 어긋나면 안 된다.
+ * 재고가 있으면 `· 재고편향 −4.5bp`가 붙는다 — 그게 빠지면 분해 합이 x와 안 맞는다.
  */
 function xBreakdown(
   x: {
@@ -184,13 +188,30 @@ function xBreakdown(
     sigmaRBp: number | null
     sigmaCombBp: number | null
     horizonSeconds: number
+    biasBp: number
   },
   z: number,
 ): string {
   if (x.muBp == null || x.sigmaCombBp == null) return ''
   const g = x.sigmaGBp != null ? x.sigmaGBp.toFixed(1) : '-'
   const r = x.sigmaRBp != null ? x.sigmaRBp.toFixed(1) : '없음(선물봉 부재 → σ괴리만)'
-  return `μ ${fmtSignedBp(x.muBp)} · σ괴리 ${g} · σ선물(${horizonLabel(x.horizonSeconds)}) ${r} → ±${z}σ ${(z * x.sigmaCombBp).toFixed(1)}bp`
+  return (
+    `μ ${fmtSignedBp(x.muBp)} · σ괴리 ${g} · σ선물(${horizonLabel(x.horizonSeconds)}) ${r} → ±${z}σ ${(z * x.sigmaCombBp).toFixed(1)}bp` +
+    (x.biasBp !== 0 ? ` · 재고편향 ${fmtSignedBp(-x.biasBp)}bp` : '')
+  )
+}
+
+/**
+ * 재고 편향 툴팁 한 줄 — `재고 편향 −0.045% (포지션 +5,000주 / 한도 8,500주)`.
+ * %는 OMS 조건변수와 같은 단위·자리수(3자리)라 엑셀 OMS 시트의 D·C와 눈으로 대조된다.
+ * 재고가 없으면 빈 문자열 (편향 0인 행에 굳이 줄을 늘리지 않는다).
+ */
+function biasNote(biasBp: number, posQty: number, capShares: number | null): string {
+  if (biasBp === 0) return ''
+  return (
+    `\n재고 편향 ${fmtSignedBp(-biasBp / 100, 3)}% (포지션 ${fmtSigned(posQty)}주 / 한도 ${capShares?.toLocaleString() ?? '-'}주)` +
+    ' — 매도·매수 동일 이동(간격 불변), OMS v1.5'
+  )
 }
 
 /**
@@ -464,20 +485,27 @@ export function LpDeskPage() {
         ? null
         : relPerfBp(changePct, it.beta_k200 ?? null, it.beta_kq150 ?? null, fkChg, fqChg)
 
-      // 제안 호가 (§14.5 호가 층) — 앵커 iNAV × (1 + x), x = μ_g ± z·√(σ_g²+σ_r²).
-      // 캘리브·iNAV 중 하나라도 없으면 가격 없이 사유만. 선물·β·전일종가는 무관
+      const pos = posByCode.get(code)
+      const qty = pos?.qty ?? 0
+
+      // 제안 호가 (§14.5 호가 층) — 앵커 iNAV × (1 + x), x = μ_g ± z·√(σ_g²+σ_r²) − 재고 편향.
+      // 캘리브·iNAV 중 하나라도 없으면 가격 없이 사유만. 선물·β는 무관
       // (σ_r은 선물이 필요하지만, 없으면 차단이 아니라 σ_g로 degrade).
+      // 편향은 OMS 함수 전략 v1.5와 **같은 항** — 재고가 있으면 화면 제안가도 OMS가 실제로 거는
+      // 자리로 따라 내려간다 (2026-09-09). C는 위에서 푼 전일종가로 만든다: 엑셀 OMS 시트는 서버
+      // 일봉 종가를 쓰므로 배당락 등으로 틱 기준가와 갈리면 드물게 한 로트(100주) 차이가 날 수
+      // 있지만, 화면 안에서 전일종가 정의가 둘이 되는 편이 더 나쁘다.
       const quote = suggestQuote({
         inav: nav > 0 ? nav : null,
         calib: it.calib,
         z: tuner.z,
         horizonSeconds: tuner.horizonSeconds,
+        positionQty: qty,
+        prevClose,
       })
       // 체결 임박 — 실시간 g가 x 레벨까지 |x|의 20% 이내로 접근했는지 (§14.5 운영 사이클).
       const near = nearSide(premiumBp, quote.xAskBp, quote.xBidBp)
 
-      const pos = posByCode.get(code)
-      const qty = pos?.qty ?? 0
       const markPrice = ref || pos?.avg_price || 0
       const value = qty * markPrice
       const entryGapBp = pos?.entry_gap_bp ?? null
@@ -542,6 +570,9 @@ export function LpDeskPage() {
         anchor: quote.anchor,
         bidBp: quote.xBidBp,
         askBp: quote.xAskBp,
+        // 재고 편향 (OMS v1.5) — x는 이미 편향이 빠진 값이고, 이 둘은 툴팁에 근거를 적기 위한 것.
+        biasBp: quote.biasBp,
+        capShares: quote.capShares,
         // x 분해 (μ_g / σ_g / σ_r / σ_comb) — 툴팁에서 "왜 이 폭인가"를 보여준다.
         muBp: quote.muBp,
         sigmaGBp: quote.sigmaGBp,
@@ -754,7 +785,8 @@ export function LpDeskPage() {
    * 파라미터 엑셀 내보내기 (§14.11) — 실집행은 LENS가 없는 **내부망**에서 하므로 β·호가 밴드
    * 같은 정적 파라미터만 엑셀로 반입하고, 체결·시세·선물가는 내부망 엑셀이 DDE로 받아
    * 워크북 수식이 헤지 계약수를 낸다. 화면 튜너(z·지평)를 그대로 실어 보내 파일의 x가
-   * 지금 보고 있는 호가 밴드와 어긋나지 않게 한다.
+   * 지금 보고 있는 호가 밴드와 어긋나지 않게 한다. 단 엑셀의 x는 밴드 원값(편향 미적용 — OMS
+   * 함수가 스스로 뺀다)이고 화면의 x는 편향 반영값이라, 포지션 있는 종목은 그만큼 다르다.
    *
    * `window.open`이 아니라 fetch→blob인 이유: 캘리브가 없을 때 서버가 503을 주는데, 링크
    * 이동이면 데스크 화면이 JSON 오류 페이지로 통째로 날아간다. 실패는 헤더 배지로만 알린다.
@@ -904,9 +936,11 @@ export function LpDeskPage() {
               className="flex items-center gap-1.5 rounded-md h-[28px] px-2.5 bg-[#1e1e22] text-[10px] text-[#8b8b8e]"
               title={
                 '매도 = iNAV × (1 + x매도) 5원 올림 / 매수 = iNAV × (1 + x매수) 5원 내림\n' +
-                'x = μ_g ± z·σ결합 · σ결합 = √(σ괴리² + σ선물²)\n' +
+                'x = μ_g ± z·σ결합 − 재고편향 · σ결합 = √(σ괴리² + σ선물²)\n' +
                 `  μ_g·σ괴리 = 최근 ${master?.calib_params?.calib_days ?? 10}거래일 30초봉 NAV 괴리 g의 평균·레벨 σ\n` +
                 `  σ선물 = 선물 대비 스큐 s의 ${horizonLabel(tuner.horizonSeconds)} 변화 σ — 그 지평에서 **직접 측정**(√T 환산 폐기)\n` +
+                `  재고편향 = σ결합 × 포지션 ÷ 재고한도(장중 상한 ${fmtWonAbs(INTRADAY_CAP_WON)} ÷ 전일종가, 100주 내림)\n` +
+                '    — 매도·매수를 같은 폭만큼 내려 간격은 그대로. OMS 함수 전략 v1.5와 같은 항\n' +
                 `지평 T = 호가를 걸어 두는 시간. 늘릴수록 폭이 넓어지지만 √T 가정만큼은 아니다\n` +
                 `z(호가 폭 배수)는 왼쪽 프리셋 토글·입력칸에서 — 현재 ${zLabel(tuner.z)}\n` +
                 `g 표본 ${master?.calib_params?.g_window ?? '09:10~15:20'} (선물 불필요 — 하루 전체)`
@@ -936,7 +970,8 @@ export function LpDeskPage() {
                 '내부망 반입용 파라미터 엑셀 (β·호가 밴드·전일종가·CU 36종 스냅샷)\n' +
                 '실집행은 LENS가 없는 내부망에서 하므로, 체결·시세·선물가는 그쪽 엑셀이 DDE로 받고\n' +
                 '이 파일의 수식이 K200/KQ150 노출 → 목표 계약수 → 집행할 계약까지 계산한다.\n' +
-                `x는 지금 헤더 설정(z ${zLabel(tuner.z)} · 지평 ${horizonLabel(tuner.horizonSeconds)})으로 채워진다. 매크로 없음.`
+                `x는 지금 헤더 설정(z ${zLabel(tuner.z)} · 지평 ${horizonLabel(tuner.horizonSeconds)})으로 채워진다. 매크로 없음.\n` +
+                '엑셀의 x·A·B는 밴드 원값 — 재고 편향은 OMS 함수가 빼므로, 포지션 있는 종목은 화면 x(편향 반영)와 다른 게 정상.'
               }
             >
               {exporting ? '내보내는 중…' : '엑셀 내보내기'}
@@ -1120,7 +1155,8 @@ export function LpDeskPage() {
                       r.premiumBp == null
                         ? 'iNAV/현재가 미수신 — 괴리 산출 불가'
                         : `실시간 괴리 g = (${r.mid > 0 ? 'mid' : '현재가'} − iNAV)/iNAV = ${fmtSignedBp(r.premiumBp)}bp\n` +
-                          `x매도 ${r.askBp != null ? fmtSignedBp(r.askBp) : '-'} / x매수 ${r.bidBp != null ? fmtSignedBp(r.bidBp) : '-'}bp (μ_g ± ${tuner.z}σ결합)` +
+                          `x매도 ${r.askBp != null ? fmtSignedBp(r.askBp) : '-'} / x매수 ${r.bidBp != null ? fmtSignedBp(r.bidBp) : '-'}bp ` +
+                          `(μ_g ± ${tuner.z}σ결합${r.biasBp !== 0 ? ' − 재고편향' : ''})` +
                           (r.near ? `\n→ ${r.near === 'ask' ? '매도' : '매수'} 체결 임박 (x까지 |x|의 ${Math.round(NEAR_MARGIN_RATIO * 100)}% 이내)` : '')
                     }
                   >
@@ -1132,12 +1168,14 @@ export function LpDeskPage() {
                     breakdown={xBreakdown(r, tuner.z)} excludedLegs={r.calib?.excluded_legs ?? 0}
                     touchDays={r.touchDaysAsk} calibDays={r.touchTotalDays}
                     ticksOut={r.ticksOutAsk} reason={r.quoteAskReason}
+                    biasBp={r.biasBp} posQty={r.qty} capShares={r.capShares}
                   />
                   <QuoteCell
                     price={r.quoteBid} side="bid" anchor={r.anchor} xBp={r.bidBp}
                     breakdown={xBreakdown(r, tuner.z)} excludedLegs={r.calib?.excluded_legs ?? 0}
                     touchDays={r.touchDaysBid} calibDays={r.touchTotalDays}
                     ticksOut={r.ticksOutBid} reason={r.quoteBidReason}
+                    biasBp={r.biasBp} posQty={r.qty} capShares={r.capShares}
                   />
                   <C c="text-[#d1d1d6]" className="border-l border-white/[0.04]">{r.ask1 > 0 ? r.ask1.toLocaleString() : '-'}</C>
                   <C c="text-[#d1d1d6]">{r.bid1 > 0 ? r.bid1.toLocaleString() : '-'}</C>
@@ -1239,6 +1277,7 @@ export function LpDeskPage() {
                         gapObs={r.gapObs}
                         xBidBp={r.bidBp}
                         xAskBp={r.askBp}
+                        biasBp={r.biasBp}
                         z={tuner.z}
                         xBreakdown={xBreakdown(r, tuner.z)}
                         touchDaysBid={r.touchDaysBid}
@@ -1517,12 +1556,18 @@ function PriceCell({
  */
 function QuoteCell({
   price, side, anchor, xBp, breakdown, excludedLegs, touchDays, calibDays, ticksOut, reason,
+  biasBp, posQty, capShares,
 }: {
   price: number | null
   side: 'bid' | 'ask'
   /** 호가 앵커 = iNAV (§14.5 4차 정정). */
   anchor: number | null
+  /** 호가가 설 레벨 = 밴드 − 재고 편향 (편향은 x에 이미 반영돼 있다). */
   xBp: number | null
+  /** 재고 편향 bp — 0이면 툴팁에 줄이 붙지 않는다 (OMS v1.5). */
+  biasBp: number
+  posQty: number
+  capShares: number | null
   /** x 분해 한 줄 (`μ … · σ괴리 … · σ선물 … → ±zσ`). */
   breakdown: string
   /** 재구성에서 뺀 레그 수 (0이면 표기 없음, §14.3). */
@@ -1545,6 +1590,7 @@ function QuoteCell({
             `제안${label} ${price.toLocaleString()} · x ${xBp != null ? fmtSignedBp(xBp) : '-'}bp\n` +
             `iNAV ${anchor != null ? anchor.toLocaleString(undefined, { maximumFractionDigits: 1 }) : '-'} × (1 ${fmtSignedBp(xBp ?? 0)}bp) → 5원 ${side === 'ask' ? '올림' : '내림'}\n` +
             `x = ${breakdown}` +
+            biasNote(biasBp, posQty, capShares) +
             (touchDays != null ? `\n도달 ${calibDays ?? '-'}일 중 ${touchDays}일 (장중 g가 이 레벨을 넘은 날)` : '') +
             (ticksOut != null
               ? `\n시장 ${mktLabel} 대비 ${fmtSigned(ticksOut)}틱 (양수 = 시장 밖에서 대기 / 음수 = 안쪽)`
