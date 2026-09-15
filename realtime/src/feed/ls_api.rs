@@ -12,7 +12,7 @@ use tracing::{debug, info, warn};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::model::message::WsMessage;
-use crate::model::tick::{EtfTick, FuturesTick, IndexFuturesDepthTick, IndexFuturesTick, OrderbookLevel, OrderbookTick, StockTick};
+use crate::model::tick::{EtfTick, FuturesTick, IndexFuturesDepthTick, IndexFuturesQuote, IndexFuturesTick, OrderbookLevel, OrderbookTick, StockTick};
 use crate::Stats;
 
 use super::{MarketFeed, SubCommand};
@@ -466,8 +466,9 @@ impl MarketFeed for LsApiFeed {
         );
 
         // ─── 지수선물 (FC9 체결 + FH9 호가) ───
-        // FC9: LP FV_futures 앵커 (lp-system-design.md §13.3-A / §13.7 Phase 2)
-        // FH9: 총잔량(매도/매수) — "선물" 탭 비율 추이.
+        // FC9: LP FV_futures 앵커 (lp-system-design.md §13.3-A / §13.7 Phase 2) — **lp front**(D-2 롤)
+        // FH9: 총잔량(매도/매수) — "선물" 탭 비율 추이 — **depth front**(만기 당일까지 당월물)
+        // 두 front는 만기 D-1·D-0 이틀만 다르다 (ls_rest.rs 지수선물 front-month 해석 참조).
         // 기동 시 t8467로 KOSPI200/미니/KOSDAQ150 front-month 해석 → 전용 연결(키A) 스폰.
         // 실패해도 기동은 막지 않음 (지수선물 없이 진행). 월물 토글(futures_cancel)과 무관하게
         // 항상 살아있도록 별도 cancel 토큰(global cancel에만 종속) 사용.
@@ -493,23 +494,40 @@ impl MarketFeed for LsApiFeed {
             let stream_us = index_futures_stream_us().clone();
             // FH9 전용 stream atomic — 위와 같은 이유로 FC9와도 분리.
             let depth_stream_us = index_futures_depth_stream_us().clone();
+            // depth front FC9(롤 창에만 스폰) 전용 stream atomic — FH9와도 분리(같은 이유).
+            let depth_quote_stream_us = index_futures_depth_quote_stream_us().clone();
             tokio::spawn(async move {
                 // t8467은 마스터라 장 외에도 가능. REST 키는 시간대 기준(rest_credentials).
                 let (ak_r, as_r) = super::ls_rest::rest_credentials();
                 match super::ls_rest::fetch_index_futures_front_months(&ak_r, &as_r).await {
-                    Ok(resolved) if !resolved.is_empty() => {
+                    Ok(fronts) if !fronts.lp.is_empty() => {
                         let fc9_subs: Vec<(String, String)> =
-                            resolved.iter().map(|r| ("FC9".to_string(), r.code.clone())).collect();
+                            fronts.lp.iter().map(|r| ("FC9".to_string(), r.code.clone())).collect();
                         // FH9(총잔량)는 화면 대상 2종만 — 미니는 KOSPI200과 같은 기초지수라 중복.
-                        let fh9_subs: Vec<(String, String)> = resolved
+                        let depth_fronts: Vec<&super::ls_rest::ResolvedIndexFuture> =
+                            fronts.depth.iter().filter(|r| r.product != "mini_k200").collect();
+                        let fh9_subs: Vec<(String, String)> = depth_fronts
                             .iter()
-                            .filter(|r| r.product != "mini_k200")
                             .map(|r| ("FH9".to_string(), r.code.clone()))
                             .collect();
+                        // 총잔량 틱에 붙일 체결 스냅샷용 FC9 — depth front가 lp front와 **다를 때만**
+                        // 추가 구독한다(만기 D-1·D-0). 이 스트림은 broadcast하지 않고 캐시만 갱신 →
+                        // LP의 resolveIndexFutures(price>0 + 최신 timestamp 단일 체인)가 구월물을
+                        // 집을 여지를 원천 차단.
+                        let lp_codes: Vec<String> = fronts.lp.iter().map(|r| r.code.clone()).collect();
+                        let depth_codes: Vec<String> =
+                            depth_fronts.iter().map(|r| r.code.clone()).collect();
+                        let depth_only_subs: Vec<(String, String)> = depth_codes
+                            .iter()
+                            .filter(|c| !lp_codes.contains(c))
+                            .map(|c| ("FC9".to_string(), c.clone()))
+                            .collect();
+                        set_index_front_codes(&lp_codes, &depth_codes);
                         info!(
-                            "지수선물 front-month 해석 완료: {} (FC9 {} / FH9 {})",
-                            resolved.iter().map(|r| format!("{}={}", r.product, r.code)).collect::<Vec<_>>().join(" "),
-                            fc9_subs.len(), fh9_subs.len(),
+                            "지수선물 front-month 해석 완료: lp[{}] depth[{}] (FC9 {} / FH9 {} / depth FC9 {})",
+                            fronts.lp.iter().map(|r| format!("{}={}", r.product, r.code)).collect::<Vec<_>>().join(" "),
+                            depth_fronts.iter().map(|r| format!("{}={}", r.product, r.code)).collect::<Vec<_>>().join(" "),
+                            fc9_subs.len(), fh9_subs.len(), depth_only_subs.len(),
                         );
                         // idle grace anchor — 해석 완료 시각부터 age 측정 (0=미수신과 구분).
                         let anchor = now_us();
@@ -524,6 +542,17 @@ impl MarketFeed for LsApiFeed {
                             spawn_futures_connections(
                                 &fh9_subs, &ak, &as_, &names, &stock_codes, &futures_to_spot,
                                 &tx_if, &cancel_if, &cancel_if, &stats, &last_data_us, &last_subscribe_us, &depth_stream_us, 710,
+                            );
+                        }
+                        if !depth_only_subs.is_empty() {
+                            info!(
+                                "지수선물 롤 창(만기 D-1·D-0) — depth front FC9 추가 구독 {:?}: 총잔량 틱 quote 전용, broadcast 안 함",
+                                depth_only_subs.iter().map(|(_, c)| c).collect::<Vec<_>>()
+                            );
+                            depth_quote_stream_us.store(anchor, Ordering::Relaxed);
+                            spawn_futures_connections(
+                                &depth_only_subs, &ak, &as_, &names, &stock_codes, &futures_to_spot,
+                                &tx_if, &cancel_if, &cancel_if, &stats, &last_data_us, &last_subscribe_us, &depth_quote_stream_us, 720,
                             );
                         }
                     }
@@ -1568,7 +1597,7 @@ async fn handle_tick(
                 Some("4") | Some("5") => -change_mag,
                 _ => change_mag,
             };
-            try_send_tick(tx, WsMessage::IndexFuturesTick(IndexFuturesTick {
+            let tick = IndexFuturesTick {
                 code: tr_key.into(),
                 name: index_futures_display_name(tr_key, product),
                 product,
@@ -1583,7 +1612,17 @@ async fn handle_tick(
                 open_interest: oi,
                 open_interest_change: oi_change,
                 timestamp: now,
-            }));
+            };
+            // depth front(= "선물" 탭 총잔량과 같은 월물)면 FH9 틱에 실어 보낼 스냅샷 갱신.
+            // 롤 창(만기 D-1·D-0)엔 lp front와 다른 코드라 **broadcast는 하지 않는다** —
+            // IndexFuturesTick 맵에 구월물이 섞이면 LP resolveIndexFutures가 오집을 수 있다.
+            let (is_lp_front, is_depth_front) = index_front_role(tr_key);
+            if is_depth_front {
+                store_index_quote(product, &tick);
+            }
+            if is_lp_front || !is_depth_front {
+                try_send_tick(tx, WsMessage::IndexFuturesTick(tick));
+            }
         }
         // 지수선물 호가 (FH9) — **총잔량만** 사용. 5호가 레벨은 "선물" 탭이 안 쓰므로 파싱 생략
         // (totofferrem/totbidrem이 총잔량을 직접 준다). 틱이 매우 잦아 product별 500ms throttle.
@@ -1608,6 +1647,8 @@ async fn handle_tick(
                 total_ask_qty: total_ask,
                 total_bid_qty: total_bid,
                 ratio: if total_ask > 0 { Some(r4(total_bid as f64 / total_ask as f64)) } else { None },
+                // 같은 월물 FC9 스냅샷 동승 — 탭이 IndexFuturesTick을 역참조하지 않게(월물 혼입 차단).
+                quote: load_index_quote(product),
                 time_ms: now_ms as i64,
             }));
         }
@@ -1726,6 +1767,88 @@ pub fn index_futures_depth_stream_us() -> &'static Arc<AtomicU64> {
     SLOT.get_or_init(|| Arc::new(AtomicU64::new(0)))
 }
 
+/// **depth front FC9**(롤 창에만 스폰되는 추가 구독) 전용 last_data_us.
+/// FH9·lp FC9와 또 분리 — 같은 atomic을 쓰면 한쪽 stall이 다른 쪽 idle watchdog을 가린다.
+/// 값 0 = 미스폰(평시) 또는 아직 데이터 없음.
+pub fn index_futures_depth_quote_stream_us() -> &'static Arc<AtomicU64> {
+    static SLOT: std::sync::OnceLock<Arc<AtomicU64>> = std::sync::OnceLock::new();
+    SLOT.get_or_init(|| Arc::new(AtomicU64::new(0)))
+}
+
+// ─── 지수선물 front 코드 역할 + 총잔량 동승 체결 스냅샷 ──────────────────────
+// front 해석(기동 시 1회) 결과를 FC9 핸들러가 조회할 수 있게 보관. 코드 2~3개씩이라
+// HashSet 대신 Vec로 충분하고, 쓰기는 기동 1회 / 읽기는 FC9 틱마다(초당 수 건).
+
+static INDEX_FRONT_CODES: std::sync::OnceLock<std::sync::RwLock<(Vec<String>, Vec<String>)>> =
+    std::sync::OnceLock::new();
+
+fn index_front_codes() -> &'static std::sync::RwLock<(Vec<String>, Vec<String>)> {
+    INDEX_FRONT_CODES.get_or_init(|| std::sync::RwLock::new((Vec::new(), Vec::new())))
+}
+
+/// front 해석 직후 1회 등록. `lp` = FC9 broadcast 대상, `depth` = FH9(+ 스냅샷) 대상.
+fn set_index_front_codes(lp: &[String], depth: &[String]) {
+    let mut g = index_front_codes().write().unwrap();
+    g.0 = lp.to_vec();
+    g.1 = depth.to_vec();
+}
+
+/// 코드의 역할 (is_lp_front, is_depth_front). 미등록 코드는 (true, false) — 기존 동작 유지.
+fn index_front_role(code: &str) -> (bool, bool) {
+    let g = index_front_codes().read().unwrap();
+    if g.0.is_empty() && g.1.is_empty() {
+        return (true, false);
+    }
+    (g.0.iter().any(|c| c == code), g.1.iter().any(|c| c == code))
+}
+
+/// 상품 고정 3종 → 슬롯 인덱스 (throttle·스냅샷 캐시 공용).
+fn index_product_slot(product: &str) -> usize {
+    match product {
+        "kospi200" => 0,
+        "mini_k200" => 1,
+        _ => 2,
+    }
+}
+
+/// depth front 체결 스냅샷 캐시 — FH9 틱에 실어 보낼 값. product별 1건.
+static INDEX_QUOTES: std::sync::OnceLock<[std::sync::RwLock<Option<IndexFuturesQuote>>; 3]> =
+    std::sync::OnceLock::new();
+
+fn index_quotes() -> &'static [std::sync::RwLock<Option<IndexFuturesQuote>>; 3] {
+    INDEX_QUOTES.get_or_init(Default::default)
+}
+
+/// FC9 틱 → 스냅샷 갱신. 필드별 sticky(0/None이면 직전 값 유지) — FC9가 어떤 틱에서
+/// 이론가·미결제약정을 안 실어 보내도 카드/차트 값이 깜빡이지 않게.
+fn store_index_quote(product: &'static str, t: &IndexFuturesTick) {
+    let slot = &index_quotes()[index_product_slot(product)];
+    let Ok(mut cur) = slot.write() else { return };
+    let mut q = cur.unwrap_or_default();
+    if t.price > 0.0 {
+        q.price = t.price;
+        q.change = t.change;
+        q.change_rate = t.change_rate;
+    }
+    if t.volume > 0 {
+        q.volume = t.volume;
+    }
+    if t.underlying_index > 0.0 {
+        q.underlying_index = t.underlying_index;
+    }
+    if let Some(th) = t.theory_price.filter(|v| *v > 0.0) {
+        q.theory_price = Some(th);
+    }
+    if let Some(oi) = t.open_interest.filter(|v| *v > 0) {
+        q.open_interest = Some(oi);
+    }
+    *cur = Some(q);
+}
+
+fn load_index_quote(product: &str) -> Option<IndexFuturesQuote> {
+    index_quotes()[index_product_slot(product)].read().ok().and_then(|q| *q)
+}
+
 /// LS feed → bridge mpsc 채널이 full이거나 receiver dropped 시 drop 카운터.
 /// 핫 path에서 `.await` blocking을 피하기 위해 try_send 사용 — 거의 0이어야 정상.
 /// /debug/stats 의 tx_dropped 로 노출.
@@ -1755,7 +1878,7 @@ const FH9_MIN_INTERVAL_MS: u64 = 500;
 /// product별 500ms throttle. 통과 시 true(+ 시각 갱신). 상품 3종 고정이라 map 대신 슬롯 배열.
 fn fh9_throttle_pass(product: &str, now_ms: u64) -> bool {
     static SLOTS: [AtomicU64; 3] = [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)];
-    let idx = match product { "kospi200" => 0, "mini_k200" => 1, _ => 2 };
+    let idx = index_product_slot(product);
     if now_ms.saturating_sub(SLOTS[idx].load(Ordering::Relaxed)) < FH9_MIN_INTERVAL_MS {
         return false;
     }

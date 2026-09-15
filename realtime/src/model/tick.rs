@@ -155,6 +155,33 @@ pub struct IndexFuturesTick {
     pub timestamp: String,
 }
 
+/// 총잔량 틱에 **동승하는 같은 월물의 FC9 체결 스냅샷** (2026-09-09).
+///
+/// "선물" 탭은 총잔량뿐 아니라 현재가·전일대비·베이시스·미결제약정도 같이 본다. 그런데
+/// FH9(탭)와 FC9(LP 앵커)는 **롤 규칙이 달라 만기 D-1·D-0에 서로 다른 월물**이다
+/// (`ls_rest.rs` 지수선물 front-month 해석 참조). 프론트가 `IndexFuturesTick` 맵을
+/// product로 역참조하면 그 이틀간 "9월물 잔량 + 12월물 가격"이 섞이므로, 총잔량과 **같은
+/// 코드의** 체결값을 서버에서 붙여 내려보낸다. (LP의 IndexFuturesTick 체인은 손대지 않음.)
+#[derive(Debug, Clone, Copy, Default, Serialize)]
+pub struct IndexFuturesQuote {
+    /// 현재가 (FC9 `price`).
+    pub price: f64,
+    /// 전일대비 (부호 복원 완료).
+    pub change: f64,
+    /// 등락률 % (FC9 `drate`).
+    pub change_rate: f64,
+    /// 당일 누적 거래량 (FC9 `volume`).
+    pub volume: u64,
+    /// 기초지수 (FC9 `k200jisu`). 0 = 미상. 시장 베이시스 = price − underlying_index.
+    pub underlying_index: f64,
+    /// 이론가 (FC9 `theoryprice`). 미제공 시 None.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub theory_price: Option<f64>,
+    /// 미결제약정 (FC9 `openyak`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub open_interest: Option<i64>,
+}
+
 /// 지수선물 총잔량 틱 (LS FH9 호가 — KOSPI200 / KOSDAQ150).
 ///
 /// `OrderbookTick`(H1_/HA_/JH0)과 **별도 타입**인 이유: "선물" 탭은 호가 레벨이 아니라
@@ -173,6 +200,9 @@ pub struct IndexFuturesDepthTick {
     /// 매수÷매도. >1이면 매수우위. 매도잔량 0이면 None (0 나눗셈 회피).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ratio: Option<f64>,
+    /// 같은 `code`의 FC9 최신 스냅샷. 체결 틱 수신 전이면 None.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quote: Option<IndexFuturesQuote>,
     /// 수신 시각 (epoch ms). FH9 `hotime`(HHMMSS)은 초 단위라 서버 시계 사용.
     pub time_ms: i64,
 }

@@ -9,7 +9,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 use crate::model::message::WsMessage;
-use crate::model::tick::{EtfTick, FuturesTick, IndexFuturesDepthTick, IndexFuturesTick, OrderbookLevel, OrderbookTick, StockTick};
+use crate::model::tick::{EtfTick, FuturesTick, IndexFuturesDepthTick, IndexFuturesQuote, IndexFuturesTick, OrderbookLevel, OrderbookTick, StockTick};
 
 use super::{MarketFeed, SubCommand};
 
@@ -310,6 +310,8 @@ impl MarketFeed for MockFeed {
         let mut index_fut_volume: HashMap<&'static str, u64> = HashMap::new();
         // 지수선물 미결제약정 — 완만한 랜덤워크 ("선물" 탭 OI 추이 차트용).
         let mut index_fut_oi: HashMap<&'static str, i64> = HashMap::new();
+        // 최근 FC9 스냅샷 — FH9 틱에 동승시킬 값 (실 피드가 depth front 체결을 붙이는 것과 동형).
+        let mut index_fut_quote: HashMap<&'static str, IndexFuturesQuote> = HashMap::new();
 
         // PDF 기반 NAV 계산: ETF 코드 → 현재 stock_prices로 basket 합 / cu_unit.
         let compute_basket_nav = |code: &str, stock_prices: &HashMap<String, f64>| -> Option<f64> {
@@ -461,7 +463,17 @@ impl MarketFeed for MockFeed {
                     let oi = index_fut_oi.entry(f.code).or_insert(250_000);
                     // 완만한 증감 (실제 OI는 하루 수 % 내에서 움직인다)
                     *oi = (*oi + rng.random_range(-400..420)).clamp(200_000, 300_000);
-                    if tx.send(WsMessage::IndexFuturesTick(make_index_futures_tick(f.code, f.name, f.product, next, idx, *vol, *oi, &mut rng))).await.is_err() { return; }
+                    let t = make_index_futures_tick(f.code, f.name, f.product, next, idx, *vol, *oi, &mut rng);
+                    index_fut_quote.insert(f.code, IndexFuturesQuote {
+                        price: t.price,
+                        change: t.change,
+                        change_rate: t.change_rate,
+                        volume: t.volume,
+                        underlying_index: t.underlying_index,
+                        theory_price: t.theory_price,
+                        open_interest: t.open_interest,
+                    });
+                    if tx.send(WsMessage::IndexFuturesTick(t)).await.is_err() { return; }
                 }
             }
 
@@ -480,6 +492,8 @@ impl MarketFeed for MockFeed {
                         total_ask_qty: a,
                         total_bid_qty: b,
                         ratio: if a > 0 { Some((b as f64 / a as f64 * 10_000.0).round() / 10_000.0) } else { None },
+                        // 실 피드와 동형 — 같은 코드의 최신 체결 스냅샷 동승 ("선물" 탭이 이것만 본다).
+                        quote: index_fut_quote.get(f.code).copied(),
                         time_ms: Utc::now().timestamp_millis(),
                     });
                     if tx.send(msg).await.is_err() { return; }

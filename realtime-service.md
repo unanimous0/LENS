@@ -266,6 +266,15 @@ Mock:   MockFeed가 직접 프론트엔드 포맷 생성 → 브로드캐스트 
     "total_ask_qty": 13136,
     "total_bid_qty": 14458,
     "ratio": 1.1006,
+    "quote": {
+      "price": 1295.5,
+      "change": 2.37,
+      "change_rate": 0.18,
+      "volume": 15073,
+      "underlying_index": 1293.13,
+      "theory_price": 1294.03,
+      "open_interest": 249978
+    },
     "time_ms": 1786406112000
   }
 }
@@ -273,6 +282,9 @@ Mock:   MockFeed가 직접 프론트엔드 포맷 생성 → 브로드캐스트 
 
 - FH9의 `totofferrem`/`totbidrem` 그대로 (5호가 합산 불필요 — TR이 총잔량을 직접 준다)
 - `ratio` = 매수총잔량 ÷ 매도총잔량 (ask==0이면 필드 생략)
+- `quote` = **같은 `code`(월물)의 FC9 최신 스냅샷 동승** (2026-09-09). 필드별 sticky(0/None이면 직전 값 유지).
+  "선물" 탭은 이 한 스트림만 보고 카드·차트를 그린다 — `index_futures_tick`(LP 앵커용 FC9)을
+  product로 역참조하면 만기 전일·당일에 월물이 섞인다 (아래 롤 규칙 2벌 참조)
 - product별 **500ms throttle**. 재접속 스냅샷 캐시 포함 (key `index_futures_depth:{product}`)
 - 당일 히스토리는 WS가 아니라 REST `GET /futures/depth-history` — 아래 "지수선물 총잔량 수집" 섹션
 
@@ -302,15 +314,28 @@ Mock:   MockFeed가 직접 프론트엔드 포맷 생성 → 브로드캐스트 
 - **FC9와 연결 분리**: FC9 = conn_base 700 / FH9 = conn_base **710** + 전용 `index_futures_depth_stream_us`.
   같은 연결에 두면 FH9(초당 수십 틱)가 FC9 stall을 watchdog·`/debug/stats` 양쪽에서 가린다
   (JC0 크로스마스킹과 동일 패턴). 분리 덕에 FH9 stall도 독립 감지·재접속된다.
-- front-month resolve는 FC9와 동일 (t8467, `ls_rest.rs`). 월물 롤 재resolve 부재도 FC9와 같은 한계 (후속 트랙).
-- `/debug/stats`: `index_futures_depth_age_sec` (FC9의 `index_futures_age_sec`와 독립).
+- **front-month 롤 규칙은 용도별 2벌** (t8467 1회 호출로 동시 해석, `ls_rest.rs`, 2026-09-09):
+  **lp front** = FC9(LP FV_futures 앵커) — 만기 D-2부터 차근월물 / **depth front** = FH9("선물" 탭)
+  — 만기 **전일(D-1)까지 당월물**, 만기 당일부터 차근월물 (사용자 확정 2026-09-10: "만기날 당일은
+  근월물 끝"). LP 앵커는 D-2부터 롤이라 두 벌이 다른 건 만기 전일(D-1) 하루뿐.
+- 그 이틀에는 depth front의 FC9를 **추가 구독**(conn_base 720, 전용 `index_futures_depth_quote_stream_us`)해
+  총잔량 틱의 `quote`만 채우고 **broadcast는 하지 않는다** — `IndexFuturesTick` 맵에 구월물이 섞이면
+  LP의 `resolveIndexFutures`(price>0 + 최신 timestamp 단일 체인)가 잘못된 월물을 집을 수 있다.
+- 월물 롤 재resolve 부재는 여전한 한계: **해석은 기동 시 1회**라 만기일 밤을 넘겨 계속 돌리면
+  다음 기동까지 구월물을 물고 있다 (start_dev.sh 일일 재기동 전제로 수용, 후속 트랙).
+- `/debug/stats`: `index_futures`(lp front) / `index_futures_depth`(depth front) +
+  `index_futures_depth_age_sec`·`index_futures_depth_quote_age_sec` (FC9의 `index_futures_age_sec`와 독립).
 
 ### 당일 히스토리 (`realtime/src/futures_depth.rs`)
 
 - product별 10초 샘플 링버퍼(상한 3,000점). 샘플 포인트(REST 필드명은 페이로드 절약용 축약):
   `t`(epoch초) / `a`(매도총잔량) / `b`(매수총잔량) / `p`(선물가) / `v`(누적거래량) /
   `oi`(미결제약정) / `u`(기초지수) / `th`(이론가) — 뒤 3개는 FC9 최신값 sticky, 0 = 미상 (2026-08-12 추가, `#[serde(default)]`로 구포맷 스냅샷 호환).
-- p/v/oi/u/th는 `main.rs` bridge의 `observe()` 훅에서 FC9·FH9를 한 지점에서 합쳐 기록 (ls_api·mock 공통 커버).
+- p/v/oi/u/th는 `main.rs` bridge의 `observe()` 훅이 **FH9 틱에 동승한 `quote`**에서 뽑아 기록
+  (ls_api·mock 공통 커버). 2026-09-09 이전엔 FC9 스트림에서 따로 모았는데, 롤 규칙 분리 후엔
+  FC9(lp front)와 월물이 갈릴 수 있어 동승 스냅샷만 쓴다.
+- 시계열 도중 **월물이 바뀌면 이전 계약 표본을 폐기**한다 (계약이 다르면 잔량 수준 자체가 달라
+  이어붙이면 한 차트에 두 계약이 섞인다). 만기 주변에 장중 재기동해 front가 갈릴 때만 발생.
 - **파일 스냅샷** `data/futures_depth_intraday.json` (volume_cache.rs 패턴): 6샘플마다 spawn_blocking flush + SIGINT 시 최종 flush.
   기동 시 같은 KST 날짜면 복원, 아니면 폐기. 날짜 롤오버 시 sticky 포함 전체 리셋.
 - **mock/live 혼입 차단**: 스냅샷·메모리에 `source`("mock"/"live") 태깅. 기동/모드 전환 시 `set_source()`가

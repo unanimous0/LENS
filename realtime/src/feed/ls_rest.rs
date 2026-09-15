@@ -1014,24 +1014,46 @@ pub async fn fetch_quotes_snapshot(
 }
 
 // ─── 지수선물 front-month 해석 (t8467 지수선물마스터) ─────────────────────────
-// LP FV_futures 앵커(lp-system-design.md §13.3-A / §13.7 Phase 2 전제조건)용.
-// 기동 시 1회 t8467로 KOSPI200(01)/미니(05)/KOSDAQ150(06) 최근월물 코드를 해석.
+// 기동 시 1회 t8467로 KOSPI200(01)/미니(05)/KOSDAQ150(06) 월물 목록을 받아 front를 고른다.
+//
+// **롤 규칙은 용도별로 2벌** (2026-09-09 분리):
+//   · `lp`    — FC9 체결 → LP FV_futures 앵커(lp-system-design.md §13.3-A / §13.8).
+//               만기 D-2부터 차근월물. 만기 임박 월물의 이론가·유동성으로 헤지 앵커를 잡지 않는다.
+//   · `depth` — FH9 총잔량 → "선물" 탭. **만기 당일까지 당월물**, 만기 다음 날부터 차근월물.
+//               탭이 보는 건 "지금 잔량이 쌓여 있는 계약"이라 만기일에도 당월물이 정답.
+// 두 벌이 갈리는 건 만기 D-1·D-0 이틀뿐이고 그 외 기간은 같은 코드다.
+//
+// ⚠️ 해석은 **프로세스 기동 시 1회**뿐이라 만기일 밤을 넘겨 계속 돌리면 다음 기동까지
+//    구월물을 물고 있다 (start_dev.sh 일일 재기동 전제로 수용. 일일 re-resolve는 후속 트랙).
 
 /// t8467 엔드포인트 — futureoption/market-data (t8402와 동일 그룹).
 const INDEX_FUT_MASTER_URL: &str = T8402_URL;
 
-/// 만기 임박 롤 임계치(일). 만기(2번째 목요일)까지 남은 일수가 이 값 미만이면 그 월물을
-/// 건너뛰고 차근월물을 front로 선택. (만기 당일=0·전일=1 → 롤. 스펙 "만기 당일~전일 차근월물".)
+/// **LP 트랙** 만기 임박 롤 임계치(일). 만기(2번째 목요일)까지 남은 일수가 이 값 미만이면
+/// 그 월물을 건너뛰고 차근월물을 front로 선택. (만기 당일=0·전일=1 → 롤.)
 const INDEX_FUT_ROLL_THRESHOLD_DAYS: i64 = 2;
+
+/// **"선물" 탭(FH9 총잔량)** 롤 임계치(일). 1 = 만기 전일(D-1)까지 당월물 유지,
+/// 만기 당일(D-0)부터 차근월물 — "만기날 당일은 근월물 끝" (사용자 확정 2026-09-10).
+const INDEX_FUT_DEPTH_ROLL_THRESHOLD_DAYS: i64 = 1;
 
 /// 해석된 지수선물 front-month 1건.
 #[derive(Clone, Debug)]
 pub struct ResolvedIndexFuture {
     /// "kospi200" | "mini_k200" | "kosdaq150"
     pub product: &'static str,
-    /// FC9 tr_key (A + 상품2 + 연1 + 월1 + 000, 8자리).
+    /// FC9/FH9 tr_key (A + 상품2 + 연1 + 월1 + 000, 8자리).
     pub code: String,
     pub name: String,
+}
+
+/// 용도별 front-month 두 벌 (위 롤 규칙 참조). 만기 D-1·D-0에만 서로 다른 월물이 담긴다.
+#[derive(Clone, Debug, Default)]
+pub struct ResolvedIndexFronts {
+    /// FC9(LP FV_futures 앵커)용 — 만기 D-2 롤.
+    pub lp: Vec<ResolvedIndexFuture>,
+    /// FH9("선물" 탭 총잔량)용 — 만기 당일까지 당월물.
+    pub depth: Vec<ResolvedIndexFuture>,
 }
 
 static RESOLVED_INDEX_FUTURES: OnceLock<std::sync::RwLock<Vec<ResolvedIndexFuture>>> = OnceLock::new();
@@ -1039,14 +1061,27 @@ fn resolved_slot() -> &'static std::sync::RwLock<Vec<ResolvedIndexFuture>> {
     RESOLVED_INDEX_FUTURES.get_or_init(|| std::sync::RwLock::new(Vec::new()))
 }
 
-/// /debug/stats 노출용. (product, code, name) 리스트. 해석 전이면 빈 Vec.
-pub fn resolved_index_futures() -> Vec<(String, String, String)> {
-    resolved_slot()
-        .read()
+static RESOLVED_INDEX_FUTURES_DEPTH: OnceLock<std::sync::RwLock<Vec<ResolvedIndexFuture>>> = OnceLock::new();
+fn resolved_depth_slot() -> &'static std::sync::RwLock<Vec<ResolvedIndexFuture>> {
+    RESOLVED_INDEX_FUTURES_DEPTH.get_or_init(|| std::sync::RwLock::new(Vec::new()))
+}
+
+fn snapshot_slot(slot: &std::sync::RwLock<Vec<ResolvedIndexFuture>>) -> Vec<(String, String, String)> {
+    slot.read()
         .unwrap()
         .iter()
         .map(|r| (r.product.to_string(), r.code.clone(), r.name.clone()))
         .collect()
+}
+
+/// /debug/stats 노출용 — **LP front**(FC9). (product, code, name) 리스트. 해석 전이면 빈 Vec.
+pub fn resolved_index_futures() -> Vec<(String, String, String)> {
+    snapshot_slot(resolved_slot())
+}
+
+/// /debug/stats 노출용 — **depth front**(FH9, "선물" 탭). 만기 D-1·D-0에만 위와 달라진다.
+pub fn resolved_index_futures_depth() -> Vec<(String, String, String)> {
+    snapshot_slot(resolved_depth_slot())
 }
 
 fn index_product_of(prefix: &str) -> Option<&'static str> {
@@ -1095,15 +1130,70 @@ pub(crate) fn second_thursday(year: i32, month: u32) -> Option<chrono::NaiveDate
     NaiveDate::from_ymd_opt(year, month, first_thu_day + 7)
 }
 
-/// t8467(지수선물마스터)로 KOSPI200/미니/KOSDAQ150 front-month를 해석.
-/// - t8467이 세 상품을 모두 반환하면 각자 최근월물(만기 임박 제외)을 선택.
-/// - 미니/KOSDAQ150 미반환 시 KOSPI200 front에서 상품 prefix 치환으로 파생(best-effort, 경고 로그).
+/// t8467 후보 (year, month, code, name).
+type IndexFutCandidate = (i32, u32, String, String);
+
+/// 상품별 후보에서 front를 고른다. `min_days_left` = 만기까지 남은 일수 하한
+/// (LP `INDEX_FUT_ROLL_THRESHOLD_DAYS` / depth `INDEX_FUT_DEPTH_ROLL_THRESHOLD_DAYS`).
+/// t8467이 미니/KOSDAQ150을 안 주면 KOSPI200 front에서 상품 prefix 치환으로 파생(best-effort).
+/// `label`은 로그 구분용("lp"/"depth").
+fn select_index_fronts(
+    by_product: &HashMap<&'static str, Vec<IndexFutCandidate>>,
+    today: chrono::NaiveDate,
+    min_days_left: i64,
+    label: &str,
+) -> Vec<ResolvedIndexFuture> {
+    // front = 만기까지 min_days_left일 이상 남은 것 중 가장 이른 만기.
+    let pick_front = |cands: &[IndexFutCandidate]| -> Option<(String, String)> {
+        cands
+            .iter()
+            .filter(|(y, m, _, _)| {
+                second_thursday(*y, *m)
+                    .map(|exp| (exp - today).num_days() >= min_days_left)
+                    .unwrap_or(false)
+            })
+            .min_by_key(|(y, m, _, _)| (*y, *m))
+            .map(|(_, _, code, name)| (code.clone(), name.clone()))
+    };
+
+    let mut resolved: Vec<ResolvedIndexFuture> = Vec::new();
+    for &prod in &["kospi200", "mini_k200", "kosdaq150"] {
+        if let Some(cands) = by_product.get(prod) {
+            if let Some((code, name)) = pick_front(cands) {
+                resolved.push(ResolvedIndexFuture { product: prod, code, name });
+            }
+        }
+    }
+
+    // t8467이 미니/KOSDAQ150 미반환 → KOSPI200 front에서 prefix 치환으로 파생.
+    // 세 지수선물 모두 분기물 만기 사이클 공유(2번째 목요일). 단 미니는 월물 존재 가능 →
+    // 파생은 best-effort, FC9 실측으로 검증 필요.
+    if let Some(kospi) = resolved.iter().find(|r| r.product == "kospi200").cloned() {
+        for &(prod, prefix) in &[("mini_k200", "05"), ("kosdaq150", "06")] {
+            if !resolved.iter().any(|r| r.product == prod) {
+                let derived = format!("A{}{}", prefix, &kospi.code[3..]);
+                warn!(
+                    "지수선물 {prod}[{label}]: t8467 미반환 → KOSPI200 front에서 파생 {derived} (만기 사이클 미검증, FC9 실측 필요)"
+                );
+                resolved.push(ResolvedIndexFuture {
+                    product: prod,
+                    code: derived,
+                    name: format!("{prod} F(derived)"),
+                });
+            }
+        }
+    }
+    resolved
+}
+
+/// t8467(지수선물마스터)로 KOSPI200/미니/KOSDAQ150 front-month를 **용도별 2벌** 해석
+/// (`lp` = FC9/LP 앵커, `depth` = FH9/"선물" 탭. 롤 규칙은 이 섹션 상단 주석 참조).
 ///
 /// 실패/빈 응답 시 Err/빈 Vec — 호출자는 "지수선물 없이 진행".
 pub async fn fetch_index_futures_front_months(
     app_key: &str,
     app_secret: &str,
-) -> Result<Vec<ResolvedIndexFuture>, String> {
+) -> Result<ResolvedIndexFronts, String> {
     use chrono::{Datelike, Local};
 
     let token = get_or_fetch_token(app_key, app_secret).await?;
@@ -1155,7 +1245,7 @@ pub async fn fetch_index_futures_front_months(
     let today_year = today.year();
 
     // product prefix → 후보 (year, month, code, name).
-    let mut by_product: HashMap<&'static str, Vec<(i32, u32, String, String)>> = HashMap::new();
+    let mut by_product: HashMap<&'static str, Vec<IndexFutCandidate>> = HashMap::new();
     let mut all_shcodes: Vec<String> = Vec::new(); // A06 가설 실측용 원 응답 로깅
     for item in arr {
         let shcode = item.get("shcode").and_then(|v| v.as_str()).unwrap_or("");
@@ -1185,49 +1275,12 @@ pub async fn fetch_index_futures_front_months(
         &all_shcodes[..all_shcodes.len().min(12)]
     );
 
-    // product별 front = 만기 임박(threshold 미만) 제외 후 가장 이른 만기.
-    let pick_front = |cands: &[(i32, u32, String, String)]| -> Option<(String, String)> {
-        cands
-            .iter()
-            .filter(|(y, m, _, _)| {
-                second_thursday(*y, *m)
-                    .map(|exp| (exp - today).num_days() >= INDEX_FUT_ROLL_THRESHOLD_DAYS)
-                    .unwrap_or(false)
-            })
-            .min_by_key(|(y, m, _, _)| (*y, *m))
-            .map(|(_, _, code, name)| (code.clone(), name.clone()))
-    };
+    let lp = select_index_fronts(&by_product, today, INDEX_FUT_ROLL_THRESHOLD_DAYS, "lp");
+    let depth = select_index_fronts(&by_product, today, INDEX_FUT_DEPTH_ROLL_THRESHOLD_DAYS, "depth");
 
-    let mut resolved: Vec<ResolvedIndexFuture> = Vec::new();
-    for &prod in &["kospi200", "mini_k200", "kosdaq150"] {
-        if let Some(cands) = by_product.get(prod) {
-            if let Some((code, name)) = pick_front(cands) {
-                resolved.push(ResolvedIndexFuture { product: prod, code, name });
-            }
-        }
-    }
-
-    // t8467이 미니/KOSDAQ150 미반환 → KOSPI200 front에서 prefix 치환으로 파생.
-    // 세 지수선물 모두 분기물 만기 사이클 공유(2번째 목요일). 단 미니는 월물 존재 가능 →
-    // 파생은 best-effort, FC9 실측으로 검증 필요.
-    if let Some(kospi) = resolved.iter().find(|r| r.product == "kospi200").cloned() {
-        for &(prod, prefix) in &[("mini_k200", "05"), ("kosdaq150", "06")] {
-            if !resolved.iter().any(|r| r.product == prod) {
-                let derived = format!("A{}{}", prefix, &kospi.code[3..]);
-                warn!(
-                    "지수선물 {prod}: t8467 미반환 → KOSPI200 front에서 파생 {derived} (만기 사이클 미검증, FC9 실측 필요)"
-                );
-                resolved.push(ResolvedIndexFuture {
-                    product: prod,
-                    code: derived,
-                    name: format!("{prod} F(derived)"),
-                });
-            }
-        }
-    }
-
-    *resolved_slot().write().unwrap() = resolved.clone();
-    Ok(resolved)
+    *resolved_slot().write().unwrap() = lp.clone();
+    *resolved_depth_slot().write().unwrap() = depth.clone();
+    Ok(ResolvedIndexFronts { lp, depth })
 }
 
 #[allow(dead_code)] // t8407 배치로 대체됨. 단건 디버그/폴백용 보존.
@@ -1354,3 +1407,91 @@ fn pi(v: Option<&serde_json::Value>) -> i64 {
     }
 }
 fn r2(v: f64) -> f64 { (v * 100.0).round() / 100.0 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::NaiveDate;
+
+    fn d(y: i32, m: u32, day: u32) -> NaiveDate {
+        NaiveDate::from_ymd_opt(y, m, day).unwrap()
+    }
+
+    /// 2026년 분기물 후보 (9월 A0169000 / 12월 A016C000) — KOSPI200만.
+    fn candidates_2026() -> HashMap<&'static str, Vec<IndexFutCandidate>> {
+        let mut m: HashMap<&'static str, Vec<IndexFutCandidate>> = HashMap::new();
+        m.insert(
+            "kospi200",
+            vec![
+                (2026, 9, "A0169000".into(), "코스피200 F 2609".into()),
+                (2026, 12, "A016C000".into(), "코스피200 F 2612".into()),
+            ],
+        );
+        m
+    }
+
+    fn front_code(by: &HashMap<&'static str, Vec<IndexFutCandidate>>, today: NaiveDate, min_days: i64) -> String {
+        select_index_fronts(by, today, min_days, "test")
+            .into_iter()
+            .find(|r| r.product == "kospi200")
+            .map(|r| r.code)
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn second_thursday_is_krx_expiry() {
+        assert_eq!(second_thursday(2026, 9), Some(d(2026, 9, 10)));
+        assert_eq!(second_thursday(2026, 12), Some(d(2026, 12, 10)));
+        // 1일이 목요일인 달 — "첫 주 목요일 + 7" 규칙 검증 (2026-10-01 목).
+        assert_eq!(second_thursday(2026, 10), Some(d(2026, 10, 8)));
+    }
+
+    #[test]
+    fn lp_front_rolls_two_days_before_expiry() {
+        let by = candidates_2026();
+        // D-2(9/8)까지는 당월물, D-1(9/9)·D-0(9/10)은 차근월물.
+        assert_eq!(front_code(&by, d(2026, 9, 8), INDEX_FUT_ROLL_THRESHOLD_DAYS), "A0169000");
+        assert_eq!(front_code(&by, d(2026, 9, 9), INDEX_FUT_ROLL_THRESHOLD_DAYS), "A016C000");
+        assert_eq!(front_code(&by, d(2026, 9, 10), INDEX_FUT_ROLL_THRESHOLD_DAYS), "A016C000");
+    }
+
+    #[test]
+    fn depth_front_holds_current_month_until_expiry_day() {
+        let by = candidates_2026();
+        let t = INDEX_FUT_DEPTH_ROLL_THRESHOLD_DAYS;
+        // 만기 전일까지 당월물 유지, 만기 당일부터 차근월물.
+        assert_eq!(front_code(&by, d(2026, 9, 8), t), "A0169000");
+        assert_eq!(front_code(&by, d(2026, 9, 9), t), "A0169000");
+        assert_eq!(front_code(&by, d(2026, 9, 10), t), "A016C000");
+        assert_eq!(front_code(&by, d(2026, 9, 11), t), "A016C000");
+    }
+
+    #[test]
+    fn fronts_agree_outside_roll_window() {
+        let by = candidates_2026();
+        for day in [1u32, 5, 8, 11, 20] {
+            let today = d(2026, 9, day);
+            let lp = front_code(&by, today, INDEX_FUT_ROLL_THRESHOLD_DAYS);
+            let depth = front_code(&by, today, INDEX_FUT_DEPTH_ROLL_THRESHOLD_DAYS);
+            assert_eq!(lp, depth, "롤 창(9/9~9/10) 밖에서는 두 벌이 같아야 함: {today}");
+        }
+    }
+
+    #[test]
+    fn derives_missing_products_from_kospi_front() {
+        let fronts = select_index_fronts(&candidates_2026(), d(2026, 9, 10), 0, "test");
+        // t8467이 미니/KOSDAQ150을 안 줘도 prefix 치환으로 채운다 (같은 월물).
+        let by_prod: HashMap<&str, &str> =
+            fronts.iter().map(|r| (r.product, r.code.as_str())).collect();
+        assert_eq!(by_prod.get("mini_k200"), Some(&"A0569000"));
+        assert_eq!(by_prod.get("kosdaq150"), Some(&"A0669000"));
+    }
+
+    #[test]
+    fn parses_index_fut_year_month() {
+        assert_eq!(parse_index_fut_ym("A0169000", 2026), Some((2026, 9)));
+        assert_eq!(parse_index_fut_ym("A016C000", 2026), Some((2026, 12)));
+        assert_eq!(parse_index_fut_ym("A0170000", 2026), None); // 월 코드 '0' 없음
+        assert_eq!(parse_index_fut_ym("D016C000", 2026), None); // 스프레드
+    }
+}

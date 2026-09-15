@@ -12,7 +12,7 @@ import {
   type LiveDepthPoint,
   type MaMin,
 } from '@/components/futures/session'
-import type { IndexFuturesProduct, IndexFuturesTick } from '@/types/market'
+import type { IndexFuturesProduct, IndexFuturesQuote } from '@/types/market'
 
 /**
  * /futures — 지수선물 총잔량(호가 잔량) 모니터.
@@ -24,8 +24,11 @@ import type { IndexFuturesProduct, IndexFuturesTick } from '@/types/market'
  * 데이터 경로:
  *   · 히스토리 — `GET /realtime/futures/depth-history`. Rust realtime(8200)이 FH9를 **상시**
  *     구독해 10초 간격으로 서버측에 쌓아둔 당일 시계열. 브라우저를 껐다 켜도 개장부터 보인다.
- *   · 실시간   — WS `index_futures_depth` (product별 500ms throttle) + 기존 `index_futures_tick`
- *     (현재가·등락·누적거래량). 서버 상시 구독이라 페이지별 구독 훅이 필요 없다.
+ *   · 실시간   — WS `index_futures_depth` **한 스트림만** (product별 500ms throttle). 총잔량에
+ *     더해 현재가·등락·누적거래량·OI·기초지수·이론가가 같은 월물의 FC9 스냅샷(`quote`)으로
+ *     동승해 온다. 서버 상시 구독이라 페이지별 구독 훅이 필요 없다.
+ *     ⚠️ `indexFuturesTicks`(LP FV_futures 앵커용 FC9)를 여기서 쓰지 말 것 — 롤 규칙이 달라
+ *     (탭 = 만기 당일까지 당월물 / LP = 만기 D-2 롤) 만기 전일·당일에 월물이 섞인다.
  *
  * 탭이 백그라운드로 내려가면 rAF flush가 늦어져 라이브 점에 구멍이 생길 수 있으므로,
  * 다시 보일 때 히스토리를 재시딩한다.
@@ -323,15 +326,17 @@ function ControlStrip({
   )
 }
 
-/** 상품별 실시간 상태 — 카드/차트/베이시스 패널이 공유. */
+/**
+ * 상품별 실시간 상태 — 카드/차트/베이시스 패널이 공유.
+ *
+ * 총잔량(FH9)과 체결값(FC9)을 **한 틱에서** 받는다. `indexFuturesTicks`(LP FV_futures 앵커용
+ * FC9 맵)를 product로 역참조하지 않는 이유: 두 스트림은 롤 규칙이 달라 만기 전일·당일에
+ * 서로 다른 월물이다 (탭 = 만기 당일까지 당월물 / LP = 만기 D-2부터 차근월물).
+ * 서버가 총잔량과 **같은 코드의** 체결 스냅샷을 `quote`로 실어 보내므로 월물이 섞이지 않는다.
+ */
 function useProductLive(product: IndexFuturesProduct) {
   const depth = useMarketStore((s) => s.indexFuturesDepth[product])
-  const indexTicks = useMarketStore((s) => s.indexFuturesTicks)
-  // 지수선물은 상품당 근월물 1개 — code로 키잉된 맵에서 product로 역인덱싱 (엔트리 3개).
-  const tick = useMemo<IndexFuturesTick | undefined>(
-    () => Object.values(indexTicks).find((t) => t.product === product),
-    [indexTicks, product],
-  )
+  const quote = depth?.quote
   // 라이브 점 — 10초 버킷 + 총잔량/가격/누적거래량/OI/기초지수/이론가 스냅샷.
   // 히스토리 포인트와 같은 모양이라 메인·베이시스 차트가 그대로 공유한다.
   const live = useMemo<LiveDepthPoint | null>(() => {
@@ -340,14 +345,14 @@ function useProductLive(product: IndexFuturesProduct) {
       t: Math.floor(depth.time_ms / 1000 / BUCKET_SEC) * BUCKET_SEC,
       a: depth.total_ask_qty,
       b: depth.total_bid_qty,
-      p: tick?.price ?? 0,
-      v: tick?.volume ?? 0,
-      oi: tick?.open_interest ?? 0,
-      u: tick?.underlying_index ?? 0,
-      th: tick?.theory_price ?? 0,
+      p: quote?.price ?? 0,
+      v: quote?.volume ?? 0,
+      oi: quote?.open_interest ?? 0,
+      u: quote?.underlying_index ?? 0,
+      th: quote?.theory_price ?? 0,
     }
-  }, [depth, tick?.price, tick?.volume, tick?.open_interest, tick?.underlying_index, tick?.theory_price])
-  return { depth, tick, live }
+  }, [depth, quote])
+  return { depth, quote, live }
 }
 
 /** 페이지 하단 베이시스 행 — 상품별 시장/이론 베이시스. */
@@ -401,8 +406,8 @@ function ProductSection({
   ratioCandle: boolean
   mas: MaMin[]
 }) {
-  const { depth, tick, live } = useProductLive(product)
-  const code = depth?.code ?? tick?.code ?? series?.code ?? ''
+  const { depth, quote, live } = useProductLive(product)
+  const code = depth?.code ?? series?.code ?? ''
   // 화면 전 구간 공통 **v 스케일**(0 중심 부호) — 표시는 fmtRatio로 ±1.xx (session.ts).
   const ratio = depth ? ratioValue(depth.total_bid_qty, depth.total_ask_qty) : null
 
@@ -414,7 +419,7 @@ function ProductSection({
 
   return (
     <div className="flex flex-col gap-1 lg:flex-row">
-      <DepthCard label={label} code={code} tick={tick} depth={depth} ratio={ratio} stats={stats} />
+      <DepthCard label={label} code={code} quote={quote} depth={depth} ratio={ratio} stats={stats} />
       {/* 높이는 왼쪽 정보 카드에 맞춤 (lg에서 flex stretch) — 모바일 세로 배치에서만 고정 300px */}
       <div className="panel h-[300px] min-w-0 flex-1 lg:h-auto">
         {hasChart ? (
@@ -521,19 +526,19 @@ function useRatioStats(points: DepthPoint[], date: string, current: number | nul
 function DepthCard({
   label,
   code,
-  tick,
+  quote,
   depth,
   ratio,
   stats,
 }: {
   label: string
   code: string
-  tick: IndexFuturesTick | undefined
+  quote: IndexFuturesQuote | undefined
   depth: { total_ask_qty: number; total_bid_qty: number; time_ms: number } | undefined
   ratio: number | null
   stats: RatioStats | null
 }) {
-  const chg = tick?.change ?? 0
+  const chg = quote?.change ?? 0
   // 상승/하락 색은 사용자 TV 차트 팔레트 (docs/화면 캡처 2026-08-12 094528.png) — 선물 탭 한정.
   const chgColor = chg > 0 ? 'text-[#089981]' : chg < 0 ? 'text-[#f23645]' : 'text-t3'
   // 색 판정을 fmtRatio 결과로 — '1.00'(균형 근처 반올림 밴드)이 청록/빨강으로 착색되지 않게.
@@ -557,12 +562,12 @@ function DepthCard({
 
       <div className="mt-1 flex items-baseline gap-2">
         <span className="font-mono text-[22px] font-semibold tabular-nums text-t1">
-          {tick
-            ? tick.price.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+          {quote
+            ? quote.price.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
             : '-'}
         </span>
         <span className={cn('font-mono text-[12px] tabular-nums', chgColor)}>
-          {tick ? `${chg > 0 ? '+' : ''}${chg.toFixed(2)} (${chg > 0 ? '+' : ''}${tick.change_rate.toFixed(2)}%)` : ''}
+          {quote ? `${chg > 0 ? '+' : ''}${chg.toFixed(2)} (${chg > 0 ? '+' : ''}${quote.change_rate.toFixed(2)}%)` : ''}
         </span>
       </div>
 
@@ -601,19 +606,19 @@ function DepthCard({
       <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-[11px]">
         <span className="text-t3">미결제약정</span>
         <span className="text-right font-mono tabular-nums text-t2">
-          {tick?.open_interest ? tick.open_interest.toLocaleString() : '-'}
+          {quote?.open_interest ? quote.open_interest.toLocaleString() : '-'}
         </span>
         <span className="text-t3">베이시스 (이론)</span>
         <span className="text-right font-mono tabular-nums text-t2">
-          {tick && tick.underlying_index > 0
-            ? `${signed(tick.price - tick.underlying_index)}${
-                tick.theory_price ? ` (${signed(tick.theory_price - tick.underlying_index)})` : ''
+          {quote && quote.underlying_index > 0
+            ? `${signed(quote.price - quote.underlying_index)}${
+                quote.theory_price ? ` (${signed(quote.theory_price - quote.underlying_index)})` : ''
               }`
             : '-'}
         </span>
         <span className="text-t3">누적 거래량</span>
         <span className="text-right font-mono tabular-nums text-t2">
-          {tick ? tick.volume.toLocaleString() : '-'}
+          {quote ? quote.volume.toLocaleString() : '-'}
         </span>
         <span className="text-t3">갱신</span>
         <span className="text-right font-mono tabular-nums text-t4">

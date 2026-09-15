@@ -103,6 +103,29 @@ export interface IndexFuturesTick {
   is_initial?: boolean
 }
 
+/**
+ * 총잔량 틱에 동승하는 **같은 월물의 FC9 체결 스냅샷**.
+ *
+ * FH9("선물" 탭)와 FC9(LP 앵커)는 롤 규칙이 달라 만기 D-1·D-0에 서로 다른 월물이다
+ * (FH9 = 만기 당일까지 당월물 / FC9 = 만기 D-2부터 차근월물). 그래서 탭은
+ * `indexFuturesTicks`를 product로 역참조하지 않고 **이 스냅샷만** 본다 — 안 그러면
+ * 그 이틀간 "당월물 잔량 + 차근월물 가격"이 섞인다.
+ */
+export interface IndexFuturesQuote {
+  price: number
+  /** 전일대비 */
+  change: number
+  /** 등락률 % */
+  change_rate: number
+  /** 당일 누적 거래량 */
+  volume: number
+  /** 기초지수 레벨 (FC9 k200jisu). 없으면 0. */
+  underlying_index: number
+  /** 이론가 (FC9 theoryprice) */
+  theory_price?: number
+  open_interest?: number
+}
+
 /** 지수선물 총잔량 (LS FH9). "선물" 탭 — 호가 레벨 없이 매도/매수 총잔량 + 비율만.
  *  서버(Rust 8200)가 상시 구독하며 product별 500ms throttle로 발행. */
 export interface IndexFuturesDepthTick {
@@ -114,6 +137,8 @@ export interface IndexFuturesDepthTick {
   total_bid_qty: number
   /** 매수÷매도. >1이면 매수우위. 매도잔량 0이면 미발행. */
   ratio?: number
+  /** 같은 code의 FC9 최신 스냅샷. 체결 틱 수신 전이면 미발행. */
+  quote?: IndexFuturesQuote
   /** 수신 시각 (epoch ms) */
   time_ms: number
 }

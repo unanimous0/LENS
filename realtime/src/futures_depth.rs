@@ -267,44 +267,18 @@ fn roll_date_if_needed(h: &mut DepthHistory) {
 }
 
 /// bridge에서 모든 WsMessage 1건마다 호출 (sync, 비용 거의 0).
-///  - `IndexFuturesTick`(FC9): 다음 샘플에 붙일 price/cum_volume 갱신
-///  - `IndexFuturesDepth`(FH9): 10초 간격 샘플 append
+/// `IndexFuturesDepth`(FH9)만 본다 — 10초 간격 샘플 append. 샘플에 붙일
+/// price/cum_volume/OI/기초지수/이론가는 **같은 틱에 동승한 `quote`**(같은 월물의 FC9 스냅샷)에서
+/// 가져온다. 예전엔 `IndexFuturesTick`(FC9) 스트림에서 따로 모았는데, FC9(lp front)와
+/// FH9(depth front)는 만기 D-1·D-0에 월물이 갈려 "9월물 잔량 + 12월물 가격"이 섞였다.
 pub fn observe(msg: &WsMessage) {
-    match msg {
-        WsMessage::IndexFuturesTick(t) => {
-            // 격리 창 안(모드 전환 직후)이면 이전 피드의 in-flight 틱일 수 있어 무시.
-            if !is_tracked(t.product) || !sampling_enabled() {
-                return;
-            }
-            let Ok(mut h) = store().lock() else { return };
-            roll_date_if_needed(&mut h);
-            let s = h.products.entry(t.product.to_string()).or_default();
-            if s.code != t.code {
-                s.code = t.code.clone();
-            }
-            if t.price > 0.0 {
-                s.last_price = t.price;
-            }
-            if t.volume > 0 {
-                s.last_volume = t.volume;
-            }
-            // OI/기초지수/이론가 — 미제공(None·0)이면 직전 값 유지 (sticky).
-            if let Some(oi) = t.open_interest.filter(|v| *v > 0) {
-                s.last_oi = oi;
-            }
-            if t.underlying_index > 0.0 {
-                s.last_underlying = t.underlying_index;
-            }
-            if let Some(th) = t.theory_price.filter(|v| *v > 0.0) {
-                s.last_theory = th;
-            }
-        }
-        WsMessage::IndexFuturesDepth(d) => record_depth(d),
-        _ => {}
+    if let WsMessage::IndexFuturesDepth(d) = msg {
+        record_depth(d);
     }
 }
 
 fn record_depth(d: &IndexFuturesDepthTick) {
+    // 격리 창 안(모드 전환 직후)이면 이전 피드의 in-flight 틱일 수 있어 무시.
     if !is_tracked(d.product) || !sampling_enabled() {
         return;
     }
@@ -315,7 +289,35 @@ fn record_depth(d: &IndexFuturesDepthTick) {
         roll_date_if_needed(&mut h);
         let s = h.products.entry(d.product.to_string()).or_default();
         if s.code != d.code {
+            // 월물이 바뀌면 이전 계약 표본은 버린다 — 계약이 다르면 잔량 수준 자체가 달라
+            // 이어붙이면 한 차트 안에서 다른 계약의 비율·가격이 섞인다. (장중 재기동으로
+            // front가 갈아끼워지는 만기 주변 하루에서만 발생.)
+            if !s.points.is_empty() {
+                info!(
+                    "지수선물 총잔량 {} 월물 전환 ({} → {}) — 이전 계약 표본 {}점 폐기",
+                    d.product, s.code, d.code, s.points.len()
+                );
+                *s = ProductSeries::default();
+            }
             s.code = d.code.clone();
+        }
+        // 체결값은 미제공(0/None)이면 직전 값 유지 (sticky) — 샘플 간격과 무관하게 매 틱 갱신.
+        if let Some(q) = d.quote {
+            if q.price > 0.0 {
+                s.last_price = q.price;
+            }
+            if q.volume > 0 {
+                s.last_volume = q.volume;
+            }
+            if let Some(oi) = q.open_interest.filter(|v| *v > 0) {
+                s.last_oi = oi;
+            }
+            if q.underlying_index > 0.0 {
+                s.last_underlying = q.underlying_index;
+            }
+            if let Some(th) = q.theory_price.filter(|v| *v > 0.0) {
+                s.last_theory = th;
+            }
         }
         if now_sec - s.last_sample_t < SAMPLE_INTERVAL_SEC {
             return;

@@ -1629,6 +1629,8 @@ async fn debug_stats(State(state): State<AppState>) -> Json<serde_json::Value> {
     let index_futures_age_sec = stream_age(feed::ls_api::index_futures_stream_us().load(Ordering::Relaxed));
     let index_futures_depth_age_sec =
         stream_age(feed::ls_api::index_futures_depth_stream_us().load(Ordering::Relaxed));
+    let index_futures_depth_quote_age_sec =
+        stream_age(feed::ls_api::index_futures_depth_quote_stream_us().load(Ordering::Relaxed));
 
     Json(serde_json::json!({
         "uptime_sec": uptime_s,
@@ -1656,8 +1658,15 @@ async fn debug_stats(State(state): State<AppState>) -> Json<serde_json::Value> {
             "current_mtime": current_mtime,
             "stale": futures_master_stale,
         },
-        // 지수선물(FC9) front-month 해석 결과. [[product, code, name], ...]. 미해석/타 모드면 빈 배열.
+        // 지수선물 front-month 해석 결과. [[product, code, name], ...]. 미해석/타 모드면 빈 배열.
+        // index_futures = **lp front**(FC9, 만기 D-2 롤 — LP FV_futures 앵커),
+        // index_futures_depth = **depth front**(FH9 "선물" 탭, 만기 당일까지 당월물).
+        // 만기 D-1·D-0 이틀만 서로 다른 코드가 보인다 (ls_rest.rs 지수선물 front-month 해석).
         "index_futures": feed::ls_rest::resolved_index_futures()
+            .into_iter()
+            .map(|(p, c, n)| serde_json::json!([p, c, n]))
+            .collect::<Vec<_>>(),
+        "index_futures_depth": feed::ls_rest::resolved_index_futures_depth()
             .into_iter()
             .map(|(p, c, n)| serde_json::json!([p, c, n]))
             .collect::<Vec<_>>(),
@@ -1666,6 +1675,9 @@ async fn debug_stats(State(state): State<AppState>) -> Json<serde_json::Value> {
         "index_futures_age_sec": index_futures_age_sec,
         // FH9(총잔량) 스트림 age. "선물" 탭이 stale인지 판단용 — FC9와 독립.
         "index_futures_depth_age_sec": index_futures_depth_age_sec,
+        // depth front FC9 추가 구독(만기 D-1·D-0에만 스폰) age. 평시엔 null — lp front FC9가
+        // 같은 코드라 그쪽 하나로 총잔량 틱의 quote까지 채운다.
+        "index_futures_depth_quote_age_sec": index_futures_depth_quote_age_sec,
         "serialize": {
             "calls": ser_calls,
             "total_ns": ser_ns,
