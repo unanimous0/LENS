@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 
-import { fmtSignedBp } from '@/lib/lp-desk'
+import { fmtSignedBp, UNWIND_SIGMA, xLevelSource } from '@/lib/lp-desk'
 import { cn } from '@/lib/utils'
 import { S_REF_ASK, S_REF_BID } from '@/types/lp-desk'
 import type {
@@ -69,6 +69,8 @@ export function LpDeskDetailPanel({
   xBidBp,
   xAskBp,
   biasBp = 0,
+  unwindAsk = false,
+  unwindBid = false,
   z,
   xBreakdown,
   touchDaysBid,
@@ -89,11 +91,14 @@ export function LpDeskDetailPanel({
   gapMeanBp: number | null
   gapSigmaBp: number | null
   gapObs: number | null
-  /** 현재 x 레벨 (bp) = μ_g ± z·σ결합 − 재고편향. 캘리브 없으면 null. */
+  /** 현재 x 레벨 (bp) = 앵커(밴드 μ_g ± z·σ결합 또는 정리 μ_g ± E×D) − 재고편향. 없으면 null. */
   xBidBp: number | null
   xAskBp: number | null
-  /** x에 이미 반영된 재고 편향 bp (OMS v1.5) — 0이 아니면 라벨에 밝힌다. */
+  /** x에 이미 반영된 재고 편향 bp (OMS v1.6) — 0이 아니면 라벨에 밝힌다. */
   biasBp?: number
+  /** 그 쪽 x가 **정리 앵커**에 섰는가 (재고 > G인 방향만, OMS v1.6) — 마커 라벨을 바꾼다. */
+  unwindAsk?: boolean
+  unwindBid?: boolean
   /** σ결합 배수 (튜너). 마커 라벨에 표기. */
   z: number
   /** x 분해 한 줄 (`μ … · σ괴리 … · σ선물 … → ±zσ`) — 헤더 툴팁용. */
@@ -137,7 +142,7 @@ export function LpDeskDetailPanel({
           <span className="tabular-nums" style={{ color: C.up }}>
             {xBidBp != null ? fmtSignedBp(xBidBp) : '—'}
           </span>
-          <span className="text-[#5a5a5e]">bp (μ_g ± {z}σ결합{biasBp !== 0 ? ' − 재고편향' : ''})</span>
+          <span className="text-[#5a5a5e]">bp ({xLevelSource(z, biasBp, unwindAsk, unwindBid)})</span>
           <span
             className="ml-1 text-[#5a5a5e] tabular-nums"
             title="장중 g가 그 x 레벨을 한 번이라도 넘은 날 수 (매도/매수) — z가 클수록 줄어든다"
@@ -199,8 +204,9 @@ export function LpDeskDetailPanel({
             touchDaysBid={touchDaysBid}
             touchDaysAsk={touchDaysAsk}
             calibDays={touchTotalDays}
-            bidLabel={`x매수 −${z}σ${biasBp !== 0 ? '−편향' : ''}`}
-            askLabel={`x매도 +${z}σ${biasBp !== 0 ? '−편향' : ''}`}
+            // 정리 모드면 그쪽 마커는 밴드가 아니라 정리 앵커 μ±E·σ다 — 라벨의 σ 배수도 같이 바뀐다.
+            bidLabel={`x매수 ${unwindBid ? `정리앵커 −${UNWIND_SIGMA}σ` : `−${z}σ`}${biasBp !== 0 ? '−편향' : ''}`}
+            askLabel={`x매도 ${unwindAsk ? `정리앵커 +${UNWIND_SIGMA}σ` : `+${z}σ`}${biasBp !== 0 ? '−편향' : ''}`}
             nowLabel="now"
           />
         </Card>

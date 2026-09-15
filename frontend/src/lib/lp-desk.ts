@@ -158,16 +158,30 @@ export function zLabel(z: number): string {
   return `${z.toFixed(2).replace(/0$/, '')}σ`
 }
 
-// ── 재고 편향 (OMS 함수 전략 v1.5) ─────────────────────────────────────────
-// 아래 세 상수는 백엔드 `lp_desk_export.py`와 **같은 수**여야 한다. 엑셀 OMS 시트가 뽑아 주는
-// C·D를 실제 OMS 함수가 그대로 쓰므로, 화면이 다른 수를 쓰면 제안가만 혼자 어긋난다.
+// ── 재고 편향 · 정리 앵커 (OMS 함수 전략 v1.6 — 분리형 눈금) ────────────────
+// 아래 상수는 백엔드 `lp_desk_export.py`와 **같은 이름·같은 수**여야 한다. 엑셀 OMS 시트가 뽑아
+// 주는 C·D·E·G·H를 실제 OMS 함수가 그대로 쓰므로, 화면이 다른 수를 쓰면 제안가만 혼자 어긋난다.
+// 2026-09-09 눈금 분리 — **물러남(편향)은 H, 정리 레벨은 E·D**로 손잡이가 갈렸다. 화면은 두
+// 축을 각각 하나의 상수로만 본다 (엑셀 D=1σ 눈금은 곱이 1이라 별도 상수가 필요 없다).
 
 /** 장중 재고 상한(원) — 백엔드 `INTRADAY_CAP_WON_DEFAULT`. 전 종목 동일(§14.11). */
 export const INTRADAY_CAP_WON = 300_000_000
 /** C(재고한도)를 끊는 단위 주 수 — 백엔드 `LOT_SHARES`. 상한을 넘지 않게 내림. */
 export const LOT_SHARES = 100
-/** 편향 폭(= OMS D) = σ결합 × 이 배수 — 백엔드 `SKEW_SIGMA_MULT`. */
-export const SKEW_SIGMA_MULT = 1.0
+/**
+ * 편향 폭 = σ결합 × 이 배수 — 백엔드 `BIAS_SIGMA_MULT`. OMS에서는 변수가 아니라 함수 72에 ÷2로 내장(H 폐지, 2026-09-10).
+ * 0.5 = 한도 C에서 0.5σ(한도의 10%당 0.05σ) — 1.0은 편향이 너무 셌다(사용자, 2026-09-09).
+ * 정리 앵커와는 무관하다 — 물러남만 조절하려면 이 값만 만진다.
+ */
+export const BIAS_SIGMA_MULT = 0.5
+/**
+ * 정리 앵커의 **σ 배수** = μ ± E×D ÷ σ결합 — 백엔드 `UNWIND_SIGMA`(=`UNWIND_ANCHOR_SIGMA`).
+ * 1.0σ, 즉 "1.5σ에 산 걸 1σ에 판다"(진입 z보다 안쪽). 엑셀 D가 1σ 눈금이라 E가 곧 σ 배수이고,
+ * 편향(H)을 어떻게 바꾸든 이 값은 따라 움직이지 않는다 (9/9 분리형 전환의 요점).
+ */
+export const UNWIND_SIGMA = 1.0
+/** G — 정리 모드로 넘어가는 최소 재고(주). 백엔드 `UNWIND_MIN_SHARES` (호가 클립 1개 = 노이즈). */
+export const UNWIND_MIN_SHARES = 1000
 
 /**
  * 재고한도 C(주) = 장중 상한 ÷ 전일종가, 100주 내림. 백엔드 `inventory_cap_shares`와 같은 산식.
@@ -182,15 +196,17 @@ export function inventoryCapShares(prevClose: number | null, capWon = INTRADAY_C
 }
 
 /**
- * 재고 편향 (bp) — OMS 함수 전략 v1.5의 유일한 재고 항 (정본 `docs/lp-oms-strategy-v1.html`).
+ * 재고 편향 (bp) — OMS 함수 전략 v1.6의 **양쪽 공통** 재고 항 (정본 `docs/lp-oms-strategy-v1.html`).
  *
- *   편향 = RealNav × D × 포지션 ÷ C ÷ 100   ·   매도/매수 = 밴드 − 편향
- *   D(%) = σ결합(bp) × `SKEW_SIGMA_MULT` ÷ 100  ⟹  **편향(bp) = σ결합 × 포지션 ÷ C**
+ *   편향 = RealNav × H × 포지션 ÷ C ÷ 100   ·   호가 = 앵커 − 편향
+ *   OMS 편향 = D÷2 (함수 내장)  ⟹  **편향(bp) = 0.5·σ결합 × 포지션 ÷ C**
+ *   (9/9 — 한도 C에서 0.5σ, 한도의 10%당 0.05σ. 편향 전용 눈금이라 앵커와 독립이다.)
  *
- * 매도·매수에서 **같은 값을 뺀다** — 간격(=2zσ)은 그대로 두고 밴드 전체를 옮기는 항이다.
- * 롱이면(+) 양쪽이 내려가 매도가 잘 맞고 매수는 멀어진다. 임계·분기 없이 수량에 정비례
- * (한도 C에서 μ±0.5σ, 절반에서 μ±1σ). 한도를 넘긴 재고도 **클램프하지 않는다** — OMS 함수가
- * 그렇고, 한도 초과분은 더 세게 밀리는 게 의도다.
+ * 매도·매수에서 **같은 값을 뺀다** — 앵커 사이 간격은 그대로 두고 두 호가를 통째로 옮기는 항이다.
+ * 롱이면(+) 양쪽이 내려가 매도가 잘 맞고 매수는 멀어진다(= 더 싸질 때만 추가 매집). 임계·분기
+ * 없이 수량에 정비례하고, 한도를 넘긴 재고도 **클램프하지 않는다** — OMS 함수가 그렇고, 한도
+ * 초과분은 더 세게 밀리는 게 의도다. 재고 방향 호가의 *레벨*은 편향이 아니라 정리 앵커
+ * (μ ± E×D = μ ± `UNWIND_SIGMA`·σ)가 정한다 (v1.6) — H를 바꿔도 앵커는 그대로다.
  */
 export function inventoryBiasBp(
   sigmaCombBp: number | null,
@@ -199,16 +215,22 @@ export function inventoryBiasBp(
 ): number {
   if (sigmaCombBp == null || !Number.isFinite(sigmaCombBp)) return 0
   if (!Number.isFinite(positionQty) || positionQty === 0 || capShares == null) return 0
-  return (sigmaCombBp * SKEW_SIGMA_MULT * positionQty) / capShares
+  return (sigmaCombBp * BIAS_SIGMA_MULT * positionQty) / capShares
 }
 
 /**
  * 제안 호가 (§14.5 **호가 층**, 2026-08-21 4차 보완 두 분포 결합 z·σ + **5차 지평 직접 측정**).
  *
  *   매도 = tick올림( iNAV × (1 + x_ask) )   /   매수 = tick내림( iNAV × (1 + x_bid) )
- *   x_ask = μ_g + z·σ_comb − bias   /   x_bid = μ_g − z·σ_comb − bias   (z 기본 1.5 — `Z_DEFAULT`)
+ *   x_ask = 앵커_ask − bias   /   x_bid = 앵커_bid − bias
+ *   앵커_ask = 포지션 >  G 이면 μ_g + E×D (= +1σ_comb, 정리) · 아니면 μ_g + z·σ_comb (밴드)
+ *   앵커_bid = 포지션 < −G 이면 μ_g − E×D (= −1σ_comb, 정리) · 아니면 μ_g − z·σ_comb (밴드)
  *   σ_comb = √(σ_g² + σ_r²)  ·  σ_r = `s_diff_sigma_bp[T]` (지평 T에서 **직접 측정**, 기본 1분)
- *   bias = σ_comb × 포지션 ÷ C  (`inventoryBiasBp` — OMS 전략 v1.5의 재고 편향, 2026-09-09)
+ *   bias = H·σ_comb × 포지션 ÷ C  (`inventoryBiasBp` — 양쪽 공통, H=0.5σ / z 기본 1.5 / E·G는 OMS 상수)
+ *
+ * **정리 앵커는 재고가 있는 쪽에만** 선다 (OMS 전략 v1.6, 2026-09-10). 롱이면 매도만 μ+1σ로
+ * 내려오고 매수는 진입 밴드에 남아 편향만큼 후퇴한다 — 정리하는 중에도 더 싸지면 계속 받는다.
+ * 재고가 G(=1,000주, 호가 클립 1개) 이하면 양쪽 다 밴드다 (소량은 서둘러 털지 않는다).
  *
  * 앵커는 **iNAV**, 중심은 **μ_g**(가격이 장중 재구성 NAV에서 평소 얼마나 벌어져 거래되나),
  * 폭은 **두 괴리 분포의 결합**이다. 호가가 걸려 있는 몇 분 동안 나를 때리는 움직임은 두 갈래다:
@@ -222,9 +244,10 @@ export function inventoryBiasBp(
  * 체결은 "가격이 NAV에서 x만큼 벌어진 순간"에 일어난다 — 표의 `괴리bp`가 곧 실시간 g이므로
  * 그게 x에 다가가는 게 체결 임박이다 (`nearSide`).
  *
- * **x는 "호가가 실제로 설 레벨"이다** — 재고가 있으면 밴드가 아니라 편향까지 뺀 값이 x가 된다
- * (2026-09-09). OMS가 그 자리에 호가를 걸므로, 체결 임박 판정(`nearSide`)·도달 일수·x 컬럼이
- * 전부 같은 레벨을 봐야 화면과 OMS가 한 화면에서 말이 된다. 밴드만 보고 싶으면 `bandAskBp`.
+ * **x는 "호가가 실제로 설 레벨"이다** — 재고가 있으면 밴드가 아니라 (정리 앵커까지 반영하고)
+ * 편향을 뺀 값이 x가 된다 (2026-09-09 편향 / 2026-09-10 앵커). OMS가 그 자리에 호가를 걸므로,
+ * 체결 임박 판정(`nearSide`)·도달 일수·x 컬럼이 전부 같은 레벨을 봐야 화면과 OMS가 한 화면에서
+ * 말이 된다. 편향·앵커 전의 진입 밴드만 보고 싶으면 `bandAskBp`/`bandBidBp`.
  *
  * ⚠️ 재구성 NAV와 공식 iNAV의 상수 편차(보수·배당 계상)가 μ_g에 실릴 수 있다 (§14.5 주석).
  *    운용 중 괴리 컬럼과 대조할 것.
@@ -237,12 +260,15 @@ export function inventoryBiasBp(
 export type QuoteSuggestion = {
   /** 호가 앵커 = iNAV. 미수신이면 null. */
   anchor: number | null
-  /** 호가가 설 레벨 = 밴드 − 재고 편향. */
+  /** 호가가 설 레벨 = 앵커(밴드 또는 정리) − 재고 편향. */
   xAskBp: number | null
   xBidBp: number | null
-  /** 편향 전 진입 밴드 (μ ± zσ) — 툴팁에서 "밴드 → 편향 → x"를 보여줄 때. */
+  /** 편향·앵커 전 진입 밴드 (μ ± zσ) — 툴팁에서 "밴드 → 편향 → x"를 보여줄 때. */
   bandAskBp: number | null
   bandBidBp: number | null
+  /** 그 쪽 호가가 **정리 앵커**(μ ± E·σ)에 섰는가 — 재고 |q| > G 인 방향만 true (v1.6). */
+  unwindAsk: boolean
+  unwindBid: boolean
   /** 재고 편향 bp (양수 = 호가 양쪽을 그만큼 아래로). 재고·한도 없으면 0. */
   biasBp: number
   /** 편향 계산에 쓴 재고한도 C(주). 전일종가 없으면 null. */
@@ -291,17 +317,27 @@ export function suggestQuote(args: {
   const halfBp = sigmaCombBp != null ? z * sigmaCombBp : null
   const bandAskBp = muBp != null && halfBp != null ? muBp + halfBp : null
   const bandBidBp = muBp != null && halfBp != null ? muBp - halfBp : null
-  // 재고 편향 — 양쪽에서 **같은 값**을 빼 밴드를 통째로 옮긴다 (간격 불변, OMS v1.5).
+  // 재고 편향 — 양쪽에서 **같은 값**을 빼 두 호가를 통째로 옮긴다 (OMS v1.6, 양쪽 공통 항).
   const positionQty = args.positionQty ?? 0
   const capShares = inventoryCapShares(num(args.prevClose))
   const biasBp = inventoryBiasBp(sigmaCombBp, positionQty, capShares)
-  const xAskBp = bandAskBp != null ? bandAskBp - biasBp : null
-  const xBidBp = bandBidBp != null ? bandBidBp - biasBp : null
+  // 정리 앵커 — 재고가 G를 넘은 **그쪽 호가만** μ ± E·σ 고정 레벨로 (반대쪽은 밴드 그대로).
+  // 두 조건은 배타적이다(|q| > G인 부호는 하나뿐) — 호출부가 둘을 동시에 참으로 볼 일은 없다.
+  const unwindHalfBp = sigmaCombBp != null ? UNWIND_SIGMA * sigmaCombBp : null
+  const unwindAskBp =
+    muBp != null && unwindHalfBp != null && positionQty > UNWIND_MIN_SHARES ? muBp + unwindHalfBp : null
+  const unwindBidBp =
+    muBp != null && unwindHalfBp != null && positionQty < -UNWIND_MIN_SHARES ? muBp - unwindHalfBp : null
+  const anchorAskBp = unwindAskBp ?? bandAskBp
+  const anchorBidBp = unwindBidBp ?? bandBidBp
+  const xAskBp = anchorAskBp != null ? anchorAskBp - biasBp : null
+  const xBidBp = anchorBidBp != null ? anchorBidBp - biasBp : null
   const dayMax = calib?.g_day_max ?? null
   const dayMin = calib?.g_day_min ?? null
 
   const base = {
     anchor: null, xAskBp, xBidBp, bandAskBp, bandBidBp, biasBp, capShares, bid: null, ask: null,
+    unwindAsk: unwindAskBp != null, unwindBid: unwindBidBp != null,
     muBp, sigmaGBp, sigmaRBp, sigmaCombBp, horizonSeconds,
     degraded: sigmaGBp != null && sigmaRBp == null,
     touchDaysAsk: touchDays(dayMax, xAskBp, 'ask'),
@@ -323,6 +359,27 @@ export function suggestQuote(args: {
     askReason: '',
     bidReason: '',
   }
+}
+
+/**
+ * x 레벨의 **출처 한 줄** — 괴리 셀 툴팁·상세 패널 헤더가 같은 문장을 쓰게 한 벌로 둔다.
+ *   평상시 `μ_g ± 1.5σ결합 − 재고편향`
+ *   롱 정리 `매도 정리앵커 μ+1σ · 매수 μ_g ± 1.5σ결합 − 재고편향`
+ * `unwindAsk`/`unwindBid`는 배타적이라(재고 부호는 하나) 앞을 먼저 본다.
+ */
+export function xLevelSource(
+  z: number,
+  biasBp: number,
+  unwindAsk = false,
+  unwindBid = false,
+): string {
+  const band = `μ_g ± ${z}σ결합`
+  const head = unwindAsk
+    ? `매도 정리앵커 μ+${UNWIND_SIGMA}σ · 매수 ${band}`
+    : unwindBid
+      ? `매수 정리앵커 μ−${UNWIND_SIGMA}σ · 매도 ${band}`
+      : band
+  return head + (biasBp !== 0 ? ' − 재고편향' : '')
 }
 
 /**

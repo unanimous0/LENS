@@ -7,6 +7,7 @@ import { usePageInavSubscriptions } from '@/hooks/usePageInavSubscriptions'
 import { usePageOrderbookBulk } from '@/hooks/usePageOrderbookBulk'
 import { usePageStockSubscriptions } from '@/hooks/usePageStockSubscriptions'
 import {
+  BIAS_SIGMA_MULT,
   clampHorizon,
   clampZ,
   cV,
@@ -27,6 +28,9 @@ import {
   resolveIndexFutures,
   suggestQuote,
   ticksOutside,
+  UNWIND_MIN_SHARES,
+  UNWIND_SIGMA,
+  xLevelSource,
   Z_DEFAULT,
   Z_MAX,
   Z_MIN,
@@ -129,6 +133,31 @@ function loadTuner(): Tuner {
   }
 }
 
+// ── 운용사(브랜드) 필터 ────────────────────────────────────────────────────
+
+/**
+ * 브랜드 = 종목명의 **첫 토큰** (TIGER / SOL / RISE / HANARO / PLUS …).
+ * 유니버스가 112종으로 늘면서 "내 브랜드만 보기"가 필요해졌다. 목록은 **하드코딩하지 않고**
+ * 유니버스 이름에서 매번 도출한다 — KODEX·ACE가 들어와도 칩이 저절로 늘어난다.
+ * 필터는 **표 행만** 거른다 — 헤지 버킷·미헤지 델타·잔차·P&L 같은 집계는 전체 유니버스가
+ * 기준이어야 실제 북과 맞는다(§14.4).
+ */
+function brandOf(name: string): string {
+  const head = name.trim().split(/\s+/)[0]
+  return head || '기타'
+}
+
+const BRAND_KEY = 'lpDesk.brand.v1'
+
+/** 저장값은 브랜드 문자열 하나(단일 선택). 없거나 읽기 실패면 전체. */
+function loadBrand(): string | null {
+  try {
+    return localStorage.getItem(BRAND_KEY) || null
+  } catch {
+    return null
+  }
+}
+
 // ── 헤지 버킷 ──────────────────────────────────────────────────────────────
 
 type BucketId = 'k200' | 'kq150'
@@ -165,11 +194,13 @@ const COLS = 21
 /** x 컬럼 헤더 툴팁 — 산식과 보조줄(도달 일수)이 무엇인지 한 곳에만 적는다. */
 function xHeaderTip(horizonSeconds: number): string {
   return (
-    '호가가 설 레벨 x = μ_g ± z·σ결합 − 재고편향 (bp, iNAV 대비).\n' +
+    '호가가 설 레벨 x = 앵커 − 재고편향 (bp, iNAV 대비).\n' +
+    '앵커는 진입 밴드 μ_g ± z·σ결합, 다만 재고가 ' +
+    `${UNWIND_MIN_SHARES.toLocaleString()}주(G)를 넘은 **그쪽만** 정리 앵커 μ_g ± ${UNWIND_SIGMA}σ결합으로 내려온다.\n` +
     `σ결합 = √(σ괴리² + σ선물²) — NAV 괴리 분포와 선물 괴리 분포의 결합.\n` +
     `σ선물은 ${horizonLabel(horizonSeconds)} 지평에서 **직접 측정**한 값이다 (√T 환산 폐기 — §14.5 5차).\n` +
-    '재고편향 = σ결합 × 포지션 ÷ 재고한도 — 매도·매수를 같이 내리므로 간격은 그대로다\n' +
-    '(OMS 함수 전략 v1.5와 같은 항. 재고가 없으면 0).\n' +
+    `재고편향 = ${BIAS_SIGMA_MULT}×σ결합 × 포지션 ÷ 재고한도 — 매도·매수를 같이 내린다 (한도에서 ${BIAS_SIGMA_MULT}σ)\n` +
+    '(OMS 함수 전략 v1.6과 같은 항. 재고가 없으면 0).\n' +
     '보조줄 "N일 중 M일" = 장중 g가 그 x 레벨을 한 번이라도 넘은 날 수.\n' +
     'z를 올릴수록 유리하지만 도달 일수는 줄어든다 (정의상 단조).'
   )
@@ -180,6 +211,8 @@ function xHeaderTip(horizonSeconds: number): string {
  * 셀·툴팁 여러 곳이 같은 문장을 쓰므로 한 벌로 둔다. 지평은 산출에 실제로 쓰인 값
  * (`suggestQuote`가 돌려준 `horizonSeconds`)을 그대로 적는다 — 라벨과 값이 어긋나면 안 된다.
  * 재고가 있으면 `· 재고편향 −4.5bp`가 붙는다 — 그게 빠지면 분해 합이 x와 안 맞는다.
+ * 정리 모드(재고 > G)면 그쪽 앵커가 밴드가 아니므로 `· 매도 정리앵커 μ+1σ 12.4bp`도 붙는다
+ * (v1.6). 한 문장을 매도·매수 셀이 같이 쓰므로 어느 쪽이 정리 앵커인지 명시한다.
  */
 function xBreakdown(
   x: {
@@ -189,29 +222,49 @@ function xBreakdown(
     sigmaCombBp: number | null
     horizonSeconds: number
     biasBp: number
+    unwindAsk: boolean
+    unwindBid: boolean
   },
   z: number,
 ): string {
   if (x.muBp == null || x.sigmaCombBp == null) return ''
   const g = x.sigmaGBp != null ? x.sigmaGBp.toFixed(1) : '-'
   const r = x.sigmaRBp != null ? x.sigmaRBp.toFixed(1) : '없음(선물봉 부재 → σ괴리만)'
+  const unwindHalf = UNWIND_SIGMA * x.sigmaCombBp
+  const unwind = x.unwindAsk
+    ? ` · 매도 정리앵커 μ+${UNWIND_SIGMA}σ ${fmtSignedBp(x.muBp + unwindHalf)}bp`
+    : x.unwindBid
+      ? ` · 매수 정리앵커 μ−${UNWIND_SIGMA}σ ${fmtSignedBp(x.muBp - unwindHalf)}bp`
+      : ''
   return (
     `μ ${fmtSignedBp(x.muBp)} · σ괴리 ${g} · σ선물(${horizonLabel(x.horizonSeconds)}) ${r} → ±${z}σ ${(z * x.sigmaCombBp).toFixed(1)}bp` +
+    unwind +
     (x.biasBp !== 0 ? ` · 재고편향 ${fmtSignedBp(-x.biasBp)}bp` : '')
   )
 }
 
 /**
- * 재고 편향 툴팁 한 줄 — `재고 편향 −0.045% (포지션 +5,000주 / 한도 8,500주)`.
- * %는 OMS 조건변수와 같은 단위·자리수(3자리)라 엑셀 OMS 시트의 D·C와 눈으로 대조된다.
- * 재고가 없으면 빈 문자열 (편향 0인 행에 굳이 줄을 늘리지 않는다).
+ * 제안 호가 셀 툴팁의 **재고 근거 줄** — 정리 앵커(그 쪽이 정리 모드일 때) + 재고 편향.
+ *   `정리 앵커 μ+1σ (재고 +2,000주 > 1,000주)` / `재고 편향 −0.045% (포지션 +5,000주 / 한도 8,500주)`
+ * %는 OMS 조건변수와 같은 단위·자리수(3자리)라 엑셀 OMS 시트의 H(편향 눈금)·C와 눈으로 대조된다.
+ * 둘 다 해당 없으면 빈 문자열 (플랫 행에 굳이 줄을 늘리지 않는다).
+ *
+ * 편향과 앵커는 **독립**이다 — 전일종가가 없어 한도 C를 못 만들면 편향은 0이지만 정리 앵커는
+ * 그대로 선다(앵커는 C를 쓰지 않는다). 그래서 두 줄을 각자 판정한다.
  */
-function biasNote(biasBp: number, posQty: number, capShares: number | null): string {
-  if (biasBp === 0) return ''
-  return (
-    `\n재고 편향 ${fmtSignedBp(-biasBp / 100, 3)}% (포지션 ${fmtSigned(posQty)}주 / 한도 ${capShares?.toLocaleString() ?? '-'}주)` +
-    ' — 매도·매수 동일 이동(간격 불변), OMS v1.5'
-  )
+function biasNote(biasBp: number, posQty: number, capShares: number | null, unwind: boolean): string {
+  const lines: string[] = []
+  if (unwind)
+    lines.push(
+      `\n정리 앵커 μ${posQty > 0 ? '+' : '−'}${UNWIND_SIGMA}σ (재고 ${fmtSigned(posQty)}주 —` +
+        ` 정리 시작 ${UNWIND_MIN_SHARES.toLocaleString()}주 초과, OMS v1.6)`,
+    )
+  if (biasBp !== 0)
+    lines.push(
+      `\n재고 편향 ${fmtSignedBp(-biasBp / 100, 3)}% (포지션 ${fmtSigned(posQty)}주 / 한도 ${capShares?.toLocaleString() ?? '-'}주)` +
+        ' — 매도·매수 동일 이동, OMS v1.6',
+    )
+  return lines.join('')
 }
 
 /**
@@ -251,6 +304,15 @@ export function LpDeskPage() {
   }, [tuner])
   /** z가 프리셋 값이면 세그먼트가, 아니면(자유 입력) 옆 입력칸이 켜진다. */
   const zIsPreset = (Z_PRESETS as readonly number[]).includes(tuner.z)
+
+  /** 운용사 필터 — 표 행만 거른다. null = 전체. */
+  const [brand, setBrand] = useState<string | null>(loadBrand)
+  useEffect(() => {
+    try {
+      if (brand) localStorage.setItem(BRAND_KEY, brand)
+      else localStorage.removeItem(BRAND_KEY)
+    } catch { /* 저장 실패는 무해 */ }
+  }, [brand])
 
   const [sk, setSk] = useState<SK>('qty')
   const [asc, setAsc] = useState(false)
@@ -412,7 +474,8 @@ export function LpDeskPage() {
     setDetailErrors((p) => (Object.keys(p).length ? {} : p))
   }, [statsDate])
 
-  // ── 실시간 구독 (36종 고정) ──
+  // ── 실시간 구독 (유니버스 전체 — 운용사 필터와 무관하게 구독한다: 헤더 집계·헤지 환산이
+  //    숨긴 종목까지 다 써야 실제 북과 맞는다) ──
   const codes = useMemo(() => (master?.items ?? []).map((i) => i.etf_code), [master])
   usePageStockSubscriptions(codes)
   usePageInavSubscriptions(codes)
@@ -488,11 +551,12 @@ export function LpDeskPage() {
       const pos = posByCode.get(code)
       const qty = pos?.qty ?? 0
 
-      // 제안 호가 (§14.5 호가 층) — 앵커 iNAV × (1 + x), x = μ_g ± z·√(σ_g²+σ_r²) − 재고 편향.
+      // 제안 호가 (§14.5 호가 층) — 앵커 iNAV × (1 + x), x = 밴드(μ_g ± z·√(σ_g²+σ_r²)) − 재고 편향.
+      // 재고가 G(1,000주)를 넘으면 그쪽 앵커만 정리 레벨 μ_g ± E·σ로 바뀐다 (OMS v1.6).
       // 캘리브·iNAV 중 하나라도 없으면 가격 없이 사유만. 선물·β는 무관
       // (σ_r은 선물이 필요하지만, 없으면 차단이 아니라 σ_g로 degrade).
-      // 편향은 OMS 함수 전략 v1.5와 **같은 항** — 재고가 있으면 화면 제안가도 OMS가 실제로 거는
-      // 자리로 따라 내려간다 (2026-09-09). C는 위에서 푼 전일종가로 만든다: 엑셀 OMS 시트는 서버
+      // 편향·앵커는 OMS 함수 전략 v1.6과 **같은 항** — 재고가 있으면 화면 제안가도 OMS가 실제로
+      // 거는 자리로 따라간다. C는 위에서 푼 전일종가로 만든다: 엑셀 OMS 시트는 서버
       // 일봉 종가를 쓰므로 배당락 등으로 틱 기준가와 갈리면 드물게 한 로트(100주) 차이가 날 수
       // 있지만, 화면 안에서 전일종가 정의가 둘이 되는 편이 더 나쁘다.
       const quote = suggestQuote({
@@ -570,9 +634,12 @@ export function LpDeskPage() {
         anchor: quote.anchor,
         bidBp: quote.xBidBp,
         askBp: quote.xAskBp,
-        // 재고 편향 (OMS v1.5) — x는 이미 편향이 빠진 값이고, 이 둘은 툴팁에 근거를 적기 위한 것.
+        // 재고 편향·정리 앵커 (OMS v1.6) — x에는 이미 둘 다 반영돼 있고, 아래 넷은 툴팁·라벨에
+        // 근거를 적기 위한 것이다.
         biasBp: quote.biasBp,
         capShares: quote.capShares,
+        unwindAsk: quote.unwindAsk,
+        unwindBid: quote.unwindBid,
         // x 분해 (μ_g / σ_g / σ_r / σ_comb) — 툴팁에서 "왜 이 폭인가"를 보여준다.
         muBp: quote.muBp,
         sigmaGBp: quote.sigmaGBp,
@@ -635,6 +702,49 @@ export function LpDeskPage() {
     if (sk === k) setAsc((v) => !v)
     else { setSk(k); setAsc(k === 'name') }
   }
+
+  // ── 운용사 칩 ──
+  // 시세와 무관한 축(이름·포지션)이라 `rows`가 아니라 **마스터·포지션**에서 센다 —
+  // rows는 200ms마다 identity가 바뀌므로 그걸 물면 칩 배열이 5Hz로 새로 만들어진다.
+  const brands = useMemo(() => {
+    const m = new Map<string, { id: string; count: number; posCount: number }>()
+    for (const it of master?.items ?? []) {
+      const id = brandOf(it.name)
+      const held = (posByCode.get(it.etf_code)?.qty ?? 0) !== 0
+      const e = m.get(id)
+      if (e) {
+        e.count += 1
+        if (held) e.posCount += 1
+      } else {
+        m.set(id, { id, count: 1, posCount: held ? 1 : 0 })
+      }
+    }
+    // 개수 내림차순 — 주력 브랜드가 앞. 동수는 이름순으로 자리를 고정한다.
+    return [...m.values()].sort((a, b) => b.count - a.count || a.id.localeCompare(b.id))
+  }, [master, posByCode])
+
+  /** 브랜드가 하나뿐이면 칩 줄 자체를 숨긴다 (필터가 무의미). */
+  const showBrandChips = brands.length > 1
+  /**
+   * 저장된 브랜드가 유니버스에서 사라졌으면(운용사 교체·유니버스 축소) 조용히 전체로.
+   * 칩 줄이 없을 때도 전체 — 조작할 UI가 없는데 표만 걸러져 있는 상태를 만들지 않는다.
+   */
+  const activeBrand = showBrandChips && brand != null && brands.some((b) => b.id === brand) ? brand : null
+
+  const visible = useMemo(
+    () => (activeBrand == null ? sorted : sorted.filter((r) => brandOf(r.name) === activeBrand)),
+    [sorted, activeBrand],
+  )
+
+  /** 필터에 가려진 **보유 종목** — 있으면 칩 줄에 경고로 남긴다 (안 보이는 포지션 방지). */
+  const hiddenPos = useMemo(() => {
+    if (activeBrand == null) return { count: 0, note: '' }
+    const others = brands.filter((b) => b.id !== activeBrand && b.posCount > 0)
+    return {
+      count: others.reduce((n, b) => n + b.posCount, 0),
+      note: others.map((b) => `${b.id} ${b.posCount}종`).join(' · '),
+    }
+  }, [brands, activeBrand])
 
   // ── 헤지 환산 (§14.4) ──
   const hedgeByContract = useMemo(() => {
@@ -936,11 +1046,12 @@ export function LpDeskPage() {
               className="flex items-center gap-1.5 rounded-md h-[28px] px-2.5 bg-[#1e1e22] text-[10px] text-[#8b8b8e]"
               title={
                 '매도 = iNAV × (1 + x매도) 5원 올림 / 매수 = iNAV × (1 + x매수) 5원 내림\n' +
-                'x = μ_g ± z·σ결합 − 재고편향 · σ결합 = √(σ괴리² + σ선물²)\n' +
+                'x = 앵커 − 재고편향 · 앵커 = μ_g ± z·σ결합 (밴드) · σ결합 = √(σ괴리² + σ선물²)\n' +
                 `  μ_g·σ괴리 = 최근 ${master?.calib_params?.calib_days ?? 10}거래일 30초봉 NAV 괴리 g의 평균·레벨 σ\n` +
                 `  σ선물 = 선물 대비 스큐 s의 ${horizonLabel(tuner.horizonSeconds)} 변화 σ — 그 지평에서 **직접 측정**(√T 환산 폐기)\n` +
-                `  재고편향 = σ결합 × 포지션 ÷ 재고한도(장중 상한 ${fmtWonAbs(INTRADAY_CAP_WON)} ÷ 전일종가, 100주 내림)\n` +
-                '    — 매도·매수를 같은 폭만큼 내려 간격은 그대로. OMS 함수 전략 v1.5와 같은 항\n' +
+                `  재고편향 = ${BIAS_SIGMA_MULT}×σ결합 × 포지션 ÷ 재고한도(장중 상한 ${fmtWonAbs(INTRADAY_CAP_WON)} ÷ 전일종가, 100주 내림)\n` +
+                '    — 매도·매수를 같은 폭만큼 내린다 (OMS 함수 전략 v1.6과 같은 항)\n' +
+                `  재고 ${UNWIND_MIN_SHARES.toLocaleString()}주(G) 초과면 **그쪽 앵커만** 정리 레벨 μ_g ± ${UNWIND_SIGMA}σ결합으로 (반대쪽은 밴드 유지)\n` +
                 `지평 T = 호가를 걸어 두는 시간. 늘릴수록 폭이 넓어지지만 √T 가정만큼은 아니다\n` +
                 `z(호가 폭 배수)는 왼쪽 프리셋 토글·입력칸에서 — 현재 ${zLabel(tuner.z)}\n` +
                 `g 표본 ${master?.calib_params?.g_window ?? '09:10~15:20'} (선물 불필요 — 하루 전체)`
@@ -967,7 +1078,7 @@ export function LpDeskPage() {
               onClick={exportXlsx}
               disabled={exporting}
               title={
-                '내부망 반입용 파라미터 엑셀 (β·호가 밴드·전일종가·CU 36종 스냅샷)\n' +
+                '내부망 반입용 파라미터 엑셀 (β·호가 밴드·전일종가·CU — 유니버스 전체 스냅샷)\n' +
                 '실집행은 LENS가 없는 내부망에서 하므로, 체결·시세·선물가는 그쪽 엑셀이 DDE로 받고\n' +
                 '이 파일의 수식이 K200/KQ150 노출 → 목표 계약수 → 집행할 계약까지 계산한다.\n' +
                 `x는 지금 헤더 설정(z ${zLabel(tuner.z)} · 지평 ${horizonLabel(tuner.horizonSeconds)})으로 채워진다. 매크로 없음.\n` +
@@ -1035,6 +1146,9 @@ export function LpDeskPage() {
                         )}
                       </span>
                     : <span className="ml-2 text-warning">캘리브 없음 — 제안 호가 미산출</span>)}
+                  {activeBrand != null && (
+                    <span className="ml-2 text-[#8b8b8e]">· 표시 {visible.length}종 ({activeBrand})</span>
+                  )}
                   {posErr && <span className="ml-2 text-down">포지션 조회 실패: {posErr}</span>}
                   {/* 이미 마스터가 있는데 재조회만 실패한 경우 — 표는 그대로 두고 배지로만 알린다. */}
                   {master && masterErr && <span className="ml-2 text-warning">통계 재조회 실패: {masterErr}</span>}
@@ -1043,6 +1157,48 @@ export function LpDeskPage() {
             </div>
           </div>
         </div>
+
+        {/* 운용사 필터 — 표 바로 위, **표 행만** 거른다 (헤더 집계는 전체 기준) */}
+        {showBrandChips && (
+          <div className="px-4 pb-2 flex items-center gap-2 flex-wrap">
+            <div
+              className="flex items-center gap-1 rounded-md bg-[#1e1e22] p-0.5 h-[26px]"
+              title={
+                '운용사(브랜드)별 보기 — 종목명 첫 토큰으로 자동 분류.\n' +
+                '**표 행만** 걸러진다: 위 버킷·미헤지 델타·잔차·P&L은 언제나 전체 유니버스 기준이다.\n' +
+                '같은 칩을 다시 누르면 전체로 돌아온다. 선택은 브라우저에 저장된다.\n' +
+                '칩의 초록 점 = 그 브랜드에 보유 포지션이 있다.'
+              }
+            >
+              <span className="pl-1.5 text-[10px] text-[#8b8b8e]">운용사</span>
+              <BrandChip
+                label="전체"
+                count={master?.items.length ?? 0}
+                active={activeBrand == null}
+                onClick={() => setBrand(null)}
+              />
+              {brands.map((b) => (
+                <BrandChip
+                  key={b.id}
+                  label={b.id}
+                  count={b.count}
+                  posCount={b.posCount}
+                  active={activeBrand === b.id}
+                  onClick={() => setBrand(activeBrand === b.id ? null : b.id)}
+                />
+              ))}
+            </div>
+            <span className="text-[10px] text-[#5a5a5e]">표만 필터 · 집계는 전체 기준</span>
+            {hiddenPos.count > 0 && (
+              <span
+                className="rounded-sm bg-warning/15 px-1.5 py-0.5 text-[10px] text-warning tabular-nums"
+                title={`필터에 가려진 보유 종목 — ${hiddenPos.note}\n헤더 집계·헤지 계약수에는 그대로 들어가 있다.`}
+              >
+                숨은 보유 {hiddenPos.count}종
+              </span>
+            )}
+          </div>
+        )}
       </div>
 
       {/* ── 확장 영역 (테이블 위, 상시 아님) ── */}
@@ -1128,10 +1284,19 @@ export function LpDeskPage() {
                 </td>
               </tr>
             )}
-            {!loading && master && sorted.length === 0 && (
-              <tr><td colSpan={COLS} className="px-4 py-8 text-center text-[12px] text-[#8b8b8e]">유니버스가 비어 있습니다.</td></tr>
+            {!loading && master && visible.length === 0 && (
+              <tr>
+                <td colSpan={COLS} className="px-4 py-8 text-center text-[12px] text-[#8b8b8e]">
+                  {activeBrand != null ? (
+                    <>
+                      {activeBrand} 종목이 없습니다.
+                      <button onClick={() => setBrand(null)} className="ml-3 rounded bg-[#1e1e22] px-2.5 py-1 text-[11px] text-[#d1d1d6] hover:bg-[#2e2e32]">전체 보기</button>
+                    </>
+                  ) : '유니버스가 비어 있습니다.'}
+                </td>
+              </tr>
             )}
-            {sorted.map((r) => (
+            {visible.map((r) => (
               <Fragment key={r.code}>
                 <tr
                   onClick={() => toggleExpand(r.code)}
@@ -1156,7 +1321,7 @@ export function LpDeskPage() {
                         ? 'iNAV/현재가 미수신 — 괴리 산출 불가'
                         : `실시간 괴리 g = (${r.mid > 0 ? 'mid' : '현재가'} − iNAV)/iNAV = ${fmtSignedBp(r.premiumBp)}bp\n` +
                           `x매도 ${r.askBp != null ? fmtSignedBp(r.askBp) : '-'} / x매수 ${r.bidBp != null ? fmtSignedBp(r.bidBp) : '-'}bp ` +
-                          `(μ_g ± ${tuner.z}σ결합${r.biasBp !== 0 ? ' − 재고편향' : ''})` +
+                          `(${xLevelSource(tuner.z, r.biasBp, r.unwindAsk, r.unwindBid)})` +
                           (r.near ? `\n→ ${r.near === 'ask' ? '매도' : '매수'} 체결 임박 (x까지 |x|의 ${Math.round(NEAR_MARGIN_RATIO * 100)}% 이내)` : '')
                     }
                   >
@@ -1168,14 +1333,14 @@ export function LpDeskPage() {
                     breakdown={xBreakdown(r, tuner.z)} excludedLegs={r.calib?.excluded_legs ?? 0}
                     touchDays={r.touchDaysAsk} calibDays={r.touchTotalDays}
                     ticksOut={r.ticksOutAsk} reason={r.quoteAskReason}
-                    biasBp={r.biasBp} posQty={r.qty} capShares={r.capShares}
+                    biasBp={r.biasBp} posQty={r.qty} capShares={r.capShares} unwind={r.unwindAsk}
                   />
                   <QuoteCell
                     price={r.quoteBid} side="bid" anchor={r.anchor} xBp={r.bidBp}
                     breakdown={xBreakdown(r, tuner.z)} excludedLegs={r.calib?.excluded_legs ?? 0}
                     touchDays={r.touchDaysBid} calibDays={r.touchTotalDays}
                     ticksOut={r.ticksOutBid} reason={r.quoteBidReason}
-                    biasBp={r.biasBp} posQty={r.qty} capShares={r.capShares}
+                    biasBp={r.biasBp} posQty={r.qty} capShares={r.capShares} unwind={r.unwindBid}
                   />
                   <C c="text-[#d1d1d6]" className="border-l border-white/[0.04]">{r.ask1 > 0 ? r.ask1.toLocaleString() : '-'}</C>
                   <C c="text-[#d1d1d6]">{r.bid1 > 0 ? r.bid1.toLocaleString() : '-'}</C>
@@ -1278,6 +1443,8 @@ export function LpDeskPage() {
                         xBidBp={r.bidBp}
                         xAskBp={r.askBp}
                         biasBp={r.biasBp}
+                        unwindAsk={r.unwindAsk}
+                        unwindBid={r.unwindBid}
                         z={tuner.z}
                         xBreakdown={xBreakdown(r, tuner.z)}
                         touchDaysBid={r.touchDaysBid}
@@ -1375,6 +1542,43 @@ function BucketLine({ bucket: b }: { bucket: Bucket }) {
       <span className="text-[#8b8b8e]">미헤지</span>
       <span className={cn(cV(b.unhedged))}>{fmtWon(b.unhedged)}</span>
     </div>
+  )
+}
+
+/**
+ * 운용사 칩 — z 프리셋 세그먼트와 같은 생김새(단일 선택·토글)라 조작 규칙이 한눈에 읽힌다.
+ * 개수는 한 칸 작게, 보유가 있는 브랜드는 초록 점 하나 — 필터로 가려도 포지션의 존재는 보인다.
+ */
+function BrandChip({
+  label,
+  count,
+  posCount = 0,
+  active,
+  onClick,
+}: {
+  label: string
+  count: number
+  /** 그 브랜드의 보유 종목 수 (0이면 점 없음). */
+  posCount?: number
+  active: boolean
+  onClick: () => void
+}) {
+  return (
+    <button
+      onClick={onClick}
+      title={
+        `${label} ${count}종${posCount > 0 ? ` · 보유 ${posCount}종` : ''}\n` +
+        (active ? '다시 누르면 전체' : '표를 이 운용사만으로 (집계는 전체 유지)')
+      }
+      className={cn(
+        'flex h-full items-center gap-1 rounded px-2 text-[11px] transition-colors',
+        active ? 'bg-[#2e2e32] text-white' : 'text-[#8b8b8e] hover:text-white',
+      )}
+    >
+      <span>{label}</span>
+      <span className={cn('text-[10px] tabular-nums', active ? 'text-[#8b8b8e]' : 'text-[#5a5a5e]')}>{count}</span>
+      {posCount > 0 && <span className="h-[4px] w-[4px] rounded-full bg-accent" />}
+    </button>
   )
 }
 
@@ -1556,18 +1760,20 @@ function PriceCell({
  */
 function QuoteCell({
   price, side, anchor, xBp, breakdown, excludedLegs, touchDays, calibDays, ticksOut, reason,
-  biasBp, posQty, capShares,
+  biasBp, posQty, capShares, unwind,
 }: {
   price: number | null
   side: 'bid' | 'ask'
   /** 호가 앵커 = iNAV (§14.5 4차 정정). */
   anchor: number | null
-  /** 호가가 설 레벨 = 밴드 − 재고 편향 (편향은 x에 이미 반영돼 있다). */
+  /** 호가가 설 레벨 = 앵커(밴드 또는 정리) − 재고 편향 (둘 다 x에 이미 반영돼 있다). */
   xBp: number | null
-  /** 재고 편향 bp — 0이면 툴팁에 줄이 붙지 않는다 (OMS v1.5). */
+  /** 재고 편향 bp — 0이면 툴팁에 줄이 붙지 않는다 (OMS v1.6). */
   biasBp: number
   posQty: number
   capShares: number | null
+  /** **이 쪽** 호가가 정리 앵커(μ ± E·σ)에 섰는가 — 재고 방향만 true (OMS v1.6). */
+  unwind: boolean
   /** x 분해 한 줄 (`μ … · σ괴리 … · σ선물 … → ±zσ`). */
   breakdown: string
   /** 재구성에서 뺀 레그 수 (0이면 표기 없음, §14.3). */
@@ -1590,7 +1796,7 @@ function QuoteCell({
             `제안${label} ${price.toLocaleString()} · x ${xBp != null ? fmtSignedBp(xBp) : '-'}bp\n` +
             `iNAV ${anchor != null ? anchor.toLocaleString(undefined, { maximumFractionDigits: 1 }) : '-'} × (1 ${fmtSignedBp(xBp ?? 0)}bp) → 5원 ${side === 'ask' ? '올림' : '내림'}\n` +
             `x = ${breakdown}` +
-            biasNote(biasBp, posQty, capShares) +
+            biasNote(biasBp, posQty, capShares, unwind) +
             (touchDays != null ? `\n도달 ${calibDays ?? '-'}일 중 ${touchDays}일 (장중 g가 이 레벨을 넘은 날)` : '') +
             (ticksOut != null
               ? `\n시장 ${mktLabel} 대비 ${fmtSigned(ticksOut)}틱 (양수 = 시장 밖에서 대기 / 음수 = 안쪽)`
