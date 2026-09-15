@@ -162,6 +162,11 @@ export interface LpDeskMaster {
     on_cap_unit_won?: number
   }
   calib_params?: LpDeskCalibParams | null
+  /**
+   * 캘리브 캐시가 비어 있고 **백그라운드 빌드가 도는 중** (기동 직후 112종 ≈ 2분, §14.9).
+   * 이때 `calib_params`·행별 `calib`는 전부 null이다 — 화면은 폴링으로 채워 넣는다.
+   */
+  calib_building?: boolean
   items: LpDeskMasterItem[]
 }
 

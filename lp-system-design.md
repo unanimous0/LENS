@@ -971,6 +971,8 @@ x_ask = μ_g + z·σ_comb        x_bid = μ_g − z·σ_comb          z 기본 1
   - **호가 x = `g_mean_bp` ± z·√(`g_sigma_level_bp`² + `s_diff_sigma_bp[T]`²)** (5차 보완, T = 프론트 선택 지평 초). 프론트는 √T 환산을 하지 않는다 — 각 지평의 σ가 이미 직접 측정값이다. 분위수(`*_quantiles`·`*_touch_days`)는 표시·참고용으로 유지. `g_day_max`/`g_day_min`은 길이 = `g_days`인 일별 극값 — 분위수가 아닌 임의 x 레벨의 도달 일수를 프론트가 직접 세는 재료다.
   - `g_sigma_bp`(일별 demean 후 = 하루 안의 흔들림)와 `g_sigma_level_bp`(레벨 σ)는 **다른 값**이다. 호가 폭에 들어가는 건 후자.
   - 두 축은 표본 창이 달라 일수/봉수가 따로다(`g_days`/`g_bars` vs `days`/`bars`). 한쪽만 표본 부족이면 그 블록만 null, 둘 다 부족해야 `calib: null`. 선택한 지평의 `s_diff_sigma_bp[T]`가 null이면 호가는 σ_g만으로 degrade.
+  - **아침 자동 빌드** (2026-09-16): 캘리브 캐시가 비어 있으면(기동 직후 — 112종 빌드 실측 94초) `/master`가 **백그라운드 빌드를 띄우고** `calib_building: true`만 실어 **기다리지 않고** 답한다(본문은 종전대로 `calib: null`). 중복 기동 금지 — 이미 빌드 중이면(1시간 주기 루프 포함) 그 빌드를 재사용하고, 실패 직후엔 `RETRY_SECS`(5분) 동안 재기동하지 않는다. 수동 `POST /calib/refresh`·1시간 버전 프로브는 그대로.
+  - 프론트는 `calib_params`가 null인 동안만 **15초 주기로 `/master` 재조회**하고 채워지면 멈춘다(정상 상태 폴링 0) — 아침에 먼저 열어 둔 화면이 F5 없이 채워진다. 마스터 조회 자체가 실패한 경우(서버 미기동)도 같은 타이머가 회복을 맡는다. 헤더 배지는 "캘리브 계산 중 — 약 2분, 자동 반영".
 - `GET /detail/{etf_code}` → `{rolling_beta:[{date,bk,bq}], resid:[{date,bp}], s_hist:{bins,counts}, s_recent:[{t,bp}] (최근 수일 30초 경로), g_hist:{bins,counts}, gap:[{date,bp}], pdf_top:[{code,name,weight_pct,market}]}`
 - `GET/POST /fills`, `DELETE /fills/{id}` / 동일하게 `/hedge-fills`
 - `GET /positions` → per-ETF 합산 + 헤지 계약 합산

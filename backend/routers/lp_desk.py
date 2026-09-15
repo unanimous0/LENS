@@ -14,7 +14,8 @@
 실시간 시세·계약수 환산(§14.4)·호가 산식(§14.5 호가 층 — iNAV × (1+x), x = μ_g ± z·σ_comb)은
 프론트 몫 — 서버는 β·포지션과 **캘리브 층**(g μ/σ·s 증분 σ·일별 극값·분위수·전일종가+신선도)까지만.
 캘리브가 없거나 실패해도
-`calib: null`로만 degrade하고 통계 응답 자체는 살린다 (§14.9).
+`calib: null`로만 degrade하고 통계 응답 자체는 살린다 (§14.9). 비어 있는 경우(기동 직후)엔
+`/master`가 **백그라운드 빌드를 띄우고** `calib_building: true`로만 알린다 — 응답은 기다리지 않는다.
 """
 from __future__ import annotations
 
@@ -54,11 +55,17 @@ async def get_universe() -> dict:
 
 @router.get("/master")
 async def get_master() -> dict:
+    """통계 + 캘리브. **캘리브를 기다리지 않는다** — 기동 직후 캐시가 비어 있으면 백그라운드
+    빌드만 띄우고(`calib_building: true`) 즉시 답한다. 프론트는 그 플래그를 보고 폴링해
+    F5 없이 채워 넣는다 (§14.9 아침 자동 빌드)."""
     try:
-        return lp_desk_calib.decorate_master(await lp_desk_stats.master())
+        payload = lp_desk_calib.decorate_master(await lp_desk_stats.master())
     except Exception as e:  # noqa: BLE001 — Finance_Data 미가용 시 화면 전체가 죽지 않게 503
         logger.warning("lp_desk master 실패: %s", e)
         raise HTTPException(503, f"LP 데스크 통계 산출 실패: {e}")
+    # 캐시가 있으면 no-op (부작용 0) — 빌드를 띄우는 건 캘리브가 비어 있을 때뿐.
+    payload["calib_building"] = lp_desk_calib.ensure_build()
+    return payload
 
 
 @router.post("/calib/refresh")
@@ -125,7 +132,12 @@ async def get_export(
         logger.warning("lp_desk export 통계 조회 실패: %s", e)
         raise HTTPException(503, f"LP 데스크 통계 산출 실패: {e}")
     if not master.get("calib_params"):
-        raise HTTPException(503, "캘리브레이션 없음 — 호가 밴드를 채울 수 없습니다 (POST /calib/refresh 후 재시도)")
+        # 기동 직후라면 여기서도 빌드를 띄워 둔다 — 사용자가 수동 refresh를 몰라도 곧 채워진다.
+        building = lp_desk_calib.ensure_build()
+        raise HTTPException(503, (
+            "캘리브레이션 계산 중 — 약 2분 뒤 다시 내려받으세요" if building
+            else "캘리브레이션 없음 — 호가 밴드를 채울 수 없습니다 (POST /calib/refresh 후 재시도)"
+        ))
 
     blob = lp_desk_export.build_workbook(
         master, z=z, horizon=horizon, intraday_cap_won=intraday_cap_won

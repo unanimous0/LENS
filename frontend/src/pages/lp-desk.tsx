@@ -73,6 +73,14 @@ import {
 
 const API = '/api/lp-desk'
 
+/**
+ * 마스터 재조회 주기 — **캘리브가 비어 있을 때만** 돈다 (§14.9). 서버 기동 직후 캘리브 빌드는
+ * 112종 2분 남짓이고 그동안 x·μ_g 컬럼이 전부 "—"라, 아침에 먼저 열어 둔 화면이 F5 없이
+ * 채워지게 한다. 서버가 아직 안 떴을 때(조회 실패)의 회복 경로도 같은 타이머다.
+ * 캘리브가 차면 즉시 멈춘다 — 정상 상태에서는 마스터 폴링이 없다.
+ */
+const CALIB_POLL_MS = 15_000
+
 // ── 튜너 (localStorage) ────────────────────────────────────────────────────
 
 /**
@@ -381,8 +389,9 @@ export function LpDeskPage() {
   // ── 서버 조회 ──
   /** 한 번이라도 마스터를 받았는지 — 수동 새로고침 때 테이블을 로딩 문구로 비우지 않기 위해. */
   const hasMaster = useRef(false)
-  const loadMaster = useCallback(() => {
-    if (!hasMaster.current) setLoading(true)
+  /** `quiet` = 자동 폴링 — 실패해도 표를 "로딩 중"으로 깜빡이지 않는다(에러 문구 유지). */
+  const loadMaster = useCallback((quiet = false) => {
+    if (!hasMaster.current && !quiet) setLoading(true)
     fetch(`${API}/master`)
       .then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json() })
       .then((d: LpDeskMaster) => {
@@ -402,6 +411,20 @@ export function LpDeskPage() {
   }, [])
 
   useEffect(() => { loadMaster() }, [loadMaster])
+
+  /**
+   * 캘리브가 아직 없는 동안만 자동 재조회 (§14.9). 서버 기동 직후엔 캐시가 비어 있고 빌드에
+   * 2분쯤 걸려, 먼저 열어 둔 화면이 F5 전까지 "—"로 굳는 게 원래 문제였다. 마스터 자체를 못
+   * 받은 경우(서버 미기동 등)도 `master == null`이라 같은 타이머가 회복을 맡는다.
+   * `calib_params`가 차는 순간 deps가 바뀌며 타이머가 해제된다 — 정상 상태에선 폴링이 없다.
+   */
+  const calibPending = master?.calib_params == null
+  useEffect(() => {
+    if (!calibPending) return
+    const id = setInterval(() => loadMaster(true), CALIB_POLL_MS)
+    return () => clearInterval(id)
+  }, [calibPending, loadMaster])
+
   useEffect(() => {
     loadPositions()
     // 체결은 이 화면에서만 들어가지만 여러 탭·기기에서 볼 수 있어 주기 재조회 (SQLite라 저렴).
@@ -1145,7 +1168,20 @@ export function LpDeskPage() {
                           <span className="text-[#3a3a3e]"> · s 표본 {master.calib_params.s_window}</span>
                         )}
                       </span>
-                    : <span className="ml-2 text-warning">캘리브 없음 — 제안 호가 미산출</span>)}
+                    : <span
+                        className="ml-2 text-warning"
+                        title={
+                          master.calib_building
+                            ? '서버 기동 직후라 캘리브(30초봉 μ_g·σ) 배치가 돌고 있다 — 112종 약 2분.\n' +
+                              `끝나면 ${CALIB_POLL_MS / 1000}초 주기 재조회가 자동으로 받아 온다 (F5 불필요).`
+                            : '캘리브 배치가 아직 돌지 않았거나 데이터가 없다 (30초봉/근월물).\n' +
+                              `${CALIB_POLL_MS / 1000}초마다 재조회 중 — 계속 비어 있으면 POST /api/lp-desk/calib/refresh.`
+                        }
+                      >
+                        {master.calib_building
+                          ? '캘리브 계산 중 — 약 2분, 자동 반영'
+                          : '캘리브 없음 — 제안 호가 미산출'}
+                      </span>)}
                   {activeBrand != null && (
                     <span className="ml-2 text-[#8b8b8e]">· 표시 {visible.length}종 ({activeBrand})</span>
                   )}
@@ -1280,7 +1316,8 @@ export function LpDeskPage() {
               <tr>
                 <td colSpan={COLS} className="px-4 py-8 text-center text-[12px] text-down">
                   마스터 조회 실패: {masterErr}
-                  <button onClick={loadMaster} className="ml-3 rounded bg-[#1e1e22] px-2.5 py-1 text-[11px] text-[#d1d1d6] hover:bg-[#2e2e32]">재시도</button>
+                  <span className="ml-2 text-[#8b8b8e]">· {CALIB_POLL_MS / 1000}초마다 자동 재시도 중</span>
+                  <button onClick={() => loadMaster()} className="ml-3 rounded bg-[#1e1e22] px-2.5 py-1 text-[11px] text-[#d1d1d6] hover:bg-[#2e2e32]">재시도</button>
                 </td>
               </tr>
             )}

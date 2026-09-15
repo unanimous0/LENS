@@ -65,6 +65,9 @@ NAV 주변에 서야 하고, g는 그 감각과 맞는 유일한 양이다. μ·
 캐시: 시간 TTL이 아니라 **데이터 버전**(인트라데이 최신 봉 시각 + lp_desk_stats 패널 버전) 기반.
 백그라운드 루프가 1시간마다 버전만 프로브하고, 바뀐 경우에만 재계산한다 — 인트라데이 적재는
 야간 배치라 장중에는 대개 스킵된다(§14.5의 "장중 1시간 주기"를 낭비 없이 만족).
+
+기동 직후(캐시 비어 있음)에 화면이 열리는 경우는 `ensure_build()`가 받는다 — /master가 빌드를
+기다리지 않고 `calib_building`만 알려 주면, 프론트가 채워질 때까지 폴링한다 (§14.9 아침 자동 빌드).
 """
 from __future__ import annotations
 
@@ -430,7 +433,9 @@ class Calib:
 
 _state: Calib | None = None
 _lock = asyncio.Lock()
-_task: asyncio.Task | None = None
+_task: asyncio.Task | None = None       # 1시간 주기 프로브 루프
+_kick: asyncio.Task | None = None       # /master가 띄운 온디맨드 빌드 (기동 직후 1회)
+_kick_retry_at: float = 0.0             # 온디맨드 빌드 실패 시 재시도 억제 (monotonic)
 
 
 # ---------------------------------------------------------------------------
@@ -885,3 +890,46 @@ def start_background() -> None:
     if _task is not None and not _task.done():
         return
     _task = asyncio.create_task(_loop())
+
+
+def is_building() -> bool:
+    """지금 캘리브 빌드가 돌고 있나 — /master `calib_building`의 근거.
+
+    판정은 **락 점유**(= refresh 본체 실행 중, 주기 루프가 돌리는 것도 포함) 또는 온디맨드
+    태스크 생존. 주기 루프 태스크는 대부분 시간을 sleep으로 보내므로 생존 여부로 보면 안 된다.
+    """
+    return _lock.locked() or (_kick is not None and not _kick.done())
+
+
+async def _kick_build() -> None:
+    """온디맨드 빌드 1회. 실패·데이터 부족이면 RETRY_SECS 동안 재시도를 막는다 (폴링 × 풀빌드 방지)."""
+    global _kick_retry_at
+    try:
+        if await refresh() is None:
+            _kick_retry_at = _time.monotonic() + RETRY_SECS
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:  # noqa: BLE001 — /master 응답은 이미 나갔다. 로그만 남기고 다음 주기에 맡긴다
+        _kick_retry_at = _time.monotonic() + RETRY_SECS
+        logger.warning("lp_desk calib 자동 빌드 실패: %s", e)
+
+
+def ensure_build() -> bool:
+    """캐시가 비어 있으면 백그라운드 빌드를 띄우고 "빌드 중"을 반환 (§14.9 아침 자동 빌드).
+
+    기동 직후 112종 빌드는 2분 남짓이라 /master를 기다리게 할 수 없다 — 응답은 종전대로 즉시
+    `calib: null`로 나가고, 프론트가 이 플래그를 보고 채워질 때까지 폴링한다.
+
+    **중복 기동 금지**: 이미 빌드 중이면(주기 루프가 돌리는 것 포함) 그 빌드를 재사용하고,
+    직전 시도가 실패했으면 RETRY_SECS 동안은 새로 띄우지 않는다 — 15초 폴링이 풀빌드를
+    겹쳐 쌓는 걸 막는다. 캐시가 이미 있으면 아무것도 하지 않는다(정상 상태에서 부작용 0).
+    """
+    global _kick
+    if _state is not None:
+        return False
+    if is_building():
+        return True
+    if _time.monotonic() < _kick_retry_at:
+        return False    # 실패 직후 — 프론트는 "캘리브 없음"을 보되 폴링은 계속한다
+    _kick = asyncio.create_task(_kick_build())
+    return True
