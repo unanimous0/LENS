@@ -3,147 +3,204 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>LP 데스크 — 호가 산정 근거</title>
+<title>LP 데스크 — 호가 전략, 쉬운 설명</title>
 <style>
   :root{--bg:#000;--panel:#111114;--surface:#1c1c1e;--line:#26262a;
-    --t1:#fff;--t2:#d1d1d6;--t3:#8e8e93;--up:#00b26b;--down:#bb4a65;--warn:#ff9f0a}
+    --t1:#fff;--t2:#d1d1d6;--t3:#8e8e93;--up:#00b26b;--down:#bb4a65;--warn:#ff9f0a;--blue:#0a84ff}
   *{box-sizing:border-box}
   body{margin:0;background:var(--bg);color:var(--t2);
-    font:14px/1.7 Inter,Pretendard,-apple-system,"Segoe UI",sans-serif;padding:36px 20px 80px}
+    font:14.5px/1.8 Pretendard,Inter,-apple-system,sans-serif;padding:36px 20px 90px}
   .wrap{max-width:880px;margin:0 auto}
   h1{color:var(--t1);font-size:21px;margin:0 0 4px}
-  h2{color:var(--t1);font-size:15px;margin:36px 0 10px;padding-top:18px;border-top:1px solid var(--line)}
-  h3{color:var(--t1);font-size:14px;margin:22px 0 8px}
-  .sub{color:var(--t3);font-size:13px;margin-bottom:10px}
+  h2{color:var(--t1);font-size:16px;margin:40px 0 12px;padding-top:20px;border-top:1px solid var(--line)}
+  .sub{color:var(--t3);font-size:13px;margin-bottom:14px}
   .formula{background:var(--panel);border-radius:6px;padding:16px 20px;margin:14px 0;
-    font-family:"SF Mono",Consolas,monospace;font-size:13.5px;color:var(--t1);text-align:center}
-  .formula .dim{color:var(--t3);font-size:12px}
-  table{width:100%;border-collapse:collapse;background:var(--panel);border-radius:6px;overflow:hidden;font-size:13px;margin:10px 0}
+    font-family:"SF Mono",Consolas,monospace;font-size:14px;color:var(--t1);text-align:center}
+  table{width:100%;border-collapse:collapse;background:var(--panel);border-radius:6px;overflow:hidden;font-size:13.5px;margin:12px 0}
   th{background:var(--surface);color:var(--t3);font-weight:600;text-align:left;padding:8px 12px;font-size:12px}
-  td{padding:8px 12px;border-top:1px solid var(--line)}
-  td:first-child{color:var(--t1);font-weight:600;white-space:nowrap}
+  td{padding:9px 12px;border-top:1px solid var(--line)}
+  td.k{color:var(--t1);font-weight:600;white-space:nowrap}
   .num{font-variant-numeric:tabular-nums;text-align:right}
-  th.num{text-align:right}
-  .u{color:var(--up)} .d{color:var(--down)} .w{color:var(--warn)}
   .note{background:var(--panel);border-left:3px solid var(--warn);border-radius:0 6px 6px 0;
-    padding:10px 14px;margin:14px 0;font-size:13px}
-  .chain{background:var(--panel);border-radius:6px;padding:12px 18px;margin:8px 0;
-    font-family:"SF Mono",Consolas,monospace;font-size:12.5px;color:var(--t2)}
-  p{margin:8px 0}
-  .scroll{overflow-x:auto}
+    padding:12px 15px;margin:14px 0;font-size:13.5px}
+  .good{border-left-color:var(--up)}
+  .talk{background:var(--panel);border-radius:6px;padding:14px 18px;margin:14px 0;font-size:14px}
+  .talk b{color:var(--t1)}
   b{color:var(--t1)}
+  .u{color:var(--up)} .d{color:var(--down)} .w{color:var(--warn)}
+  .fig{background:var(--panel);border-radius:6px;padding:16px;margin:14px 0;text-align:center}
+  .fig figcaption{color:var(--t3);font-size:12.5px;margin-top:8px;text-align:left}
+  sup a{color:var(--blue);text-decoration:none;font-size:11px}
+  .fnlist{font-size:13px;color:var(--t2)}
+  .fnlist dt{color:var(--t1);font-weight:600;margin-top:12px}
+  .fnlist dd{margin:2px 0 0 0}
+  .step{display:flex;gap:12px;margin:10px 0;align-items:baseline}
+  .step .n{flex:none;width:22px;height:22px;border-radius:50%;background:var(--surface);
+    color:var(--t1);font-size:12px;font-weight:700;text-align:center;line-height:22px}
+  .scroll{overflow-x:auto}
 </style>
 </head>
 <body><div class="wrap">
 
-<h1>LP 데스크 — 호가 산정 근거</h1>
-<div class="sub">섹터 ETF LP 호가 엔진 · 핵심 아이디어 정리 (2026-09-21 개정 — 예시 수치는 8-26 실측) · 유니버스 112종 · 기본 z=1.5, 지평 1분 · OMS 반입 버전은 별도 (lp-oms-strategy-v1.html)</div>
+<h1>LP 데스크 — 호가 전략, 쉬운 설명</h1>
+<div class="sub">섹터 ETF LP 호가 엔진의 핵심 아이디어 · 2026-09-21 · 유니버스 112종 · 처음 읽는 사람 기준 — 통계 용어는 본문의 <sup><a href="#fn">번호</a></sup>를 눌러 맨 아래 각주 참조. OMS 반입용 실행 버전은 lp-oms-strategy-v1.html 별도.</div>
 
-<h2>1. 한 줄 요약</h2>
-<p>모든 ETF에 같은 거리로 호가하지 않고, <b>ETF마다 "괴리가 실제로 노는 범위"를 데이터로 재서</b>
-그 범위의 유리한 끝(기본 1.5σ)에 호가를 놓는다. 체결이 잦은 대형 ETF는 자동으로 NAV에 바짝 붙고,
-거친 ETF는 자동으로 멀어진다.</p>
-
-<h2>2. 산식</h2>
-<div class="formula">
-  매도호가 = iNAV × (1 + x<sub>매도</sub>) &nbsp;·&nbsp; 매수호가 = iNAV × (1 + x<sub>매수</sub>) &nbsp; <span class="dim">(5원 틱, 매도 올림 / 매수 내림)</span><br><br>
-  x = μ &nbsp;±&nbsp; z · √( σ<sub>괴리</sub>² + σ<sub>선물</sub>² )
+<h2>1. 무엇을 하는 장사인가</h2>
+<div class="talk">
+ETF에는 "진짜 가치"가 있다 — 담고 있는 주식들 값을 그대로 합친 <b>NAV</b><sup><a href="#fn1">1</a></sup>.
+그런데 시장에서 거래되는 <b>가격</b>은 사려는 사람이 급하면 NAV보다 비싸지고, 팔려는 사람이
+급하면 NAV보다 싸진다. 이 차이가 <b>괴리</b><sup><a href="#fn2">2</a></sup>다.<br><br>
+우리 장사는 단순하다: <b>남들이 급할 때 반대편에 서 있는 것.</b> 누가 급하게 팔면 NAV보다 싸게
+받아주고, 누가 급하게 사면 NAV보다 비싸게 내준다. 괴리는 결국 NAV 근처로 돌아오는 성질이
+있어서<sup><a href="#fn3">3</a></sup>, 돌아올 때 반대 매매로 넘기면 그 차이가 남는다.
+ETF 자체가 오르내리는 것(섹터 등락)은 우리 수익원이 아니다 — 그건 지수선물로 헤지해서 없앤다.
 </div>
 
+<figure class="fig">
+<svg viewBox="0 0 800 210" width="100%" style="max-width:760px">
+  <line x1="40" y1="105" x2="760" y2="105" stroke="#8e8e93" stroke-width="1.5" stroke-dasharray="6 4"/>
+  <text x="762" y="109" fill="#8e8e93" font-size="12" text-anchor="end" dy="-8">NAV (진짜 가치)</text>
+  <polyline fill="none" stroke="#00b26b" stroke-width="2"
+    points="40,110 90,96 140,118 190,88 240,104 290,124 340,99 390,109 440,82 490,102 540,120 590,94 640,112 690,86 740,106"/>
+  <text x="44" y="128" fill="#00b26b" font-size="12">시장 가격</text>
+  <line x1="440" y1="82" x2="440" y2="105" stroke="#ff9f0a" stroke-width="1.5"/>
+  <text x="448" y="88" fill="#ff9f0a" font-size="12">괴리 (+) → 우리가 파는 기회</text>
+  <line x1="290" y1="105" x2="290" y2="124" stroke="#ff9f0a" stroke-width="1.5"/>
+  <text x="298" y="140" fill="#ff9f0a" font-size="12">괴리 (−) → 우리가 사는 기회</text>
+  <line x1="40" y1="180" x2="760" y2="180" stroke="#26262a" stroke-width="1"/>
+  <text x="40" y="200" fill="#636366" font-size="11">가격은 NAV 주변을 오간다 — 벌어졌다 돌아오는 왕복이 수익원</text>
+</svg>
+</figure>
+
+<h2>2. 그럼 얼마나 벌어졌을 때 받아줄 것인가 — 핵심 질문</h2>
+<p>너무 가까이 호가하면 자주 체결되지만 건당 남는 게 없고, 너무 멀면 마진은 크지만 평생 체결이
+없다. 그리고 이 "적당한 거리"는 <b>ETF마다 완전히 다르다</b> — 경쟁 LP가 많은 대형 ETF는 괴리가
+몇 bp<sup><a href="#fn4">4</a></sup> 안에서만 놀고, 거친 테마 ETF는 하루에 수십 bp씩 출렁인다.</p>
+<div class="note good"><b>핵심 아이디어: 거리를 사람이 정하지 않고, ETF마다 "괴리가 실제로 노는 범위"를
+데이터로 재서 그 범위의 유리한 끝에 호가를 놓는다.</b> 최근 10거래일의 30초봉으로 괴리 분포를 만들고,
+그 분포의 중심(μ)과 폭(σ)을 재서 중심 ± 1.5σ<sup><a href="#fn5">5</a></sup>에 선다.</div>
+
+<h2>3. 폭(σ)은 두 가지를 합친다 — NAV 괴리 + 선물 괴리</h2>
 <div class="scroll"><table>
-<tr><th>성분</th><th>의미</th><th>측정</th></tr>
-<tr><td>μ (중심)</td><td>이 ETF가 평소 NAV에서 몇 bp 벌어져 거래되는가 — 구조적 프리미엄/디스카운트. 대부분의 섹터 ETF가 약한 디스카운트(−8~−15bp)에서 거래됨이 실측으로 확인됨.</td><td rowspan="2">최근 10거래일 30초봉에서 (가격 − NAV)/NAV 분포. NAV는 당일 PDF × 구성종목 30초봉으로 장중 재구성. 1시간 주기 자동 갱신.</td></tr>
-<tr><td>σ<sub>괴리</sub> (폭 ①)</td><td>괴리가 그 중심 주변에서 얼마나 흔들리는가 — 체결 기회가 오는 범위.</td></tr>
-<tr><td>σ<sub>선물</sub> (폭 ②)</td><td>호가가 체결된 뒤 <b>선물 헤지를 넣기까지(~1분)</b> ETF가 선물 대비 얼마나 더 밀릴 수 있는가 — 집행 리스크 버퍼. √T 환산이 아니라 1분 변화를 직접 측정 (환산 가정은 실측 분산비 0.5~0.8로 기각됨).</td><td>ETF 수익률 − β·지수선물 수익률의 1분 변화 분포 (30초봉).</td></tr>
-<tr><td>z (배수)</td><td>폭을 몇 σ 잡을지 = <b>체결 빈도와 건당 마진의 트레이드오프.</b> 기본 1.5 (매수 기준 10일 중 8~9일 도달 수준). 장이 험하면 2.0으로 한 클릭.</td><td>화면 상단 토글 (1.0/1.25/1.5/2.0σ)</td></tr>
+<tr><th>성분</th><th>무엇을 재나</th><th>왜 필요한가</th></tr>
+<tr><td class="k">σ<sub>괴리</sub> (NAV 괴리)</td><td>가격이 NAV에서 벗어나는 폭 — 10일치 30초봉 괴리의 표준편차<sup><a href="#fn6">6</a></sup></td><td>체결 기회가 오는 범위 그 자체. NAV는 당일 PDF<sup><a href="#fn7">7</a></sup>(구성종목×수량+현금)로 장중 직접 재구성</td></tr>
+<tr><td class="k">σ<sub>선물</sub> (선물 괴리)</td><td>체결 후 선물 헤지가 잡히기까지 ~1분간, ETF가 <b>선물 대비</b><sup><a href="#fn8">8</a></sup> 얼마나 더 밀릴 수 있나 — 1분 변화를 직접 측정</td><td>체결 순간부터 헤지 전까지는 무방비. 그 1분어치 위험만큼 호가를 더 물러서 받는 보험료</td></tr>
+</table></div>
+<p>둘은 서로 다른 원인의 위험이라 단순 더하기가 아니라 직각으로 합친다<sup><a href="#fn9">9</a></sup>:</p>
+
+<figure class="fig">
+<svg viewBox="0 0 800 190" width="100%" style="max-width:700px">
+  <line x1="150" y1="150" x2="450" y2="150" stroke="#00b26b" stroke-width="3"/>
+  <text x="300" y="172" fill="#00b26b" font-size="13" text-anchor="middle">σ괴리 (평소 흔들림)</text>
+  <line x1="450" y1="150" x2="450" y2="40" stroke="#0a84ff" stroke-width="3"/>
+  <text x="462" y="100" fill="#0a84ff" font-size="13">σ선물 (헤지까지 1분 위험)</text>
+  <line x1="150" y1="150" x2="450" y2="40" stroke="#ff9f0a" stroke-width="3"/>
+  <text x="255" y="80" fill="#ff9f0a" font-size="13.5" font-weight="bold">σ결합 = √(σ괴리² + σ선물²)</text>
+</svg>
+<figcaption>예: σ괴리 5.2bp, σ선물 4.5bp → σ결합 = √(5.2²+4.5²) = 6.9bp. 단순합(9.7)보다 작다 —
+두 위험이 같은 순간 최악으로 겹칠 확률이 낮기 때문.</figcaption>
+</figure>
+
+<h2>4. 최종 공식 — 한 줄</h2>
+<div class="formula">
+매도호가 = iNAV<sup><a href="#fn10" style="font-size:10px">10</a></sup> × (1 + x매도) · 매수호가 = iNAV × (1 + x매수)<br>
+<span style="color:var(--warn)">x = μ ± 1.5 × σ결합</span> &nbsp;
+<span style="color:#8e8e93;font-size:12px">(μ = 괴리 분포의 중심, +가 매도 / −가 매수)</span>
+</div>
+
+<figure class="fig">
+<svg viewBox="0 0 800 220" width="100%" style="max-width:760px">
+  <path d="M 60 185 C 200 185 240 45 400 45 C 560 45 600 185 740 185" fill="none" stroke="#48484c" stroke-width="2"/>
+  <line x1="400" y1="45" x2="400" y2="195" stroke="#8e8e93" stroke-width="1.5" stroke-dasharray="5 4"/>
+  <text x="400" y="212" fill="#d1d1d6" font-size="12.5" text-anchor="middle">μ (중심, 예: −9.6bp)</text>
+  <line x1="610" y1="90" x2="610" y2="195" stroke="#bb4a65" stroke-width="2"/>
+  <text x="610" y="80" fill="#bb4a65" font-size="12.5" text-anchor="middle" font-weight="bold">매도 호가 μ+1.5σ</text>
+  <line x1="190" y1="90" x2="190" y2="195" stroke="#00b26b" stroke-width="2"/>
+  <text x="190" y="80" fill="#00b26b" font-size="12.5" text-anchor="middle" font-weight="bold">매수 호가 μ−1.5σ</text>
+  <text x="60" y="60" fill="#636366" font-size="11.5">괴리가 여기까지 오는 날은 드묾 →</text>
+  <text x="400" y="30" fill="#8e8e93" font-size="12" text-anchor="middle">최근 10일 괴리 분포 (30초봉 ~7,300개)</text>
+</svg>
+<figcaption>분포의 양쪽 꼬리(1.5σ)에 서 있는 그림. 대부분의 시간엔 체결이 없다가, 괴리가 극단으로
+밀리는 순간에만 "유리한 가격으로" 걸린다. 가운데(NAV 근처)에서 남 따라 체결을 쫓는 LP가 아니다.</figcaption>
+</figure>
+
+<h2>5. 예시 A — 반도체TOP10: 대형·경쟁 치열 → 자동으로 타이트</h2>
+<div class="step"><span class="n">1</span><span>최근 10일 괴리 분포를 재보니 <b>중심 μ = −9.6bp</b> — 이 ETF는 평소 NAV보다 살짝 싸게(디스카운트) 거래된다<sup><a href="#fn11">11</a></sup>.</span></div>
+<div class="step"><span class="n">2</span><span>폭: σ괴리 5.2bp (AUM 9조, LP 경쟁이 세서 괴리가 하루 +7bp를 못 넘음) + σ선물 4.5bp → <b>σ결합 6.9bp</b>.</span></div>
+<div class="step"><span class="n">3</span><span>1.5σ = ±10.3bp. 그래서 <b class="d">x매도 = −9.6+10.3 = +0.6bp</b> / <b class="u">x매수 = −9.6−10.3 = −19.9bp</b>.</span></div>
+<div class="step"><span class="n">4</span><span>원화로: 기준가 35,105원이면 <b>매도 35,110 / 매수 35,035</b> (스프레드 75원 ≈ 21bp).</span></div>
+<div class="talk">읽는 법: 매도가 NAV 바로 위(+0.6bp)에 붙는 게 이상해 보이지만, 이 종목에서 "+15bp에
+팔겠다"는 호가는 <b>열흘간 단 한 번도 체결 기회가 없었다</b>. 데이터가 그렇게 말하니 호가도 붙는 것.
+매수는 −19.9bp — 평소 중심(−9.6)보다 10bp 더 싸게 나올 때만 받는다.</div>
+
+<h2>6. 예시 B — 코스닥150IT: 거친 종목 → 같은 공식이 자동으로 멀어진다</h2>
+<div class="step"><span class="n">1</span><span>μ = −12.5bp. 폭: σ괴리 15.8bp (코스닥 기술주 바스켓 — 괴리가 하루 +77/−164bp까지 간 날도 있음) + σ선물 13.4bp → <b>σ결합 20.7bp</b>.</span></div>
+<div class="step"><span class="n">2</span><span>1.5σ = ±31.0bp → <b class="d">x매도 +18.5bp</b> / <b class="u">x매수 −43.5bp</b>. 기준가 23,425원이면 매도 23,470 / 매수 23,320 (스프레드 150원 ≈ 64bp).</span></div>
+<div class="talk"><b>A와 B는 같은 규칙, 다른 데이터일 뿐이다.</b> 사람이 "이 종목은 위험하니 넓게"라고
+정하는 게 아니라, 그 종목의 괴리 데이터가 σ를 크게 재면 호가가 알아서 물러선다. 112종 전부 이
+한 공식으로 각자 자리가 나온다.</div>
+
+<h2>7. 예시 C — 중국소비테마: 헤지가 잘 안 먹는 종목</h2>
+<div class="step"><span class="n">1</span><span>μ −11.3, σ괴리 19.3, σ선물 7.9 → σ결합 20.9 → x매도 +20.1 / x매수 −42.7bp.</span></div>
+<div class="step"><span class="n">2</span><span>이 종목의 특징: 국내 지수로 움직임이 설명되는 비율(R²<sup><a href="#fn12">12</a></sup>)이 0.50뿐 — 중국 소비 테마라 국내 지수선물 헤지가 절반밖에 못 막는다.</span></div>
+<div class="talk">폭의 대부분이 σ선물이 아니라 σ괴리에서 나온다 — 지수와 따로 노는 종목은 괴리
+자체가 넓게 논다. 이런 종목은 밴드가 넓은 것에 더해 <b>수량(한도)을 보수적으로</b> 가져간다.
+헤지로 못 막는 위험은 크기로 줄이는 수밖에 없다.</div>
+
+<h2>8. 이 아이디어가 실제로 돈이 되는가 — 검증</h2>
+<p>4.5년(2022~2026) 30초봉으로 "밴드 끝 터치 → 되돌림에 청산"을 백테스트했다:</p>
+<div class="scroll"><table>
+<tr><th>확인한 것</th><th>결과</th></tr>
+<tr><td class="k">왕복 수익</td><td>진입 2σ 터치 · 청산은 중심 반대쪽 0.5σ 터치 → <b class="u">+11.8bp/왕복</b> (비용 차감 후) · 청산까지 중앙값 2~4분 · 95%가 당일 종결</td></tr>
+<tr><td class="k">신호의 수명</td><td>괴리 신호는 <b>그날 장 안에서 소멸</b> — 집행을 하루 미루면 부호가 반전. 며칠 들고 가서 버는 전략이 아니다</td></tr>
+<tr><td class="k">실전 6일</td><td>규칙 없이 2일: +357만 / <b class="d">−1,184만</b> → 규칙 적용 4일 합 <b class="u">+1,139만</b>. 큰 손실날을 해부해 보니 호가는 벌었고(+796만) 손실 전부가 재고 방치분</td></tr>
 </table></div>
 
-<h2>3. 설계 논리 — 왜 이 구조인가</h2>
-<p><b>① 괴리는 수익원, 섹터 등락은 리스크.</b> ETF 가격 = NAV × (1+괴리)로 분해하면, LP가 먹는 것은
-평균회귀하는 괴리 조각이고, NAV 자체의 등락(섹터가 시장 따라 움직이는 것)은 지수선물 헤지가 담당한다.
-그래서 호가 위치는 <b>괴리 분포만으로</b> 정하고, 섹터의 지수 대비 고유 움직임(일중 ±100bp+)은
-호가에 넣지 않는다 — 넣는 순간 호가가 NAV에서 수백 bp 떨어져 무의미해진다.</p>
-<p><b>② 체결에서 헤지까지의 1분이 유일한 예외.</b> 체결 순간부터 선물이 잡히기 전까지는 섹터 움직임에
-노출되므로, 그 1분어치 변동(σ<sub>선물</sub>)만 폭에 가산한다.</p>
-<p><b>③ 체결 가능성을 사후 검증한다.</b> 산출된 x 레벨에 최근 10일 중 며칠이나 괴리가 실제로
-도달했는지("도달 일수")를 함께 계산 — 도달 0일짜리 호가는 장식이라는 것을 화면에서 바로 확인할 수 있다.</p>
-
-<h2>4. 예시 3종 (2026-08-26 캘리브레이션 실측, z=1.5)</h2>
-
-<h3>A. TIGER 반도체TOP10 (396500) — 대형·경쟁 치열 → 초타이트</h3>
-<div class="chain">μ −9.6 · σ괴리 5.2 · σ선물 4.5 → σ결합 6.9 → ×1.5 = ±10.3bp<br>
-x매도 = −9.6+10.3 = <b>+0.6bp</b> · x매수 = −9.6−10.3 = <b>−19.9bp</b><br>
-기준가 35,105원 → <span class="d">매도 35,110</span> / <span class="u">매수 35,035</span> &nbsp;(스프레드 75원 ≈ 21bp)</div>
-<p>AUM 9조, 경쟁 LP가 많아 괴리가 하루 최고 +7bp를 넘지 못한다(10일 실측). 그래서 매도호가가
-NAV 바로 위에 붙는다 — 이 종목에서 +15bp에 팔겠다는 호가는 열흘간 한 번도 체결 기회가 없었다.
-도달: 매도 7/9일 · 매수 8/9일.</p>
-
-<h3>B. TIGER 코스닥150IT (261060) — 고변동 → 넓게</h3>
-<div class="chain">μ −12.5 · σ괴리 15.8 · σ선물 13.4 → σ결합 20.7 → ×1.5 = ±31.0bp<br>
-x매도 = <b>+18.5bp</b> · x매수 = <b>−43.5bp</b><br>
-기준가 23,425원 → <span class="d">매도 23,470</span> / <span class="u">매수 23,320</span> &nbsp;(스프레드 150원 ≈ 64bp)</div>
-<p>코스닥 기술주 바스켓이라 괴리가 하루 +77bp/−164bp까지 출렁인 날도 있다. 같은 공식이
-σ를 크게 재서 호가가 자동으로 멀어진다 — A와 B는 같은 규칙, 다른 데이터일 뿐이다.
-도달: 매도 7/9일 · 매수 9/9일.</p>
-
-<h3>C. TIGER 중국소비테마 (150460) — 지수와 관계 약함 → 괴리 자체가 넓음</h3>
-<div class="chain">μ −11.3 · σ괴리 19.3 · σ선물 7.9 → σ결합 20.9 → ×1.5 = ±31.4bp<br>
-x매도 = <b>+20.1bp</b> · x매수 = <b>−42.7bp</b><br>
-기준가 7,880원 → <span class="d">매도 7,900</span> / <span class="u">매수 7,845</span></div>
-<p>중국 소비 테마라 국내 지수로 설명이 안 되는 종목(R² 0.50 — B의 0.86과 대조).
-지수와 따로 노는 만큼 NAV 괴리 분포 자체가 넓고(σ괴리 19bp), 폭의 대부분이 σ<sub>선물</sub>이 아니라
-σ<sub>괴리</sub>에서 나온다. 이런 종목은 헤지 신뢰도도 낮으므로(β_K −0.10 / β_Q 0.47) 수량을 보수적으로 가져간다.
-도달: 매도 9/9일 · 매수 9/9일.</p>
-
-<h2>5. 검증 — 이 아이디어가 실제로 돈이 되는가</h2>
-<p>4.5년(2022~2026) 30초봉으로 "밴드 끝 터치 → 되돌림 청산"을 백테스트했다 (마크 규약:
-단일 프린트 금지·클린창 09:10~15:10 중앙값 — 종가 오염을 3단계 걸러낸 버전).</p>
-<table>
-<tr><th>규칙</th><th>결과</th></tr>
-<tr><td>진입 2σ 터치 · 청산 μ 반대쪽 0.5σ 터치</td><td class="num"><b>+11.8bp/왕복</b> (비용 차감 후) · 청산 중앙값 2~4분 · 95% 당일 종결</td></tr>
-<tr><td>괴리 신호의 수명</td><td>당일 세션 안에서 소멸 — 집행을 하루 미루면 부호가 반전. <b>며칠 보유에 실증된 엣지는 없다</b> (깊은 저평가 g≤−30bp만 예외적 생존)</td></tr>
-<tr><td>실전 6일 (8/26~9/2)</td><td class="num">규칙 전 2일 +357/−1,184만 → 규칙 적용 4일 합 <b>+1,139만</b>. 8/27 손실 해부: 호가는 벌었고(+796만 스프레드) 손실 전부 재고 방치분</td></tr>
-</table>
-<p>결론: <b>엣지는 "괴리 극단에서 받아서 그 세션 안에 되돌림으로 넘기는 것"에만 있다.</b>
-그래서 아래 재고 규율이 산식만큼 중요하다.</p>
-
-<h2>6. 호가는 전략의 절반 — 재고 규율</h2>
-<p>8/27 −1,184만의 교훈: 손실은 호가가 아니라 <b>재고 델타</b>(헤지 미집행 −641만·잔차 −738만·수동
-마감 −588만)에서 났다. 그래서 체결 이후가 규칙화돼 있다:</p>
-<table>
+<h2>9. 호가는 절반이다 — 나머지 절반은 재고 규율</h2>
+<p>위 −1,184만의 교훈: 이 전략이 죽는 길은 호가를 잘못 놓는 게 아니라 <b>받은 물건을 들고 있는 것</b>이다.</p>
+<div class="scroll"><table>
 <tr><th>규칙</th><th>내용</th></tr>
-<tr><td>즉시 헤지</td><td>체결 → 지수선물 필요계약 |2~3| 이상이면 바로 집행 (미니K200 5만/KQ150F 1만 승수)</td></tr>
-<tr><td>종목당 한도</td><td>장중 재고 상한 2.5억/종목 (하루 감내 손실 500만 기준 역산) — 험한 날·이벤트 종목은 절반</td></tr>
-<tr><td>당일 정리</td><td>재고는 그날 되돌림에 넘긴다 (신호 수명이 당일이므로). 14:30부터 정리 가속, 14:55 잔량 강제 마감</td></tr>
-<tr><td>오버나이트 상한</td><td>50만원 ÷ (1.645×잔차σ) 주 이하만 이월 허용, 잔차σ&gt;250bp 종목은 이월 금지</td></tr>
-</table>
-<p>손익은 4조각으로 분해해 감시한다 — ①스프레드(실력) ②지수β(헤지가 담당) ③잔차(운 —
-지수선물로 못 막는 부분) ④선물 실현. <b>③이 ①을 압도하는 날이 반복되면 전략이 아니라 도박</b>이라
-③/① 비율이 드리프트 감지 지표다.</p>
+<tr><td class="k">즉시 헤지</td><td>체결되면 지수선물을 바로 잡는다 — ETF 등락은 그 순간부터 남의 일</td></tr>
+<tr><td class="k">종목당 한도</td><td>재고 상한 2.5억/종목 (하루 감내 손실 500만에서 역산). 험한 날·이벤트 종목은 절반</td></tr>
+<tr><td class="k">당일 정리</td><td>신호 수명이 당일이므로 재고도 당일 되돌림에 넘긴다. 14:30부터 가속, 14:55 잔량 강제 마감</td></tr>
+<tr><td class="k">이월 상한</td><td>밤새 들고 갈 수 있는 양 = 50만원 ÷ (1.645×잔차<sup><a href="#fn13">13</a></sup>σ) — 잔차 변동이 큰 종목은 이월 자체 금지</td></tr>
+</table></div>
+<p>그리고 손익을 4조각(①스프레드=실력 ②지수 등락=헤지 몫 ③잔차=운 ④선물 실현)으로 매일 분해해서,
+<b>③이 ①을 압도하는 날이 반복되면 전략이 아니라 도박이 된 것</b> — 그 비율이 경보 지표다.</p>
 
-<h2>7. 자기조절 사례 — 이벤트가 나면 밴드가 스스로 반응한다 (2026-09-15 실측)</h2>
-<p>TIGER 코리아휴머노이드로봇산업: 구성종목 급등으로 하루 괴리 상단이 +42bp까지 뻗은 날
-(직전 9일은 +9~13bp). 다음 날 캘리브레이션:</p>
-<table>
-<tr><th>성분</th><th>변화</th><th>의미</th></tr>
-<tr><td>μ (중심)</td><td class="num">−11bp — 거의 불변</td><td>하루 꼬리는 시간 비중이 작아 평균을 못 민다 — 밴드가 위로 <b>평행이동하지 않음</b></td></tr>
-<tr><td>σ (폭)</td><td class="num">확대 → x매도 +13.6 / x매수 −35.6bp</td><td>양쪽이 <b>대칭으로 넓어짐</b> — 이슈 지속이면 더 비싸게 팔고, 반전(급락)이면 평소보다 깊은 곳에서 사게 됨</td></tr>
-</table>
-<p>즉 하루짜리 이벤트는 위험한 방향(중심 이동)이 아니라 방어적인 방향(폭 확대)으로만 통계에
-들어온다. 이런 날 사람이 할 일은 밴드 조정이 아니라 <b>그 종목 한도 축소</b>뿐이다.
-이벤트가 끝나면 넓어진 밴드는 10일 창을 빠져나가며 서서히 정상화된다.</p>
+<h2>10. 이벤트가 나면 밴드가 스스로 반응한다 — 실측 사례</h2>
+<div class="talk">2026-09-15, 휴머노이드로봇 ETF의 구성종목이 급등해 괴리 상단이 하루 +42bp까지
+뻗었다 (직전 9일은 +9~13bp). 다음 날 밴드는 어떻게 됐나:<br><br>
+· <b>중심(μ)은 안 움직였다</b> (−11bp 그대로) — 하루 꼬리는 시간 비중이 작아 평균을 못 민다.<br>
+· <b>폭(σ)만 커졌다</b> → 매도는 +13.6bp로 올라가고, 매수도 −35.6bp로 <b>같이 깊어졌다</b>.<br><br>
+그래서: 이슈가 이어지면 더 비싸게 팔고, 반짝하고 급락 반전하면 평소보다 <b>더 싼 곳에서</b> 받는다 —
+어느 쪽이든 불리해지는 방향이 없다. 이런 날 사람이 할 일은 밴드 조정이 아니라 <b>그 종목 한도
+축소</b> 하나다. 이벤트가 지나가면 넓어진 밴드는 10일 창을 빠져나가며 서서히 원래대로 돌아온다.</div>
 
-<h2>8. 한계와 운영 원칙</h2>
-<div class="note">
-① <b>재구성 NAV의 상수 편차</b> — 통계의 NAV는 PDF 재구성값이라 공식 NAV와 보수·배당 계상 차이가
-있을 수 있다 (μ가 전 종목 음수로 쏠린 원인 후보). 장중 실시간 괴리 컬럼과 대조하며 운용하고,
-공식 NAV 히스토리 적재(Finance_Data 후속)로 근본 해소 예정.<br>
-② <b>파생 내장 ETF</b>(커버드콜 등)는 옵션·선물 레그를 제외한 주식+현금만으로 재구성 — 레벨 편차를
-감수하는 의도적 단순화. 실측(472150 배당커버드콜액티브): 레그 4개 제외 후 μ −5.5bp·σ 14.7bp로
-일반 ETF 대역과 동일 (현재 PDF의 파생 레그 계약수가 0으로 적재돼 실질 편차 없음).<br>
-③ σ<sub>선물</sub>은 지수선물 30초봉 클린창(09:10~15:20) 표본 기준 (풀세션 적재 확인).<br>
-④ 위 수치는 최근 10일 창의 스냅샷 — 시장 변동성이 바뀌면 1시간 주기로 자동 추적된다.
-</div>
+<h2>11. 한계 — 알고 쓰는 것</h2>
+<div class="scroll"><table>
+<tr><th>한계</th><th>대응</th></tr>
+<tr><td class="k">재구성 NAV의 상수 편차</td><td>통계용 NAV는 PDF 재구성값이라 보수·배당 계상이 공식 NAV와 다를 수 있다 (μ가 전 종목 음수로 쏠린 원인 후보). 장중 실시간 괴리와 대조 운용, 공식 NAV 적재로 추후 해소</td></tr>
+<tr><td class="k">파생 내장 ETF</td><td>커버드콜 등은 옵션·선물 레그를 빼고 주식+현금만으로 재구성 — 의도적 단순화 (실측상 실질 편차 없음)</td></tr>
+<tr><td class="k">10일 창의 성격</td><td>모든 수치는 최근 10거래일 스냅샷 — 시장이 바뀌면 1시간 주기로 따라가되, 충격이 완전히 반영되는 데는 며칠 걸린다</td></tr>
+</table></div>
+
+<h2 id="fn">각주 — 용어 사전</h2>
+<dl class="fnlist">
+<dt id="fn1">1. NAV (순자산가치)</dt><dd>ETF 한 주가 실제로 담고 있는 재산의 값. 구성종목 주식값 × 수량 + 현금을 전부 더해 발행 주수로 나눈 것. "이 ETF의 원가"라고 생각하면 된다.</dd>
+<dt id="fn2">2. 괴리</dt><dd>(시장 가격 − NAV) ÷ NAV. 가격이 원가보다 비싸면 +(프리미엄), 싸면 −(디스카운트). 이 문서의 모든 bp 숫자가 이 괴리다.</dd>
+<dt id="fn3">3. 평균회귀</dt><dd>벌어진 괴리가 NAV 근처로 돌아오는 성질. LP·차익거래자들이 벌어진 쪽을 계속 받아가기 때문에 생긴다. 백테스트로 "그날 안에 돌아온다"까지 확인됨 (§8).</dd>
+<dt id="fn4">4. bp (베이시스포인트)</dt><dd>0.01%. 10bp = 0.1%. 가격 20,000원 ETF에서 10bp = 20원.</dd>
+<dt id="fn5">5. σ(시그마)와 1.5σ</dt><dd>σ = 표준편차 — 값들이 평균에서 평균적으로 얼마나 떨어져 노는지의 "한 칸" 단위. 1.5σ는 그 1.5칸 — 분포가 정규분포 비슷하다면 괴리가 중심에서 1.5σ 밖으로 나가는 시간은 대략 13% 정도다. 즉 "가끔만 오는 극단"에 서 있는 것. 1.5라는 배수(z)는 체결 빈도와 건당 마진의 절충으로 고른 운용값 — 험한 날은 2.0으로 한 클릭 올린다.</dd>
+<dt id="fn6">6. 표준편차 측정 방식</dt><dd>최근 10거래일 × 매일 09:10~15:20(개장 직후·마감 동시호가 제외) × 30초봉 ≈ 7,300개 괴리 값의 흩어짐. 매 영업일 1시간 주기로 자동 갱신.</dd>
+<dt id="fn7">7. PDF (납부자산구성내역)</dt><dd>운용사가 매일 공시하는 "이 ETF 1창출단위에 뭐가 몇 주 들었나" 목록. 이걸로 NAV를 30초 단위로 직접 재구성한다.</dd>
+<dt id="fn8">8. 선물 괴리 (s)</dt><dd>ETF 수익률 − β×지수선물 수익률. "선물로 헤지하고 남는 움직임"이 1분 동안 얼마나 변하나를 직접 잰다. √시간 환산 같은 이론 공식은 실측과 안 맞아 폐기하고 (실측 분산비 0.5~0.8), 1분이면 1분 변화를 그대로 잰다.</dd>
+<dt id="fn9">9. 제곱합 제곱근 (√(a²+b²))</dt><dd>서로 독립인 두 위험을 합치는 표준 방법. 두 위험이 같은 순간에 최악으로 겹칠 확률이 낮아서, 단순합보다 작게 나온다.</dd>
+<dt id="fn10">10. iNAV</dt><dd>장중 실시간으로 계산되는 NAV 추정치. 호가의 닻(앵커) — 통계(μ, σ)는 과거 10일에서 오고, 호가를 실제로 놓는 기준점은 지금 이 순간의 iNAV다.</dd>
+<dt id="fn11">11. μ가 왜 음수(디스카운트)인가</dt><dd>대부분의 섹터 ETF가 −8~−15bp 약한 디스카운트에서 거래됨이 실측됐다. 재구성 NAV가 보수·배당을 빼지 않는 계상 차이도 원인 후보(§11) — 어느 쪽이든 "그 종목의 평소 자리"를 중심으로 쓰면 호가는 올바른 위치에 선다.</dd>
+<dt id="fn12">12. β(베타)와 R²</dt><dd>β = 지수가 1% 움직일 때 이 ETF가 몇 % 따라 움직이나 (헤지 수량 계산에 사용, 120일 회귀로 추정). R² = 그 지수로 움직임이 설명되는 비율 (1이면 완벽, 0.5면 절반) — 낮을수록 선물 헤지가 덜 먹는다.</dd>
+<dt id="fn13">13. 잔차</dt><dd>지수선물로 헤지하고도 남는 그 종목 고유의 움직임 (예: 구성종목의 개별 뉴스). 지수선물로는 원리적으로 못 막는 위험이라, 크기(한도)로만 통제한다. 1.645라는 숫자는 "20일 중 1일만 감내 손실을 넘는" 수준의 통계 계수.</dd>
+</dl>
 
 </div></body>
 </html>
